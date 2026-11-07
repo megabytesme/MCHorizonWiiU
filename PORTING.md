@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe integrated-server polling boundary (2026-11-07)
+
+- `crates/horizon-client-lib/Cargo.toml` excludes Mio on Cafe. `crates/horizon-client/src/lan/io_pool.rs` uses a condition variable and the existing inbox for Cafe's in-memory connections while retaining the original framing, encryption, session and cleanup logic; `lan/mod.rs` explicitly rejects TCP listeners, so Cafe LAN and dedicated TCP hosting are unavailable. This local platform substitution is required because Mio does not support Cafe and cannot be replaced externally without changing the worker; the existing paths remain identifiable for upstream updates. From WSL in the repository with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work CARGO_INCREMENTAL=0`, `cargo +nightly test -p horizon-client-lib --lib lan::io_pool::tests --jobs 16 --offline` passed 7/7, including desktop socket and alternate in-memory poller tests. The full-client Cafe dependency tree no longer selects Mio. A disposable Cafe harness type-checked the actual polling source and tests but used a compile-only `frame_body` placeholder and was not run; neither the integrated server nor world entry has been verified on Cafe.
+
 ### Cafe private-file boundary (2026-11-07)
 
 - `crates/horizon-server-files/src/private_file.rs` returns `Unsupported` before touching files on Cafe: Cafe std does not provide the exclusive creation and owner-only protection required by this secret-writing API. The desktop implementation remains unchanged. A local conditional is necessary because an external adapter cannot safely satisfy those guarantees yet; it is a small upstream patch expected to reapply cleanly. Agent Control TCP endpoints and dedicated-server management endpoints that require these private files cannot start on Cafe. Desktop `cargo +nightly test -p horizon-server-files --lib private_file::tests --jobs 16 --offline` passed 3/3. A disposable wrapper with the experimental prepared Ring passed Cafe `cargo +nightly check` and `check --tests`; the Cafe-only no-mutation test type-checked but has not run.

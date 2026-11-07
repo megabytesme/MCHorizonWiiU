@@ -644,6 +644,7 @@ impl Lan {
     }
     /// The socket [`Lan::listen`] accepts on, bound ahead so that a failure
     /// can be reported before the hub is at hand.
+    #[cfg(not(target_os = "cafe"))]
     pub fn bind(address: Option<std::net::IpAddr>, port: u16) -> io::Result<TcpListener> {
         let bind = address.unwrap_or_else(|| {
             if test_loopback() {
@@ -656,7 +657,16 @@ impl Lan {
         listener.set_nonblocking(true)?;
         Ok(listener)
     }
+    /// Cafe currently supports the in-process connection, not TCP listeners.
+    #[cfg(target_os = "cafe")]
+    pub fn bind(_address: Option<std::net::IpAddr>, _port: u16) -> io::Result<TcpListener> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LAN TCP is unavailable on Cafe",
+        ))
+    }
     /// [`Lan::listen`] on a socket already bound.
+    #[cfg(not(target_os = "cafe"))]
     pub fn listen_on(&mut self, listener: TcpListener, announce: bool) -> io::Result<u16> {
         if self.listener.is_some() {
             return Err(io::Error::new(
@@ -679,6 +689,14 @@ impl Lan {
         self.listener_stop = stop;
         self.port = port;
         Ok(port)
+    }
+    /// Do not advertise a listener whose TCP connections cannot be served.
+    #[cfg(target_os = "cafe")]
+    pub fn listen_on(&mut self, _listener: TcpListener, _announce: bool) -> io::Result<u16> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LAN TCP is unavailable on Cafe",
+        ))
     }
     /// Stop accepting connections and announcing; connections already in
     /// (the local one included) stay.

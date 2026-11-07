@@ -8,7 +8,12 @@
 //! integrated server's own player, over an in-memory pipe, is served the same
 //! way: the pipe tells the thread when bytes arrive.
 use horizon_protocol::connection::{ConnReader, ConnWriter, Pipe, Socket};
+#[cfg(not(target_os = "cafe"))]
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
+#[cfg(target_os = "cafe")]
+type Registry = ();
+#[cfg(any(target_os = "cafe", test))]
+use std::sync::Condvar;
 use std::{
     io::{ErrorKind, Read, Write},
     sync::{
@@ -30,6 +35,7 @@ const SWEEP: Duration = Duration::from_millis(100);
 const AHEAD: usize = 256 << 10;
 /// How long a disconnect's last bytes are given before the socket closes.
 const LINGER: Duration = Duration::from_millis(50);
+#[cfg(not(target_os = "cafe"))]
 const WAKER: Token = Token(usize::MAX);
 
 /// The play state's side of a connection (conn.rs's `PlayConn`).
@@ -182,7 +188,10 @@ struct Inbox {
 
 /// One network thread, as the others see it.
 pub(super) struct Worker {
-    waker: Waker,
+    #[cfg(not(target_os = "cafe"))]
+    waker: Option<Waker>,
+    #[cfg(any(target_os = "cafe", test))]
+    ready: Condvar,
     inbox: Mutex<Inbox>,
     /// Its connections, to give a new one to the least busy.
     load: AtomicUsize,
@@ -196,9 +205,15 @@ impl Worker {
         empty
     }
     pub(super) fn wake(&self) {
-        if let Err(e) = self.waker.wake() {
-            log::warn!("[lan] waking a network thread: {e}");
+        #[cfg(not(target_os = "cafe"))]
+        if let Some(waker) = &self.waker {
+            if let Err(e) = waker.wake() {
+                log::warn!("[lan] waking a network thread: {e}");
+            }
+            return;
         }
+        #[cfg(any(target_os = "cafe", test))]
+        self.ready.notify_one();
     }
 }
 
@@ -218,12 +233,20 @@ fn pool() -> Result<&'static Pool, String> {
 fn start(threads: usize) -> std::io::Result<Pool> {
     let mut workers = Vec::new();
     for n in 0..threads {
+        #[cfg(not(target_os = "cafe"))]
         let poll = Poll::new()?;
         let worker = Arc::new(Worker {
-            waker: Waker::new(poll.registry(), WAKER)?,
+            #[cfg(not(target_os = "cafe"))]
+            waker: Some(Waker::new(poll.registry(), WAKER)?),
+            #[cfg(any(target_os = "cafe", test))]
+            ready: Condvar::new(),
             inbox: Mutex::default(),
             load: AtomicUsize::new(0),
         });
+        #[cfg(not(target_os = "cafe"))]
+        let poll = Poller::Socket(poll);
+        #[cfg(target_os = "cafe")]
+        let poll = Poller::Memory;
         let mine = worker.clone();
         std::thread::Builder::new()
             .name(format!("horizon-net-{n}"))
@@ -231,6 +254,24 @@ fn start(threads: usize) -> std::io::Result<Pool> {
         workers.push(worker);
     }
     Ok(Pool { workers })
+}
+
+enum Poller {
+    #[cfg(not(target_os = "cafe"))]
+    Socket(Poll),
+    #[cfg(any(target_os = "cafe", test))]
+    Memory,
+}
+
+impl Poller {
+    fn registry(&self) -> Option<&Registry> {
+        match self {
+            #[cfg(not(target_os = "cafe"))]
+            Self::Socket(poll) => Some(poll.registry()),
+            #[cfg(any(target_os = "cafe", test))]
+            Self::Memory => None,
+        }
+    }
 }
 
 /// A connection handed to its thread.
@@ -267,7 +308,8 @@ pub(super) fn adopt(
     }
 }
 
-fn run(mut poll: Poll, worker: &Arc<Worker>) {
+fn run(mut poll: Poller, worker: &Arc<Worker>) {
+    #[cfg(not(target_os = "cafe"))]
     let mut events = Events::with_capacity(1024);
     let mut conns: Vec<Option<Conn>> = Vec::new();
     let mut free: Vec<usize> = Vec::new();
@@ -275,25 +317,43 @@ fn run(mut poll: Poll, worker: &Arc<Worker>) {
     let mut sweep_at = Instant::now() + SWEEP;
     loop {
         let wait = sweep_at.saturating_duration_since(Instant::now());
-        if let Err(e) = poll.poll(&mut events, Some(wait))
-            && e.kind() != ErrorKind::Interrupted
-        {
-            log::warn!("[lan] network poll: {e}");
-            std::thread::sleep(SWEEP);
+        match &mut poll {
+            #[cfg(not(target_os = "cafe"))]
+            Poller::Socket(poll) => {
+                if let Err(e) = poll.poll(&mut events, Some(wait))
+                    && e.kind() != ErrorKind::Interrupted
+                {
+                    log::warn!("[lan] network poll: {e}");
+                    std::thread::sleep(SWEEP);
+                }
+            }
+            #[cfg(any(target_os = "cafe", test))]
+            Poller::Memory => {
+                let inbox = worker.inbox.lock().unwrap_or_else(PoisonError::into_inner);
+                let _guard = worker
+                    .ready
+                    .wait_timeout_while(inbox, wait, |i| {
+                        i.serve.is_empty() && i.read.is_empty() && i.adopt.is_empty()
+                    })
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
         }
         let now = Instant::now();
-        for event in &events {
-            let i = event.token().0;
-            let Some(Some(c)) = conns.get_mut(i) else {
-                continue;
-            };
-            if event.is_readable() || event.is_read_closed() || event.is_error() {
-                c.read(now);
+        #[cfg(not(target_os = "cafe"))]
+        if matches!(poll, Poller::Socket(_)) {
+            for event in &events {
+                let i = event.token().0;
+                let Some(Some(c)) = conns.get_mut(i) else {
+                    continue;
+                };
+                if event.is_readable() || event.is_read_closed() || event.is_error() {
+                    c.read(now);
+                }
+                if event.is_writable() || event.is_write_closed() || event.is_error() {
+                    c.serve(now);
+                }
+                touched.push(i);
             }
-            if event.is_writable() || event.is_write_closed() || event.is_error() {
-                c.serve(now);
-            }
-            touched.push(i);
         }
         let inbox =
             std::mem::take(&mut *worker.inbox.lock().unwrap_or_else(PoisonError::into_inner));
@@ -347,12 +407,14 @@ fn run(mut poll: Poll, worker: &Arc<Worker>) {
 
 /// A connection's stream, polled.
 enum Io {
+    #[cfg(not(target_os = "cafe"))]
     Tcp(mio::net::TcpStream),
     Memory(Pipe),
 }
 impl Read for Io {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(not(target_os = "cafe"))]
             Self::Tcp(s) => s.read(out),
             Self::Memory(p) => p.read(out),
         }
@@ -361,6 +423,7 @@ impl Read for Io {
 impl Write for Io {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(not(target_os = "cafe"))]
             Self::Tcp(s) => s.write(data),
             Self::Memory(p) => p.write(data),
         }
@@ -402,21 +465,41 @@ struct Conn {
 impl Conn {
     fn register(
         a: Adopted,
-        registry: &Registry,
+        registry: Option<&Registry>,
         worker: &Arc<Worker>,
         i: usize,
         now: Instant,
     ) -> Result<Self, ()> {
+        #[cfg(target_os = "cafe")]
+        let _ = registry;
         let io = match a.socket {
             Socket::Tcp(stream) => {
+                #[cfg(not(target_os = "cafe"))]
                 let registered = stream.set_nonblocking(true).and_then(|()| {
+                    let registry = registry.ok_or_else(|| {
+                        std::io::Error::new(
+                            ErrorKind::Unsupported,
+                            "TCP is unavailable in the memory poller",
+                        )
+                    })?;
                     let mut stream = mio::net::TcpStream::from_std(stream);
                     let interest = Interest::READABLE | Interest::WRITABLE;
                     registry.register(&mut stream, Token(i), interest)?;
                     Ok(stream)
                 });
+                #[cfg(target_os = "cafe")]
+                let registered: std::io::Result<Io> = {
+                    drop(stream);
+                    Err(std::io::Error::new(
+                        ErrorKind::Unsupported,
+                        "TCP is unavailable on Cafe",
+                    ))
+                };
                 match registered {
+                    #[cfg(not(target_os = "cafe"))]
                     Ok(stream) => Io::Tcp(stream),
+                    #[cfg(target_os = "cafe")]
+                    Ok(io) => io,
                     Err(e) => {
                         let mut session = a.session;
                         a.outbox.closed();
@@ -618,10 +701,13 @@ impl Conn {
         }
     }
 
-    fn close(mut self, registry: &Registry, worker: &Worker) {
+    fn close(mut self, registry: Option<&Registry>, worker: &Worker) {
         match &mut self.io {
+            #[cfg(not(target_os = "cafe"))]
             Io::Tcp(stream) => {
-                let _ = registry.deregister(stream);
+                let _ = registry
+                    .expect("TCP requires a socket poller")
+                    .deregister(stream);
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
             Io::Memory(pipe) => {
@@ -629,6 +715,8 @@ impl Conn {
                 pipe.shutdown();
             }
         }
+        #[cfg(target_os = "cafe")]
+        let _ = registry;
         self.outbox.closed();
         self.left("Disconnected".to_owned());
         self.session.closed();
@@ -722,6 +810,42 @@ mod tests {
             seen,
         }
     }
+    /// Exercise the same condition-variable poller used by Cafe on the host.
+    fn serve_memory(
+        server: Connection,
+        probe: impl FnOnce(Sender<Seen>) -> Probe,
+        timeout: Duration,
+    ) -> Served {
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker = Arc::new(Worker {
+            #[cfg(not(target_os = "cafe"))]
+            waker: None,
+            ready: Condvar::new(),
+            inbox: Mutex::default(),
+            load: AtomicUsize::new(0),
+        });
+        let outbox = Arc::new(Outbox {
+            queue: Mutex::default(),
+            pending: pending.clone(),
+            worker: worker.clone(),
+        });
+        let (tx, seen) = channel();
+        let (socket, reader, writer) = server.detach();
+        // Queue before the worker starts: a notification alone cannot wake it.
+        adopt(
+            socket,
+            (reader, writer),
+            outbox.clone(),
+            Box::new(probe(tx)),
+            timeout,
+        );
+        std::thread::spawn(move || run(Poller::Memory, &worker));
+        Served {
+            outbox,
+            pending,
+            seen,
+        }
+    }
     fn quiet(seen: Sender<Seen>) -> Probe {
         Probe {
             seen,
@@ -730,6 +854,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn memory_poller_uses_original_connection_path_and_closes_after_kick() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        client
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut server = Connection::local(b);
+        for connection in [&mut client, &mut server] {
+            connection.set_compression(64);
+            connection.enable_encryption(&[5; 16]);
+        }
+        client.send(&body(2, 100)).unwrap();
+        let served = serve_memory(
+            server,
+            |seen| Probe {
+                seen,
+                kick_on: Some(9),
+                unprompted: Some(body(0x21, 2)),
+            },
+            Duration::from_secs(30),
+        );
+        assert_eq!(served.next(), Seen::Packet(2, body(2, 100)[1..].to_vec()));
+        served.send(vec![body(3, 100)], None);
+        assert_eq!(client.recv().unwrap(), packet(&body(3, 100)));
+        assert_eq!(client.recv().unwrap(), packet(&body(0x21, 2)));
+        client.send(&body(9, 1)).unwrap();
+        assert_eq!(client.recv().unwrap(), packet(&body(0x7f, 3)));
+        assert!(client.recv().unwrap_err().is_end_of_stream());
+        assert_eq!(served.next(), Seen::Packet(9, body(9, 1)[1..].to_vec()));
+        assert_eq!(served.next(), Seen::Left("kicked".into()));
+        assert_eq!(served.next(), Seen::Closed);
+        assert_eq!(served.pending.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn memory_poller_times_out_silent_pipes_and_rejects_tcp() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        client
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let served = serve_memory(Connection::local(b), quiet, Duration::from_millis(300));
+        assert_eq!(served.next(), Seen::Left("Timed out".into()));
+        assert_eq!(served.next(), Seen::Closed);
+        assert!(client.recv().unwrap_err().is_end_of_stream());
+
+        #[cfg(not(target_os = "cafe"))]
+        {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+            let served = serve_memory(server, quiet, Duration::from_secs(30));
+            assert!(matches!(served.next(), Seen::Left(reason) if reason.contains("unavailable")));
+            assert_eq!(served.next(), Seen::Closed);
+        }
+    }
+
+    #[cfg(not(target_os = "cafe"))]
     #[test]
     fn a_socket_carries_packets_both_ways_in_order_then_disconnects() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -809,6 +994,7 @@ mod tests {
 
     /// A client that reads nothing holds its disconnect unwritten; a close
     /// then ends the connection at once.
+    #[cfg(not(target_os = "cafe"))]
     #[test]
     fn a_close_ends_a_disconnect_the_client_does_not_take() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
