@@ -86,7 +86,14 @@ impl Game<'_> {
     }
 
     pub(super) fn memory_report(&self) -> Value {
-        let (commit, peak_commit) = horizon_threads::allocator_commit();
+        #[cfg(not(target_os = "cafe"))]
+        let (commit, peak_commit) = {
+            let (commit, peak) = horizon_threads::allocator_commit();
+            (Some(mb(commit)), Some(mb(peak)))
+        };
+        // The Cafe system allocator does not expose mimalloc's commit metrics.
+        #[cfg(target_os = "cafe")]
+        let (commit, peak_commit): (Option<f64>, Option<f64>) = (None, None);
         let client = self.level_census();
         // The single-player server thread's own levels: a second copy of the
         // columns both hold, unless they share sections.
@@ -152,8 +159,8 @@ impl Game<'_> {
         json!({
             "process": {
                 "resident_mb": horizon_threads::process_memory::resident_bytes().map(mb),
-                "allocator_commit_mb": mb(commit),
-                "allocator_peak_commit_mb": mb(peak_commit),
+                "allocator_commit_mb": commit,
+                "allocator_peak_commit_mb": peak_commit,
             },
             "render_distance": self.streaming.radius,
             "client_columns": census_json(&client),

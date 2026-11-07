@@ -300,11 +300,16 @@ pub fn catch_stop_signals() {}
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 pub type Allocator = mimalloc::MiMalloc;
 /// The game's mimalloc allocator.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
+/// Cafe uses its system allocator; mimalloc does not support this target.
+#[cfg(all(feature = "mimalloc", target_os = "cafe"))]
+pub type Allocator = std::alloc::System;
+#[cfg(all(feature = "mimalloc", target_os = "cafe"))]
+pub const ALLOCATOR: Allocator = std::alloc::System;
 
 /// The global allocator of a build with the `alloc-census` feature: live
 /// heap bytes by startup step and thread, for `horizon-ctl memory`.
@@ -323,14 +328,14 @@ pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
 
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
 /// Set the allocator up, first thing in `main`: free pages go back to the OS
 /// at once instead of a second later. With mimalloc's delay the game held a
 /// quarter more memory than with the system heap; without it a few percent,
 /// and generation keeps most of its speed-up.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 pub fn configure_allocator() {
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
@@ -338,9 +343,13 @@ pub fn configure_allocator() {
     }
 }
 
+/// Cafe's system allocator has no mimalloc options to configure.
+#[cfg(all(feature = "mimalloc", target_os = "cafe"))]
+pub fn configure_allocator() {}
+
 /// The bytes the allocator has committed now and at its peak (mimalloc's
 /// process info), for `horizon-ctl memory`.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 pub fn allocator_commit() -> (usize, usize) {
     let mut info = [0usize; 8];
     let [
@@ -373,7 +382,7 @@ pub fn allocator_commit() -> (usize, usize) {
 /// large was dropped: mimalloc's free pages, then the system heap's, which
 /// native libraries still use: glibc keeps freed pages in the arena of the
 /// thread that allocated them, and macOS in its zones until memory runs short.
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
 pub fn release_free_memory() {
     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
     unsafe {
@@ -381,6 +390,10 @@ pub fn release_free_memory() {
     }
     release();
 }
+
+/// Cafe's system allocator exposes no explicit free-page collection API here.
+#[cfg(all(feature = "mimalloc", target_os = "cafe"))]
+pub fn release_free_memory() {}
 
 #[cfg(all(feature = "mimalloc", target_os = "linux", target_env = "gnu"))]
 fn release() {
@@ -405,6 +418,7 @@ fn release() {
 
 #[cfg(all(
     feature = "mimalloc",
+    not(target_os = "cafe"),
     not(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))
 ))]
 fn release() {}
@@ -633,7 +647,7 @@ mod tests {
 
     /// The option set is the purge delay: mimalloc v3's default for it is
     /// 1000 ms, and it is 0 once configured.
-    #[cfg(feature = "mimalloc")]
+    #[cfg(all(feature = "mimalloc", not(target_os = "cafe")))]
     #[test]
     fn configuring_the_allocator_purges_at_once() {
         // SAFETY: reads and sets one integer option.

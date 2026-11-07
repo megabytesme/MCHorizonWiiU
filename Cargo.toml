@@ -60,6 +60,9 @@ rust-version = "1.85"
 
 # Ports mirror vanilla's Java signatures, index loops and nested generic types
 # one to one so they can be checked against the decompiled sources.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("cafe"))'] }
+
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
