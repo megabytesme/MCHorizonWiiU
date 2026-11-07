@@ -1,5 +1,13 @@
 # Third-party notices
 
+## ring Cafe patch
+
+`wiiu/ring/ring-0.17.14-cafe.patch` adapts the ISC-licensed `src/rand.rs`
+(Copyright 2015-2016 Brian Smith) in [ring 0.17.14](https://crates.io/crates/ring/0.17.14),
+which combines Apache-2.0, ISC and MIT-licensed components. The helper
+applies the patch only to a checksum-pinned crates.io archive in a new scratch
+directory, preserving the archive's copyright notices and license files.
+
 ## wgpu-hal
 
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs

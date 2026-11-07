@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe Ring compatibility probe (2026-11-07)
+
+- `wiiu/ring/prepare.sh` applies a one-line Cafe OS gate to a checksum-verified Ring 0.17.14 archive in a new scratch directory. The existing Ring random implementation delegates to getrandom 0.2; the final executable must link and initialize `wiiu/entropy`. A disposable client-wrapper check with this Cargo path override passed the earlier Rustls `SecureRandom` error but still failed on Winit, networking and a private-file atomic. The helper does not change the checkout's dependency graph or build a client. On NSS-patched Cemu, a separately linked diagnostic passed entropy, SHA-256, AES-GCM, Ed25519 verification and X25519 agreement smoke checks; stock Cemu failed the existing entropy guard. This is not a TLS handshake or hardware validation. Commands, RPX and limitations are in [wiiu/ring/README.md](wiiu/ring/README.md).
+
 ### Cafe Vulkan HDR boundary (2026-11-07)
 
 - `crates/horizon-hdr/Cargo.toml` and `src/lib.rs` exclude its Vulkan-specific `ash` and HAL calls on Cafe, where WGPU exposes no Vulkan backend. The existing unavailable-device result and non-Vulkan metadata behavior are retained; this has to be gated at the upstream call site rather than in an external GX2 adapter. On WSL from the repository with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work`, `cargo +nightly check -p horizon-hdr --jobs 16` passed on Linux, and the same check with the Cafe stage1 `RUSTC` and `--target powerpc-nintendo-cafe` passed. This localized gate should reapply cleanly; it does not remove other WGPU dependencies or demonstrate GX2 or HDR runtime support.
