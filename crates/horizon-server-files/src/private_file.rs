@@ -2,13 +2,17 @@
 //! token) and the management protocol's generated key. Written whole to a temporary file this
 //! process creates with owner-only permissions, then renamed over the path, so the result never
 //! keeps an old file's wider permissions and never writes through a link left at the path.
-use std::io::{self, Write};
+use std::io;
+#[cfg(not(target_os = "cafe"))]
+use std::io::Write;
 use std::path::Path;
+#[cfg(not(target_os = "cafe"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Writes `text` to `path`, readable and writable by its owner only (0600 on Unix; on Windows the
 /// folder's inherited permissions, as for any file). Replaces what was at `path`, a link included
 /// (the link itself, not what it points to).
+#[cfg(not(target_os = "cafe"))]
 pub fn write_private(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let name = path
@@ -35,6 +39,15 @@ pub fn write_private(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
     result
 }
 
+/// Cafe cannot guarantee exclusive creation and owner-only access for secrets.
+#[cfg(target_os = "cafe")]
+pub fn write_private(_path: &Path, _text: impl AsRef<[u8]>) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private file creation is unavailable on Cafe",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +60,7 @@ mod tests {
         dir
     }
 
+    #[cfg(not(target_os = "cafe"))]
     #[test]
     fn writes_whole_and_leaves_no_temporary_file() {
         let dir = scratch("whole");
@@ -54,6 +68,19 @@ mod tests {
         write_private(&path, "one").unwrap();
         write_private(&path, "two").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "cafe")]
+    #[test]
+    fn unavailable_private_write_leaves_existing_file_untouched() {
+        let dir = scratch("unsupported");
+        let path = dir.join("api.json");
+        std::fs::write(&path, "existing").unwrap();
+        let error = write_private(&path, "secret").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
