@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe protocol atomics (2026-11-07)
+
+- Cafe lacks native 64-bit atomics. `crates/horizon-protocol/src/connection.rs` therefore uses the existing `portable-atomic` fallback on targets without them, selected in `crates/horizon-protocol/Cargo.toml`; desktop keeps its original standard atomics. The counters need real cross-thread atomic operations, so an external adapter cannot replace their concrete type. These two localized changes should be easy to reapply. On WSL in the repository, with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work CARGO_INCREMENTAL=0`, `cargo +nightly test -p horizon-protocol --lib connection::tests --jobs 32 --offline` passed 13/13. With Cafe stage1 `RUSTC` and `RUSTFLAGS='--cfg getrandom_backend="custom"'`, `cargo +nightly check -p horizon-protocol --target powerpc-nintendo-cafe --jobs 32 --offline` passed. The check did not link entropy or run the atomic fallback on Cafe.
+
 ### Cafe free-space query (2026-11-07)
 
 - `wiiu/fs` calls WUT `FSGetFreeSpaceSize` through a separate per-call FS client. Cafe std initializes the filesystem and resolves relative paths before that call. Only the two client manifests and `crates/horizon-client/src/save.rs` select this adapter on Cafe: the original disk-space decision and the desktop `fs4` path remain unchanged. This target-specific call site is needed because the upstream library otherwise unconditionally links `fs4`, whose `rustix`/`errno` dependencies do not support Cafe.

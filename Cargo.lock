@@ -1825,6 +1825,7 @@ dependencies = [
  "horizon-world",
  "ipconfig",
  "log",
+ "portable-atomic",
  "serde_json",
  "sha1",
  "sha2",

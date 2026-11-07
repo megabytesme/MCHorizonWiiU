@@ -20,6 +20,9 @@ sha2 = "0.10"
 # AES-NI at run time on x86 for the connection cipher (crypto/blocks.rs).
 aes = "0.8.4"
 
+[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
+portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
+
 # The name servers of Windows' network adapters, for Minecraft SRV redirects.
 [target.'cfg(windows)'.dependencies]
 ipconfig = "0.3.4"

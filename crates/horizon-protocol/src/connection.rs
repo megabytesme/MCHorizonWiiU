@@ -9,12 +9,14 @@ use crate::{Error, Result, buf::Reader, crypto::Cfb8, frame};
 use std::{
     io::{Read, Write},
     net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicI64, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
+
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicI64;
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicI64;
 
 /// Called when a [`Pipe`] end has bytes to read or was closed ([`Pipe::on_ready`]).
 type Notify = Arc<dyn Fn() + Send + Sync>;
