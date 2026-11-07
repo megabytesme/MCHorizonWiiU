@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.13)
 project(horizon_wiiu_bootstrap C)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
+find_program(CARGO_WIIU_EXECUTABLE cargo-wiiu REQUIRED)
 find_program(POWERPC_OBJCOPY_EXECUTABLE powerpc-eabi-objcopy REQUIRED)
+find_program(READRPL_EXECUTABLE readrpl REQUIRED)
 find_program(POWERPC_AR_EXECUTABLE powerpc-eabi-ar REQUIRED)
 find_program(POWERPC_NM_EXECUTABLE powerpc-eabi-nm REQUIRED)
 find_program(CAFEGLSL_COMPILER_EXECUTABLE glslcompiler REQUIRED)
@@ -165,12 +167,18 @@ set(WUHB "${CMAKE_CURRENT_BINARY_DIR}/horizon_wiiu_bootstrap.wuhb")
 # GCC 16 emits a zero-sized .note.GNU-stack section in its startup object.
 # Both elf2rpl and cargo-wiiu 0.4.1 currently reject it, so remove this
 # link-time-only marker from a copy before converting the executable to RPX.
+# WUT's __rplwrap_exit names the coreinit export exit. Normalize that alias
+# before cargo-wiiu conversion and reject any other unresolved WUT wrappers.
 add_custom_command(
    OUTPUT "${RPX}"
    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:horizon_wiiu_bootstrap>" "${PACKAGE_ELF}"
-   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" --strip-debug --remove-section=.note.GNU-stack "${PACKAGE_ELF}"
-   COMMAND "${CARGO_EXECUTABLE}" wiiu rpx "${PACKAGE_ELF}" "${RPX}"
-   DEPENDS horizon_wiiu_bootstrap
+   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" --strip-debug --remove-section=.note.GNU-stack
+      --redefine-sym __rplwrap_exit=exit "${PACKAGE_ELF}"
+   COMMAND "${CMAKE_COMMAND}" "-DCARGO=${CARGO_EXECUTABLE}" "-DPACKAGE_ELF=${PACKAGE_ELF}"
+      "-DREADRPL=${READRPL_EXECUTABLE}" "-DRPX=${RPX}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../package_rpx.cmake"
+   DEPENDS horizon_wiiu_bootstrap "${CMAKE_CURRENT_SOURCE_DIR}/../package_rpx.cmake"
+      "${CARGO_EXECUTABLE}" "${CARGO_WIIU_EXECUTABLE}" "${POWERPC_OBJCOPY_EXECUTABLE}" "${READRPL_EXECUTABLE}"
    COMMENT "Packaging CafeOS ELF as RPX"
    VERBATIM
 )
