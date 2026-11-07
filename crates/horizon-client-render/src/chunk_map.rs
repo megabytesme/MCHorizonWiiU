@@ -1,4 +1,5 @@
 //! Resident chunk membership, with a token for consumers that cache its keys.
+use crate::AtomicU64;
 use crate::{
     chunk::Chunk,
     fast_hash::{FxHashMap, FxHashSet},
@@ -9,10 +10,7 @@ use std::{
         hash_map::{Iter, ValuesMut},
     },
     ops::Deref,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 
 type Key = (i32, i32);

@@ -578,7 +578,7 @@ impl Worker {
 /// from an older `Occlusion` (another level's) never matches. As gfx.rs
 /// `next_block_entity_revision`.
 fn next_generation() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    static NEXT: crate::AtomicU64 = crate::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 

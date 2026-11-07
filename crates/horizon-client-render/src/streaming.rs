@@ -29,7 +29,8 @@ pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
 /// job then.
 pub mod job_stats {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use crate::AtomicU64;
+    use std::sync::atomic::{AtomicBool, Ordering};
     pub const KINDS: [&str; 7] = [
         "load", "generate", "decorate", "finish", "light", "mesh", "other",
     ];

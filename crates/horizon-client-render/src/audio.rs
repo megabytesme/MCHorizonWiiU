@@ -132,7 +132,7 @@ impl Drop for MixerBackend {
 /// Splitscreen: each shared backend's channel ids start at a block of their own, never handed out
 /// again, so a player in a seat used before never reuses an id a departed one's decoder may
 /// still attach to. The game's own backend counts from 0, as before.
-static SHARED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SHARED_CHANNELS: crate::AtomicU64 = crate::AtomicU64::new(0);
 /// Two players' copies of one sound: started within this of each other.
 const SAME_SOUND: std::time::Duration = std::time::Duration::from_millis(150);
 /// Decoded samples and their rate (`None`: the file did not load).

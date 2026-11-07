@@ -1288,7 +1288,7 @@ const SIGN_TEXT_KEEP: i64 = 100;
 /// block-entity positions in the last few seconds.
 const STATIC_GEOMETRY_MAX_ENTRIES: usize = 4096;
 fn next_static_snapshot_revision() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    static NEXT: crate::AtomicU64 = crate::AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 const MODELS: [(&str, &str); 27] = [

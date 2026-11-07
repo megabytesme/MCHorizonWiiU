@@ -2,6 +2,7 @@
 //! and its payloads). Plain data, as vanilla's block entities are world data;
 //! their behaviour lives with the features that use them (`containers`,
 //! `brewing`, `signs`, ...), which re-export these types under their old paths.
+use crate::AtomicU64;
 use horizon_client_core::{text::Text, who::Who};
 use horizon_items::{banner_layer::BannerLayer, items::ItemStack};
 use horizon_world::{
@@ -10,10 +11,7 @@ use horizon_world::{
 };
 use std::{
     collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 
 /// An entity's UUID as its four ints (`UUIDUtil.CODEC`).

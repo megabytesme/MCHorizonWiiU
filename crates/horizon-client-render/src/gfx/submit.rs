@@ -6,8 +6,9 @@
 //! frame's encoder to [`Queue::submit_later`] and goes on; every use of the queue
 //! ([`Deref`]) first waits for that frame to be submitted, so writes, copies and
 //! submissions keep the order they had on one thread.
+use crate::AtomicU64;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 

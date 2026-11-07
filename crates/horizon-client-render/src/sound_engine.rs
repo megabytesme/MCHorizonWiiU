@@ -1487,7 +1487,8 @@ impl SoundEngine {
 }
 /// `RandomSupport.generateUniqueSeed`.
 pub fn unique_seed() -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use crate::AtomicI64;
+    use std::sync::atomic::Ordering;
     static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
     let mut current = UNIQUIFIER.load(Ordering::Relaxed);
     let next = loop {

@@ -1,6 +1,11 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (horizon-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
+#[cfg(not(target_has_atomic = "64"))]
+pub(crate) use portable_atomic::{AtomicI64, AtomicU64};
+#[cfg(target_has_atomic = "64")]
+pub(crate) use std::sync::atomic::{AtomicI64, AtomicU64};
+
 pub use horizon_terrain_mesh::{
     assets, atlas_sources, biome, cit_assets, connected, fusion, mipmap, model_library, models,
     native_emissive, par, spans, sprites,
