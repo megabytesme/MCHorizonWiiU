@@ -13,9 +13,11 @@ winit = { version = "0.30.13", optional = true }
 # The window icon.
 horizon-theme = { path = "../horizon-theme", optional = true }
 png = { version = "0.18", optional = true }
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
 # The DualSense's trigger effects (the `controllers` feature).
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+
+[target.'cfg(not(target_os = "cafe"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
 
 [features]
 default = ["desktop"]

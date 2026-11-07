@@ -121,14 +121,14 @@ pub trait Clipboard {
 /// without it. When no system clipboard can be reached, text copied in the
 /// game can still be pasted in the game.
 #[derive(Default)]
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 pub struct SystemClipboard {
     system: Option<arboard::Clipboard>,
     /// The text Horizon last copied (`horizon-ctl status`).
     copied: Option<String>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 impl SystemClipboard {
     /// The text last copied by the game.
     pub fn copied(&self) -> Option<&str> {
@@ -142,7 +142,7 @@ impl SystemClipboard {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> String {
         let Some(system) = self.system() else {
@@ -183,6 +183,30 @@ impl Clipboard for MemoryClipboard {
         if !text.is_empty() {
             self.0 = text.to_owned();
         }
+    }
+}
+
+/// Cafe has no desktop clipboard service; copied text remains available in the game.
+#[cfg(any(target_os = "cafe", all(test, not(feature = "desktop"))))]
+#[derive(Default)]
+pub struct SystemClipboard(MemoryClipboard);
+
+#[cfg(any(target_os = "cafe", all(test, not(feature = "desktop"))))]
+impl SystemClipboard {
+    /// The text last copied by the game.
+    pub fn copied(&self) -> Option<&str> {
+        (!self.0.0.is_empty()).then_some(self.0.0.as_str())
+    }
+}
+
+#[cfg(any(target_os = "cafe", all(test, not(feature = "desktop"))))]
+impl Clipboard for SystemClipboard {
+    fn get(&mut self) -> String {
+        self.0.get()
+    }
+
+    fn set(&mut self, text: &str) {
+        self.0.set(text);
     }
 }
 
@@ -315,6 +339,18 @@ pub fn append_limited(value: &mut String, text: &str, max_chars: usize) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "desktop"))]
+    #[test]
+    fn in_process_system_clipboard_preserves_copied_text() {
+        let mut clipboard = SystemClipboard::default();
+        assert_eq!(clipboard.copied(), None);
+        assert_eq!(clipboard.get(), "");
+        clipboard.set("copied");
+        clipboard.set("");
+        assert_eq!(clipboard.copied(), Some("copied"));
+        assert_eq!(clipboard.get(), "copied");
+    }
 
     #[test]
     fn altgr_types_text_where_it_is_ctrl_alt() {
