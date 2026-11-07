@@ -6,7 +6,9 @@
 //! configured adds a short code and a fallback. The integrated server is the
 //! LAN one, unchanged: tunnelled guests are LAN guests that connect from the
 //! loopback address.
-use super::{Game, lan::LanSettings};
+use super::Game;
+#[cfg(not(target_os = "cafe"))]
+use super::lan::LanSettings;
 use horizon_client::{
     Result,
     friends_screen::{self, Action, FriendsView},
@@ -14,7 +16,10 @@ use horizon_client::{
     lang,
     text::Text,
 };
-use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
+use horizon_friends::{Host, HostEvent, reach};
+#[cfg(not(target_os = "cafe"))]
+use horizon_friends::{HostConfig, PathMode, host::DEFAULT_PORT, stun};
+#[cfg(not(target_os = "cafe"))]
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
 
@@ -38,6 +43,7 @@ pub const HELP: &[&str] = &[
 ];
 
 /// `HORIZON_STUN_SERVERS`, else `friendsStun` in horizon.txt, else the defaults.
+#[cfg(not(target_os = "cafe"))]
 fn stun_servers() -> Vec<String> {
     if std::env::var_os("HORIZON_STUN_SERVERS").is_some() {
         return stun::servers_from_env();
@@ -49,12 +55,20 @@ fn stun_servers() -> Vec<String> {
     }
 }
 
+#[cfg(not(target_os = "cafe"))]
 fn env_flag(name: &str, default: bool) -> bool {
     std::env::var(name).map_or(default, |v| v != "0")
 }
 
 impl Game<'_> {
     /// Start sharing the open world.
+    #[cfg(target_os = "cafe")]
+    pub(super) fn friends_start(&mut self) -> Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
+    }
+
+    /// Start sharing the open world.
+    #[cfg(not(target_os = "cafe"))]
     pub(super) fn friends_start(&mut self) -> Result<()> {
         if self.friends.is_some() {
             return Ok(());
@@ -219,6 +233,13 @@ impl Game<'_> {
         match action {
             Action::Share => {
                 if let Err(e) = self.friends_start() {
+                    #[cfg(target_os = "cafe")]
+                    if e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::Unsupported)
+                    {
+                        self.system_message(Text::tr("horizon.friends.unavailable", &[]));
+                        return;
+                    }
                     self.system_message(Text::literal(
                         lang::get_or(
                             "horizon.friends.share_failed",

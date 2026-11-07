@@ -2,22 +2,18 @@
 //! protect the relayed stream, swap candidates over it, race direct streams
 //! for [`direct::RACE`] and settle on one. The guest decides and says so;
 //! the host follows.
-use crate::{
-    PathMode,
-    crypto::{self, Frame, Key, Role, SecureReader, SecureWriter},
-    direct,
-};
+use crate::crypto::{self, Frame, Key, Role, SecureReader, SecureWriter};
+#[cfg(not(target_os = "cafe"))]
+use crate::{PathMode, direct};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
-    net::{SocketAddr, TcpStream},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Sender, channel},
-    },
-    time::{Duration, Instant},
+    net::TcpStream,
+    sync::{Arc, atomic::AtomicBool, mpsc::Sender},
+    time::Instant,
 };
+#[cfg(not(target_os = "cafe"))]
+use std::{net::SocketAddr, sync::atomic::Ordering, sync::mpsc::channel, time::Duration};
 
 pub(crate) type Secure = (SecureReader<TcpStream>, SecureWriter<TcpStream>);
 
@@ -66,6 +62,7 @@ pub(crate) type Listen<'a> = Box<dyn FnOnce(Sender<TcpStream>, Instant, Arc<Atom
 
 /// Settle a session on the relayed stream `relay` (already protected) or a
 /// direct one.
+#[cfg(not(target_os = "cafe"))]
 pub(crate) fn settle(
     relay: Secure,
     key: &Key,

@@ -3,11 +3,12 @@
 //! on the router (PCP / NAT-PMP / UPnP), and its public address from STUN.
 //! The endpoints go into the invite code; the verdict tells the host what
 //! friends outside its network can expect, and what to do when it's nothing.
-use crate::portmap::{self, Mapping};
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::Duration,
-};
+#[cfg(not(target_os = "cafe"))]
+use crate::portmap;
+use crate::portmap::Mapping;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(not(target_os = "cafe"))]
+use std::time::Duration;
 
 /// Where the troubleshooting lives (shown to hosts nobody can reach).
 pub const HELP_URL: &str =
@@ -66,6 +67,7 @@ fn virtual_interface(name: &str) -> bool {
 /// This machine's addresses worth offering, best first: private IPv4 (the
 /// LAN), shared IPv4 (Tailscale's 100.64/10, CGNAT), other IPv4, one global
 /// IPv6. No link-local or unique-local; loopback on request.
+#[cfg(not(target_os = "cafe"))]
 pub fn interface_addresses(loopback: bool) -> Vec<IpAddr> {
     let mut found: Vec<(u8, IpAddr)> = Vec::new();
     for i in if_addrs::get_if_addrs().unwrap_or_default() {
@@ -115,6 +117,7 @@ pub fn interface_addresses(loopback: bool) -> Vec<IpAddr> {
 
 impl Reach {
     /// Find out (takes a few seconds: router discovery and STUN).
+    #[cfg(not(target_os = "cafe"))]
     pub fn discover(port: u16, options: &Options) -> Self {
         let local = interface_addresses(options.loopback);
         let stun = {
@@ -354,6 +357,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "cafe"))]
     fn interface_addresses_skip_loopback_unless_asked() {
         assert!(interface_addresses(false).iter().all(|a| !a.is_loopback()));
         assert!(interface_addresses(true).contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));

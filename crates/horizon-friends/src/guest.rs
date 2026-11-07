@@ -1,21 +1,27 @@
 //! The guest's end: reach the host from the code (directly, or through a
 //! relay), agree on the key, then offer the session on a loopback port the
 //! game's client connects to like to any server.
+#[cfg(not(target_os = "cafe"))]
 use crate::{
-    Code, PathMode,
+    Code,
     crypto::{self, Role},
     direct,
     invite::{Invite, Parsed},
-    resolve_relay,
-    session::{self, Secure},
+    resolve_relay, session,
     wire::{self, ErrorCode, FromRelay, ToRelay},
 };
+use crate::{PathMode, session::Secure};
 use std::{
     fmt, io,
-    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
-    sync::mpsc::channel,
+    net::{Ipv4Addr, TcpListener},
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Duration,
+};
+#[cfg(not(target_os = "cafe"))]
+use std::{
+    net::{SocketAddr, TcpStream},
+    sync::mpsc::channel,
+    time::Instant,
 };
 
 pub struct GuestConfig {
@@ -34,6 +40,8 @@ pub struct GuestConfig {
 /// Why joining failed, in words for the player.
 #[derive(Debug)]
 pub enum JoinError {
+    #[cfg(target_os = "cafe")]
+    Unavailable,
     BadCode(crate::invite::CodeError),
     /// A short code without a relay to resolve it.
     NeedsRelay,
@@ -55,6 +63,8 @@ pub enum JoinError {
 impl fmt::Display for JoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(target_os = "cafe")]
+            Self::Unavailable => write!(f, "{}", io::Error::from(io::ErrorKind::Unsupported)),
             Self::BadCode(e) => write!(f, "{e}"),
             Self::NeedsRelay => write!(
                 f,
@@ -110,6 +120,7 @@ pub struct Tunnel {
 /// Join with what the player pasted: a full invite is dialled directly
 /// (every endpoint at once), then through the relay it names, if any; a
 /// short code goes through the configured relay. Blocks for a few seconds.
+#[cfg(not(target_os = "cafe"))]
 pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
     match crate::invite::parse_detailed(&config.code).map_err(JoinError::BadCode)? {
         Parsed::Short(code) => {
@@ -133,8 +144,14 @@ pub fn join(config: &GuestConfig) -> Result<Tunnel, JoinError> {
     }
 }
 
+#[cfg(target_os = "cafe")]
+pub fn join(_: &GuestConfig) -> Result<Tunnel, JoinError> {
+    Err(JoinError::Unavailable)
+}
+
 /// Dial every endpoint of the code; the first that answers as a Horizon
 /// host gets the handshake, the others are dropped before it.
+#[cfg(not(target_os = "cafe"))]
 fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
     let (tx, rx) = channel();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -175,6 +192,7 @@ fn join_direct(invite: &Invite) -> Result<Option<Tunnel>, JoinError> {
 
 /// Through a relay with its short code (its own direct race, then the
 /// relay's byte stream).
+#[cfg(not(target_os = "cafe"))]
 fn join_relay(config: &GuestConfig, relay_url: &str, code: &Code) -> Result<Tunnel, JoinError> {
     let relays = resolve_relay(relay_url).map_err(|e| JoinError::Unreachable(e.to_string()))?;
     let direct_allowed = config.path != PathMode::RelayOnly;

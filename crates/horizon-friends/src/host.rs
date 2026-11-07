@@ -6,6 +6,8 @@
 //! sessions (with their own direct race, then the relay as fallback).
 //! Every session ends at the integrated server's port. Everything runs on
 //! its own threads; the game polls [`Host::poll`] and [`Host::state`].
+#[cfg(not(target_os = "cafe"))]
+use crate::wire::{self, FromRelay, ToRelay};
 use crate::{
     Code, PathMode,
     crypto::{self, Role},
@@ -13,20 +15,21 @@ use crate::{
     invite::{Invite, RelayRef},
     reach::{self, Reach, Verdict},
     resolve_relay, session,
-    wire::{self, FromRelay, ToRelay},
 };
 use std::{
     collections::HashMap,
-    io::{self, BufReader},
+    io,
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, Sender},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+#[cfg(not(target_os = "cafe"))]
+use std::{io::BufReader, sync::mpsc::channel};
 
 /// Wrong short codes tried at the relay before the host retires it.
 pub const MAX_WRONG: u32 = 5;
@@ -236,6 +239,7 @@ pub struct Host {
 impl Host {
     /// Start sharing in the background: the code arrives as an event once
     /// the host knows its addresses (a few seconds).
+    #[cfg(not(target_os = "cafe"))]
     pub fn start(config: HostConfig) -> io::Result<Self> {
         let (tx, events) = channel();
         let (listeners, port) = direct::listen(config.port).or_else(|_| direct::listen(0))?;
@@ -275,6 +279,10 @@ impl Host {
             threads,
         })
     }
+    #[cfg(target_os = "cafe")]
+    pub fn start(_: HostConfig) -> io::Result<Self> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     pub fn state(&self) -> HostState {
         self.shared.state.lock().unwrap().clone()
     }
@@ -309,6 +317,7 @@ impl Drop for Host {
 
 /// Find the addresses, publish the code, keep the router mapping alive,
 /// serve the relay when there is one.
+#[cfg(not(target_os = "cafe"))]
 fn share(shared: Arc<Shared>, port: u16) {
     let config = &shared.config;
     let reach = if config.path == PathMode::RelayOnly {
@@ -507,6 +516,7 @@ fn connect_relay(relay: &str, port: Option<u16>) -> io::Result<(TcpStream, Socke
 
 /// Register, serve the control connection, register again when it drops
 /// (a new short code) until stopped.
+#[cfg(not(target_os = "cafe"))]
 fn run_relay(shared: Arc<Shared>, relay: String) {
     let mut backoff = Duration::from_secs(1);
     while !shared.stopped() {
@@ -550,6 +560,7 @@ fn run_relay(shared: Arc<Shared>, relay: String) {
     }
 }
 
+#[cfg(not(target_os = "cafe"))]
 fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
     let config = &shared.config;
     let port = Some(shared.state.lock().unwrap().port);
@@ -628,6 +639,7 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
 /// One guest through the relay: attach, agree on the key from the short
 /// code, settle on a direct or relayed stream, carry it.
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(target_os = "cafe"))]
 fn serve_relayed(
     shared: &Arc<Shared>,
     reserved: Reserved,

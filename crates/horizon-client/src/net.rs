@@ -463,7 +463,13 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
         game: horizon_protocol::GAME_VERSION.to_owned(),
         path: PathMode::from_env(),
     })
-    .map_err(|e| Reason::plain(e.to_string()))?;
+    .map_err(|e| {
+        #[cfg(target_os = "cafe")]
+        if matches!(e, horizon_friends::JoinError::Unavailable) {
+            return Reason::keyed("horizon.friends.unavailable", lang);
+        }
+        Reason::plain(e.to_string())
+    })?;
     status(
         send,
         &if tunnel.direct {
