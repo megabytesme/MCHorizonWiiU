@@ -13,6 +13,13 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe free-space query (2026-11-07)
+
+- `wiiu/fs` calls WUT `FSGetFreeSpaceSize` through a separate per-call FS client. Cafe std initializes the filesystem and resolves relative paths before that call. Only the two client manifests and `crates/horizon-client/src/save.rs` select this adapter on Cafe: the original disk-space decision and the desktop `fs4` path remain unchanged. This target-specific call site is needed because the upstream library otherwise unconditionally links `fs4`, whose `rustix`/`errno` dependencies do not support Cafe.
+- With the Cafe stage-1 compiler, `cargo +nightly check -p horizon-wiiu-fs --target powerpc-nintendo-cafe --jobs 32 --offline` passed from the repository root with `CARGO_TARGET_DIR=/tmp/horizonwiiu-fs-rust` and devkitPro/WUT set. The original-client wrapper's `cargo +nightly tree --target powerpc-nintendo-cafe -i errno --offline` now reports no reverse dependency. This is not a successful full-client Cafe build; Winit, TLS and networking dependencies remain blockers.
+- The existing desktop disk-space test passed on WSL from the repository root: `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work CARGO_INCREMENTAL=0 cargo +nightly test -p horizon-client-lib --lib save::tests::low_disk_space_is_under_64_mib_usable --jobs 32 --offline` (1/1).
+- The separately linked Rust/WUT diagnostic tested an absolute SD path, a path relative to a changed current directory, missing and invalid paths, a NUL, and 4 concurrent threads performing 8 queries each. Isolated Cemu 2.6 reported `failure_flags=0` and `coreinit.exit(0)`; the RPX is `%TEMP%\HorizonWiiU-fs-probe-20261107\cemu\fs-rust-final.rpx`, SHA-256 `2615ac36f32b2841460e208bbc287a9a34a4a83343acc1d6adcd13b21d34896e`. Source, build and isolated SD result are in the same temporary directory; exact diagnostic details and limitations are in [wiiu/fs/README.md](wiiu/fs/README.md). This was built from the working tree on base `ae75e914f2`, not a Horizon-client or real-hardware run. FS client deregistration failure remains untested.
+
 ### Client renderer seam prototype (2026-11-06)
 
 - Added Horizon `PresentationBackend` and `TerrainBackend` contracts, routed game presentation and streamed section lifecycle calls through them, and made the desktop renderer return allocation errors so CPU meshes can be retried. The budgeted uploader now continues past a failed section instead of starving later meshes; the scene replay example reports upload failures.
