@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe Discord presence boundary (2026-11-07)
+
+- `crates/horizon-client/src/discord_presence.rs` skips the optional Discord worker on Cafe and returns `Unsupported` for its unavailable local IPC. This gate belongs at the existing worker and IPC call sites because Cafe has no compatible opener; desktop behavior is unchanged and the localized patch should be straightforward to reapply. A scratch harness ran six original host tests, including Unix-socket interactions, and type-checked the Cafe module and its unavailable-path test. The harness is under `%TEMP%\HorizonWiiU-discord-cafe-probe-5d910353919d4224a589f1fdd8f43ba7`; no Cafe runtime or full-client result is implied.
+
 ### Cemu instruction and panorama diagnostics (2026-11-07)
 
 - A diagnostic using Horizon's original panorama face loader stalls in `png::Decoder::read_info`; scratch instrumentation narrowed this to code emitted for depth/transform selection. A separate C-only WUT RPX executing `crnand 20,6,1` reaches its before marker but not its after marker in stock Cemu 2.6 and the NSS-patched build. A `nop` control reaches both markers; the result also reproduces with an isolated single-core-interpreter profile. The user first tried a bare RPX and then a WUHB containing that RPX on Aroma; both showed system-memory error 160-2203 without a diagnostic log. The probe source is under `%TEMP%\HorizonWiiU-crnand-standalone` and the Cemu logs under `%TEMP%\HorizonWiiU-Panorama-Cemu-bc28b7eae7e34cf3b409c50e2bd39b43`; the corrected WUHB remains at `/wiiu/apps/horizon-crnand-diagnostic` on the SD card. See `%TEMP%\HorizonWiiU-crnand-hardware-36ea292c1507457bb1be7af0b86e182a\README.txt` for diagnostic interpretation and limitations.

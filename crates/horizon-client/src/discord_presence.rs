@@ -119,6 +119,12 @@ pub fn start(enabled: bool, automated: bool) {
     {
         return;
     }
+    if cfg!(target_os = "cafe") {
+        if enabled {
+            log::warn!("Horizon: Discord presence is unavailable on Wii U");
+        }
+        return;
+    }
     if !enabled {
         lock().wanted.status = Status::Off;
     }
@@ -437,9 +443,29 @@ fn open(path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
     Ok(Box::new(pipe))
 }
 
+#[cfg(target_os = "cafe")]
+fn open(_path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Discord local IPC is unavailable on Wii U",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "cafe")]
+    #[test]
+    fn cafe_reports_ipc_unavailable_without_starting_a_worker() {
+        let error = match open(std::path::Path::new("unused")) {
+            Ok(_) => panic!("Discord IPC unexpectedly available"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        start(true, false);
+        assert!(THREAD.get().is_none());
+    }
 
     fn world(play: Play, dimension: Dimension) -> Status {
         Status::World {
