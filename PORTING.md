@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe Vulkan HDR boundary (2026-11-07)
+
+- `crates/horizon-hdr/Cargo.toml` and `src/lib.rs` exclude its Vulkan-specific `ash` and HAL calls on Cafe, where WGPU exposes no Vulkan backend. The existing unavailable-device result and non-Vulkan metadata behavior are retained; this has to be gated at the upstream call site rather than in an external GX2 adapter. On WSL from the repository with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work`, `cargo +nightly check -p horizon-hdr --jobs 16` passed on Linux, and the same check with the Cafe stage1 `RUSTC` and `--target powerpc-nintendo-cafe` passed. This localized gate should reapply cleanly; it does not remove other WGPU dependencies or demonstrate GX2 or HDR runtime support.
+
 ### Cafe protocol atomics (2026-11-07)
 
 - Cafe lacks native 64-bit atomics. `crates/horizon-protocol/src/connection.rs` therefore uses the existing `portable-atomic` fallback on targets without them, selected in `crates/horizon-protocol/Cargo.toml`; desktop keeps its original standard atomics. The counters need real cross-thread atomic operations, so an external adapter cannot replace their concrete type. These two localized changes should be easy to reapply. On WSL in the repository, with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work CARGO_INCREMENTAL=0`, `cargo +nightly test -p horizon-protocol --lib connection::tests --jobs 32 --offline` passed 13/13. With Cafe stage1 `RUSTC` and `RUSTFLAGS='--cfg getrandom_backend="custom"'`, `cargo +nightly check -p horizon-protocol --target powerpc-nintendo-cafe --jobs 32 --offline` passed. The check did not link entropy or run the atomic fallback on Cafe.
