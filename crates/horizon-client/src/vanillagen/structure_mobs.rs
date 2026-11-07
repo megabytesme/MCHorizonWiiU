@@ -2,6 +2,7 @@
 //! of the mobs structures place (StructureTemplate.placeEntities with
 //! finalizeEntities, ocean ruin drowned, mansion illagers, witch huts,
 //! monuments), run as decoration places them, with the WorldGenRegion's random.
+use crate::AtomicI64;
 use crate::{
     enchant::Enchantments,
     entity_nbt,
@@ -25,7 +26,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicI64, AtomicU8, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 

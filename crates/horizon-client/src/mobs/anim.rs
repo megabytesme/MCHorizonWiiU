@@ -128,7 +128,7 @@ pub struct Poses {
     version: u64,
 }
 /// The next [`Poses::version`].
-static NEXT_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_VERSION: crate::AtomicU64 = crate::AtomicU64::new(1);
 thread_local! {
     /// Spare `Poses` for [`Poses::pooled`].
     static POOL: std::cell::RefCell<Vec<Poses>> = const { std::cell::RefCell::new(Vec::new()) };

@@ -12,6 +12,7 @@ use super::{
     forwarding,
     io_pool::{self, Session as _},
 };
+use crate::AtomicI64;
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnWriter, Connection, Counters},
@@ -28,7 +29,7 @@ use std::{
     net::TcpStream,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
         mpsc::{RecvTimeoutError, Sender, channel},
     },
     time::{Duration, Instant},

@@ -9,8 +9,9 @@
 //! LOGS: none. READS-BY: `game/entity.rs` (the join-order walk, the save order).
 //! ENDS-WHEN: kinds share one stored entity list, which is its own order.
 
+use crate::AtomicU64;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 

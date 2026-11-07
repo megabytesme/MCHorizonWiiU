@@ -13,6 +13,10 @@ Porting Horizon 26.3 to the Nintendo Wii U. The project repository is [MCHorizon
 
 ## Build and emulator results
 
+### Cafe client-library atomics (2026-11-07)
+
+- `crates/horizon-client-lib/Cargo.toml`, `crates/horizon-client/src/client_lib.rs`, and the existing client-library source locations using private 64-bit atomics select the existing portable-atomic fallback when the target lacks native 64-bit atomics. Desktop retains the original standard atomics; signed sentinels and memory orderings are unchanged. These localized substitutions are required at the upstream definitions and should reapply with their containing modules. A disposable renderer-gated Cafe check no longer reported the 17 prior atomic errors but still stopped at an unrelated Discord error (subsequently addressed separately); this was not a full client build. A separately linked Cemu probe tested signed compare-exchange and four concurrent high-bit-set u64 counters with `failure_flags=0`; source and logs are under `%TEMP%\HorizonWiiU-client-atomic-probe-fde939a343664553bac297e6aeb43330`. On WSL with `CARGO_TARGET_DIR=/mnt/e/temp/horizonwiiu-cit-work`, `cargo test --offline -p horizon-client-lib --lib --no-default-features a_silent_client_times_out --jobs 32` passed 2/2, and the same test binary passed the exact recorder-lifecycle and concurrent-UUID tests. No Wii U hardware or full-client runtime result is implied.
+
 ### Cafe Discord presence boundary (2026-11-07)
 
 - `crates/horizon-client/src/discord_presence.rs` skips the optional Discord worker on Cafe and returns `Unsupported` for its unavailable local IPC. This gate belongs at the existing worker and IPC call sites because Cafe has no compatible opener; desktop behavior is unchanged and the localized patch should be straightforward to reapply. A scratch harness ran six original host tests, including Unix-socket interactions, and type-checked the Cafe module and its unavailable-path test. The harness is under `%TEMP%\HorizonWiiU-discord-cafe-probe-5d910353919d4224a589f1fdd8f43ba7`; no Cafe runtime or full-client result is implied.

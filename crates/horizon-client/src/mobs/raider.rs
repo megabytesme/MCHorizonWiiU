@@ -62,7 +62,7 @@ pub struct State {
     pub pre_hurt_health: f32,
 }
 
-static HURT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HURT_SEQ: crate::AtomicU64 = crate::AtomicU64::new(0);
 /// A counter ordering the hurts of raiders across the game.
 pub fn next_hurt_seq() -> u64 {
     HURT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1

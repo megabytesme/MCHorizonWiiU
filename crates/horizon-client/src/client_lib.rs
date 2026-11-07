@@ -1,6 +1,10 @@
 //! Horizon native client: resources, world streaming, rendering and the
 //! bindings between the validated simulation pieces and the game loop.
 #![forbid(unsafe_code)]
+#[cfg(not(target_has_atomic = "64"))]
+pub(crate) use portable_atomic::{AtomicI64, AtomicU64};
+#[cfg(target_has_atomic = "64")]
+pub(crate) use std::sync::atomic::{AtomicI64, AtomicU64};
 extern crate self as horizon_client;
 pub mod advancements;
 pub mod ambience;

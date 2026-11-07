@@ -3695,7 +3695,7 @@ impl Mob {
     }
     /// The section the mob is in, noted when it changes (`EntitySection` lists).
     fn track_section(&mut self) {
-        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        static SEQUENCE: crate::AtomicU64 = crate::AtomicU64::new(1);
         let section = [
             (self.position.x.floor() as i32) >> 4,
             (self.position.y.floor() as i32) >> 4,

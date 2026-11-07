@@ -61,7 +61,7 @@ pub struct VanillaTerrain {
     dimension: String,
     /// When the last proto chunk was generated, in milliseconds since
     /// `created`: the ring search waits for a pause in generation.
-    last_proto: std::sync::atomic::AtomicU64,
+    last_proto: crate::AtomicU64,
     created: std::time::Instant,
     /// A superflat generator (`FlatLevelSource`).
     flat: bool,
@@ -328,7 +328,7 @@ impl VanillaTerrain {
             saved_references: Default::default(),
             preset: preset.to_owned(),
             dimension: dimension.to_owned(),
-            last_proto: std::sync::atomic::AtomicU64::new(0),
+            last_proto: crate::AtomicU64::new(0),
             created: std::time::Instant::now(),
             flat: false,
         })

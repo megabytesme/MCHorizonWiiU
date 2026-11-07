@@ -4,19 +4,20 @@
 //! thread so gameplay frame rates and latency are unaffected.
 
 use super::mcpr::{McprWriter, Metadata, TimestampedPacket};
+use crate::AtomicU64;
 use std::{
     io,
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-static RECORDING_NAME_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RECORDING_NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Commands sent to the background recording thread.
 enum RecordCommand {

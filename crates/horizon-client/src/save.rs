@@ -13,6 +13,7 @@
 //! game rules) is kept from the loaded files and written back unchanged.
 //! Worlds saved by older Horizon builds (`region/`, `DIM-1/`, `Player` in
 //! `level.dat`) are migrated on open.
+use crate::AtomicU64;
 use crate::{
     Result,
     beehive::BeehiveExt,
@@ -42,11 +43,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Condvar, Mutex, OnceLock, atomic::Ordering, mpsc},
 };
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
@@ -3100,10 +3097,7 @@ pub use horizon_world::level_dat::{write_dat, write_dat_durable, write_durable};
 /// macOS): a pack of mobs generated together all had the same UUID, and a
 /// vanilla client keeps only one entity per UUID (the rest never moved).
 pub fn random_uuid() -> [i32; 4] {
-    use std::sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering},
-    };
+    use std::sync::{OnceLock, atomic::Ordering};
     static NEXT: OnceLock<AtomicU64> = OnceLock::new();
     let next = NEXT.get_or_init(|| {
         let t = std::time::SystemTime::now()

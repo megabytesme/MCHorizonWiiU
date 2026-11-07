@@ -36,6 +36,7 @@ mod sound_order;
 pub mod tracking;
 pub mod waypoints;
 
+use crate::AtomicU64;
 pub use conn::{Holding, PlayerSender, flush_all};
 use horizon_protocol::packets::play;
 use horizon_protocol::{
@@ -48,7 +49,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
