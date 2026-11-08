@@ -22996,6 +22996,7 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
     }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
+    #[cfg(not(target_os = "cafe"))]
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
     if !synchronous_startup(&options) {
         if let Some(host) = cafe_host.as_deref_mut() {
