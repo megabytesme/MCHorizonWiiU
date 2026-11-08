@@ -55,7 +55,15 @@ fn read_at_locked(file: &std::sync::Mutex<fs::File>, out: &mut [u8], at: u64) ->
 }
 /// The bytes of `file` from `start` to `end`.
 fn read_range(file: &SharedFile, start: u64, end: u64) -> io::Result<Vec<u8>> {
-    let mut out = vec![0; (end - start) as usize];
+    let length = end
+        .checked_sub(start)
+        .ok_or_else(|| invalid(format!("invalid byte range {start}..{end}")))?;
+    let length = usize::try_from(length).map_err(|_| {
+        invalid(format!(
+            "byte range {start}..{end} is too large for this platform"
+        ))
+    })?;
+    let mut out = vec![0; length];
     let mut done = 0;
     while done < out.len() {
         match read_at(file, &mut out[done..], start + done as u64)? {
@@ -285,6 +293,17 @@ fn normalize_end(data: &mut [u8]) {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn read_range_rejects_an_inverted_range() {
+        let file = fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        #[cfg(not(any(unix, windows)))]
+        let file = std::sync::Mutex::new(file);
+
+        let error = read_range(&file, 2, 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("2..1"));
+    }
 
     #[test]
     fn locked_positional_reads_keep_offsets_separate_and_report_errors() {
