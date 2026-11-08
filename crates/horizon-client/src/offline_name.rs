@@ -51,8 +51,13 @@ fn seed() -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    // Two players starting the game in the same millisecond still differ.
-    let mut x = nanos ^ u64::from(std::process::id()).rotate_left(32);
+    // Add process-local entropy where the platform provides a process ID.
+    #[cfg(not(target_os = "cafe"))]
+    let process_id = std::process::id();
+    // Cafe has no process ID; the timestamp remains available as the seed.
+    #[cfg(target_os = "cafe")]
+    let process_id = 0u32;
+    let mut x = nanos ^ u64::from(process_id).rotate_left(32);
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
     x ^ (x >> 33)
