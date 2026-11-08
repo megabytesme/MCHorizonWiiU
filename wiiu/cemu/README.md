@@ -22,6 +22,14 @@ returns a nonzero error. A passing buffer smoke test is not a cryptographic
 audit or real-hardware verification. `getrandom` 0.3/0.4 integration remains
 separate and is not solved by this patch.
 
+The separate [`crnand-cemu-2.6.patch`](crnand-cemu-2.6.patch) adds the missing
+PowerPC `crnand` interpreter instruction for the same Cemu revision. Cemu's
+recompiler falls back to the interpreter for the containing function. Check the
+revision and use `git apply --unidiff-zero --check` before applying it with
+`git apply --unidiff-zero` alongside the NSS patch. Do not apply either patch
+to an installed emulator. The title diagnostic's
+result and its remaining limitations are recorded in `PORTING.md`.
+
 ## Isolated build performed
 
 The source was cloned to `E:\dev\HorizonWiiU-cemu-nss-20261107\source`,
