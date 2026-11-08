@@ -8,6 +8,26 @@ pub fn main() {
 
 /// Start the game with trait mods in dispatch order.
 pub fn main_with(mods: crate::mod_api::Mods) {
+    main_with_runner(mods, game::run_with);
+}
+
+/// Run the ordinary Loading path on a caller-owned Cafe host, using the same
+/// entry initialization, mod hooks, and error reporting as [`main_with`].
+///
+/// The host is borrowed only while `game::run_with_cafe_host` drives its
+/// Loading loop. The returned outcome owns any remaining Loading session.
+#[cfg(target_os = "cafe")]
+pub fn main_with_cafe_host(
+    mods: crate::mod_api::Mods,
+    host: &mut dyn game::CafeLoadingHost,
+) -> game::CafeRunOutcome {
+    main_with_runner(mods, || game::run_with_cafe_host(host))
+}
+
+/// Shared executable setup and error handling for the entrypoint's runner.
+/// Keep platform-specific hosts at this seam so they receive the same mods,
+/// native hooks, logging, crash reporting, and exit behavior as the desktop.
+fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::Result<T>) -> T {
     // First: a trait injection into anything below (logging, the crash handler) calls its mod.
     if crate::mod_api::MODS.set(mods).is_err() {
         log::warn!("Trait mods already installed; ignoring the second list");
@@ -176,29 +196,34 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }
     raise_open_file_limit();
-    if let Err(error) = game::run_with() {
-        // A bad command line is the caller's mistake, not a crash: no report.
-        let usage = error.is::<game::UsageError>();
-        log::error!("Horizon: {error}");
-        logging::flush();
-        // The report's path is the last line on stderr (crash::SAVED_LINE).
-        if !help && !usage {
-            crash::report_error(&home, side, &*error);
+    let result = run();
+    let value = match result {
+        Ok(value) => value,
+        Err(error) => {
+            // A bad command line is the caller's mistake, not a crash: no report.
+            let usage = error.is::<game::UsageError>();
+            log::error!("Horizon: {error}");
+            logging::flush();
+            // The report's path is the last line on stderr (crash::SAVED_LINE).
+            if !help && !usage {
+                crash::report_error(&home, side, &*error);
+            }
+            // Started from Explorer, the console window closes with the game:
+            // keep the message on screen until it is read.
+            #[cfg(windows)]
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                eprintln!("Press Enter to close.");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
+            std::process::exit(if usage {
+                game::exit_code::USAGE
+            } else {
+                game::exit_code::ERROR
+            });
         }
-        // Started from Explorer, the console window closes with the game:
-        // keep the message on screen until it is read.
-        #[cfg(windows)]
-        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            eprintln!("Press Enter to close.");
-            let _ = std::io::stdin().read_line(&mut String::new());
-        }
-        std::process::exit(if usage {
-            game::exit_code::USAGE
-        } else {
-            game::exit_code::ERROR
-        });
-    }
+    };
     logging::flush();
+    value
 }
 
 /// The JVM raises its open-file limit to the hard limit as it starts
