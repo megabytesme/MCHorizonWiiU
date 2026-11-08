@@ -660,16 +660,23 @@ impl Options {
     /// The command line alone: no file is read and nothing changes. `None` for `--help` and
     /// `--launch-api`, which print and end the run.
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Self>> {
-        let sibling = std::env::current_exe()?
-            .parent()
-            .ok_or("missing executable directory")?
-            .join("resources");
-        let mut o = Self {
-            resources: if sibling.join("horizon-resources.json").exists() {
+        #[cfg(target_os = "cafe")]
+        let resources =
+            std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION);
+        #[cfg(not(target_os = "cafe"))]
+        let resources = {
+            let sibling = std::env::current_exe()?
+                .parent()
+                .ok_or("missing executable directory")?
+                .join("resources");
+            if sibling.join("horizon-resources.json").exists() {
                 sibling
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
-            },
+            }
+        };
+        let mut o = Self {
+            resources,
             distance: 12,
             distance_override: None,
             seed: 0,
@@ -20866,6 +20873,27 @@ fn validate_cafe_host_startup(options: &Options) -> Result<()> {
 #[cfg(test)]
 mod cafe_host_startup_tests {
     use super::*;
+
+    #[cfg(target_os = "cafe")]
+    #[test]
+    fn cafe_default_resources_are_relative_to_the_host_working_directory() {
+        let options = Options::parse(std::iter::empty::<String>())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            options.resources,
+            std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
+        );
+
+        let options = Options::parse(
+            ["--resources", "custom/resources"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(options.resources, PathBuf::from("custom/resources"));
+    }
 
     #[test]
     fn cafe_host_rejects_synchronous_launch_options() {
