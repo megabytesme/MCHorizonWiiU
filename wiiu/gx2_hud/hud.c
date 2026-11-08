@@ -136,10 +136,35 @@ fail:
    return failure;
 }
 
-HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame *f)
+static HorizonHudResult validate_target_viewport(const HorizonHudFrame *f,
+                                                  uint32_t x, uint32_t y,
+                                                  uint32_t width, uint32_t height)
 {
-   if (!hud) return HORIZON_HUD_INVALID;
+   if (!f || !f->viewport_width || !f->viewport_height || !width || !height ||
+       x > UINT32_MAX - width || y > UINT32_MAX - height)
+      return HORIZON_HUD_INVALID;
+
+   /* Let the host letterbox mismatched outputs instead of stretching the UI.
+    * The small tolerance accounts for the DRC's 854x480 pixel dimensions. */
+   uint64_t target_scaled = (uint64_t)width * f->viewport_height;
+   uint64_t source_scaled = (uint64_t)height * f->viewport_width;
+   uint64_t difference = target_scaled > source_scaled
+      ? target_scaled - source_scaled : source_scaled - target_scaled;
+   uint64_t largest = target_scaled > source_scaled ? target_scaled : source_scaled;
+   if (difference > largest / 200)
+      return HORIZON_HUD_UNSUPPORTED;
+
+   return HORIZON_HUD_OK;
+}
+
+HorizonHudResult horizon_gx2_hud_draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+                                         uint32_t x, uint32_t y,
+                                         uint32_t width, uint32_t height)
+{
+   if (!hud || !f) return HORIZON_HUD_INVALID;
    HorizonHudResult validation = horizon_hud_validate(f, hud->width, hud->height, hud->capacity);
+   if (validation != HORIZON_HUD_OK) return validation;
+   validation = validate_target_viewport(f, x, y, width, height);
    if (validation != HORIZON_HUD_OK) return validation;
    /* The previous frame may still read these resources. */
    GX2DrawDone();
@@ -159,8 +184,8 @@ HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame 
    if (!out) return HORIZON_HUD_ALLOCATION_FAILED;
    horizon_hud_encode_vertices(f, out);
    GX2RUnlockBufferEx(&hud->buffer, 0);
-   GX2SetViewport(0, 0, f->viewport_width, f->viewport_height, 0, 1);
-   GX2SetScissor(0, 0, f->viewport_width, f->viewport_height);
+   GX2SetViewport((float)x, (float)y, (float)width, (float)height, 0, 1);
+   GX2SetScissor(x, y, width, height);
    GX2SetVertexShader(hud->shader.vertexShader);
    GX2SetPixelShader(hud->shader.pixelShader);
    GX2SetFetchShader(&hud->shader.fetchShader);
@@ -189,4 +214,10 @@ HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame 
       GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, f->runs[i].end - f->runs[i].start, f->runs[i].start, 1);
    }
    return HORIZON_HUD_OK;
+}
+
+HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame *f)
+{
+   if (!hud || !f) return HORIZON_HUD_INVALID;
+   return horizon_gx2_hud_draw_to(hud, f, 0, 0, f->viewport_width, f->viewport_height);
 }

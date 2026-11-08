@@ -170,6 +170,29 @@ impl<'a> Prepared<'a> {
     }
 }
 
+fn validate_target_viewport(source: [u32; 2], target: [u32; 4]) -> Result<(), Error> {
+    let [source_width, source_height] = source;
+    let [x, y, width, height] = target;
+    if source_width == 0
+        || source_height == 0
+        || width == 0
+        || height == 0
+        || x.checked_add(width).is_none()
+        || y.checked_add(height).is_none()
+    {
+        return Err(Error::Invalid);
+    }
+
+    let target_scaled = u64::from(width) * u64::from(source_height);
+    let source_scaled = u64::from(height) * u64::from(source_width);
+    let difference = target_scaled.abs_diff(source_scaled);
+    let largest = target_scaled.max(source_scaled);
+    if difference > largest / 200 {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
 mod cafe {
     use super::*;
@@ -186,6 +209,14 @@ mod cafe {
             capacity: u32,
         ) -> i32;
         fn horizon_gx2_hud_draw(hud: *mut c_void, frame: *const RawFrame) -> i32;
+        fn horizon_gx2_hud_draw_to(
+            hud: *mut c_void,
+            frame: *const RawFrame,
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        ) -> i32;
         fn horizon_gx2_hud_destroy(hud: *mut c_void);
     }
 
@@ -244,6 +275,27 @@ mod cafe {
             result(horizon_gx2_hud_draw(self.hud.as_ptr(), &prepared.raw()))
         }
 
+        /// Draw source-layout vertices into a target rectangle without changing
+        /// their normalization. The target must preserve the source aspect
+        /// ratio (within 0.5%); hosts can letterbox mismatched screens.
+        ///
+        /// # Safety
+        /// The calling render thread must have a valid GX2 color target bound.
+        /// `target` is `[x, y, width, height]` in that target and must fit its
+        /// bounds. This changes GX2 render state.
+        pub unsafe fn draw_to(&mut self, frame: &Frame<'_>, target: [u32; 4]) -> Result<(), Error> {
+            let prepared = Prepared::new(frame)?;
+            validate_target_viewport(frame.viewport, target)?;
+            result(horizon_gx2_hud_draw_to(
+                self.hud.as_ptr(),
+                &prepared.raw(),
+                target[0],
+                target[1],
+                target[2],
+                target[3],
+            ))
+        }
+
         #[cfg(feature = "horizon-hud")]
         pub(super) unsafe fn draw_with_patches(
             &mut self,
@@ -252,6 +304,25 @@ mod cafe {
         ) -> Result<(), Error> {
             let prepared = Prepared::with_extra_patches(frame, extra)?;
             result(horizon_gx2_hud_draw(self.hud.as_ptr(), &prepared.raw()))
+        }
+
+        #[cfg(feature = "horizon-hud")]
+        pub(super) unsafe fn draw_with_patches_to(
+            &mut self,
+            frame: &Frame<'_>,
+            extra: &[Patch],
+            target: [u32; 4],
+        ) -> Result<(), Error> {
+            let prepared = Prepared::with_extra_patches(frame, extra)?;
+            validate_target_viewport(frame.viewport, target)?;
+            result(horizon_gx2_hud_draw_to(
+                self.hud.as_ptr(),
+                &prepared.raw(),
+                target[0],
+                target[1],
+                target[2],
+                target[3],
+            ))
         }
     }
 
@@ -268,6 +339,48 @@ pub use cafe::Presenter;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_layout_normalization_is_independent_of_target_viewport() {
+        let vertices = [HudVertex {
+            pos: [213.5, 120.0],
+            uv: [0.0; 2],
+            color: 0,
+            depth: 0.0,
+            glint_uv: [0.0; 2],
+            text: 0,
+        }; 3];
+        let runs = [(0..3, Blend::Alpha)];
+        let frame = Frame {
+            vertices: &vertices,
+            runs: &runs,
+            patches: &[],
+            viewport: [854, 480],
+            scale: 2.0,
+            pack_text_shader: false,
+        };
+
+        let prepared = Prepared::new(&frame).unwrap();
+        let raw = prepared.raw();
+        assert_eq!((raw.viewport_width, raw.viewport_height), (854, 480));
+        assert!(validate_target_viewport(frame.viewport, [0, 0, 1920, 1080]).is_ok());
+        assert!(validate_target_viewport(frame.viewport, [0, 60, 640, 360]).is_ok());
+        assert!(matches!(
+            validate_target_viewport(frame.viewport, [0, 0, 640, 480]),
+            Err(Error::Unsupported)
+        ));
+        assert!(matches!(
+            validate_target_viewport(frame.viewport, [u32::MAX, 0, 1, 1]),
+            Err(Error::Invalid)
+        ));
+
+        // Independent expected center in NDC, using the source viewport and
+        // scale; target output dimensions do not enter this transform.
+        let clip_x = vertices[0].pos[0] * frame.scale / 854.0 * 2.0 - 1.0;
+        let clip_y = 1.0 - vertices[0].pos[1] * frame.scale / 480.0 * 2.0;
+        assert!(clip_x.abs() < 0.00001);
+        assert!(clip_y.abs() < 0.00001);
+    }
 
     #[test]
     fn converts_borrowed_frame_and_rejects_unsupported_blends() {

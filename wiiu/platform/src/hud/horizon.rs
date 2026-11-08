@@ -113,10 +113,56 @@ impl<'shader> HorizonPresenter<'shader> {
         tick: u64,
         animated_textures: bool,
     ) -> Result<(), Error> {
+        self.draw_inner(atlas, batch, viewport, None, tick, animated_textures)
+    }
+
+    /// Draw one original Horizon batch into a target viewport rectangle while
+    /// preserving the viewport and scale used to lay out the batch.
+    ///
+    /// Use the layout viewport passed to `HudBatch::new` as
+    /// `layout_viewport`; `target` is `[x, y, width, height]` on the active
+    /// GX2 target. Its aspect ratio must match the layout viewport within 0.5%.
+    /// A host can letterbox a differently shaped output rectangle. Reuse the
+    /// same batch for each output instead of drawing the menu again.
+    ///
+    /// Animated sprite updates are committed only after this target accepts
+    /// the frame, matching [`Self::draw`].
+    ///
+    /// # Safety
+    /// The calling render thread must have a valid GX2 color target bound.
+    /// This changes GX2 render state.
+    pub unsafe fn draw_to(
+        &mut self,
+        atlas: &HudAtlas,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: [u32; 4],
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        self.draw_inner(
+            atlas,
+            batch,
+            layout_viewport,
+            Some(target),
+            tick,
+            animated_textures,
+        )
+    }
+
+    unsafe fn draw_inner(
+        &mut self,
+        atlas: &HudAtlas,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: Option<[u32; 4]>,
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
         if atlas.revision != self.atlas_revision || [atlas.width, atlas.height] != self.atlas_size {
             return Err(Error::Invalid);
         }
-        let frame = BatchFrame::new(atlas, batch, viewport);
+        let frame = BatchFrame::new(atlas, batch, layout_viewport);
         let update = prepare_animations(
             &mut self.animations,
             self.atlas_size,
@@ -124,11 +170,23 @@ impl<'shader> HorizonPresenter<'shader> {
             animated_textures,
         );
         if let Some(update) = update {
-            self.presenter
-                .draw_with_patches(&frame.frame(), update.patches())?;
+            let frame = frame.frame();
+            match target {
+                Some(target) => unsafe {
+                    self.presenter
+                        .draw_with_patches_to(&frame, update.patches(), target)?;
+                },
+                None => unsafe {
+                    self.presenter.draw_with_patches(&frame, update.patches())?;
+                },
+            }
             update.commit();
         } else {
-            self.presenter.draw(&frame.frame())?;
+            let frame = frame.frame();
+            match target {
+                Some(target) => unsafe { self.presenter.draw_to(&frame, target)? },
+                None => unsafe { self.presenter.draw(&frame)? },
+            }
         }
         Ok(())
     }

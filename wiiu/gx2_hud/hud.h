@@ -59,4 +59,11 @@ HorizonHudResult horizon_gx2_hud_create(HorizonGx2Hud **out, const void *gfd,
                                         uint32_t vertex_capacity);
 /* Draw into the caller's active GX2 color target; this changes GX2 render state. */
 HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame *frame);
+/* Draw the source-layout frame into a target viewport rectangle. The source
+ * viewport and scale still normalize vertices; target dimensions only select
+ * the GX2 viewport/scissor. The target must preserve source aspect (within
+ * 0.5%); the caller may letterbox it. */
+HorizonHudResult horizon_gx2_hud_draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *frame,
+                                         uint32_t x, uint32_t y,
+                                         uint32_t width, uint32_t height);
 void horizon_gx2_hud_destroy(HorizonGx2Hud *hud);
