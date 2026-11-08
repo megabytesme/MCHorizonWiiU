@@ -1,8 +1,6 @@
 #include "vpad_bridge.h"
 #include <vpad/input.h>
 
-_Static_assert(sizeof(HorizonVpadSample) == 20, "unexpected VPAD bridge layout");
-
 int32_t
 horizon_wiiu_vpad_read(HorizonVpadSample *sample)
 {
@@ -20,5 +18,20 @@ horizon_wiiu_vpad_read(HorizonVpadSample *sample)
    sample->left_y = status.leftStick.y;
    sample->right_x = status.rightStick.x;
    sample->right_y = status.rightStick.y;
+   sample->touch_x = 0;
+   sample->touch_y = 0;
+   sample->touch_active = status.tpNormal.touched != 0;
+   sample->touch_valid = 0;
+   if (status.tpNormal.touched != 0) {
+      VPADTouchData calibrated;
+      VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_1920X1080,
+                                 &calibrated, &status.tpNormal);
+      if (calibrated.validity == VPAD_VALID && calibrated.touched != 0 &&
+          calibrated.x < 1920 && calibrated.y < 1080) {
+         sample->touch_x = calibrated.x;
+         sample->touch_y = calibrated.y;
+         sample->touch_valid = 1;
+      }
+   }
    return 1;
 }

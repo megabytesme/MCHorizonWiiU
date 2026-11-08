@@ -16,6 +16,28 @@ pub struct VpadSample {
     pub left_y: f32,
     pub right_x: f32,
     pub right_y: f32,
+    /// Calibrated 1920×1080 GamePad screen coordinates.
+    pub touch_x: u16,
+    pub touch_y: u16,
+    /// Physical touch contact, independent of coordinate validity.
+    pub touch_active: u32,
+    /// Nonzero only when calibrated coordinates are valid and in range.
+    pub touch_valid: u32,
+}
+
+// This type is passed to the WUT bridge compiled from vpad_bridge.h.
+const _: () = {
+    assert!(std::mem::size_of::<VpadSample>() == 32);
+    assert!(std::mem::offset_of!(VpadSample, touch_x) == 20);
+    assert!(std::mem::offset_of!(VpadSample, touch_active) == 24);
+    assert!(std::mem::offset_of!(VpadSample, touch_valid) == 28);
+};
+
+/// A calibrated contact on the Wii U GamePad's 1920×1080 touch surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VpadTouch {
+    pub x: u16,
+    pub y: u16,
 }
 
 /// Convert WUT VPAD button positions and stick axes to Horizon's pad state.
@@ -60,21 +82,54 @@ pub fn pad_state(sample: VpadSample) -> PadState {
 }
 
 /// Retains the last state when VPAD has no new sample in a frame.
+///
+/// A missing or busy sample is not a release event: the last valid touch is
+/// retained until VPAD reports a new sample, the host resets state, or polling
+/// reports a terminal error. While contact remains active, invalid coordinates
+/// preserve the last valid point; a point is `None` until one has been observed.
 #[derive(Default)]
-pub struct VpadState(PadState);
+pub struct VpadState {
+    pad: PadState,
+    touch_active: bool,
+    touch: Option<VpadTouch>,
+}
 
 impl VpadState {
     pub fn update(&mut self, sample: Option<VpadSample>) -> PadState {
         if let Some(sample) = sample {
-            self.0 = pad_state(sample);
+            self.pad = pad_state(sample);
+            self.touch_active = sample.touch_active != 0;
+            if !self.touch_active {
+                self.touch = None;
+            } else if sample.touch_valid != 0 && sample.touch_x < 1920 && sample.touch_y < 1080 {
+                self.touch = Some(VpadTouch {
+                    x: sample.touch_x,
+                    y: sample.touch_y,
+                });
+            }
         }
-        self.0
+        self.pad
+    }
+
+    /// Whether the latest VPAD sample reports physical contact.
+    ///
+    /// Retained when VPAD has no sample or is busy; cleared on a real release/reset.
+    pub fn touch_active(&self) -> bool {
+        self.touch_active
+    }
+
+    /// Last valid calibrated point; it can be stale while coordinates are invalid.
+    /// it is cleared only on physical release/reset. `None` means no point is known.
+    pub fn touch(&self) -> Option<VpadTouch> {
+        self.touch
     }
 
     /// Clear held controls when the host loses the controller.
     pub fn reset(&mut self) -> PadState {
-        self.0 = PadState::default();
-        self.0
+        self.pad = PadState::default();
+        self.touch_active = false;
+        self.touch = None;
+        self.pad
     }
 
     /// Read VPAD channel 0. On a non-busy error the host must feed a neutral
@@ -89,7 +144,7 @@ impl VpadState {
         match unsafe { horizon_wiiu_vpad_read(&mut sample) } {
             1 => Ok(self.update(Some(sample))),
             -1 => Ok(self.update(None)),
-            // A busy channel can be retried without releasing held controls.
+            // A busy channel can be retried without releasing held controls or touch.
             -4 => Err(-4),
             error => {
                 self.reset();
@@ -111,6 +166,7 @@ mod tests {
             left_y: 0.75,
             right_x: 0.25,
             right_y: -1.0,
+            ..Default::default()
         });
         assert!(state.held(Button::South));
         assert!(state.held(Button::East));
@@ -147,5 +203,107 @@ mod tests {
         }));
         assert!(!reader.reset().held(Button::South));
         assert!(!reader.update(None).held(Button::South));
+    }
+
+    #[test]
+    fn calibrated_touch_is_retained_without_a_sample_and_cleared_on_release_or_reset() {
+        let mut reader = VpadState::default();
+        let contact = VpadSample {
+            touch_x: 1919,
+            touch_y: 1079,
+            touch_active: 1,
+            touch_valid: 1,
+            ..Default::default()
+        };
+        reader.update(Some(contact));
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), Some(VpadTouch { x: 1919, y: 1079 }));
+        reader.update(None);
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), Some(VpadTouch { x: 1919, y: 1079 }));
+        reader.update(Some(VpadSample::default()));
+        assert!(!reader.touch_active());
+        assert_eq!(reader.touch(), None);
+
+        reader.update(Some(contact));
+        reader.reset();
+        assert_eq!(reader.touch(), None);
+    }
+
+    #[test]
+    fn invalid_touch_coordinates_are_never_exposed() {
+        let mut reader = VpadState::default();
+        reader.update(Some(VpadSample {
+            touch_x: 500,
+            touch_y: 400,
+            touch_active: 1,
+            touch_valid: 0,
+            ..Default::default()
+        }));
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), None);
+    }
+
+    #[test]
+    fn touch_coordinates_must_be_inside_the_calibrated_screen() {
+        let mut reader = VpadState::default();
+        for (x, y) in [(1920, 1079), (1919, 1080)] {
+            reader.update(Some(VpadSample {
+                touch_x: x,
+                touch_y: y,
+                touch_active: 1,
+                touch_valid: 1,
+                ..Default::default()
+            }));
+            assert!(reader.touch_active());
+            assert_eq!(
+                reader.touch(),
+                None,
+                "accepted out-of-range point ({x}, {y})"
+            );
+        }
+
+        reader.update(Some(VpadSample {
+            touch_x: 1919,
+            touch_y: 1079,
+            touch_active: 1,
+            touch_valid: 1,
+            ..Default::default()
+        }));
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), Some(VpadTouch { x: 1919, y: 1079 }));
+    }
+
+    #[test]
+    fn invalid_coordinates_do_not_synthesize_release_between_valid_points() {
+        let mut reader = VpadState::default();
+        reader.update(Some(VpadSample {
+            touch_x: 100,
+            touch_y: 200,
+            touch_active: 1,
+            touch_valid: 1,
+            ..Default::default()
+        }));
+        reader.update(Some(VpadSample {
+            touch_active: 1,
+            touch_valid: 0,
+            ..Default::default()
+        }));
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), Some(VpadTouch { x: 100, y: 200 }));
+
+        reader.update(Some(VpadSample {
+            touch_x: 300,
+            touch_y: 400,
+            touch_active: 1,
+            touch_valid: 1,
+            ..Default::default()
+        }));
+        assert!(reader.touch_active());
+        assert_eq!(reader.touch(), Some(VpadTouch { x: 300, y: 400 }));
+
+        reader.update(Some(VpadSample::default()));
+        assert!(!reader.touch_active());
+        assert_eq!(reader.touch(), None);
     }
 }
