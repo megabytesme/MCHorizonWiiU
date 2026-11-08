@@ -50,6 +50,17 @@ pub struct VpadTouch {
 #[derive(Debug)]
 pub struct FreshTouchRelease(());
 
+/// Non-cloneable evidence that one VPAD update received a successful hardware
+/// sample. Unlike [`FreshTouchRelease`], this evidence says nothing about
+/// touchscreen contact; controller rearming may use a fresh neutral pad sample
+/// even while touch remains active.
+///
+/// Pair it with the exact `VpadState` updated by the same call and consume it
+/// immediately. A reset, cached/default state, no-sample result, busy poll, or
+/// terminal poll error cannot produce this marker.
+#[derive(Debug)]
+pub struct FreshVpadSample(());
+
 /// Convert WUT VPAD button positions and stick axes to Horizon's pad state.
 pub fn pad_state(sample: VpadSample) -> PadState {
     let mut state = PadState {
@@ -119,7 +130,22 @@ impl VpadState {
         &mut self,
         sample: Option<VpadSample>,
     ) -> (PadState, Option<FreshTouchRelease>) {
+        let (pad, _fresh_sample, release) = self.update_with_evidence(sample);
+        (pad, release)
+    }
+
+    /// Update the cached VPAD state and return separate evidence for a real
+    /// successful hardware sample and for a fresh touchscreen release.
+    ///
+    /// The sample marker is present for every `Some(VpadSample)`, including
+    /// when the controller is neutral but the touchscreen is held. The touch
+    /// marker remains present only when that sample reports no touch contact.
+    pub fn update_with_evidence(
+        &mut self,
+        sample: Option<VpadSample>,
+    ) -> (PadState, Option<FreshVpadSample>, Option<FreshTouchRelease>) {
         let mut release = None;
+        let fresh_sample = sample.map(|_| FreshVpadSample(()));
         if let Some(sample) = sample {
             self.pad = pad_state(sample);
             self.touch_active = sample.touch_active != 0;
@@ -133,7 +159,7 @@ impl VpadState {
                 });
             }
         }
-        (self.pad, release)
+        (self.pad, fresh_sample, release)
     }
 
     /// Whether the latest VPAD sample reports physical contact.
@@ -173,14 +199,26 @@ impl VpadState {
     /// any terminal error provide no release marker.
     #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
     pub fn poll_with_freshness(&mut self) -> Result<(PadState, Option<FreshTouchRelease>), i32> {
+        self.poll_with_evidence()
+            .map(|(pad, _fresh_sample, release)| (pad, release))
+    }
+
+    /// Read VPAD and return one-shot evidence for any newly read hardware
+    /// sample, independently of the touchscreen release marker. `Ok` with
+    /// `None` sample evidence means VPAD supplied no new sample; busy and
+    /// terminal errors return `Err` and also provide no evidence.
+    #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+    pub fn poll_with_evidence(
+        &mut self,
+    ) -> Result<(PadState, Option<FreshVpadSample>, Option<FreshTouchRelease>), i32> {
         extern "C" {
             fn horizon_wiiu_vpad_read(sample: *mut VpadSample) -> i32;
         }
         let mut sample = VpadSample::default();
         // The C bridge writes the sample only on success and owns VPADStatus's ABI.
         match unsafe { horizon_wiiu_vpad_read(&mut sample) } {
-            1 => Ok(self.update_with_freshness(Some(sample))),
-            -1 => Ok(self.update_with_freshness(None)),
+            1 => Ok(self.update_with_evidence(Some(sample))),
+            -1 => Ok(self.update_with_evidence(None)),
             // A busy channel can be retried without releasing held controls or touch.
             -4 => Err(-4),
             error => {
@@ -265,6 +303,31 @@ mod tests {
         reader.update(Some(contact));
         reader.reset();
         assert_eq!(reader.touch(), None);
+    }
+
+    #[test]
+    fn fresh_sample_evidence_is_independent_of_touch_release() {
+        let mut state = VpadState::default();
+        let contact = VpadSample {
+            buttons: 0,
+            touch_active: 1,
+            touch_valid: 0,
+            ..Default::default()
+        };
+        let (pad, fresh_sample, fresh_touch_release) =
+            state.update_with_evidence(Some(contact));
+        assert_eq!(pad, PadState::default());
+        assert!(fresh_sample.is_some());
+        assert!(fresh_touch_release.is_none());
+
+        let (cached, no_sample, no_release) = state.update_with_evidence(None);
+        assert_eq!(cached, PadState::default());
+        assert!(no_sample.is_none());
+        assert!(no_release.is_none());
+        assert_eq!(state.reset(), PadState::default());
+        let (reset_state, no_reset_evidence, _) = state.update_with_evidence(None);
+        assert_eq!(reset_state, PadState::default());
+        assert!(no_reset_evidence.is_none());
     }
 
     #[test]
