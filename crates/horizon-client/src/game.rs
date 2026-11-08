@@ -20853,6 +20853,32 @@ fn synchronous_startup(options: &Options) -> bool {
         || std::env::var_os("HORIZON_NET_REPORT").is_some()
 }
 
+/// The Cafe host session drives only the asynchronous original Loading screen.
+/// Reject modes that would otherwise fall through to Winit's synchronous game loop.
+fn validate_cafe_host_startup(options: &Options) -> Result<()> {
+    if synchronous_startup(options) || options.offscreen {
+        Err("Cafe host mode requires an ordinary interactive client launch".into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cafe_host_startup_tests {
+    use super::*;
+
+    #[test]
+    fn cafe_host_rejects_synchronous_launch_options() {
+        for arg in ["--headless", "--offscreen"] {
+            let options = Options::parse([arg.to_owned()].into_iter())
+                .unwrap()
+                .unwrap();
+            let error = validate_cafe_host_startup(&options).unwrap_err();
+            assert!(error.to_string().contains("ordinary interactive client"));
+        }
+    }
+}
+
 /// The local world a client's launch opens at once (`--world`,
 /// `--quickPlaySingleplayer`), whose generator data can load with the game's.
 fn launch_world(options: &Options) -> Option<&str> {
@@ -22059,6 +22085,122 @@ struct Loading {
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
 }
+
+/// Borrowed title artwork for one synchronous Cafe presentation callback.
+/// The presenter may retain native copies but must not retain these borrows.
+pub struct CafeLoadingArtwork<'a> {
+    pub atlas: &'a HudAtlas,
+    pub panorama: Option<&'a horizon_client::gfx::panorama::Faces>,
+    /// Changes when Loading switches from its boot atlas to loaded UI resources.
+    pub generation: u64,
+}
+
+/// Cafe presenter contract for the original title frame. `frame.hud` is laid
+/// out once using `layout_viewport`; both targets may draw that same batch.
+pub trait CafeLoadingPresenter {
+    /// Native GamePad size used for original GUI layout and input coordinates.
+    fn layout_viewport(&self) -> [u32; 2];
+    /// `[x, y, width, height]` rectangles on the active TV and GamePad targets.
+    /// The presenter must validate that they are nonempty, in target bounds,
+    /// and preserve the layout aspect within the GX2 HUD backend's tolerance;
+    /// use an in-bounds letterbox rectangle for a mismatched display.
+    fn target_viewports(&self) -> [[u32; 4]; 2];
+    /// Draw both target views synchronously. `Ok(true)` means both were accepted.
+    fn present_loading(
+        &mut self,
+        artwork: CafeLoadingArtwork<'_>,
+        frame: &Frame<'_>,
+        layout_viewport: [u32; 2],
+        target_viewports: [[u32; 4]; 2],
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<bool>;
+}
+
+/// Loading-owned session for an external Cafe event/render loop. It deliberately
+/// exposes readiness without consuming Loaded or claiming a Game handoff.
+pub struct CafeLoadingSession {
+    loading: Loading,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CafeLoadingStatus {
+    Loading,
+    ReadyForHandoff,
+    Failed,
+}
+
+impl CafeLoadingSession {
+    pub fn poll(&mut self, event_loop: &dyn EventLoopCtl) -> bool {
+        self.loading.poll_platform(event_loop)
+    }
+
+    pub fn dispatch_event(&mut self, event_loop: &dyn EventLoopCtl, event: WindowEvent) {
+        self.loading
+            .dispatch_platform_window_event(event_loop, event);
+    }
+
+    /// Draw one original menu batch at the DRC layout size and lend it, with
+    /// current artwork, to a host that presents both Cafe displays.
+    pub fn draw(&mut self, presenter: &mut dyn CafeLoadingPresenter) -> Result<bool> {
+        let layout = presenter.layout_viewport();
+        let targets = presenter.target_viewports();
+        if layout.contains(&0) || targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+            return Err("Cafe loading presenter returned an empty viewport".into());
+        }
+        horizon_client::hud::GUI_SCALE.store(self.loading.settings.gui_scale, Ordering::Relaxed);
+        let animated_textures = self.loading.settings.horizon.animated_textures;
+        self.loading.draw_with(
+            layout,
+            |artwork, frame| {
+                presenter.present_loading(
+                    artwork,
+                    frame,
+                    layout,
+                    targets,
+                    frame.ticks,
+                    animated_textures,
+                )
+            },
+            false,
+            |_| {},
+        )
+    }
+
+    /// Readiness is informational only: this does not take `Loaded`, consume
+    /// `menu.pending`, or launch a world/Game handoff.
+    pub fn status(&self) -> CafeLoadingStatus {
+        if self.failure_message().is_some() {
+            CafeLoadingStatus::Failed
+        } else if self.loading.loaded.is_some() && self.loading.ready_for_handoff() {
+            CafeLoadingStatus::ReadyForHandoff
+        } else {
+            CafeLoadingStatus::Loading
+        }
+    }
+
+    /// The loader's concrete failure message, if it has failed.
+    pub fn failure_message(&self) -> Option<String> {
+        if let Some(error) = &self.loading.error {
+            Some(error.to_string())
+        } else {
+            match self.loading.loaded.as_ref() {
+                Some(Err(error)) => Some(error.clone()),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Cafe loop driver; the returned session remains owned by the caller.
+pub trait CafeLoadingHost: EventLoopCtl {
+    fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> Result<()>;
+}
+
+pub enum CafeRunOutcome {
+    Finished,
+    Loading(CafeLoadingSession),
+}
 /// How long a hidden desktop window waits for a first title frame before
 /// handing off anyway; a host without a window must present the frame.
 const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
@@ -22351,9 +22493,15 @@ impl Loading {
         self.renderer = Some(renderer);
     }
 
-    /// Draw the existing startup menu through the host's presentation backend.
-    fn draw_on(&mut self, renderer: &mut dyn horizon_client::presentation::PresentationBackend) {
-        let size = horizon_client::presentation::viewport_size(renderer);
+    /// Build the original startup menu frame once and synchronously lend its
+    /// artwork and frame to a platform-specific presenter.
+    fn draw_with(
+        &mut self,
+        size: [u32; 2],
+        present: impl FnOnce(CafeLoadingArtwork<'_>, &Frame<'_>) -> Result<bool>,
+        mark_shown_on_error: bool,
+        on_error: impl FnOnce(&dyn std::error::Error),
+    ) -> Result<bool> {
         self.viewport = size;
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
@@ -22363,15 +22511,24 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
-        match horizon_client::presentation::present(renderer, &frame) {
-            Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                self.title_drawn = true;
-                self.menu.perf.title_shown()
-            }
-            Ok(_) => {}
-            Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
+        let (atlas, panorama) = self.artwork();
+        let artwork = CafeLoadingArtwork {
+            atlas,
+            panorama: panorama.map(Arc::as_ref),
+            generation: atlas.revision,
+        };
+        let result = present(artwork, &frame);
+        if let Err(error) = &result {
+            on_error(error.as_ref());
         }
-        if !self.shown {
+        if result.as_ref().is_ok_and(|presented| *presented)
+            && self.gui.is_some()
+            && self.menu.pending.is_none()
+        {
+            self.title_drawn = true;
+            self.menu.perf.title_shown();
+        }
+        if !self.shown && (result.is_ok() || mark_shown_on_error) {
             self.shown = true;
             startup::mark("loading_screen.shown");
             log::info!(
@@ -22379,6 +22536,18 @@ impl Loading {
                 self.started.elapsed().as_millis()
             );
         }
+        result
+    }
+
+    /// Draw the existing startup menu through the desktop presentation backend.
+    fn draw_on(&mut self, renderer: &mut dyn horizon_client::presentation::PresentationBackend) {
+        let size = horizon_client::presentation::viewport_size(renderer);
+        let _ = self.draw_with(
+            size,
+            |_, frame| horizon_client::presentation::present(renderer, frame),
+            true,
+            |error| log::warn!("Horizon: loading screen frame failed: {error}"),
+        );
     }
     fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
@@ -22629,13 +22798,25 @@ fn run_loading(
 pub use launch_api::{UsageError, exit_code};
 
 pub fn run_with() -> Result<()> {
+    run_with_mode(None).map(|_| ())
+}
+
+#[cfg(target_os = "cafe")]
+pub fn run_with_cafe_host(host: &mut dyn CafeLoadingHost) -> Result<CafeRunOutcome> {
+    run_with_mode(Some(host))
+}
+
+fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<CafeRunOutcome> {
     let Some(mut options) = Options::read()? else {
-        return Ok(());
+        return Ok(CafeRunOutcome::Finished);
     };
+    if cafe_host.is_some() {
+        validate_cafe_host_startup(&options)?;
+    }
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
-        return Ok(());
+        return Ok(CafeRunOutcome::Finished);
     }
     let _ = horizon_client::health::HURT_SERVER.set(native_hooks::hurt_server);
     let _ = horizon_client::block_contact::HOOK.set(native_hooks::block_contact);
@@ -22678,13 +22859,19 @@ pub fn run_with() -> Result<()> {
     }
     let vanilla_root = options.resources.clone();
     if let Some(error) = missing_resources(&vanilla_root) {
+        // A Cafe host owns its surface and must receive a normal error instead
+        // of entering the Winit-only missing-resource window.
+        if cafe_host.is_some() {
+            return Err(error.into());
+        }
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
         // the error.
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&Game::options_path());
-            return no_resources::show(&vanilla_root, &settings);
+            no_resources::show(&vanilla_root, &settings)?;
+            return Ok(CafeRunOutcome::Finished);
         }
         return Err(error.into());
     }
@@ -22735,7 +22922,19 @@ pub fn run_with() -> Result<()> {
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
     if !synchronous_startup(&options) {
-        return run_loading(options, early_settings, vanilla_root, None, started);
+        if let Some(host) = cafe_host.as_deref_mut() {
+            let loading = Loading::start(options, early_settings, vanilla_root, None, started)?;
+            let mut session = CafeLoadingSession { loading };
+            if let Err(error) = host.drive_loading(&mut session) {
+                // Match the ordinary event-loop path: the narrator belongs to
+                // the live Loading session, but must stop when that loop errors.
+                narrator::stop();
+                return Err(error);
+            }
+            return Ok(CafeRunOutcome::Loading(session));
+        }
+        run_loading(options, early_settings, vanilla_root, None, started)?;
+        return Ok(CafeRunOutcome::Finished);
     }
     let mut pack_error = None;
     options.resources = packs::startup_root(&vanilla_root, &early_settings.resource_packs, &[])
@@ -22792,7 +22991,7 @@ pub fn run_with() -> Result<()> {
         }
         run_event_loop(game)?;
     }
-    Ok(())
+    Ok(CafeRunOutcome::Finished)
 }
 
 /// The right and left arms of a player model layer (`PlayerModel.rightArm`

@@ -1371,6 +1371,20 @@ mod tests {
         }
     }
 
+    struct GuiScaleRestore(u32);
+
+    impl GuiScaleRestore {
+        fn new() -> Self {
+            Self(horizon_client::hud::GUI_SCALE.load(Ordering::Relaxed))
+        }
+    }
+
+    impl Drop for GuiScaleRestore {
+        fn drop(&mut self) {
+            horizon_client::hud::GUI_SCALE.store(self.0, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn loading_start_uses_the_real_menu_and_reports_loader_failure() {
         const CHILD: &str = "HORIZON_WIIU_TEST_LOADING_CHILD";
@@ -1608,6 +1622,139 @@ mod tests {
         assert!(loading.title_drawn);
         assert!(loading.ready_for_handoff());
         assert!(matches!(loading.take_ready(), Some(Err(ref e)) if e == "loader failure"));
+    }
+
+    #[test]
+    fn cafe_session_lends_boot_then_loaded_artwork_and_marks_only_accepted_title() {
+        #[derive(Clone, Copy)]
+        enum Outcome {
+            Accept(bool),
+        }
+        struct Presenter {
+            outcome: Outcome,
+            calls: usize,
+            atlas_revision: u64,
+            panorama: Option<usize>,
+            title: bool,
+            layout: [u32; 2],
+            targets: [[u32; 4]; 2],
+        }
+        impl CafeLoadingPresenter for Presenter {
+            fn layout_viewport(&self) -> [u32; 2] {
+                [854, 480]
+            }
+            fn target_viewports(&self) -> [[u32; 4]; 2] {
+                [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+            }
+            fn present_loading(
+                &mut self,
+                artwork: CafeLoadingArtwork<'_>,
+                frame: &Frame<'_>,
+                layout_viewport: [u32; 2],
+                target_viewports: [[u32; 4]; 2],
+                _: u64,
+                _: bool,
+            ) -> Result<bool> {
+                self.calls += 1;
+                self.atlas_revision = artwork.generation;
+                self.panorama = artwork.panorama.map(|faces| faces as *const _ as usize);
+                self.title = frame.title;
+                self.layout = layout_viewport;
+                self.targets = target_viewports;
+                match self.outcome {
+                    Outcome::Accept(accepted) => Ok(accepted),
+                }
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let boot_revision = session.loading.boot.revision;
+        let mut presenter = Presenter {
+            outcome: Outcome::Accept(false),
+            calls: 0,
+            atlas_revision: 0,
+            panorama: None,
+            title: false,
+            layout: [0; 2],
+            targets: [[0; 4]; 2],
+        };
+
+        assert!(!session.draw(&mut presenter).unwrap());
+        assert_eq!(presenter.calls, 1);
+        assert_eq!(presenter.atlas_revision, boot_revision);
+        assert!(presenter.panorama.is_none());
+        assert!(presenter.title);
+        assert_eq!(presenter.layout, [854, 480]);
+        assert_eq!(presenter.targets, [[0, 0, 1920, 1080], [0, 0, 854, 480]]);
+        assert!(!session.loading.title_drawn);
+
+        let root = std::env::temp_dir().join("horizon-cafe-session-artwork-test");
+        let resources = gui(&root);
+        let loaded_revision = resources.atlas.revision;
+        let expected_panorama = Arc::as_ptr(&resources.panorama) as usize;
+        session.loading.set_ui(resources, root);
+        presenter.outcome = Outcome::Accept(true);
+        assert!(session.draw(&mut presenter).unwrap());
+        assert_eq!(presenter.calls, 2);
+        assert_eq!(presenter.atlas_revision, loaded_revision);
+        assert_eq!(presenter.panorama, Some(expected_panorama));
+        assert!(session.loading.title_drawn);
+        assert_eq!(session.status(), CafeLoadingStatus::Loading);
+        assert!(session.loading.loaded.is_none());
+    }
+
+    #[test]
+    fn cafe_presenter_error_keeps_loader_failure_and_pending_entry() {
+        struct Presenter;
+        impl CafeLoadingPresenter for Presenter {
+            fn layout_viewport(&self) -> [u32; 2] {
+                [854, 480]
+            }
+            fn target_viewports(&self) -> [[u32; 4]; 2] {
+                [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+            }
+            fn present_loading(
+                &mut self,
+                _: CafeLoadingArtwork<'_>,
+                _: &Frame<'_>,
+                _: [u32; 2],
+                _: [[u32; 4]; 2],
+                _: u64,
+                _: bool,
+            ) -> Result<bool> {
+                Err("presenter failure".into())
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        session.loading.loaded = Some(Err("loader failure".into()));
+        session.loading.menu.pending = Some(PendingWorldEntry::Server {
+            address: "example.invalid".into(),
+            name: "test".into(),
+            lan: false,
+            cookies: None,
+        });
+        let mut presenter = Presenter;
+
+        let error = session.draw(&mut presenter).unwrap_err();
+        assert_eq!(error.to_string(), "presenter failure");
+        assert_eq!(session.status(), CafeLoadingStatus::Failed);
+        assert_eq!(session.failure_message().as_deref(), Some("loader failure"));
+        assert!(matches!(
+            session.loading.loaded.as_ref(),
+            Some(Err(error)) if error == "loader failure"
+        ));
+        assert!(session.loading.menu.pending.is_some());
+        assert!(!session.loading.title_drawn);
+        assert!(!session.loading.shown);
     }
 
     #[test]
