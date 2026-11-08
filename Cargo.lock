@@ -1407,6 +1407,7 @@ dependencies = [
  "open",
  "png",
  "pollster",
+ "portable-atomic",
  "rustix 1.1.5",
  "serde",
  "serde_json",

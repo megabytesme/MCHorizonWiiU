@@ -138,7 +138,8 @@ enum Target {
 /// (`RandomSupport.generateUniqueSeed`). Draws of an entity's own random never
 /// touch the level's stream.
 pub(super) fn entity_random() -> LegacyRandom {
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use crate::AtomicI64;
+    use std::sync::atomic::Ordering;
     static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
     const STEP: i64 = 1_181_783_497_276_652_981;
     // seedUniquifier.updateAndGet(s -> s * STEP)

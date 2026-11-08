@@ -83,6 +83,9 @@ unicode-bidi = "0.3.18"
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
+[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
+portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
+
 [target.'cfg(target_os = "cafe")'.dependencies]
 horizon-wiiu-fs = { path = "../../wiiu/fs" }
 

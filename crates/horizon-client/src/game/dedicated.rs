@@ -7,6 +7,7 @@
 //! from server.properties, with the operator, whitelist and ban lists and a
 //! console on standard input.
 use super::{Game, Options, lan::LanSettings, world_loading::WorldRequest};
+use crate::AtomicU64;
 use horizon_client::{
     Result,
     lan::{LoginGate, NetConfig, NetLog, OnlineMode, hub::HubConfig},
@@ -28,7 +29,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     time::{Duration, Instant},

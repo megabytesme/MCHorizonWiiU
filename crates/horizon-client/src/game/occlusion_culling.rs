@@ -1,5 +1,6 @@
 //! Shared, conservative block-occlusion queries for renderable geometry.
 use super::{Game, Vertex};
+use crate::AtomicU64;
 use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
@@ -16,7 +17,7 @@ use std::{
     cell::{Cell, RefCell},
     sync::{
         Arc, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::JoinHandle,

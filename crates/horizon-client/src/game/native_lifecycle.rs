@@ -2,7 +2,8 @@
 //! A paused pass
 //! observes nothing; a frozen world reports `world_running: false` except during a step.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use super::{Game, execution_role::ExecutionRole};
 // Their old home, for mixin code that names them here.

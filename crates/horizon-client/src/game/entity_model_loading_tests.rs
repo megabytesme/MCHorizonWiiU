@@ -60,7 +60,7 @@ fn fixture() -> Value {
 struct FixtureRoot(std::path::PathBuf);
 impl FixtureRoot {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static NEXT: crate::AtomicU64 = crate::AtomicU64::new(0);
         let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "horizon-entity-models-{}-{next}",
