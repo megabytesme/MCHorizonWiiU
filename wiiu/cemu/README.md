@@ -30,6 +30,12 @@ revision and use `git apply --unidiff-zero --check` before applying it with
 to an installed emulator. The title diagnostic's
 result and its remaining limitations are recorded in `PORTING.md`.
 
+The separate [`fs-callback-cemu-2.6.patch`](fs-callback-cemu-2.6.patch) avoids
+rereading a guest command block after publishing its completion. Check and apply
+it with `--unidiff-zero` against the same pinned revision. It preserves the
+existing completion order and does not solve filesystem client deletion while
+commands are in flight.
+
 ## Isolated build performed
 
 The source was cloned to `E:\dev\HorizonWiiU-cemu-nss-20261107\source`,
