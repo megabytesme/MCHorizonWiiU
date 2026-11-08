@@ -104,14 +104,24 @@ fail:
 int horizon_gx2_panorama_draw(HorizonGx2Panorama *p, uint32_t width, uint32_t height,
                               const HorizonPanoramaVertex vertices[36])
 {
-   if (!p || !width || !height || !vertices) return -1;
+   return horizon_gx2_panorama_draw_to(p, width, height, 0, 0, width, height, vertices);
+}
+
+int horizon_gx2_panorama_draw_to(HorizonGx2Panorama *p,
+                                 uint32_t target_width, uint32_t target_height,
+                                 uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                 const HorizonPanoramaVertex vertices[36])
+{
+   if (!p || !target_width || !target_height || !width || !height || !vertices ||
+       x > target_width || y > target_height ||
+       width > target_width - x || height > target_height - y) return -1;
    GX2DrawDone();
    void *buffer = GX2RLockBufferEx(&p->buffer, 0);
    if (!buffer) return -2;
    memcpy(buffer, vertices, 36 * sizeof(*vertices));
    GX2RUnlockBufferEx(&p->buffer, 0);
-   GX2SetViewport(0, 0, width, height, 0, 1);
-   GX2SetScissor(0, 0, width, height);
+   GX2SetViewport(x, y, width, height, 0, 1);
+   GX2SetScissor(x, y, width, height);
    GX2SetVertexShader(p->shader.vertexShader);
    GX2SetPixelShader(p->shader.pixelShader);
    GX2SetFetchShader(&p->shader.fetchShader);

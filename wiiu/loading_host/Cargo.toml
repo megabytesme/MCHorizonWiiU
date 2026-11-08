@@ -1,0 +1,14 @@
+[package]
+name = "horizon-wiiu-loading-host"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+horizon-client = { path = "../../crates/horizon-client", default-features = false }
+horizon-wiiu-platform = { path = "../platform", default-features = false, features = ["cafe", "horizon-hud"] }
+
+[workspace]

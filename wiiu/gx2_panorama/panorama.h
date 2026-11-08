@@ -17,4 +17,10 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
 /* Uses the caller's GX2 colour target; vertices contain Horizon's projection. */
 int horizon_gx2_panorama_draw(HorizonGx2Panorama *panorama, uint32_t width, uint32_t height,
                               const HorizonPanoramaVertex vertices[36]);
+/* Draw into an in-bounds target rectangle. Vertices are projected for the
+ * rectangle's width and height; x/y are used for both viewport and scissor. */
+int horizon_gx2_panorama_draw_to(HorizonGx2Panorama *panorama,
+                                 uint32_t target_width, uint32_t target_height,
+                                 uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                 const HorizonPanoramaVertex vertices[36]);
 void horizon_gx2_panorama_destroy(HorizonGx2Panorama *panorama);
