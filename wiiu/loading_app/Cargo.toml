@@ -1,0 +1,21 @@
+[package]
+name = "horizon-wiiu-loading-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+horizon-client = { path = "../../crates/horizon-client", default-features = false }
+horizon-wiiu-entropy = { path = "../entropy" }
+horizon-wiiu-loading-host = { path = "../loading_host" }
+horizon-wiiu-platform = { path = "../platform", default-features = false, features = ["cafe"] }
+horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+log = "0.4"
+
+[workspace]
+
+[patch.crates-io]
+getrandom = { path = "../../third_party/getrandom-0.4.3" }
