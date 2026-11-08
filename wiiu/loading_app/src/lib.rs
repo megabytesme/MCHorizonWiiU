@@ -49,7 +49,7 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     // SAFETY: C calls this only after WHBGfxInit and keeps GX2 alive until it
     // returns. The presenter is dropped on this same thread before C shuts GX2
     // down.
-    let mut presenter = match unsafe { Gx2LoadingPresenter::new_embedded(4096) } {
+    let mut presenter = match unsafe { Gx2LoadingPresenter::new_embedded(16_384) } {
         Ok(presenter) => presenter,
         Err(_) => return PRESENTER_FAILED,
     };
