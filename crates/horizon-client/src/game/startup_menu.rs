@@ -1643,10 +1643,18 @@ mod tests {
         }
         impl CafeLoadingPresenter for Presenter {
             fn layout_viewport(&self) -> [u32; 2] {
-                [854, 480]
+                if self.prepared_revisions.is_empty() {
+                    [0, 0]
+                } else {
+                    [854, 480]
+                }
             }
             fn target_viewports(&self) -> [[u32; 4]; 2] {
-                [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+                if self.prepared_revisions.is_empty() {
+                    [[0; 4]; 2]
+                } else {
+                    [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+                }
             }
             fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<()> {
                 self.prepared_revisions.push(artwork.generation);

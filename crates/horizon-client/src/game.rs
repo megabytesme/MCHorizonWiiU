@@ -22148,11 +22148,6 @@ impl CafeLoadingSession {
     /// Draw one original menu batch at the DRC layout size and lend it, with
     /// current artwork, to a host that presents both Cafe displays.
     pub fn draw(&mut self, presenter: &mut dyn CafeLoadingPresenter) -> Result<bool> {
-        let layout = presenter.layout_viewport();
-        let targets = presenter.target_viewports();
-        if layout.contains(&0) || targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
-            return Err("Cafe loading presenter returned an empty viewport".into());
-        }
         horizon_client::hud::GUI_SCALE.store(self.loading.settings.gui_scale, Ordering::Relaxed);
         let (atlas, panorama) = self.loading.artwork();
         presenter.prepare_loading(CafeLoadingArtwork {
@@ -22160,6 +22155,11 @@ impl CafeLoadingSession {
             panorama: panorama.map(Arc::as_ref),
             generation: atlas.revision,
         })?;
+        let layout = presenter.layout_viewport();
+        let targets = presenter.target_viewports();
+        if layout.contains(&0) || targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+            return Err("Cafe loading presenter returned an empty viewport".into());
+        }
         let animated_textures = self.loading.settings.horizon.animated_textures;
         self.loading.draw_with(
             layout,
