@@ -34,15 +34,15 @@ Run that command from `library/std/src/sys/net/connection/socket/`.
 
 ## Limitations for review
 
-This is a proposed source patch, not a validated std implementation. No build
-or Cemu run was performed. nsysnet has no `SO_RCVTIMEO`/`SO_SNDTIMEO`; this
-design depends on `select` plus WUT's `MsgFlags::DONTWAIT` (`0x20`). The WUT
-binding exposes a 32-bit `FdSet` and `FD_SETSIZE = 32`, hence the explicit
-range rejection. Cemu's nsysnet HLE has been observed to toggle the host socket
-blocking mode around receive calls; concurrent reads on the same descriptor
-may therefore interact even though `DONTWAIT` is passed. The probe below is
-intended to establish the target behavior before the patch is applied to the
-toolchain. Hardware behavior also remains unverified.
+The source patch has been built into Cafe stage-1 `std` and its TCP receive
+behavior has passed the Cemu probe below. It has not been verified on Wii U
+hardware or in the production Horizon client. nsysnet has no
+`SO_RCVTIMEO`/`SO_SNDTIMEO`; this design depends on `select` plus WUT's
+`MsgFlags::DONTWAIT` (`0x20`). The WUT binding exposes a 32-bit `FdSet` and
+`FD_SETSIZE = 32`, hence the explicit range rejection. Cemu's nsysnet HLE has
+been observed to toggle the host socket blocking mode around receive calls;
+concurrent reads on the same descriptor may therefore interact even though
+`DONTWAIT` is passed. The Cemu result is limited to the tested loopback cases.
 
 The emulation is at each `recv`/`recvfrom` syscall boundary: a higher-level
 `read_exact` that makes multiple reads can receive a fresh timeout per read,
@@ -53,25 +53,24 @@ repeated signals cannot extend the configured timeout.
 
 ## Bounded target probe
 
-The RPX probe in `src/lib.rs` uses local TCP and UDP sockets. It checks TCP
+The RPX probe in `src/lib.rs` uses a local TCP pair. It checks connect/accept,
 timeout duration, clone-shared timeout getter, clearing back to a blocking
 read, nonblocking `WouldBlock`, `peek`, zero timeout rejection, and read-
-shutdown cancellation. UDP coverage checks receive timeout duration, `peek`
-retention, and that a zero-length datagram is received as a datagram and
-consumed. Potentially blocking TCP and UDP data operations (reads, peeks,
-writes, and sends) run on worker threads, and the caller waits only for finite
-channel deadlines. TCP connect has its own finite timeout; listener accept
-polls a nonblocking socket to a deadline. The shutdown test waits for its
-worker to announce that it is about to call `read` before issuing shutdown.
-This narrows the scheduling race, but does not prove the worker has entered
-nsysnet's `select` or receive syscall; the current public std API provides no
-such synchronization point. Failure mask bits are declared alongside the
-probe. Workers can remain blocked on a failed case until process exit; the
-probe does not join them without a bound. A stuck worker can consume data
-intended for a later case, causing additional failures.
+shutdown cancellation. Potentially blocking reads and writes run on worker
+threads with finite channel deadlines; the probe joins completed workers and
+returns a failure without proceeding to later checks if a worker misses its
+bounded wait. TCP connect has its own finite timeout; listener accept polls a
+nonblocking socket to a deadline. The shutdown test waits for its worker to
+announce that it is about to call `read` before issuing shutdown. This narrows
+the scheduling race, but does not prove the worker has entered nsysnet's
+`select` or receive syscall; the current public std API provides no such
+synchronization point. The failure mask bits are declared alongside the
+probe. UDP is outside this RPX because Cemu's local `UdpSocket::send_to`
+stopped progressing in the earlier combined diagnostic; that behavior remains
+unverified.
 
-Build only after review, with the isolated Cafe stage1 compiler/sysroot used
-for std, and run the RPX in Cemu:
+Build with the isolated Cafe stage-1 compiler/sysroot used for `std`, then run
+the RPX once in Cemu:
 
 ```sh
 export HORIZON_WIIU_STD_RUSTC=/path/to/stage1/bin/rustc
@@ -80,5 +79,30 @@ export HORIZON_WIIU_TIMEOUT_PROBE_BUILD_DIR=/tmp/horizonwiiu-socket-timeout-prob
 bash wiiu/rust-std-timeout/build_probe.sh
 ```
 
-Expected success output: `Cafe std TcpStream timeout probe: PASS failures=0x00000000`.
-This scratch patch and probe have not been built or executed.
+Expected success output:
+`Cafe std TcpStream timeout probe: PASS failures=0x00000000`.
+
+## Cemu result (2026-11-08)
+
+The Cafe stage-1 `std` was rebuilt from the matching modified toolchain source,
+then this RPX was built in
+`C:\Users\ben\AppData\Local\Temp\horizonwiiu-socket-timeout-probe-20261108`
+with `HORIZON_WIIU_JOBS=32`. Cemu 2.6 ran it once in the isolated profile at
+`E:\temp\horizonwiiu-loading-cemu-20261108\portable`. The RPX returned
+`Cafe std TcpStream timeout probe: PASS failures=0x00000000`, called
+`coreinit.exit(0)`, and has SHA-256
+`5cfd6afeadbd1395b04c7045bddc1240e79c0d13c584b74ecfc9d4f4223ea7fa`.
+The captured run log is
+`E:\temp\horizonwiiu-loading-cemu-20261108\portable\log.txt`.
+Its 120 ms TCP receive timeout returned in about 134 ms. The remaining checks
+also completed with a zero failure mask: clone-shared timeout getter, clearing
+the timeout to blocking, nonblocking `WouldBlock`, `peek`, zero-duration
+validation, and read-shutdown cancellation.
+
+This verifies the TCP standard-library behavior in Cemu only. It does not yet
+verify the production Horizon client using this `std`, a connection to a
+desktop-hosted server, real hardware, or UDP. An earlier combined diagnostic
+reached the end of its UDP receive-timeout step, then stopped progressing at
+`UdpSocket::send_to` in Cemu. The TCP RPX is therefore deliberately TCP-only;
+the UDP send stall remains a separate platform/emulator limitation to
+investigate before claiming LAN broadcast discovery.

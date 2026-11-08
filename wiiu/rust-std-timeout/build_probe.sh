@@ -25,6 +25,6 @@ RUSTFLAGS="--sysroot=${HORIZON_WIIU_STD_SYSROOT}" \
 
 powerpc-eabi-cmake -S "${source_dir}" -B "${build_dir}/cmake" -G Ninja \
    -DCMAKE_BUILD_TYPE=Release \
-   -DHORIZON_TIMEOUT_STATICLIB="${build_dir}/rust-target/powerpc-nintendo-cafe/release/libhorizon_wiiu_socket_timeout_probe.a"
+   -DHORIZON_TIMEOUT_STATICLIB="${build_dir}/rust-target/powerpc-nintendo-cafe/release/libhorizon_wiiu_cafe_timeout_probe.a"
 cmake --build "${build_dir}/cmake" --parallel "${HORIZON_WIIU_JOBS:-$(nproc)}"
 printf 'RPX: %s\n' "${build_dir}/cmake/horizon_wiiu_socket_timeout_probe.rpx"
