@@ -1633,6 +1633,8 @@ mod tests {
         struct Presenter {
             outcome: Outcome,
             calls: usize,
+            prepared_revisions: Vec<u64>,
+            callback_order: Vec<&'static str>,
             atlas_revision: u64,
             panorama: Option<usize>,
             title: bool,
@@ -1646,6 +1648,11 @@ mod tests {
             fn target_viewports(&self) -> [[u32; 4]; 2] {
                 [[0, 0, 1920, 1080], [0, 0, 854, 480]]
             }
+            fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<()> {
+                self.prepared_revisions.push(artwork.generation);
+                self.callback_order.push("prepare");
+                Ok(())
+            }
             fn present_loading(
                 &mut self,
                 artwork: CafeLoadingArtwork<'_>,
@@ -1655,6 +1662,8 @@ mod tests {
                 _: u64,
                 _: bool,
             ) -> Result<bool> {
+                assert_eq!(self.callback_order.last(), Some(&"prepare"));
+                self.callback_order.push("present");
                 self.calls += 1;
                 self.atlas_revision = artwork.generation;
                 self.panorama = artwork.panorama.map(|faces| faces as *const _ as usize);
@@ -1676,6 +1685,8 @@ mod tests {
         let mut presenter = Presenter {
             outcome: Outcome::Accept(false),
             calls: 0,
+            prepared_revisions: Vec::new(),
+            callback_order: Vec::new(),
             atlas_revision: 0,
             panorama: None,
             title: false,
@@ -1686,6 +1697,8 @@ mod tests {
         assert!(!session.draw(&mut presenter).unwrap());
         assert_eq!(presenter.calls, 1);
         assert_eq!(presenter.atlas_revision, boot_revision);
+        assert_eq!(presenter.prepared_revisions, [boot_revision]);
+        assert_eq!(presenter.callback_order, ["prepare", "present"]);
         assert!(presenter.panorama.is_none());
         assert!(presenter.title);
         assert_eq!(presenter.layout, [854, 480]);
@@ -1701,6 +1714,14 @@ mod tests {
         assert!(session.draw(&mut presenter).unwrap());
         assert_eq!(presenter.calls, 2);
         assert_eq!(presenter.atlas_revision, loaded_revision);
+        assert_eq!(
+            presenter.prepared_revisions,
+            [boot_revision, loaded_revision]
+        );
+        assert_eq!(
+            presenter.callback_order,
+            ["prepare", "present", "prepare", "present"]
+        );
         assert_eq!(presenter.panorama, Some(expected_panorama));
         assert!(session.loading.title_drawn);
         assert_eq!(session.status(), CafeLoadingStatus::Loading);
@@ -1716,6 +1737,9 @@ mod tests {
             }
             fn target_viewports(&self) -> [[u32; 4]; 2] {
                 [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+            }
+            fn prepare_loading(&mut self, _: CafeLoadingArtwork<'_>) -> Result<()> {
+                Ok(())
             }
             fn present_loading(
                 &mut self,
@@ -1752,6 +1776,67 @@ mod tests {
             session.loading.loaded.as_ref(),
             Some(Err(error)) if error == "loader failure"
         ));
+        assert!(session.loading.menu.pending.is_some());
+        assert!(!session.loading.title_drawn);
+        assert!(!session.loading.shown);
+    }
+
+    #[test]
+    fn cafe_prepare_failure_skips_layout_presentation_and_shown_state() {
+        struct Presenter {
+            prepared_revision: Option<u64>,
+        }
+        impl CafeLoadingPresenter for Presenter {
+            fn layout_viewport(&self) -> [u32; 2] {
+                [854, 480]
+            }
+            fn target_viewports(&self) -> [[u32; 4]; 2] {
+                [[0, 0, 1920, 1080], [0, 0, 854, 480]]
+            }
+            fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<()> {
+                self.prepared_revision = Some(artwork.generation);
+                Err("resource preparation failed".into())
+            }
+            fn present_loading(
+                &mut self,
+                _: CafeLoadingArtwork<'_>,
+                _: &Frame<'_>,
+                _: [u32; 2],
+                _: [[u32; 4]; 2],
+                _: u64,
+                _: bool,
+            ) -> Result<bool> {
+                panic!("presentation must not run after preparation fails")
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let initial_viewport = session.loading.viewport;
+        session.loading.loaded = Some(Err("retained loader failure".into()));
+        session.loading.menu.pending = Some(PendingWorldEntry::Server {
+            address: "example.invalid".into(),
+            name: "test".into(),
+            lan: false,
+            cookies: None,
+        });
+        let boot_revision = session.loading.boot.revision;
+        let mut presenter = Presenter {
+            prepared_revision: None,
+        };
+
+        let error = session.draw(&mut presenter).unwrap_err();
+        assert_eq!(error.to_string(), "resource preparation failed");
+        assert_eq!(presenter.prepared_revision, Some(boot_revision));
+        assert_eq!(session.loading.viewport, initial_viewport);
+        assert_eq!(session.status(), CafeLoadingStatus::Failed);
+        assert_eq!(
+            session.failure_message().as_deref(),
+            Some("retained loader failure")
+        );
         assert!(session.loading.menu.pending.is_some());
         assert!(!session.loading.title_drawn);
         assert!(!session.loading.shown);

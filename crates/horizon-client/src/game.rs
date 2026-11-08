@@ -22105,6 +22105,11 @@ pub trait CafeLoadingPresenter {
     /// and preserve the layout aspect within the GX2 HUD backend's tolerance;
     /// use an in-bounds letterbox rectangle for a mismatched display.
     fn target_viewports(&self) -> [[u32; 4]; 2];
+    /// Prepare or recreate native resources for this artwork before Horizon
+    /// lays out the first batch that uses it. This runs every frame; reuse GPU
+    /// resources when `generation` is unchanged. The artwork is borrowed only
+    /// for this callback; copy any native texture data synchronously.
+    fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<()>;
     /// Draw both target views synchronously. `Ok(true)` means both were accepted.
     fn present_loading(
         &mut self,
@@ -22149,6 +22154,12 @@ impl CafeLoadingSession {
             return Err("Cafe loading presenter returned an empty viewport".into());
         }
         horizon_client::hud::GUI_SCALE.store(self.loading.settings.gui_scale, Ordering::Relaxed);
+        let (atlas, panorama) = self.loading.artwork();
+        presenter.prepare_loading(CafeLoadingArtwork {
+            atlas,
+            panorama: panorama.map(Arc::as_ref),
+            generation: atlas.revision,
+        })?;
         let animated_textures = self.loading.settings.horizon.animated_textures;
         self.loading.draw_with(
             layout,
