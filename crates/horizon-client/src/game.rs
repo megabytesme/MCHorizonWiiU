@@ -22057,6 +22057,9 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 struct Loading {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// Cafe's external host supplies canonical controller samples while the
+    /// original startup menu is still owned by Loading.
+    pad_edges: horizon_client::gamepad::Edges,
     /// The host's framebuffer size, including when no desktop window exists.
     viewport: [u32; 2],
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
@@ -22145,6 +22148,17 @@ impl CafeLoadingSession {
             .dispatch_platform_window_event(event_loop, event);
     }
 
+    /// Route a canonical controller sample through Horizon's startup-menu
+    /// focus and activation path. The Cafe host owns device polling; Loading
+    /// owns controller settings, edge detection, and menu behavior.
+    pub fn dispatch_pad_state(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        state: horizon_client::gamepad::PadState,
+    ) {
+        self.loading.dispatch_pad_state(event_loop, state);
+    }
+
     /// Draw one original menu batch at the DRC layout size and lend it, with
     /// current artwork, to a host that presents both Cafe displays.
     pub fn draw(&mut self, presenter: &mut dyn CafeLoadingPresenter) -> Result<bool> {
@@ -22231,6 +22245,7 @@ impl Loading {
         Ok(Self {
             window: None,
             renderer: None,
+            pad_edges: Default::default(),
             viewport: [1280, 720],
             boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
@@ -22420,6 +22435,28 @@ impl Loading {
         if let Err(error) = self.menu_event(event_loop, event, key, keyboard) {
             self.error = Some(error);
             event_loop.exit();
+        }
+    }
+    fn dispatch_pad_state(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        mut state: horizon_client::gamepad::PadState,
+    ) {
+        use horizon_client::gamepad::GlyphStyle;
+
+        let settings = &self.settings.controller;
+        if settings.glyphs.resolve(GlyphStyle::Nintendo) == GlyphStyle::Nintendo
+            && settings.nintendo_letters
+        {
+            state = state.by_letter();
+        }
+        let changes = self.pad_edges.update(&state, settings.trigger_threshold);
+        if !settings.enabled {
+            self.pad_edges.cancel();
+            return;
+        }
+        for (button, down) in changes {
+            self.menu_pad_button(event_loop, button, down);
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas

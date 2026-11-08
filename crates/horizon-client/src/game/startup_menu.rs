@@ -821,6 +821,45 @@ impl Loading {
         let Some(nav) = key_focus::nav_of(key, self.menu.modifiers.shift_key()) else {
             return false;
         };
+        self.menu_navigation(event_loop, nav, false)
+    }
+
+    /// Use the title's existing focus and click path for a typed controller
+    /// button. This keeps Cafe input out of the keyboard event stream.
+    pub(super) fn menu_pad_button(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        button: horizon_client::gamepad::Button,
+        down: bool,
+    ) {
+        use horizon_client::gamepad::Button;
+        use key_focus::Nav;
+
+        if !down {
+            return;
+        }
+        let nav = match button {
+            Button::DPadUp => Nav::Arrow(Button::DPadUp),
+            Button::DPadDown => Nav::Arrow(Button::DPadDown),
+            Button::DPadLeft => Nav::Arrow(Button::DPadLeft),
+            Button::DPadRight => Nav::Arrow(Button::DPadRight),
+            Button::South if self.menu.key_focus.is_none() && self.menu.key_origin.is_none() => {
+                Nav::Tab { forward: true }
+            }
+            Button::South => Nav::Select,
+            Button::LeftBumper => Nav::Tab { forward: false },
+            Button::RightBumper => Nav::Tab { forward: true },
+            _ => return,
+        };
+        self.menu_navigation(event_loop, nav, true);
+    }
+
+    fn menu_navigation(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        nav: key_focus::Nav,
+        gamepad: bool,
+    ) -> bool {
         let options = &self.menu.options;
         if self.gui.is_none()
             || self.menu.pending.is_some()
@@ -860,9 +899,17 @@ impl Loading {
         };
         let batch = HudBatch::new(self.menu_size());
         let ctx = key_focus::Context {
-            slider_edit,
+            slider_edit: slider_edit
+                || (gamepad
+                    && matches!(
+                        nav,
+                        key_focus::Nav::Arrow(
+                            horizon_client::gamepad::Button::DPadLeft
+                                | horizon_client::gamepad::Button::DPadRight
+                        )
+                    )),
             typing,
-            rows_take_enter,
+            rows_take_enter: rows_take_enter && !gamepad,
             gui: (batch.width, batch.height),
         };
         let act = key_focus::act(nav, focus, &targets, ctx);
@@ -1347,6 +1394,7 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
+            pad_edges: Default::default(),
             viewport: [1280, 720],
             boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
@@ -1369,6 +1417,12 @@ mod tests {
             menu: StartupMenu::default(),
             error: None,
         }
+    }
+
+    fn draw_menu_once(loading: &mut Loading) {
+        loading
+            .draw_with([854, 480], |_, _| Ok(false), false, |_| {})
+            .unwrap();
     }
 
     struct GuiScaleRestore(u32);
@@ -1622,6 +1676,209 @@ mod tests {
         assert!(loading.title_drawn);
         assert!(loading.ready_for_handoff());
         assert!(matches!(loading.take_ready(), Some(Err(ref e)) if e == "loader failure"));
+    }
+
+    #[test]
+    fn cafe_pad_routes_navigation_and_activation_through_the_title_menu() {
+        use horizon_client::gamepad::{Button, GlyphStyle, PadState};
+        use horizon_client::title::Mode;
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join("horizon-cafe-pad-menu-test");
+        session.loading.set_ui(gui(&root), root);
+        // This regression is specifically for the main-title Options action;
+        // don't let a user's onboarding preference choose another title mode.
+        session.loading.menu.title.as_mut().unwrap().mode = Mode::Main;
+        let title_screen = session.loading.menu.title.as_ref().unwrap().screen_key();
+        horizon_client::widgets::set_action_screen(title_screen);
+        draw_menu_once(&mut session.loading);
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+
+        let targets = session.loading.menu_key_targets();
+        let rects: Vec<_> = targets.iter().map(|target| target.rect).collect();
+        let (from, direction, to) = targets
+            .iter()
+            .find_map(|from| {
+                [
+                    Button::DPadUp,
+                    Button::DPadDown,
+                    Button::DPadLeft,
+                    Button::DPadRight,
+                ]
+                .into_iter()
+                .find_map(|direction| {
+                    horizon_client::gamepad::focus_step_rect(from.rect, direction, &rects)
+                        .map(|next| (*from, direction, targets[next]))
+                })
+            })
+            .expect("title menu has at least two navigable targets");
+        session.loading.menu.key_focus = Some(from);
+        session.loading.menu.key_screen = session.loading.menu.key_screen();
+        let mut state = PadState::default();
+        state.set(direction, true);
+        session.dispatch_pad_state(&control, state);
+        assert_eq!(session.loading.menu.key_focus, Some(to));
+
+        let options_rect = horizon_client::widgets::last_actions(title_screen)
+            .into_iter()
+            .find(|action| {
+                action.action == horizon_client::widgets::Action::Options && action.enabled
+            })
+            .expect("main title declares its Options action")
+            .rect;
+        let options_target = session
+            .loading
+            .menu_key_targets()
+            .into_iter()
+            .find(|target| {
+                target
+                    .rect
+                    .iter()
+                    .zip(options_rect)
+                    .all(|(a, b)| (a - b).abs() < 0.5)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "main-menu Options rect {options_rect:?} is missing from focus targets {:?}",
+                    session.loading.menu_key_targets(),
+                )
+            });
+        session.loading.menu.key_focus = Some(options_target);
+        session.loading.menu.key_screen = session.loading.menu.key_screen();
+        session.loading.settings.controller.glyphs = GlyphStyle::Nintendo;
+        session.loading.settings.controller.nintendo_letters = true;
+        let mut state = PadState::default();
+        state.set(Button::East, true); // The printed Nintendo A maps to South.
+        session.dispatch_pad_state(&control, state);
+
+        assert!(session.loading.menu.options_open);
+        draw_menu_once(&mut session.loading);
+        session.loading.menu.key_focus = None;
+        session.dispatch_pad_state(&control, state);
+        assert!(session.loading.menu.key_focus.is_none());
+        session.dispatch_pad_state(&control, PadState::default());
+        session.dispatch_pad_state(&control, state);
+        assert!(session.loading.menu.key_focus.is_some());
+        assert!(session.loading.menu.physical_keys.is_empty());
+        assert!(!session.loading.menu.key_synthetic);
+    }
+
+    #[test]
+    fn cafe_pad_confirms_a_focused_world_row_through_the_title_click_path() {
+        use horizon_client::gamepad::{Button, PadState};
+        use horizon_client::title::{Mode, WorldEntry};
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cafe-pad-world-row-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        session.loading.set_ui(gui(&root), root.clone());
+        let mut title = Title::new(root.join("saves"), &root);
+        title.mode = Mode::Select {
+            worlds: vec![WorldEntry {
+                folder: "world".into(),
+                name: "World".into(),
+                game_mode: 0,
+                hardcore: false,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                commands: false,
+                version: "26.3".into(),
+                locked: false,
+                corrupted: false,
+                incompatible: None,
+                file_fixing: false,
+                downgrade: false,
+            }],
+            selected: Some(0),
+        };
+        session.loading.menu.title = Some(title);
+        draw_menu_once(&mut session.loading);
+        let row = session
+            .loading
+            .menu_key_targets()
+            .into_iter()
+            .find(|target| target.kind == Kind::Row)
+            .expect("the selected world is registered as a row target");
+        session.loading.menu.key_focus = Some(row);
+        session.loading.menu.key_screen = session.loading.menu.key_screen();
+
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+        let mut state = PadState::default();
+        state.set(Button::South, true);
+        session.dispatch_pad_state(&control, state);
+
+        assert!(matches!(
+            session.loading.menu.title.as_ref().unwrap().mode,
+            Mode::Recover { .. }
+        ));
+        assert!(session.loading.menu.physical_keys.is_empty());
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cafe_pad_respects_disabled_setting_and_requires_release_after_reenable() {
+        use horizon_client::gamepad::{Button, PadState};
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join("horizon-cafe-pad-disabled-test");
+        session.loading.set_ui(gui(&root), root);
+        draw_menu_once(&mut session.loading);
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+
+        session.loading.settings.controller.enabled = false;
+        let mut held = PadState::default();
+        held.set(Button::South, true);
+        session.dispatch_pad_state(&control, held);
+        assert!(session.loading.menu.key_focus.is_none());
+        assert!(!session.loading.menu.options_open);
+
+        session.loading.settings.controller.enabled = true;
+        session.dispatch_pad_state(&control, held);
+        assert!(session.loading.menu.key_focus.is_none());
+        session.dispatch_pad_state(&control, PadState::default());
+        session.dispatch_pad_state(&control, held);
+        assert!(session.loading.menu.key_focus.is_some());
+        assert!(!session.loading.menu.options_open);
+        assert!(session.loading.menu.physical_keys.is_empty());
     }
 
     #[test]
