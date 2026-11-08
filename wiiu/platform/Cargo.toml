@@ -11,6 +11,7 @@ horizon-hud = ["dep:horizon-client-hud"]
 
 [dependencies]
 horizon-client-input = { path = "../../crates/horizon-client-input", default-features = false }
+horizon-client-platform = { path = "../../crates/horizon-client-platform" }
 horizon-client-hud = { path = "../../crates/horizon-client-hud", optional = true }
 horizon-hud-data = { path = "../../crates/horizon-hud-data" }
 

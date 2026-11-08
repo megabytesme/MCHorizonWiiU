@@ -6,6 +6,7 @@
 use horizon_client_input::gamepad::{Button, PadState};
 
 pub mod hud;
+pub mod touch;
 
 /// The scalar subset read from WUT's `VPADStatus` by `vpad_bridge.c`.
 #[repr(C)]
@@ -39,6 +40,15 @@ pub struct VpadTouch {
     pub x: u16,
     pub y: u16,
 }
+
+/// Non-cloneable evidence that one successful VPAD sample reported no contact.
+/// Default state, reset, no-sample and busy polling cannot produce this marker.
+///
+/// Treat it as paired with the exact `VpadState` updated by that poll: pass it
+/// immediately to `TouchMapper::events_with_freshness` with that same state,
+/// before resetting the state or polling it again. Do not retain or reuse it.
+#[derive(Debug)]
+pub struct FreshTouchRelease(());
 
 /// Convert WUT VPAD button positions and stick axes to Horizon's pad state.
 pub fn pad_state(sample: VpadSample) -> PadState {
@@ -96,10 +106,25 @@ pub struct VpadState {
 
 impl VpadState {
     pub fn update(&mut self, sample: Option<VpadSample>) -> PadState {
+        self.update_with_freshness(sample).0
+    }
+
+    /// Update state and return one-shot evidence when this call received a
+    /// fresh successful sample that reports physical release.
+    ///
+    /// Consume the returned marker immediately with this same state in
+    /// `TouchMapper::events_with_freshness`. Do not carry it across another
+    /// update, a reset, or a replacement `VpadState`.
+    pub fn update_with_freshness(
+        &mut self,
+        sample: Option<VpadSample>,
+    ) -> (PadState, Option<FreshTouchRelease>) {
+        let mut release = None;
         if let Some(sample) = sample {
             self.pad = pad_state(sample);
             self.touch_active = sample.touch_active != 0;
             if !self.touch_active {
+                release = Some(FreshTouchRelease(()));
                 self.touch = None;
             } else if sample.touch_valid != 0 && sample.touch_x < 1920 && sample.touch_y < 1080 {
                 self.touch = Some(VpadTouch {
@@ -108,7 +133,7 @@ impl VpadState {
                 });
             }
         }
-        self.pad
+        (self.pad, release)
     }
 
     /// Whether the latest VPAD sample reports physical contact.
@@ -136,14 +161,26 @@ impl VpadState {
     /// state to Horizon; the cached state is cleared before returning the error.
     #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
     pub fn poll(&mut self) -> Result<PadState, i32> {
+        self.poll_with_freshness().map(|(pad, _release)| pad)
+    }
+
+    /// Read VPAD once and return one-shot release evidence with the updated pad.
+    /// No-sample retains state and returns no marker; busy and terminal errors
+    /// retain the existing error API, and terminal errors still reset state.
+    ///
+    /// Consume a returned marker immediately with this same `VpadState` and
+    /// poll, before calling this method or `reset` again. `Err(-4)` (busy) and
+    /// any terminal error provide no release marker.
+    #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+    pub fn poll_with_freshness(&mut self) -> Result<(PadState, Option<FreshTouchRelease>), i32> {
         extern "C" {
             fn horizon_wiiu_vpad_read(sample: *mut VpadSample) -> i32;
         }
         let mut sample = VpadSample::default();
         // The C bridge writes the sample only on success and owns VPADStatus's ABI.
         match unsafe { horizon_wiiu_vpad_read(&mut sample) } {
-            1 => Ok(self.update(Some(sample))),
-            -1 => Ok(self.update(None)),
+            1 => Ok(self.update_with_freshness(Some(sample))),
+            -1 => Ok(self.update_with_freshness(None)),
             // A busy channel can be retried without releasing held controls or touch.
             -4 => Err(-4),
             error => {
