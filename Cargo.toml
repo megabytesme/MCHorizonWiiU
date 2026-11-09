@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/getrandom-0.4.3"]
+exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "wiiu/platform", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/getrandom-0.4.3"]
 members = [
     "wiiu/entropy",
     "wiiu/fs",

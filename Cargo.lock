@@ -1596,6 +1596,7 @@ dependencies = [
  "horizon-terrain-mesh",
  "horizon-theme",
  "horizon-threads",
+ "horizon-wiiu-platform",
  "horizon-world",
  "image-webp",
  "log",
@@ -2000,6 +2001,15 @@ name = "horizon-wiiu-fs"
 version = "0.1.0"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "horizon-wiiu-platform"
+version = "0.1.0"
+dependencies = [
+ "horizon-client-input",
+ "horizon-client-platform",
+ "horizon-hud-data",
 ]
 
 [[package]]
