@@ -23009,17 +23009,22 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
         cafe_game_stage!("heartbeat start begin");
         horizon_client::heartbeat::start();
         cafe_game_stage!("heartbeat start complete");
-        let player_dir = horizon_client::logging::player_dir();
-        cafe_game_stage!("official server seed begin");
-        if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
-            log::warn!("could not add the official server to servers.dat: {e}");
+        #[cfg(not(target_os = "cafe"))]
+        {
+            let player_dir = horizon_client::logging::player_dir();
+            cafe_game_stage!("official server seed begin");
+            if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
+                log::warn!("could not add the official server to servers.dat: {e}");
+            }
+            cafe_game_stage!("official server seed complete");
+            cafe_game_stage!("partner server seed begin");
+            if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
+                log::warn!("could not add the partner servers to servers.dat: {e}");
+            }
+            cafe_game_stage!("partner server seed complete");
         }
-        cafe_game_stage!("official server seed complete");
-        cafe_game_stage!("partner server seed begin");
-        if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
-            log::warn!("could not add the partner servers to servers.dat: {e}");
-        }
-        cafe_game_stage!("partner server seed complete");
+        #[cfg(target_os = "cafe")]
+        cafe_game_stage!("official and partner server seeding skipped");
     }
     cafe_game_stage!("mod components registration begin");
     mods::register_components(&vanilla_root)?;
