@@ -22210,34 +22210,57 @@ impl CafeLoadingSession {
     /// Draw one original menu batch at the DRC layout size and lend it, with
     /// current artwork, to a host that presents both Cafe displays.
     pub fn draw(&mut self, presenter: &mut dyn CafeLoadingPresenter) -> Result<bool> {
+        static FIRST_DRAW_TRACE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let trace_first_draw = !FIRST_DRAW_TRACE.swap(true, std::sync::atomic::Ordering::Relaxed);
         horizon_client::hud::GUI_SCALE.store(self.loading.settings.gui_scale, Ordering::Relaxed);
         let (atlas, panorama) = self.loading.artwork();
+        if trace_first_draw {
+            cafe_game_stage!("first Cafe session draw prepare begin");
+        }
         presenter.prepare_loading(CafeLoadingArtwork {
             atlas,
             panorama: panorama.map(Arc::as_ref),
             generation: atlas.revision,
         })?;
+        if trace_first_draw {
+            cafe_game_stage!("first Cafe session draw prepare complete");
+        }
         let layout = presenter.layout_viewport();
         let targets = presenter.target_viewports();
         if layout.contains(&0) || targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
             return Err("Cafe loading presenter returned an empty viewport".into());
         }
         let animated_textures = self.loading.settings.horizon.animated_textures;
-        self.loading.draw_with(
+        if trace_first_draw {
+            cafe_game_stage!("first Cafe session draw_with begin");
+        }
+        let result = self.loading.draw_with(
             layout,
             |artwork, frame| {
-                presenter.present_loading(
+                if trace_first_draw {
+                    cafe_game_stage!("first Cafe present callback begin");
+                }
+                let result = presenter.present_loading(
                     artwork,
                     frame,
                     layout,
                     targets,
                     frame.ticks,
                     animated_textures,
-                )
+                );
+                if trace_first_draw {
+                    cafe_game_stage!("first Cafe present callback complete");
+                }
+                result
             },
             false,
             |_| {},
-        )
+        );
+        if trace_first_draw {
+            cafe_game_stage!("first Cafe session draw_with complete");
+        }
+        result
     }
 
     /// Readiness is informational only: this does not take `Loaded`, consume

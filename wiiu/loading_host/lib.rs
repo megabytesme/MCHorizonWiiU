@@ -27,6 +27,7 @@ const _: () = {
 };
 
 extern "C" {
+    fn OSReport(format: *const std::ffi::c_char, ...);
     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
     fn horizon_loading_host_hud_gfd(length: *mut usize) -> *const u8;
     fn horizon_loading_host_panorama_gfd(length: *mut usize) -> *const u8;
@@ -52,6 +53,20 @@ extern "C" {
         vertices: *const PanoramaVertex,
     ) -> i32;
     fn horizon_gx2_panorama_destroy(panorama: *mut c_void);
+}
+
+macro_rules! gx2_loading_stage {
+    ($stage:literal) => {{
+        // Static OSReport strings stay allocation-free and cannot unwind
+        // through the synchronous GX2 draw callback.
+        unsafe {
+            OSReport(
+                concat!("Horizon GX2 loading: ", $stage, "\n\0")
+                    .as_ptr()
+                    .cast(),
+            );
+        }
+    }};
 }
 
 fn output_dimensions() -> Result<[[u32; 2]; 2], &'static str> {
@@ -245,6 +260,9 @@ pub struct Gx2LoadingPresenter<'shader> {
     layout: [u32; 2],
     outputs: [[u32; 2]; 2],
     capacity: u32,
+    trace_first_prepare: bool,
+    trace_first_present: bool,
+    trace_first_target: [bool; 2],
     _thread: PhantomData<*mut ()>,
 }
 
@@ -272,6 +290,9 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
             layout: [outputs[1][0], outputs[1][1]],
             outputs,
             capacity,
+            trace_first_prepare: false,
+            trace_first_present: false,
+            trace_first_target: [false; 2],
             _thread: PhantomData,
         })
     }
@@ -360,7 +381,20 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
     }
 
     fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> horizon_client::Result<()> {
-        self.prepare(artwork).map_err(Into::into)
+        let trace = !self.trace_first_prepare;
+        if trace {
+            self.trace_first_prepare = true;
+            gx2_loading_stage!("first presenter prepare begin");
+        }
+        let result = self.prepare(artwork).map_err(Into::into);
+        if trace {
+            if result.is_ok() {
+                gx2_loading_stage!("first presenter prepare complete");
+            } else {
+                gx2_loading_stage!("first presenter prepare failed");
+            }
+        }
+        result
     }
 
     fn present_loading(
@@ -372,6 +406,11 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
         tick: u64,
         animated_textures: bool,
     ) -> horizon_client::Result<bool> {
+        let trace = !self.trace_first_present;
+        if trace {
+            self.trace_first_present = true;
+            gx2_loading_stage!("first presenter present begin");
+        }
         let expected_panorama = artwork.panorama.map(|faces| {
             (
                 artwork.generation,
@@ -413,6 +452,16 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
                 draw.result = Err("Cafe host supplied an unexpected GX2 target");
                 return -1;
             }
+            let target_index = target as usize;
+            let trace_target = !draw.presenter.trace_first_target[target_index];
+            if trace_target {
+                draw.presenter.trace_first_target[target_index] = true;
+                if target == 0 {
+                    gx2_loading_stage!("first TV target callback begin");
+                } else {
+                    gx2_loading_stage!("first DRC target callback begin");
+                }
+            }
             if let Some(panorama) = draw.presenter.panorama.as_mut() {
                 if let Err(error) = unsafe {
                     panorama.draw(
@@ -447,6 +496,13 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
                 draw.result = Err(hud_error_message(error));
                 return -1;
             }
+            if trace_target {
+                if target == 0 {
+                    gx2_loading_stage!("first TV target callback complete");
+                } else {
+                    gx2_loading_stage!("first DRC target callback complete");
+                }
+            }
             0
         }
 
@@ -461,9 +517,15 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
         };
         // SAFETY: the C helper calls the callback synchronously on this same
         // render thread, binds and finishes TV and DRC independently, then returns.
+        if trace {
+            gx2_loading_stage!("first native TV/DRC present begin");
+        }
         let host_result = unsafe {
             horizon_loading_host_present(draw_target, (&mut draw as *mut Draw<'_, '_, '_>).cast())
         };
+        if trace {
+            gx2_loading_stage!("first native TV/DRC present returned");
+        }
         if draw.result.is_err() || host_result != 0 {
             // The next prepare callback runs before layout and must rebuild
             // from Horizon state with both transient atlas caches reset.
@@ -476,6 +538,9 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
         draw.result?;
         if host_result != 0 {
             return Err("WHB did not accept both TV and DRC loading frames".into());
+        }
+        if trace {
+            gx2_loading_stage!("first presenter present complete");
         }
         Ok(true)
     }

@@ -11,6 +11,16 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(target_os = "cafe")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+macro_rules! cafe_model_stage {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "cafe")]
+        log::info!($($arg)*);
+    }};
+}
+
 #[derive(Default)]
 pub struct ParsedModels {
     models: BTreeMap<String, Arc<CuboidModel>>,
@@ -41,7 +51,9 @@ impl AssetReader for RootAssets {
 impl ParsedModels {
     /// Every `models/**.json` of a namespace directory, by identifier.
     pub fn load(root: &Path) -> Self {
+        cafe_model_stage!("Horizon model library: enumeration begin");
         let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
+            cafe_model_stage!("Horizon model library: assets directory unavailable");
             return Self {
                 root: root.to_owned(),
                 ..Self::default()
@@ -50,11 +62,23 @@ impl ParsedModels {
         // Listed first, then read and parsed at once: a content pack has tens
         // of thousands of models.
         let mut files = Vec::new();
+        #[cfg(target_os = "cafe")]
+        let mut directories = 0usize;
         for ns in namespaces.flatten() {
             let namespace = ns.file_name().to_string_lossy().into_owned();
             let base = ns.path().join("models");
             let mut stack = vec![base.clone()];
             while let Some(dir) = stack.pop() {
+                #[cfg(target_os = "cafe")]
+                {
+                    directories += 1;
+                    if directories % 128 == 0 {
+                        log::info!(
+                            "Horizon model library: enumerating directories={directories} files={}",
+                            files.len()
+                        );
+                    }
+                }
                 let Ok(entries) = fs::read_dir(&dir) else {
                     continue;
                 };
@@ -77,10 +101,35 @@ impl ParsedModels {
                 }
             }
         }
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon model library: enumeration complete directories={directories} files={}",
+            files.len()
+        );
+        cafe_model_stage!("Horizon model library: parse begin files={}", files.len());
+        #[cfg(target_os = "cafe")]
+        let model_count = files.len();
+        #[cfg(target_os = "cafe")]
+        let completed = AtomicUsize::new(0);
         let parsed = crate::par::par_map(&files, |(_, path)| {
-            let text = horizon_core::prepared_files::read_to_string(path).ok()?;
-            CuboidModel::from_json(&text).ok().map(Arc::new)
+            let model = horizon_core::prepared_files::read_to_string(path)
+                .ok()
+                .and_then(|text| CuboidModel::from_json(&text).ok())
+                .map(Arc::new);
+            #[cfg(target_os = "cafe")]
+            {
+                let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if count % 512 == 0 || count == model_count {
+                    log::info!("Horizon model library: parsed {count}/{model_count} files");
+                }
+            }
+            model
         });
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon model library: parse complete parsed={} files={model_count}",
+            parsed.iter().filter(|model| model.is_some()).count()
+        );
         let models = files
             .into_iter()
             .zip(parsed)

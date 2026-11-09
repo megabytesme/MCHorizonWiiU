@@ -205,13 +205,32 @@ impl EventLoopCtl for LoadingHost<'_> {
 
 impl CafeLoadingHost for LoadingHost<'_> {
     fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> horizon_client::Result<()> {
+        let mut trace_focus = true;
+        let mut trace_poll = true;
+        let mut trace_vpad = true;
+        let mut trace_draw = true;
         loop {
             if !self.running() || self.control.get() == EventLoopControl::Exit {
                 self.exited = true;
                 break;
             }
+            if trace_focus {
+                startup_report!("loading first focus update begin");
+            }
             let focused = self.update_focus(session);
-            if !session.poll(self) {
+            if trace_focus {
+                startup_report!("loading first focus update complete");
+                trace_focus = false;
+            }
+            if trace_poll {
+                startup_report!("loading first session poll begin");
+            }
+            let alive = session.poll(self);
+            if trace_poll {
+                startup_report!("loading first session poll complete");
+                trace_poll = false;
+            }
+            if !alive {
                 self.exited = true;
                 break;
             }
@@ -223,6 +242,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 continue;
             }
 
+            if trace_vpad {
+                startup_report!("loading first VPAD sample begin");
+            }
             let (pad, fresh_sample, fresh_release, terminal_error) = match self.vpad.poll_with_evidence() {
                 Ok((pad, fresh_sample, fresh_release)) => {
                     (pad, fresh_sample, fresh_release, false)
@@ -238,6 +260,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     (self.vpad.reset(), None, None, true)
                 }
             };
+            if trace_vpad {
+                startup_report!("loading first VPAD sample complete");
+                trace_vpad = false;
+            }
             if terminal_error {
                 // Deliver neutral immediately to release any menu edge, but
                 // do not treat an error-created default as fresh rearm proof.
@@ -260,7 +286,15 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 break;
             }
 
-            if let Err(error) = session.draw(self.presenter) {
+            if trace_draw {
+                startup_report!("loading first draw begin");
+            }
+            let draw_result = session.draw(self.presenter);
+            if trace_draw {
+                startup_report!("loading first draw returned");
+                trace_draw = false;
+            }
+            if let Err(error) = draw_result {
                 self.failure = Some(error.to_string());
                 break;
             }
