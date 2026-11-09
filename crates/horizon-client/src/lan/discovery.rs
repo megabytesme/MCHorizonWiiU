@@ -137,14 +137,27 @@ impl Scanner {
         let games: Games = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         // Constructing multiplayer screens in unit tests must not open the LAN.
-        if !cfg!(test)
-            && !super::test_loopback()
-            && let Ok(socket) = bind_listener()
-        {
-            let (games, stop) = (games.clone(), stop.clone());
-            let _ = std::thread::Builder::new()
-                .name("horizon-lan-scan".into())
-                .spawn(move || listen(socket, games, stop));
+        if !cfg!(test) && !super::test_loopback() {
+            crate::multiplayer::trace_cafe(format_args!("LAN listener bind begin"));
+            match bind_listener() {
+                Ok(socket) => {
+                    crate::multiplayer::trace_cafe(format_args!("LAN listener bind complete"));
+                    let (games, stop) = (games.clone(), stop.clone());
+                    crate::multiplayer::trace_cafe(format_args!("LAN listener worker spawn begin"));
+                    let spawned = std::thread::Builder::new()
+                        .name("horizon-lan-scan".into())
+                        .spawn(move || listen(socket, games, stop));
+                    crate::multiplayer::trace_cafe(format_args!(
+                        "LAN listener worker spawn complete success={}",
+                        spawned.is_ok()
+                    ));
+                    drop(spawned);
+                }
+                Err(error) => crate::multiplayer::trace_cafe(format_args!(
+                    "LAN listener setup returned error kind={:?}",
+                    error.kind()
+                )),
+            }
         }
         Self {
             inner: Arc::new(ScanInner {
@@ -180,9 +193,31 @@ impl Scanner {
     }
 }
 fn bind_listener() -> io::Result<UdpSocket> {
-    let socket = UdpSocket::bind(("0.0.0.0", PORT))?;
-    socket.join_multicast_v4(&GROUP, &Ipv4Addr::UNSPECIFIED)?;
-    socket.set_read_timeout(Some(Duration::from_millis(250)))?;
+    crate::multiplayer::trace_cafe(format_args!("LAN UDP bind begin"));
+    let socket = UdpSocket::bind(("0.0.0.0", PORT)).inspect_err(|error| {
+        crate::multiplayer::trace_cafe(format_args!("LAN UDP bind error kind={:?}", error.kind()));
+    })?;
+    crate::multiplayer::trace_cafe(format_args!("LAN UDP bind complete"));
+    crate::multiplayer::trace_cafe(format_args!("LAN multicast join begin"));
+    socket
+        .join_multicast_v4(&GROUP, &Ipv4Addr::UNSPECIFIED)
+        .inspect_err(|error| {
+            crate::multiplayer::trace_cafe(format_args!(
+                "LAN multicast join error kind={:?}",
+                error.kind()
+            ));
+        })?;
+    crate::multiplayer::trace_cafe(format_args!("LAN multicast join complete"));
+    crate::multiplayer::trace_cafe(format_args!("LAN read-timeout setup begin"));
+    socket
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .inspect_err(|error| {
+            crate::multiplayer::trace_cafe(format_args!(
+                "LAN read-timeout setup error kind={:?}",
+                error.kind()
+            ));
+        })?;
+    crate::multiplayer::trace_cafe(format_args!("LAN read-timeout setup complete"));
     Ok(socket)
 }
 fn listen(socket: UdpSocket, games: Games, stop: Arc<AtomicBool>) {

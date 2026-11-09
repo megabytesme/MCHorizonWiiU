@@ -460,6 +460,9 @@ pub struct Title {
     pub onboarding_finished: bool,
     /// Focused button id, for keyboard navigation.
     pub focused_button: Option<u8>,
+    /// Whether the first Cafe Multiplayer list draw has been traced.
+    #[cfg(target_os = "cafe")]
+    multiplayer_draw_traced: Cell<bool>,
     /// CreateWorldScreen's Experiments screen, over Create New World.
     experiments: RefCell<Option<experiments::ExperimentsScreen>>,
     /// ConfirmExperimentalFeaturesScreen, over Create New World.
@@ -808,6 +811,8 @@ impl Title {
             rules: RefCell::new(None),
             onboarding_finished: false,
             focused_button: None,
+            #[cfg(target_os = "cafe")]
+            multiplayer_draw_traced: Cell::new(false),
             experiments: RefCell::new(None),
             confirm_experiments: RefCell::new(None),
             preparing: false,
@@ -3203,14 +3208,27 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 self.ban_buttons
                     .set([layout.buttons[0], layout.buttons[1], layout.buttons[2]]);
             }
-            Mode::Multiplayer(screen) => screen.draw(
-                atlas,
-                batch,
-                &mut self.caret.borrow_mut(),
-                self.started,
-                cursor,
-                hide_server_address,
-            ),
+            Mode::Multiplayer(screen) => {
+                #[cfg(target_os = "cafe")]
+                let trace_draw = matches!(screen, crate::multiplayer::Screen::List { .. })
+                    && !self.multiplayer_draw_traced.replace(true);
+                #[cfg(not(target_os = "cafe"))]
+                let trace_draw = false;
+                if trace_draw {
+                    crate::multiplayer::trace_cafe(format_args!("first list draw begin"));
+                }
+                screen.draw(
+                    atlas,
+                    batch,
+                    &mut self.caret.borrow_mut(),
+                    self.started,
+                    cursor,
+                    hide_server_address,
+                );
+                if trace_draw {
+                    crate::multiplayer::trace_cafe(format_args!("first list draw complete"));
+                }
+            }
             Mode::Realms(screen) => screen.draw(
                 batch,
                 atlas,

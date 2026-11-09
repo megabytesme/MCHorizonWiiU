@@ -14,6 +14,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Emit a trace marker on Cafe while localizing the native Multiplayer-screen
+/// stall. Other platforms keep their existing logging.
+pub(crate) fn trace_cafe(stage: std::fmt::Arguments<'_>) {
+    #[cfg(target_os = "cafe")]
+    {
+        log::info!("Horizon Wii U multiplayer diagnostic: {stage}");
+    }
+    #[cfg(not(target_os = "cafe"))]
+    let _ = stage;
+}
+
 const SERVER_NAME: crate::clipboard::FieldId = ("server.name", 0);
 const SERVER_ADDRESS: crate::clipboard::FieldId = ("server.address", 0);
 const SERVER_DIRECT: crate::clipboard::FieldId = ("server.direct", 0);
@@ -218,19 +229,32 @@ fn favicon_bytes(json: &serde_json::Value) -> Option<Vec<u8>> {
     crate::skins::base64_decode(&base64)
 }
 fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) {
-    for s in servers {
+    trace_cafe(format_args!(
+        "ping scheduling begin entries={}",
+        servers.len()
+    ));
+    for (index, s) in servers.iter().enumerate() {
         let address = s.ip.clone();
         pings.lock().unwrap().insert(address.clone(), Ping::Pinging);
         let saved = s.icon.clone();
-        if let Some(pixels) = saved
+        trace_cafe(format_args!(
+            "entry {index}: saved icon decode begin present={}",
+            saved.is_some()
+        ));
+        let pixels = saved
             .as_deref()
             .and_then(crate::skins::base64_decode)
-            .and_then(|png| icon_pixels(&png))
-        {
+            .and_then(|png| icon_pixels(&png));
+        trace_cafe(format_args!(
+            "entry {index}: saved icon decode complete pixels={}",
+            pixels.is_some()
+        ));
+        if let Some(pixels) = pixels {
             icons.lock().unwrap().insert(address.clone(), pixels);
         }
         let (pings, icons, file) = (pings.clone(), icons.clone(), file.to_owned());
-        let _ = std::thread::Builder::new()
+        trace_cafe(format_args!("entry {index}: ping worker spawn begin"));
+        let spawned = std::thread::Builder::new()
             .name("horizon-ping".into())
             .spawn(move || {
                 let result = match crate::net::ping(&address, Duration::from_secs(5)) {
@@ -313,7 +337,13 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                 };
                 pings.lock().unwrap().insert(address, result);
             });
+        trace_cafe(format_args!(
+            "entry {index}: ping worker spawn complete success={}",
+            spawned.is_ok()
+        ));
+        drop(spawned);
     }
+    trace_cafe(format_args!("ping scheduling complete"));
 }
 /// Save the list after a move or delete, keeping the icons pings stored in
 /// servers.dat since it was loaded, and the Code of Conduct accepted on a server.
@@ -705,16 +735,26 @@ impl Screen {
     }
 
     pub fn list(saves: &Path) -> Self {
-        let servers = servers::load(&servers_file(saves));
+        trace_cafe(format_args!("list construction begin"));
+        let file = servers_file(saves);
+        trace_cafe(format_args!("saved servers load begin"));
+        let servers = servers::load(&file);
+        trace_cafe(format_args!(
+            "saved servers load complete entries={}",
+            servers.len()
+        ));
         let pings: Pings = Arc::default();
         let icons: Icons = Arc::default();
-        ping_all(&servers, &pings, &icons, &servers_file(saves));
+        ping_all(&servers, &pings, &icons, &file);
+        trace_cafe(format_args!("LAN scanner construction begin"));
+        let lan = Scanner::start();
+        trace_cafe(format_args!("LAN scanner construction complete"));
         Self::List {
             servers,
             selected: None,
             pings,
             icons,
-            lan: Scanner::start(),
+            lan,
             scroll: crate::ui::Scroll::default(),
         }
     }
