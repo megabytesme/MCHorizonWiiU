@@ -42,6 +42,10 @@ pub(super) struct StartupMenu {
     pad_scroll: f32,
     /// Last controller poll used to scale stick scroll independent of frame rate.
     pad_scroll_poll: Option<Instant>,
+    /// Left-stick direction currently held for menu navigation.
+    pad_navigation: Option<horizon_client::gamepad::Button>,
+    /// Next time the held left stick may repeat its navigation step.
+    pad_navigation_repeat_at: Option<Instant>,
     /// The focused slider's arrows change its value (`canChangeValue`).
     key_slider_edit: bool,
     /// What the last click landed on, for the next Tab or arrow.
@@ -148,6 +152,80 @@ impl StartupMenu {
         if let Some(title) = &mut self.title {
             title.stick_scroll(lines, cursor, (batch.width, batch.height));
         }
+    }
+
+    fn pad_stick_direction(
+        &mut self,
+        state: horizon_client::gamepad::PadState,
+        deadzone: f32,
+        now: Instant,
+        enabled: bool,
+    ) -> Option<horizon_client::gamepad::Button> {
+        use horizon_client::gamepad::Button;
+
+        const INITIAL_REPEAT: Duration = Duration::from_millis(350);
+        const REPEAT_INTERVAL: Duration = Duration::from_millis(120);
+        const DIRECTION_HYSTERESIS: f32 = 0.12;
+
+        let dpad_held = [
+            Button::DPadUp,
+            Button::DPadDown,
+            Button::DPadLeft,
+            Button::DPadRight,
+        ]
+        .into_iter()
+        .any(|button| state.held(button));
+        let direction = if enabled && !dpad_held {
+            let [x, y] = horizon_client::gamepad::radial(state.left, deadzone);
+            let horizontal = if x == 0.0 {
+                false
+            } else if y == 0.0 {
+                true
+            } else if matches!(
+                self.pad_navigation,
+                Some(Button::DPadLeft | Button::DPadRight)
+            ) {
+                x.abs() + DIRECTION_HYSTERESIS >= y.abs()
+            } else {
+                x.abs() > y.abs() + DIRECTION_HYSTERESIS
+            };
+            if horizontal {
+                Some(if x > 0.0 {
+                    Button::DPadRight
+                } else {
+                    Button::DPadLeft
+                })
+            } else if y != 0.0 {
+                Some(if y > 0.0 {
+                    Button::DPadUp
+                } else {
+                    Button::DPadDown
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let Some(direction) = direction else {
+            self.pad_navigation = None;
+            self.pad_navigation_repeat_at = None;
+            return None;
+        };
+        if self.pad_navigation != Some(direction) {
+            self.pad_navigation = Some(direction);
+            self.pad_navigation_repeat_at = Some(now + INITIAL_REPEAT);
+            return Some(direction);
+        }
+        if self
+            .pad_navigation_repeat_at
+            .is_some_and(|repeat_at| now >= repeat_at)
+        {
+            self.pad_navigation_repeat_at = Some(now + REPEAT_INTERVAL);
+            return Some(direction);
+        }
+        None
     }
 
     pub(super) fn set_root(&mut self, root: PathBuf, settings: &Settings) {
@@ -914,6 +992,23 @@ impl Loading {
         self.menu_navigation(event_loop, nav, true);
     }
 
+    pub(super) fn pad_stick_navigation_button(
+        &mut self,
+        state: horizon_client::gamepad::PadState,
+        now: Instant,
+    ) -> Option<horizon_client::gamepad::Button> {
+        let options_capturing = self.menu.options_open
+            && (self.menu.options.selected_key.is_some()
+                || self.menu.options.selected_pad_action.is_some());
+        let enabled = self.settings.controller.enabled
+            && self.gui.is_some()
+            && self.menu.pending.is_none()
+            && self.menu.win.is_none()
+            && !options_capturing;
+        self.menu
+            .pad_stick_direction(state, self.settings.controller.move_deadzone, now, enabled)
+    }
+
     /// Route the GamePad's Back/Menu controls through the same Escape handler
     /// used by the existing title, options, loading, and win screens.
     pub(super) fn menu_pad_escape(&mut self, event_loop: &dyn EventLoopCtl) {
@@ -1511,6 +1606,229 @@ mod tests {
             .menu
             .pad_stick_scroll(state, &settings, Instant::now(), [1280, 720]);
         assert_eq!(loading.menu.pad_scroll, 0.0);
+    }
+
+    #[test]
+    fn left_stick_navigation_repeats_and_resets_for_dpad_and_deadzone() {
+        use horizon_client::gamepad::{Button, PadState};
+
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        let settings = Settings::default();
+        let deadzone = settings.controller.move_deadzone;
+        let now = Instant::now();
+        let mut state = PadState::default();
+        state.left = [0.0, 1.0];
+
+        assert_eq!(
+            loading.menu.pad_stick_direction(state, deadzone, now, true),
+            Some(Button::DPadUp)
+        );
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(349),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(350),
+                true,
+            ),
+            Some(Button::DPadUp)
+        );
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(470),
+                true,
+            ),
+            Some(Button::DPadUp)
+        );
+
+        state.left = [1.0, 0.0];
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(471),
+                true,
+            ),
+            Some(Button::DPadRight)
+        );
+        state.set(Button::DPadLeft, true);
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(480),
+                true,
+            ),
+            None
+        );
+        state.set(Button::DPadLeft, false);
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(481),
+                true,
+            ),
+            Some(Button::DPadRight)
+        );
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(482),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(483),
+                true,
+            ),
+            Some(Button::DPadRight)
+        );
+        state.left = [0.0, 0.0];
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(484),
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn left_stick_keeps_its_axis_when_diagonal_samples_are_noisy() {
+        use horizon_client::gamepad::{Button, PadState};
+
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        let deadzone = Settings::default().controller.move_deadzone;
+        let now = Instant::now();
+        let mut state = PadState::default();
+        state.left = [1.0, 0.0];
+        assert_eq!(
+            loading.menu.pad_stick_direction(state, deadzone, now, true),
+            Some(Button::DPadRight)
+        );
+
+        state.left = [0.70, 0.72];
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(10),
+                true,
+            ),
+            None,
+            "small diagonal noise should not switch an active horizontal navigation"
+        );
+        state.left = [0.45, 0.89];
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(20),
+                true,
+            ),
+            Some(Button::DPadUp)
+        );
+        state.left = [0.70, 0.72];
+        assert_eq!(
+            loading.menu.pad_stick_direction(
+                state,
+                deadzone,
+                now + Duration::from_millis(30),
+                true,
+            ),
+            None,
+            "the new vertical direction should also survive tie noise"
+        );
+    }
+
+    #[test]
+    fn cafe_left_stick_moves_existing_title_focus_targets() {
+        use horizon_client::gamepad::{Button, PadState};
+        use horizon_client::title::Mode;
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cafe-left-stick-nav-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        session.loading.set_ui(gui(&root), root.clone());
+        session.loading.menu.title.as_mut().unwrap().mode = Mode::Main;
+        let title_screen = session.loading.menu.title.as_ref().unwrap().screen_key();
+        horizon_client::widgets::set_action_screen(title_screen);
+        draw_menu_once(&mut session.loading);
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+
+        let targets = session.loading.menu_key_targets();
+        let rects: Vec<_> = targets.iter().map(|target| target.rect).collect();
+        let (from, direction, to) = targets
+            .iter()
+            .find_map(|from| {
+                [
+                    Button::DPadUp,
+                    Button::DPadDown,
+                    Button::DPadLeft,
+                    Button::DPadRight,
+                ]
+                .into_iter()
+                .find_map(|direction| {
+                    horizon_client::gamepad::focus_step_rect(from.rect, direction, &rects)
+                        .map(|next| (*from, direction, targets[next]))
+                })
+            })
+            .expect("title menu has at least two navigable targets");
+        session.loading.menu.key_focus = Some(from);
+        session.loading.menu.key_screen = session.loading.menu.key_screen();
+
+        let mut state = PadState::default();
+        state.left = match direction {
+            Button::DPadUp => [0.0, 1.0],
+            Button::DPadDown => [0.0, -1.0],
+            Button::DPadLeft => [-1.0, 0.0],
+            Button::DPadRight => [1.0, 0.0],
+            _ => unreachable!(),
+        };
+        session.dispatch_pad_state(&control, state);
+        assert_eq!(session.loading.menu.key_focus, Some(to));
+        session.dispatch_pad_state(&control, state);
+        assert_eq!(session.loading.menu.key_focus, Some(to));
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

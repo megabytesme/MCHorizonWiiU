@@ -22500,11 +22500,16 @@ impl Loading {
             .pad_edges
             .update(&state, self.settings.controller.trigger_threshold);
         let viewport = self.viewport;
+        let now = Instant::now();
         self.menu
-            .pad_stick_scroll(state, &self.settings, Instant::now(), viewport);
+            .pad_stick_scroll(state, &self.settings, now, viewport);
+        let stick_navigation = self.pad_stick_navigation_button(state, now);
         if !self.settings.controller.enabled {
             self.pad_edges.cancel();
             return;
+        }
+        if let Some(button) = stick_navigation {
+            self.menu_pad_button(event_loop, button, true);
         }
         let mut back_dispatched = false;
         for (button, down) in changes {
