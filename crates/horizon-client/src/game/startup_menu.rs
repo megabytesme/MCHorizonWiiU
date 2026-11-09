@@ -37,6 +37,10 @@ pub(super) struct StartupMenu {
     /// The keyboard's focus (`key_focus`: Tab, the arrows, Enter); the
     /// pointer sits on it, as in the game.
     key_focus: Option<Target>,
+    /// Fractional vertical scroll from the GamePad's right stick.
+    pad_scroll: f32,
+    /// Last controller poll used to scale stick scroll independent of frame rate.
+    pad_scroll_poll: Option<Instant>,
     /// The focused slider's arrows change its value (`canChangeValue`).
     key_slider_edit: bool,
     /// What the last click landed on, for the next Tab or arrow.
@@ -89,6 +93,60 @@ impl StartupMenu {
             menu.perf.world_opening();
         }
         Ok(menu)
+    }
+
+    /// Scroll the original title list with the Cafe GamePad's right stick,
+    /// using the same deadzone, speed and fractional wheel steps as Game.
+    pub(super) fn pad_stick_scroll(
+        &mut self,
+        state: horizon_client::gamepad::PadState,
+        settings: &Settings,
+        now: Instant,
+        viewport: [u32; 2],
+    ) {
+        let seconds = self.pad_scroll_poll.map_or(0.0, |previous| {
+            now.saturating_duration_since(previous)
+                .as_secs_f32()
+                .min(0.05)
+        });
+        self.pad_scroll_poll = Some(now);
+
+        let scrollable = settings.controller.enabled
+            && !self.options_open
+            && self.pending.is_none()
+            && self.win.is_none()
+            && self
+                .title
+                .as_mut()
+                .is_some_and(|title| !title.has_caret_field());
+        let axis = if scrollable {
+            horizon_client::gamepad::radial(state.right, settings.controller.look_deadzone)[1]
+        } else {
+            0.0
+        };
+        let lines = pad_scroll_lines(
+            &mut self.pad_scroll,
+            axis,
+            settings.controller.scroll_speed,
+            seconds,
+        );
+        if lines == 0.0 {
+            return;
+        }
+        // The Loading title's clipped rows are drawn before the main Game
+        // loop takes over its scroll-area registry. Anchor the hidden stick
+        // pointer to a real visible row so Title::scroll_worlds accepts the
+        // wheel step during startup too.
+        let cursor = key_focus::drawn_targets()
+            .into_iter()
+            .find(|target| target.kind == Kind::Row)
+            .map_or(self.cursor, |target| {
+                (self.cursor.0, target.rect[1] + target.rect[3] / 2.0)
+            });
+        let batch = HudBatch::new(viewport);
+        if let Some(title) = &mut self.title {
+            title.stick_scroll(lines, cursor, (batch.width, batch.height));
+        }
     }
 
     pub(super) fn set_root(&mut self, root: PathBuf, settings: &Settings) {
@@ -1378,9 +1436,131 @@ impl Loading {
     }
 }
 
+fn pad_scroll_lines(remainder: &mut f32, axis: f32, speed: f32, seconds: f32) -> f32 {
+    if axis == 0.0 {
+        *remainder = 0.0;
+        return 0.0;
+    }
+    *remainder += axis * speed * seconds;
+    let lines = remainder.trunc();
+    *remainder -= lines;
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_scroll_accumulates_fractional_wheel_lines_and_resets_on_release() {
+        let mut remainder = 0.0;
+        let axis = horizon_client::gamepad::radial([0.0, 0.6], 0.2)[1];
+        assert!((axis - 0.5).abs() < 0.0001);
+        for _ in 0..3 {
+            assert_eq!(pad_scroll_lines(&mut remainder, axis, 12.0, 0.05), 0.0);
+        }
+        assert_eq!(pad_scroll_lines(&mut remainder, axis, 12.0, 0.05), 1.0);
+        assert!((remainder - 0.2).abs() < 0.0001);
+
+        assert_eq!(pad_scroll_lines(&mut remainder, 0.0, 12.0, 0.05), 0.0);
+        assert_eq!(remainder, 0.0);
+    }
+
+    #[test]
+    fn pad_scroll_is_suppressed_while_settings_are_open() {
+        use horizon_client::gamepad::PadState;
+
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        loading.menu.options_open = true;
+        loading.menu.pad_scroll = 0.75;
+        let mut settings = Settings::default();
+        settings.controller.enabled = true;
+        let mut state = PadState::default();
+        state.right = [0.0, 1.0];
+        loading
+            .menu
+            .pad_stick_scroll(state, &settings, Instant::now(), [1280, 720]);
+        assert_eq!(loading.menu.pad_scroll, 0.0);
+    }
+
+    #[test]
+    fn cafe_right_stick_scrolls_the_original_title_world_list() {
+        use horizon_client::gamepad::PadState;
+        use horizon_client::title::{Mode, WorldEntry};
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cafe-pad-scroll-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        session.loading.set_ui(gui(&root), root.clone());
+        let mut title = Title::new(root.join("saves"), &root);
+        title.mode = Mode::Select {
+            worlds: (0..12)
+                .map(|i| WorldEntry {
+                    folder: format!("world{i}"),
+                    name: format!("World {i}"),
+                    game_mode: 0,
+                    hardcore: false,
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                    commands: false,
+                    version: "26.3".into(),
+                    locked: false,
+                    corrupted: false,
+                    incompatible: None,
+                    file_fixing: false,
+                    downgrade: false,
+                })
+                .collect(),
+            selected: Some(0),
+        };
+        session.loading.menu.title = Some(title);
+        session.loading.settings.controller.enabled = true;
+        draw_menu_once(&mut session.loading);
+        let row_rects = |loading: &Loading| {
+            loading
+                .menu_key_targets()
+                .into_iter()
+                .filter(|target| target.kind == Kind::Row)
+                .map(|target| target.rect)
+                .collect::<Vec<_>>()
+        };
+        let before = row_rects(&session.loading);
+        assert!(
+            !before.is_empty(),
+            "world list has visible controller targets"
+        );
+
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+        let mut state = PadState::default();
+        state.right = [0.0, -1.0];
+        for _ in 0..3 {
+            session.dispatch_pad_state(&control, state);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        draw_menu_once(&mut session.loading);
+        let after = row_rects(&session.loading);
+        assert_ne!(before, after, "right-stick wheel steps move the title rows");
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn gui(root: &std::path::Path) -> UiResources {
         UiResources {

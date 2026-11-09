@@ -22486,14 +22486,23 @@ impl Loading {
     ) {
         use horizon_client::gamepad::GlyphStyle;
 
-        let settings = &self.settings.controller;
-        if settings.glyphs.resolve(GlyphStyle::Nintendo) == GlyphStyle::Nintendo
-            && settings.nintendo_letters
+        if self
+            .settings
+            .controller
+            .glyphs
+            .resolve(GlyphStyle::Nintendo)
+            == GlyphStyle::Nintendo
+            && self.settings.controller.nintendo_letters
         {
             state = state.by_letter();
         }
-        let changes = self.pad_edges.update(&state, settings.trigger_threshold);
-        if !settings.enabled {
+        let changes = self
+            .pad_edges
+            .update(&state, self.settings.controller.trigger_threshold);
+        let viewport = self.viewport;
+        self.menu
+            .pad_stick_scroll(state, &self.settings, Instant::now(), viewport);
+        if !self.settings.controller.enabled {
             self.pad_edges.cancel();
             return;
         }
