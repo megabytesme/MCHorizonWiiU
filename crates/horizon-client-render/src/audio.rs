@@ -12,6 +12,8 @@ use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+use horizon_wiiu_platform::audio::CafeAudio;
 use std::{
     collections::HashMap,
     fs,
@@ -206,8 +208,56 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 /// need libasound) never has one.
 #[cfg(feature = "audio")]
 type Stream = cpal::Stream;
-#[cfg(not(feature = "audio"))]
+#[cfg(all(
+    not(feature = "audio"),
+    not(all(target_arch = "powerpc", target_os = "cafe"))
+))]
 type Stream = std::convert::Infallible;
+/// Cafe owns a single AX stream. The strong mixer reference pins callback data
+/// until AX's frame callback has been deregistered by Drop.
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+struct Stream {
+    audio: Arc<CafeAudio>,
+    stop_worker: Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.stop_worker
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+fn run_cafe_mixer(
+    mixer: Arc<Mutex<Mixer>>,
+    audio: Arc<CafeAudio>,
+    frames: usize,
+    rate: u32,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let mut scratch = vec![0.0f32; frames * 2];
+    let period = std::time::Duration::from_secs_f64(frames as f64 / f64::from(rate));
+    let mut deadline = std::time::Instant::now();
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        if let Ok(mut mixer) = mixer.lock() {
+            mix(&mut mixer, &mut scratch, 2, rate);
+        } else {
+            scratch.fill(0.0);
+        }
+        audio.submit(&scratch);
+        deadline += period;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            deadline = std::time::Instant::now();
+        } else {
+            std::thread::sleep(remaining);
+        }
+    }
+}
 /// A level sound retained for the network broadcaster, in playback order.
 #[derive(Clone, Debug)]
 pub struct CapturedSound {
@@ -886,7 +936,10 @@ pub fn output_devices() -> Vec<String> {
     names
 }
 
-#[cfg(not(feature = "audio"))]
+#[cfg(not(all(
+    feature = "audio",
+    not(all(target_arch = "powerpc", target_os = "cafe"))
+)))]
 pub fn output_devices() -> Vec<String> {
     Vec::new()
 }
@@ -981,9 +1034,35 @@ impl Audio {
             device_ticks: 0,
         }
     }
-    #[cfg(not(feature = "audio"))]
+    #[cfg(all(
+        not(feature = "audio"),
+        not(all(target_arch = "powerpc", target_os = "cafe"))
+    ))]
     fn open_named(_: Arc<Mutex<Mixer>>, _: &str) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
+    }
+    #[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+    fn open_named(mixer: Arc<Mutex<Mixer>>, _: &str) -> Result<Stream> {
+        let audio = Arc::new(CafeAudio::open().map_err(str::to_owned)?);
+        let frames = audio.frames();
+        let rate = audio.rate();
+        let stop_worker = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop_worker.clone();
+        let worker_audio = audio.clone();
+        let worker = match std::thread::Builder::new()
+            .name("Horizon Cafe audio mixer".into())
+            .spawn(move || run_cafe_mixer(mixer, worker_audio, frames as usize, rate, worker_stop))
+        {
+            Ok(worker) => worker,
+            Err(error) => {
+                return Err(format!("could not start Wii U audio mixer: {error}").into());
+            }
+        };
+        Ok(Stream {
+            audio,
+            stop_worker,
+            worker: Some(worker),
+        })
     }
     #[cfg(feature = "audio")]
     fn open_named(mixer: Arc<Mutex<Mixer>>, target: &str) -> Result<Stream> {
@@ -1031,7 +1110,23 @@ impl Audio {
         self.engine.loaded = true;
         Ok(())
     }
-    #[cfg(not(feature = "audio"))]
+    #[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+    pub fn set_device(&mut self, name: &str) -> Result<()> {
+        // Match the desktop no-output invariant: silent and failed-output
+        // instances cannot open AX later through a device-option update.
+        if !self.backend.live && self._stream.is_none() && !self.engine.loaded {
+            self.device_name = name.to_owned();
+            return Ok(());
+        }
+        // Cafe exposes one system-selected route. Updating the vanilla option
+        // keeps that output open rather than trying to acquire a second AX stream.
+        self.device_name = name.to_owned();
+        Ok(())
+    }
+    #[cfg(all(
+        not(feature = "audio"),
+        not(all(target_arch = "powerpc", target_os = "cafe"))
+    ))]
     pub fn set_device(&mut self, name: &str) -> Result<()> {
         self.device_name = name.to_owned();
         Ok(())

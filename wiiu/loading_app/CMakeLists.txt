@@ -152,9 +152,10 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../loading_host"
 add_executable(horizon_wiiu_loading_app
    "${WUT_CRT0_OBJECT}"
    main.c
+   ../audio/audio.c
    ../platform/src/vpad_bridge.c
    "${HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}")
-target_include_directories(horizon_wiiu_loading_app PRIVATE ../platform/src)
+target_include_directories(horizon_wiiu_loading_app PRIVATE ../audio ../platform/src)
 add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_wut)
 if(NOT HORIZON_WIIU_PREBUILT_STATICLIB)
    add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_rust)
