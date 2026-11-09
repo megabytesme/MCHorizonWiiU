@@ -8,6 +8,15 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+macro_rules! cafe_graphics_stage {
+    ($stage:literal) => {{
+        #[cfg(target_os = "cafe")]
+        horizon_client_platform::logging::report_startup_stage(
+            concat!("Horizon graphics settings stage: ", $stage, "\n\0").as_bytes(),
+        );
+    }};
+}
+
 pub const FILE: &str = "horizon-graphics.txt";
 /// Written beside it before HDR output is switched on and removed once the first HDR frame is
 /// presented. Found at the next start, it means HDR output took the game down, so HDR starts off.
@@ -773,20 +782,42 @@ fn bool_text(v: bool) -> &'static str {
 }
 impl Graphics {
     pub fn load(dir: &Path) -> Self {
-        let mut g: Self = fs::read_to_string(dir.join(FILE))
-            .map(|t| Self::parse(&t))
-            .unwrap_or_default();
-        g.blue_map.servers = match fs::read_to_string(dir.join(crate::bluemap::SERVERS_FILE)) {
-            Ok(text) => crate::bluemap::Settings::parse_servers(&text),
+        cafe_graphics_stage!("settings file read begin");
+        let settings_text = fs::read_to_string(dir.join(FILE));
+        cafe_graphics_stage!("settings file read complete");
+        let mut g: Self = match settings_text {
+            Ok(text) => {
+                cafe_graphics_stage!("settings file parse begin");
+                let settings = Self::parse(&text);
+                cafe_graphics_stage!("settings file parse complete");
+                settings
+            }
+            Err(_) => Self::default(),
+        };
+        cafe_graphics_stage!("BlueMap server list read begin");
+        let blue_map_servers = fs::read_to_string(dir.join(crate::bluemap::SERVERS_FILE));
+        cafe_graphics_stage!("BlueMap server list read complete");
+        g.blue_map.servers = match blue_map_servers {
+            Ok(text) => {
+                cafe_graphics_stage!("BlueMap server list parse begin");
+                let servers = crate::bluemap::Settings::parse_servers(&text);
+                cafe_graphics_stage!("BlueMap server list parse complete");
+                servers
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => {
                 log::warn!("{}: {e}; no BlueMap is named", crate::bluemap::SERVERS_FILE);
                 Vec::new()
             }
         };
-        if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
+        cafe_graphics_stage!("HDR recovery marker removal begin");
+        let has_hdr_recovery_marker = fs::remove_file(dir.join(HDR_MARKER)).is_ok();
+        cafe_graphics_stage!("HDR recovery marker removal complete");
+        if has_hdr_recovery_marker && g.hdr {
             g.hdr = false;
+            cafe_graphics_stage!("HDR recovery save begin");
             g.save(dir);
+            cafe_graphics_stage!("HDR recovery save complete");
             log::warn!(
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
             );

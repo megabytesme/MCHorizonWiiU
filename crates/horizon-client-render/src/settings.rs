@@ -6,6 +6,15 @@ use crate::options_file::{OptionsFile, V};
 use horizon_protocol::packets::configuration::ClientInformation;
 use std::{fs, path::Path};
 
+macro_rules! cafe_settings_stage {
+    ($stage:literal) => {{
+        #[cfg(target_os = "cafe")]
+        horizon_client_platform::logging::report_startup_stage(
+            concat!("Horizon settings stage: ", $stage, "\n\0").as_bytes(),
+        );
+    }};
+}
+
 pub use horizon_client_core::sound_source::SOUND_SOURCES;
 
 /// Per-source volumes for the mixer (soundCategory_* except master).
@@ -328,46 +337,84 @@ impl Settings {
             .map_or(-1, |i| i as i32)
     }
     pub fn load(path: &Path) -> Self {
-        let horizon = path
-            .parent()
-            .map(crate::graphics::Graphics::load)
-            .unwrap_or_default();
+        cafe_settings_stage!("graphics load begin");
+        cafe_settings_stage!("graphics settings parent path begin");
+        #[cfg(target_os = "cafe")]
+        log::info!("Cafe options path byte length: {}", path.as_os_str().len());
+        let options_dir = horizon_client_platform::path::parent_dir(path);
+        cafe_settings_stage!("graphics settings parent path complete");
+        let horizon = match options_dir.as_deref() {
+            Some(dir) => {
+                cafe_settings_stage!("graphics load call begin");
+                let settings = crate::graphics::Graphics::load(dir);
+                cafe_settings_stage!("graphics load call complete");
+                settings
+            }
+            None => {
+                cafe_settings_stage!("graphics defaults begin");
+                let settings = crate::graphics::Graphics::default();
+                cafe_settings_stage!("graphics defaults complete");
+                settings
+            }
+        };
+        cafe_settings_stage!("graphics load complete");
+        cafe_settings_stage!("mipmap dither setup begin");
         crate::mipmap::set_dither_cutouts(horizon.dither_cutout_mips);
-        let controller = path
-            .parent()
+        cafe_settings_stage!("mipmap dither setup complete");
+        cafe_settings_stage!("controller settings load begin");
+        let controller = options_dir
+            .as_deref()
             .map(crate::gamepad::PadSettings::load)
             .unwrap_or_default();
-        let extras_text = path
-            .parent()
+        cafe_settings_stage!("controller settings load complete");
+        cafe_settings_stage!("extras settings load begin");
+        let extras_text = options_dir
+            .as_deref()
             .and_then(|dir| fs::read_to_string(dir.join(crate::extras::FILE)).ok())
             .unwrap_or_default();
         let mut extras = crate::extras::Extras::parse(&extras_text);
+        cafe_settings_stage!("extras settings load complete");
         // The enabled mods are the game folder's, shared by its players (`--player-dir`).
-        let mods = path
-            .parent()
+        cafe_settings_stage!("mod list load begin");
+        let mods = options_dir
+            .as_deref()
             .map(|dir| crate::mod_list::ModList::load(&crate::logging::shared_dir(dir)))
             .unwrap_or_default();
-        let settings = match fs::read(path) {
+        cafe_settings_stage!("mod list load complete");
+        cafe_settings_stage!("options file read begin");
+        let options = fs::read(path);
+        cafe_settings_stage!("options file read complete");
+        let settings = match options {
             Ok(bytes) => {
+                cafe_settings_stage!("options file parse begin");
                 let text = String::from_utf8_lossy(&bytes);
                 extras.read_old_options(&extras_text, &text);
-                Self {
+                let settings = Self {
                     horizon,
                     controller,
                     extras,
                     mods,
                     ..Self::parse(&text)
-                }
+                };
+                cafe_settings_stage!("options file parse complete");
+                settings
             }
-            Err(_) => Self {
-                horizon,
-                controller,
-                extras,
-                mods,
-                ..Self::default()
-            },
+            Err(_) => {
+                cafe_settings_stage!("default settings construction begin");
+                let settings = Self {
+                    horizon,
+                    controller,
+                    extras,
+                    mods,
+                    ..Self::default()
+                };
+                cafe_settings_stage!("default settings construction complete");
+                settings
+            }
         };
+        cafe_settings_stage!("crash details update begin");
         settings.describe_for_crashes();
+        cafe_settings_stage!("crash details update complete");
         // Options.load: the backend asked for at startup, what a restart is measured from.
         Self {
             startup_api: settings.horizon.api,
@@ -651,14 +698,27 @@ impl Settings {
     }
     pub fn save(&self, path: &Path) {
         self.describe_for_crashes();
+        cafe_settings_stage!("settings save options write begin");
         if let Err(e) = fs::write(path, self.serialize()) {
             log::warn!("Horizon: options.txt is not saved: {e}");
         }
-        if let Some(dir) = path.parent() {
+        cafe_settings_stage!("settings save options write complete");
+        cafe_settings_stage!("settings save parent resolution begin");
+        let options_dir = horizon_client_platform::path::parent_dir(path);
+        cafe_settings_stage!("settings save parent resolution complete");
+        if let Some(dir) = options_dir.as_deref() {
+            cafe_settings_stage!("settings save graphics begin");
             self.horizon.save(dir);
+            cafe_settings_stage!("settings save graphics complete");
+            cafe_settings_stage!("settings save controller begin");
             self.controller.save(dir);
+            cafe_settings_stage!("settings save controller complete");
+            cafe_settings_stage!("settings save extras begin");
             self.extras.save(dir);
+            cafe_settings_stage!("settings save extras complete");
+            cafe_settings_stage!("settings save mod list begin");
             self.mods.save(&crate::logging::shared_dir(dir));
+            cafe_settings_stage!("settings save mod list complete");
         }
     }
     /// Volume of a sound source (master excluded).

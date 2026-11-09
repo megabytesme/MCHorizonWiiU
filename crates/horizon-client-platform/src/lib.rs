@@ -3,6 +3,7 @@
 pub mod events;
 pub mod input;
 pub mod logging;
+pub mod path;
 pub use events::{
     ClientDeviceEvent, ClientWindowEvent, ImeEvent, MouseScrollDelta, PhysicalPosition,
     PhysicalSize, TouchPhase,

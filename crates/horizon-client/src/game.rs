@@ -23032,8 +23032,11 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
     cafe_game_stage!("standalone models registration begin");
     mods::register_standalone_models();
     cafe_game_stage!("standalone models registration complete");
+    cafe_game_stage!("options path resolution begin");
+    let options_path = Game::options_path();
+    cafe_game_stage!("options path resolution complete");
     cafe_game_stage!("early settings load begin");
-    let mut early_settings = Settings::load(&Game::options_path());
+    let mut early_settings = Settings::load(&options_path);
     cafe_game_stage!("early settings load complete");
     // Minecraft.<init>: read the last start's flag, then mark this one as not
     // finished until onGameLoadFinished. A dedicated server has no options.txt.
