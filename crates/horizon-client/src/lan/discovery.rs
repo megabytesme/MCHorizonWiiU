@@ -2,6 +2,8 @@
 //! multicast group 224.0.2.60:4445 every 1.5 seconds as
 //! `[MOTD]text[/MOTD][AD]port[/AD]`, and LanServerDetection collects those
 //! announcements for the multiplayer screen.
+#[cfg(target_os = "cafe")]
+use std::sync::OnceLock;
 use std::{
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
@@ -139,6 +141,22 @@ struct ScanInner {
     /// How many games `take_found` has handed out.
     taken: Mutex<usize>,
 }
+#[cfg(target_os = "cafe")]
+static CAFE_SCANNER: OnceLock<Mutex<CafeScannerState>> = OnceLock::new();
+
+#[cfg(target_os = "cafe")]
+#[derive(Default)]
+struct CafeScannerState {
+    /// Keep the scanner available to a screen that opens while setup is in
+    /// flight. Release it after setup so the last screen can stop the listener.
+    pending: Option<Arc<ScanInner>>,
+    /// The active screen scanner. Weak ownership preserves `ScanInner::drop`
+    /// as the listener's stop signal.
+    scanner: std::sync::Weak<ScanInner>,
+    /// Remains set while an uninterruptible Cafe socket setup call is stuck.
+    starting: bool,
+}
+
 impl Drop for ScanInner {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -147,10 +165,114 @@ impl Drop for ScanInner {
 impl Scanner {
     /// Bind the discovery port; without it the list simply stays empty.
     pub fn start() -> Self {
-        let games: Games = Arc::default();
-        let stop = Arc::new(AtomicBool::new(false));
         // Constructing multiplayer screens in unit tests must not open the LAN.
-        if !cfg!(test) && !super::test_loopback() {
+        if cfg!(test) || super::test_loopback() {
+            return Self::empty();
+        }
+
+        #[cfg(target_os = "cafe")]
+        {
+            // WUT socket setup can block in Cemu. Keep it off the title's
+            // event/render thread. Share an in-flight/active scan while its
+            // screen owns it. A stuck native setup call stays latched, which
+            // prevents reopening Multiplayer from accumulating blocked threads.
+            let state = CAFE_SCANNER.get_or_init(|| Mutex::new(CafeScannerState::default()));
+            let mut state = state.lock().unwrap();
+            if let Some(inner) = &state.pending {
+                return Self {
+                    inner: inner.clone(),
+                };
+            }
+            if let Some(inner) = state.scanner.upgrade() {
+                return Self { inner };
+            }
+            if state.starting {
+                crate::multiplayer::trace_cafe(format_args!(
+                    "LAN listener setup still pending; returning empty scanner"
+                ));
+                return Self::empty();
+            }
+
+            let scanner = Self::empty();
+            let (games, stop) = (scanner.inner.games.clone(), scanner.inner.stop.clone());
+            let scanner_ref = Arc::downgrade(&scanner.inner);
+            state.pending = Some(scanner.inner.clone());
+            state.starting = true;
+            crate::multiplayer::trace_cafe(format_args!(
+                "LAN listener background setup spawn begin"
+            ));
+            let spawned = std::thread::Builder::new()
+                .name("horizon-lan-scan".into())
+                .spawn(move || {
+                    let socket = match bind_listener() {
+                        Ok(socket) => socket,
+                        Err(error) => {
+                            crate::multiplayer::trace_cafe(format_args!(
+                                "LAN listener setup returned error kind={:?}",
+                                error.kind()
+                            ));
+                            if let Some(state) = CAFE_SCANNER.get() {
+                                let mut state = state.lock().unwrap();
+                                if state.pending.as_ref().is_some_and(|pending| {
+                                    Arc::downgrade(pending).ptr_eq(&scanner_ref)
+                                }) {
+                                    state.pending = None;
+                                    state.starting = false;
+                                }
+                            }
+                            return;
+                        }
+                    };
+                    crate::multiplayer::trace_cafe(format_args!(
+                        "LAN listener background setup complete"
+                    ));
+                    let should_listen = if let Some(state) = CAFE_SCANNER.get() {
+                        let mut state = state.lock().unwrap();
+                        if state
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| Arc::downgrade(pending).ptr_eq(&scanner_ref))
+                        {
+                            state.scanner = scanner_ref.clone();
+                            state.pending = None;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !should_listen {
+                        crate::multiplayer::trace_cafe(format_args!(
+                            "LAN listener setup completed without an active scanner"
+                        ));
+                        return;
+                    }
+                    listen(socket, games, stop);
+                    if let Some(state) = CAFE_SCANNER.get() {
+                        let mut state = state.lock().unwrap();
+                        if state.scanner.ptr_eq(&scanner_ref) {
+                            state.scanner = std::sync::Weak::new();
+                            state.starting = false;
+                        }
+                    }
+                });
+            if let Err(error) = spawned {
+                crate::multiplayer::trace_cafe(format_args!(
+                    "LAN listener background setup spawn failed kind={:?}",
+                    error.kind()
+                ));
+                state.pending = None;
+                state.starting = false;
+            }
+            drop(state);
+            scanner
+        }
+
+        #[cfg(not(target_os = "cafe"))]
+        {
+            let scanner = Self::empty();
+            let (games, stop) = (scanner.inner.games.clone(), scanner.inner.stop.clone());
             crate::multiplayer::trace_cafe(format_args!("LAN listener bind begin"));
             match bind_listener() {
                 Ok(socket) => {
@@ -171,11 +293,15 @@ impl Scanner {
                     error.kind()
                 )),
             }
+            scanner
         }
+    }
+
+    fn empty() -> Self {
         Self {
             inner: Arc::new(ScanInner {
-                games,
-                stop,
+                games: Arc::default(),
+                stop: Arc::new(AtomicBool::new(false)),
                 taken: Mutex::new(0),
             }),
         }
