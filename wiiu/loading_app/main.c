@@ -37,19 +37,28 @@ int main(void)
 {
    /* This must be the first platform operation: it anchors Cafe std entropy. */
    horizon_wiiu_app_entropy_first();
+   OSReport("Horizon Wii U startup: entropy ready\n");
 
+   OSReport("Horizon Wii U startup: WHBProcInit begin\n");
    WHBProcInit();
+   OSReport("Horizon Wii U startup: WHBProcInit complete\n");
+   OSReport("Horizon Wii U startup: WHBGfxInit begin\n");
    if (!WHBGfxInit()) {
       OSReport("Horizon Wii U: WHBGfxInit failed\n");
       WHBProcShutdown();
       return 3;
    }
+   OSReport("Horizon Wii U startup: WHBGfxInit complete\n");
    /* WHB owns target allocation callbacks. These callbacks only publish the
     * lifecycle state after WHB's ProcUI pump has processed each transition. */
+   OSReport("Horizon Wii U startup: ProcUI callback registration begin\n");
    ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, app_acquired, NULL, 100);
    ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, app_released, NULL, 100);
+   OSReport("Horizon Wii U startup: ProcUI callback registration complete\n");
 
+   OSReport("Horizon Wii U startup: Rust app entry begin\n");
    const int32_t result = horizon_wiiu_app_run();
+   OSReport("Horizon Wii U startup: Rust app entry returned\n");
    switch (result) {
    case 0:
       OSReport("Horizon Wii U: Cafe entry finished\n");

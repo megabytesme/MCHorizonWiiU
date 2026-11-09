@@ -4,6 +4,13 @@
 use horizon_world::nbt::{self, JavaString, NamedTag, Tag};
 use std::path::Path;
 
+macro_rules! cafe_server_stage {
+    ($stage:literal) => {{
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon servers.dat stage: {}", $stage);
+    }};
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerEntry {
     pub name: String,
@@ -150,13 +157,23 @@ fn insert(
         }
         _ => return Err(std::io::Error::other("servers.dat has no server list")),
     }
+    cafe_server_stage!("list insertion complete");
     write(path, &root)
 }
 fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
+    cafe_server_stage!("NBT serialization begin");
     let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
+    cafe_server_stage!("NBT serialization complete");
     let tmp = path.with_extension("dat_tmp");
+    cafe_server_stage!("temporary file write begin");
     std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
+    cafe_server_stage!("temporary file write complete");
+    cafe_server_stage!("rename begin");
+    let result = std::fs::rename(tmp, path);
+    if result.is_ok() {
+        cafe_server_stage!("rename complete");
+    }
+    result
 }
 
 /// ServerAddress.parseString: `host`, `host:port` or `[v6]:port`; default 25565.

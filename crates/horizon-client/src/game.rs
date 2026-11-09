@@ -1,6 +1,15 @@
 //! The playable game loop: streaming world, player simulation at 20 ticks/s,
 //! block interaction, inventory and HUD.
 
+macro_rules! cafe_game_stage {
+    ($stage:literal) => {{
+        #[cfg(target_os = "cafe")]
+        crate::logging::report_startup_stage(
+            concat!("Horizon game stage: ", $stage, "\n\0").as_bytes(),
+        );
+    }};
+}
+
 /// The content tables the world plays with, as field-level borrows: the
 /// world's data packs' over the game's own. The `Game::items`/`recipes`/
 /// `stations` methods read the same tables, but taking `&self` blocks a
@@ -22997,18 +23006,30 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
+        cafe_game_stage!("heartbeat start begin");
         horizon_client::heartbeat::start();
+        cafe_game_stage!("heartbeat start complete");
         let player_dir = horizon_client::logging::player_dir();
+        cafe_game_stage!("official server seed begin");
         if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
+        cafe_game_stage!("official server seed complete");
+        cafe_game_stage!("partner server seed begin");
         if let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir) {
             log::warn!("could not add the partner servers to servers.dat: {e}");
         }
+        cafe_game_stage!("partner server seed complete");
     }
+    cafe_game_stage!("mod components registration begin");
     mods::register_components(&vanilla_root)?;
+    cafe_game_stage!("mod components registration complete");
+    cafe_game_stage!("standalone models registration begin");
     mods::register_standalone_models();
+    cafe_game_stage!("standalone models registration complete");
+    cafe_game_stage!("early settings load begin");
     let mut early_settings = Settings::load(&Game::options_path());
+    cafe_game_stage!("early settings load complete");
     // Minecraft.<init>: read the last start's flag, then mark this one as not
     // finished until onGameLoadFinished. A dedicated server has no options.txt.
     if options.execution_role.is_client() {
@@ -23021,11 +23042,15 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
             "startedCleanly",
             horizon_client::options_file::V::Bool(false),
         );
+        cafe_game_stage!("early settings save begin");
         early_settings.save(&Game::options_path());
+        cafe_game_stage!("early settings save complete");
     }
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {
+        cafe_game_stage!("narrator start begin");
         narrator::start(&early_settings);
+        cafe_game_stage!("narrator start complete");
     }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
     if options.dedicated.is_none() {
@@ -23033,7 +23058,9 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
             || options.offscreen
             || options.frames.is_some()
             || options.world_frames.is_some();
+        cafe_game_stage!("Discord presence start begin");
         horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
+        cafe_game_stage!("Discord presence start complete");
     }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
@@ -23041,14 +23068,18 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
     if !synchronous_startup(&options) {
         if let Some(host) = cafe_host.as_deref_mut() {
+            cafe_game_stage!("Loading start begin");
             let loading = Loading::start(options, early_settings, vanilla_root, None, started)?;
+            cafe_game_stage!("Loading start complete");
             let mut session = CafeLoadingSession { loading };
+            cafe_game_stage!("Cafe Loading host drive begin");
             if let Err(error) = host.drive_loading(&mut session) {
                 // Match the ordinary event-loop path: the narrator belongs to
                 // the live Loading session, but must stop when that loop errors.
                 narrator::stop();
                 return Err(error);
             }
+            cafe_game_stage!("Cafe Loading host drive complete");
             return Ok(CafeRunOutcome::Loading(session));
         }
         run_loading(options, early_settings, vanilla_root, None, started)?;

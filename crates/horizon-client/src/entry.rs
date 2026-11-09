@@ -1,6 +1,15 @@
 //! Startup shared by the gameplay library and its executable.
 use crate::{crash, game, logging};
 
+macro_rules! cafe_startup_stage {
+    ($stage:literal) => {{
+        #[cfg(target_os = "cafe")]
+        crate::logging::report_startup_stage(
+            concat!("Horizon entry stage: ", $stage, "\n\0").as_bytes(),
+        );
+    }};
+}
+
 /// Start the game. The executable supplies the allocator and retains the mod API marker.
 pub fn main() {
     main_with(Default::default());
@@ -29,22 +38,37 @@ pub fn main_with_cafe_host(
 /// native hooks, logging, crash reporting, and exit behavior as the desktop.
 fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::Result<T>) -> T {
     // First: a trait injection into anything below (logging, the crash handler) calls its mod.
+    cafe_startup_stage!("mod registration begin");
     if crate::mod_api::MODS.set(mods).is_err() {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
+    cafe_startup_stage!("mod registration complete");
+    cafe_startup_stage!("allocator configuration begin");
     horizon_threads::configure_allocator();
+    cafe_startup_stage!("allocator configuration complete");
+    cafe_startup_stage!("telemetry start marker begin");
     horizon_client::telemetry::mark_start();
+    cafe_startup_stage!("telemetry start marker complete");
+    cafe_startup_stage!("startup span init begin");
     horizon_client::spans::startup::init(std::time::Instant::now());
+    cafe_startup_stage!("startup span init complete");
+    cafe_startup_stage!("argument collection begin");
     let args: Vec<String> = std::env::args().skip(1).collect();
+    cafe_startup_stage!("argument collection complete");
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
+    cafe_startup_stage!("help argument inspection begin");
     let help = game_args
         .clone()
         .any(|a| a == "--help" || a == "-h" || a == "--launch-api");
+    cafe_startup_stage!("help argument inspection complete");
     // --home before the log opens in it.
+    cafe_startup_stage!("home argument inspection begin");
     if let Some(dir) = game_args.clone().skip_while(|a| *a != "--home").nth(1) {
         logging::set_game_home(std::path::absolute(dir).unwrap_or_else(|_| dir.into()));
     }
+    cafe_startup_stage!("home argument inspection complete");
     // The dedicated server logs in its own folder (--game-dir's), as vanilla's does; the game in its home.
+    cafe_startup_stage!("home selection begin");
     let (home, side, thread) = if args.iter().any(|a| a == "--dedicated") {
         let folder = game_args
             .clone()
@@ -65,22 +89,33 @@ fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::
         }
         (logging::game_home(), "client", "Render thread")
     };
+    cafe_startup_stage!("home selection complete");
     if !help {
+        cafe_startup_stage!("logger initialization begin");
         logging::init(
             logging::player_dir_override().unwrap_or(home.as_path()),
             thread,
         );
+        cafe_startup_stage!("logger initialization complete");
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
+        cafe_startup_stage!("version log emitted");
+        cafe_startup_stage!("crash handler install begin");
         crash::install(home.clone(), side);
+        cafe_startup_stage!("crash handler install complete");
     }
+    cafe_startup_stage!("render hook collection begin");
     let renderers = crate::mod_api::mods()
         .iter()
         .filter_map(|m| m.render())
         .collect();
+    cafe_startup_stage!("render hook collection complete");
+    cafe_startup_stage!("native render hook install begin");
     if crate::gfx::native_render::install(renderers).is_err() {
         log::warn!("Trait renderers already installed; keeping the first list");
     }
+    cafe_startup_stage!("native render hook install complete");
+    cafe_startup_stage!("world load hook install begin");
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
             loot_table_load: |id, table| {
@@ -117,6 +152,8 @@ fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::
     {
         log::warn!("Native data-load hooks already installed; keeping the first callbacks");
     }
+    cafe_startup_stage!("world load hook install complete");
+    cafe_startup_stage!("client hook install begin");
     if crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
         menu_slot_rules: |menu, slot, stack, may_place, max_stack| {
             crate::mod_api::dispatch_menu_slot_rules(
@@ -195,8 +232,13 @@ fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::
     {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }
+    cafe_startup_stage!("client hook install complete");
+    cafe_startup_stage!("open file limit begin");
     raise_open_file_limit();
+    cafe_startup_stage!("open file limit complete");
+    cafe_startup_stage!("game runner begin");
     let result = run();
+    cafe_startup_stage!("game runner returned");
     let value = match result {
         Ok(value) => value,
         Err(error) => {

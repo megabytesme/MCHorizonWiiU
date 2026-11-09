@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 unsafe extern "C" {
+    fn OSReport(format: *const std::ffi::c_char, ...);
     fn horizon_wiiu_app_is_running() -> i32;
     fn horizon_wiiu_app_is_focused() -> i32;
     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
@@ -28,6 +29,16 @@ const APP_ROOT_FAILED: i32 = 4;
 
 const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
 
+macro_rules! startup_report {
+    ($stage:literal) => {{
+        // Fixed static format strings keep these early startup markers free of
+        // allocator and logger initialization dependencies.
+        unsafe {
+            OSReport(concat!("Horizon Wii U startup: ", $stage, "\n\0").as_ptr().cast());
+        }
+    }};
+}
+
 /// Called by C before WHB/GX2 initialization so all getrandom versions are
 /// anchored and the Cafe system RNG is checked before platform startup.
 #[no_mangle]
@@ -38,13 +49,16 @@ pub extern "C" fn horizon_wiiu_app_entropy_first() {
 /// Called by the WUT driver after WHB and GX2 initialization.
 #[no_mangle]
 pub extern "C" fn horizon_wiiu_app_run() -> i32 {
+    startup_report!("Rust app entry reached");
     // Cafe std's FS backend mounts the SD card at /vol/external01 when its
     // first filesystem operation initializes the FS client. Set a known app
     // working directory so Options' existing relative .local fallback and
     // game data paths resolve inside this app's isolated SD folder.
+    startup_report!("set_current_dir begin");
     if std::env::set_current_dir(CAFE_APP_ROOT).is_err() {
         return APP_ROOT_FAILED;
     }
+    startup_report!("set_current_dir complete");
 
     // Detailed startup spans identify UI and core resource stages. Cafe std
     // cannot create the optional trace file, so send them to OSConsole/serial.
@@ -53,12 +67,16 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     // SAFETY: C calls this only after WHBGfxInit and keeps GX2 alive until it
     // returns. The presenter is dropped on this same thread before C shuts GX2
     // down.
+    startup_report!("GX2 presenter creation begin");
     let mut presenter = match unsafe { Gx2LoadingPresenter::new_embedded(16_384) } {
         Ok(presenter) => presenter,
         Err(_) => return PRESENTER_FAILED,
     };
+    startup_report!("GX2 presenter creation complete");
     let mut host = LoadingHost::new(&mut presenter);
+    startup_report!("Horizon entry call begin");
     let outcome = horizon_client::entry::main_with_cafe_host(Default::default(), &mut host);
+    startup_report!("Horizon entry call returned");
     if host.failure.is_some() {
         return LOADING_FAILED;
     }

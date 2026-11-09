@@ -429,7 +429,9 @@ pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
             .iter()
             .any(|s| address_key(&s.ip) == address_key(address))
     {
+        trace_cafe(format_args!("official server prepend begin"));
         servers::prepend(&file, &ServerEntry::new(name, address))?;
+        trace_cafe(format_args!("official server prepend complete"));
     }
     std::fs::write(marker, format!("{address}\n"))
 }
