@@ -15,8 +15,9 @@ Run that command from `library/std/src/sys/net/connection/socket/`.
 ## Proposed behavior
 
 - `SO_RCVTIMEO` is emulated in Cafe std with `select` and per-call
-  `MSG_DONTWAIT`; `SO_SNDTIMEO` stays explicitly unsupported because nsysnet
-  exposes no send-timeout mechanism.
+  `MSG_DONTWAIT`; setting `SO_SNDTIMEO` remains unsupported because nsysnet
+  exposes no send-timeout mechanism, but clearing it with `None` succeeds as a
+  no-op because Cafe never installs a send timeout.
 - Timeout is shared by cloned handles, including getter/setter behavior. Each
   blocking receive gets a fresh deadline. `None` uses the ordinary blocking
   syscall. Zero is `InvalidInput`.
@@ -54,10 +55,11 @@ repeated signals cannot extend the configured timeout.
 ## Bounded target probe
 
 The RPX probe in `src/lib.rs` uses a local TCP pair. It checks connect/accept,
-timeout duration, clone-shared timeout getter, clearing back to a blocking
-read, nonblocking `WouldBlock`, `peek`, zero timeout rejection, and read-
-shutdown cancellation. Potentially blocking reads and writes run on worker
-threads with finite channel deadlines; the probe joins completed workers and
+write-timeout clearing and rejection, receive timeout duration, clone-shared
+timeout getter, clearing back to a blocking read, nonblocking `WouldBlock`,
+`peek`, zero timeout rejection, and read-shutdown cancellation. Potentially
+blocking reads and writes run on worker threads with finite channel deadlines;
+the probe joins completed workers and
 returns a failure without proceeding to later checks if a worker misses its
 bounded wait. TCP connect has its own finite timeout; listener accept polls a
 nonblocking socket to a deadline. The shutdown test waits for its worker to
@@ -99,10 +101,36 @@ also completed with a zero failure mask: clone-shared timeout getter, clearing
 the timeout to blocking, nonblocking `WouldBlock`, `peek`, zero-duration
 validation, and read-shutdown cancellation.
 
-This verifies the TCP standard-library behavior in Cemu only. It does not yet
-verify the production Horizon client using this `std`, a connection to a
-desktop-hosted server, real hardware, or UDP. An earlier combined diagnostic
-reached the end of its UDP receive-timeout step, then stopped progressing at
+That run verified the tested TCP standard-library behavior in Cemu. The later
+production-client result below supersedes its statement about HTTPS. Real
+hardware and UDP remain unverified. An earlier combined diagnostic reached the
+end of its UDP receive-timeout step, then stopped progressing at
 `UdpSocket::send_to` in Cemu. The TCP RPX is therefore deliberately TCP-only;
 the UDP send stall remains a separate platform/emulator limitation to
 investigate before claiming LAN broadcast discovery.
+
+## Cafe HTTP write-timeout clearing and Horizon live ping (2026-11-09)
+
+The isolated Cafe `std` used for the production RPX now treats
+`set_write_timeout(None)` as a no-op. Setting `Some(timeout)` still returns
+`Unsupported`, because nsysnet has no send-timeout option. The bounded timeout
+probe against this stage-0 sysroot returned `failures=0x00000008`; bits
+`0x200` (write-timeout clear) and `0x400` (write-timeout set rejection) were
+clear. The remaining bit is the probe's separate receive-timeout result check;
+the earlier stage-1 probe above passed that check.
+
+The Horizon Loading RPX was then rebuilt against the patched sysroot with 32
+jobs and run in Cemu 2.6. It loaded the title and showed the loading screen
+after 124 ms. Cemu logged connection attempts to both telemetry hosts
+(`153.52.255.62:443` and `144.21.57.120:443`) and no live-ping failure. After
+launch, `horizontelemetry.bytesdirect.com/v1/live` reported one active
+`dev 0.1.0` session; that endpoint had reported zero before the run. The
+production RPX SHA-256 is
+`7EA448E102447B479EB2CFFFCE5BC73CCAD8ADA57D168C72301CCA32AD2E9640`.
+The Cemu log is
+`E:\temp\horizonwiiu-loading-cemu-20261108\portable\log.txt`.
+
+This verifies Cafe HTTPS live-ping delivery in Cemu, including acceptance by
+the secondary endpoint. It does not verify Wii U hardware, consented batch
+uploads, multiplayer server connections, or UDP discovery. Startup still logs
+an unrelated unsupported operation while opening `horizon/logs/latest.log`.

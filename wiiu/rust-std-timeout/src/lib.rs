@@ -18,6 +18,8 @@ const FAIL_CLEAR_BLOCKING: u32 = 1 << 5;
 const FAIL_NONBLOCKING: u32 = 1 << 6;
 const FAIL_PEEK: u32 = 1 << 7;
 const FAIL_SHUTDOWN_CANCEL: u32 = 1 << 8;
+const FAIL_WRITE_TIMEOUT_CLEAR: u32 = 1 << 9;
+const FAIL_WRITE_TIMEOUT_SET: u32 = 1 << 10;
 const PROBE_WAIT: Duration = Duration::from_secs(3);
 
 unsafe extern "C" {
@@ -96,7 +98,8 @@ fn worker_read(
 }
 
 /// Failure bits: timeout, clone-shared getter, clear-to-blocking, nonblocking,
-/// peek, zero duration validation, and shutdown cancellation.
+/// peek, zero duration validation, shutdown cancellation, and write-timeout
+/// clear/rejection behavior.
 #[unsafe(no_mangle)]
 pub extern "C" fn horizon_socket_timeout_probe() -> u32 {
     report_stage(0);
@@ -109,6 +112,17 @@ pub extern "C" fn horizon_socket_timeout_probe() -> u32 {
         Ok(clone) => clone,
         Err(_) => return FAIL_CONNECT,
     };
+    // Cafe cannot enforce a send timeout, but clearing the default `None`
+    // configuration must succeed for clients that set all timeout kinds.
+    if client.set_write_timeout(None).is_err() {
+        failures |= FAIL_WRITE_TIMEOUT_CLEAR;
+    }
+    if !matches!(
+        client.set_write_timeout(Some(Duration::from_millis(1))),
+        Err(ref error) if error.kind() == io::ErrorKind::Unsupported
+    ) {
+        failures |= FAIL_WRITE_TIMEOUT_SET;
+    }
 
     let short = Duration::from_millis(120);
     if client.set_read_timeout(Some(short)).is_err()

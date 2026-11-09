@@ -557,6 +557,12 @@ impl Socket {
     }
 
     pub fn set_timeout(&self, timeout: Option<Duration>, kind: c_int) -> io::Result<()> {
+        // nsysnet has no SO_SNDTIMEO. Clearing a send timeout is still a valid
+        // no-op because Cafe never installs one; this also lets callers such
+        // as HTTP clients apply their default `None` configuration.
+        if kind == netc::SO_SNDTIMEO && timeout.is_none() {
+            return Ok(());
+        }
         if kind != netc::SO_RCVTIMEO {
             return unsupported();
         }
