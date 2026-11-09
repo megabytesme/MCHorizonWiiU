@@ -9,7 +9,8 @@ use horizon_client::{
     widgets::{Kind, Target},
 };
 use horizon_client_platform::{
-    ClientWindowEvent as WindowEvent, KeyCode, KeyState as ElementState, Modifiers, MouseButton,
+    ClientWindowEvent as WindowEvent, KeyCode, KeyLocation, KeyState as ElementState, LogicalKey,
+    Modifiers, MouseButton,
 };
 
 #[derive(Default)]
@@ -911,6 +912,34 @@ impl Loading {
             _ => return,
         };
         self.menu_navigation(event_loop, nav, true);
+    }
+
+    /// Route the GamePad's Back/Menu controls through the same Escape handler
+    /// used by the existing title, options, loading, and win screens.
+    pub(super) fn menu_pad_escape(&mut self, event_loop: &dyn EventLoopCtl) {
+        let was_synthetic = std::mem::replace(&mut self.menu.key_synthetic, true);
+        for state in [ElementState::Pressed, ElementState::Released] {
+            let keyboard = horizon_client_platform::KeyboardEvent {
+                physical_key: Some(KeyCode::Escape),
+                logical_key: LogicalKey::Named("Escape".into()),
+                location: KeyLocation::Standard,
+                state,
+                logical_text: None,
+                text: None,
+                unmodified_text: None,
+                repeat: false,
+            };
+            let event = WindowEvent::KeyboardInput {
+                event: keyboard.clone(),
+                is_synthetic: true,
+            };
+            if let Err(error) =
+                self.menu_event(event_loop, event, Some(KeyCode::Escape), Some(keyboard))
+            {
+                log::warn!("Horizon: GamePad back action: {error}");
+            }
+        }
+        self.menu.key_synthetic = was_synthetic;
     }
 
     fn menu_navigation(
@@ -1953,6 +1982,87 @@ mod tests {
         assert!(session.loading.menu.key_focus.is_some());
         assert!(session.loading.menu.physical_keys.is_empty());
         assert!(!session.loading.menu.key_synthetic);
+    }
+
+    #[test]
+    fn cafe_pad_b_and_start_share_escape_and_cancel_pending_entries() {
+        use horizon_client::gamepad::{Button, GlyphStyle, PadState};
+        use horizon_client::multiplayer::Screen as MultiplayerScreen;
+        use horizon_client::title::Mode;
+
+        struct LoopControl(std::cell::Cell<EventLoopControl>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, control: EventLoopControl) {
+                self.0.set(control);
+            }
+        }
+
+        let _gui_scale = GuiScaleRestore::new();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut session = CafeLoadingSession {
+            loading: loading(receiver),
+        };
+        let root = std::env::temp_dir().join(format!(
+            "horizon-cafe-pad-back-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        session.loading.set_ui(gui(&root), root.clone());
+        session.loading.settings.controller.enabled = true;
+        session.loading.settings.controller.glyphs = GlyphStyle::Nintendo;
+        session.loading.settings.controller.nintendo_letters = true;
+        session.loading.menu.title.as_mut().unwrap().mode =
+            Mode::Multiplayer(MultiplayerScreen::Direct {
+                address: "localhost".into(),
+            });
+        let control = LoopControl(std::cell::Cell::new(EventLoopControl::Poll));
+
+        // With Nintendo labels, the physical bottom B button normalizes to East.
+        // Pressing B and Start together dispatches only one Escape: Direct
+        // Connection backs to the multiplayer list but remains in Multiplayer.
+        let mut back_and_start = PadState::default();
+        back_and_start.set(Button::South, true);
+        back_and_start.set(Button::Start, true);
+        session.dispatch_pad_state(&control, back_and_start);
+        assert!(matches!(
+            session.loading.menu.title.as_ref().unwrap().mode,
+            Mode::Multiplayer(MultiplayerScreen::List { .. })
+        ));
+        session.dispatch_pad_state(&control, back_and_start);
+        assert!(matches!(
+            session.loading.menu.title.as_ref().unwrap().mode,
+            Mode::Multiplayer(MultiplayerScreen::List { .. })
+        ));
+
+        // Start on its own exits the list, using the same Escape path.
+        session.dispatch_pad_state(&control, PadState::default());
+        let mut start = PadState::default();
+        start.set(Button::Start, true);
+        session.dispatch_pad_state(&control, start);
+        assert!(matches!(
+            session.loading.menu.title.as_ref().unwrap().mode,
+            Mode::Main
+        ));
+
+        // B also cancels a pending server entry through Escape's existing path.
+        session.dispatch_pad_state(&control, PadState::default());
+        session.loading.menu.pending = Some(PendingWorldEntry::Server {
+            address: "localhost".into(),
+            name: "Player".into(),
+            cookies: None,
+            lan: false,
+        });
+        let mut b = PadState::default();
+        b.set(Button::South, true);
+        session.dispatch_pad_state(&control, b);
+        assert!(session.loading.menu.pending.is_none());
+        assert!(session.loading.menu.physical_keys.is_empty());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

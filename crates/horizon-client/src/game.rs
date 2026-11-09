@@ -22484,7 +22484,7 @@ impl Loading {
         event_loop: &dyn EventLoopCtl,
         mut state: horizon_client::gamepad::PadState,
     ) {
-        use horizon_client::gamepad::GlyphStyle;
+        use horizon_client::gamepad::{Button, GlyphStyle};
 
         if self
             .settings
@@ -22506,8 +22506,16 @@ impl Loading {
             self.pad_edges.cancel();
             return;
         }
+        let mut back_dispatched = false;
         for (button, down) in changes {
-            self.menu_pad_button(event_loop, button, down);
+            if matches!(button, Button::East | Button::Start) {
+                if down && !back_dispatched {
+                    self.menu_pad_escape(event_loop);
+                    back_dispatched = true;
+                }
+            } else {
+                self.menu_pad_button(event_loop, button, down);
+            }
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
