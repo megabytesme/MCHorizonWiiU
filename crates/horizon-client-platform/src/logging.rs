@@ -33,6 +33,26 @@ fn serial_report(line: &str) {
     unsafe { OSReport(b"%s\n\0".as_ptr().cast(), line.as_ptr()) };
 }
 
+/// Reports a static startup marker before Horizon's logger is initialized.
+/// The validated C string avoids both varargs formatting and heap allocation.
+#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+pub fn report_startup_stage(message: &'static [u8]) {
+    let Ok(message) = std::ffi::CStr::from_bytes_with_nul(message) else {
+        return;
+    };
+    if message.to_bytes().contains(&b'%') {
+        return;
+    }
+    unsafe { OSReport(message.as_ptr()) };
+}
+
+macro_rules! cafe_logging_stage {
+    ($stage:literal) => {{
+        #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+        report_startup_stage(concat!("Horizon logger stage: ", $stage, "\n\0").as_bytes());
+    }};
+}
+
 /// DefaultRolloverStrategy's default `max`: archives kept for one date.
 pub const MAX_ARCHIVES_PER_DAY: u32 = 7;
 /// Formatted lines kept in memory for crash reports.
@@ -260,12 +280,16 @@ pub struct Latest {
 /// lock is a separate file (`.lock`): Windows locks are mandatory, and a locked latest.log could
 /// not be read while the game runs.
 pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
+    cafe_logging_stage!("create_dir_all begin");
     fs::create_dir_all(dir)?;
+    cafe_logging_stage!("create_dir_all complete");
+    cafe_logging_stage!("lock open begin");
     let lock = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .open(dir.join(".lock"))?;
+    cafe_logging_stage!("lock open complete");
     // The Cafe std implementation exposes File::try_lock but reports it as
     // unsupported. A Wii U title is a single process, so keep the lock file
     // handle alive without trying to take a host-style advisory lock.
@@ -275,15 +299,21 @@ pub fn open_latest(dir: &Path) -> io::Result<Option<Latest>> {
         Err(fs::TryLockError::WouldBlock) => return Ok(None),
         Err(fs::TryLockError::Error(e)) => return Err(e),
     }
+    cafe_logging_stage!("latest.log open begin");
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(dir.join("latest.log"))?;
+    cafe_logging_stage!("latest.log open complete");
+    cafe_logging_stage!("metadata begin");
     let modified = file.metadata()?.modified()?;
+    cafe_logging_stage!("metadata complete");
     let date = DateTime::<Local>::from(modified).date_naive();
+    cafe_logging_stage!("roll begin");
     roll(&mut file, dir, date)?;
+    cafe_logging_stage!("roll complete");
     Ok(Some(Latest { file, _lock: lock }))
 }
 
@@ -532,24 +562,38 @@ impl Logger {
 /// Starts the log in `home/logs`. The main thread shows as `main_thread` in it. Messages are
 /// still printed when the file cannot be opened.
 pub fn init(home: &Path, main_thread: &'static str) {
+    cafe_logging_stage!("logs_dir begin");
     let dir = logs_dir(home);
-    let file = match open_latest(&dir) {
-        Ok(Some(latest)) => Some(latest),
-        Ok(None) => {
-            eprintln!(
-                "Horizon: another game is writing {}; this one logs to the terminal only",
-                dir.join("latest.log").display()
-            );
-            None
-        }
-        Err(e) => {
-            eprintln!(
-                "Horizon: could not open {}: {e}",
-                dir.join("latest.log").display()
-            );
-            None
-        }
+    cafe_logging_stage!("logs_dir complete");
+    #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+    let file = {
+        cafe_logging_stage!("file logging skipped; using serial");
+        None
     };
+    #[cfg(not(all(feature = "cafe", target_arch = "powerpc")))]
+    let file = {
+        cafe_logging_stage!("open_latest begin");
+        let file = match open_latest(&dir) {
+            Ok(Some(latest)) => Some(latest),
+            Ok(None) => {
+                eprintln!(
+                    "Horizon: another game is writing {}; this one logs to the terminal only",
+                    dir.join("latest.log").display()
+                );
+                None
+            }
+            Err(e) => {
+                eprintln!(
+                    "Horizon: could not open {}: {e}",
+                    dir.join("latest.log").display()
+                );
+                None
+            }
+        };
+        cafe_logging_stage!("open_latest complete");
+        file
+    };
+    cafe_logging_stage!("logger registration begin");
     let logger = LOGGER.get_or_init(|| {
         let (out, receive) = mpsc::channel();
         let writer = Writer {
@@ -573,6 +617,7 @@ pub fn init(home: &Path, main_thread: &'static str) {
     if log::set_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
+    cafe_logging_stage!("logger registration complete");
 }
 
 /// A line in the log from code that prints it elsewhere itself (the dedicated server console).

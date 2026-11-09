@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = []
-cafe = []
+cafe = ["horizon-client-platform/cafe"]
 horizon-hud = ["dep:horizon-client-hud"]
 
 [dependencies]
