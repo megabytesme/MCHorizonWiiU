@@ -494,6 +494,7 @@ impl Game<'_> {
         if self.options.split_guest {
             return;
         }
+        #[cfg(not(target_os = "cafe"))]
         if let Some(w) = self.window.clone() {
             let monitor = w.current_monitor().or_else(|| w.primary_monitor());
             if let Some(modes) = self.video_modes.refresh(

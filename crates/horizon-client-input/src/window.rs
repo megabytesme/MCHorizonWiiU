@@ -517,7 +517,7 @@ impl<M: PartialEq> VideoModeList<M> {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 pub use crate::desktop_adapter::{fullscreen_request, icon, monitor_video_modes};
 
 #[cfg(test)]

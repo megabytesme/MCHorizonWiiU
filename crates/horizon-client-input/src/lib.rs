@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 pub mod actions;
 pub mod clipboard;
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 pub mod desktop_adapter;
 pub mod gamepad;
 pub mod held;
@@ -18,5 +18,5 @@ pub mod modifiers;
 pub mod mouse;
 pub mod snap;
 pub mod window;
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(target_os = "cafe")))]
 pub mod winit_adapter;

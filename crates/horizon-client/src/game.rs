@@ -264,6 +264,7 @@ mod natural_spawning;
 mod nautili;
 mod net_harness;
 mod nether_portal;
+#[cfg(not(target_os = "cafe"))]
 mod no_resources;
 mod occlusion_culling;
 mod ominous_item_spawner;
@@ -482,11 +483,17 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     error::EventLoopError,
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{CursorGrabMode, Window},
+};
+#[cfg(target_os = "cafe")]
+use winit::{event::WindowEvent as WinitWindowEvent, window::WindowId};
+#[cfg(not(target_os = "cafe"))]
+use winit::{
     event::{
         DeviceEvent as WinitDeviceEvent, DeviceId as WinitDeviceId, WindowEvent as WinitWindowEvent,
     },
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{CursorGrabMode, Window, WindowId},
+    window::WindowId,
 };
 
 /// The time a frame spends uploading chunk meshes when the player set no
@@ -17858,9 +17865,9 @@ impl ApplicationHandler for Game<'_> {
         let fullscreen = self.settings.fullscreen || self.options.fullscreen;
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
-            .with_title("Horizon")
-            .with_window_icon(horizon_client_input::desktop_adapter::icon());
+        let attributes = Window::default_attributes().with_title("Horizon");
+        #[cfg(not(target_os = "cafe"))]
+        let attributes = attributes.with_window_icon(horizon_client_input::desktop_adapter::icon());
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -17900,6 +17907,7 @@ impl ApplicationHandler for Game<'_> {
         self.apply_settings();
         self.previous = Instant::now();
     }
+    #[cfg(not(target_os = "cafe"))]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -17933,6 +17941,9 @@ impl ApplicationHandler for Game<'_> {
             self.native_input_key(&event, modifiers);
         }
     }
+    #[cfg(target_os = "cafe")]
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WinitWindowEvent) {}
+    #[cfg(not(target_os = "cafe"))]
     fn device_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -22347,9 +22358,9 @@ impl Loading {
             .map_or([1280, 720], |o| o.window_size)
             .map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
-        let attributes = Window::default_attributes()
-            .with_title("Horizon")
-            .with_window_icon(horizon_client_input::desktop_adapter::icon());
+        let attributes = Window::default_attributes().with_title("Horizon");
+        #[cfg(not(target_os = "cafe"))]
+        let attributes = attributes.with_window_icon(horizon_client_input::desktop_adapter::icon());
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -22433,6 +22444,7 @@ impl Loading {
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         self.window = Some(window);
     }
+    #[cfg(not(target_os = "cafe"))]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -22448,6 +22460,8 @@ impl Loading {
         };
         self.dispatch_platform_window_event(&WinitEventLoop::new(event_loop), event);
     }
+    #[cfg(target_os = "cafe")]
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WinitWindowEvent) {}
     /// Dispatch a native window event through Horizon's existing startup menu.
     fn dispatch_platform_window_event(
         &mut self,
@@ -22729,6 +22743,7 @@ impl ApplicationHandler for App {
             App::Ready(game) => game.resumed(event_loop),
         }
     }
+    #[cfg(not(target_os = "cafe"))]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -22740,6 +22755,9 @@ impl ApplicationHandler for App {
             App::Ready(game) => game.window_event(event_loop, id, event),
         }
     }
+    #[cfg(target_os = "cafe")]
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WinitWindowEvent) {}
+    #[cfg(not(target_os = "cafe"))]
     fn device_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -22943,6 +22961,7 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
         // the error.
+        #[cfg(not(target_os = "cafe"))]
         if !options.offscreen && !synchronous_startup(&options) {
             log::error!("Horizon: {error}");
             let settings = Settings::load(&Game::options_path());
