@@ -46,6 +46,10 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
         return APP_ROOT_FAILED;
     }
 
+    // Detailed startup spans identify UI and core resource stages. Cafe std
+    // cannot create the optional trace file, so send them to OSConsole/serial.
+    horizon_client::spans::startup::enable_log_sink();
+
     // SAFETY: C calls this only after WHBGfxInit and keeps GX2 alive until it
     // returns. The presenter is dropped on this same thread before C shuts GX2
     // down.

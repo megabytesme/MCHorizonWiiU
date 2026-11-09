@@ -283,8 +283,9 @@ pub fn describe(spans: &[Span]) -> String {
 /// the start (resource tables, the renderer, the title, a world's open, a
 /// server's join, a dimension change) on whichever thread ran it, one Chrome
 /// trace event per line (`tools/startup_trace.py` reads it; wrapped in `[...]`,
-/// Perfetto opens it). Times are microseconds since the process started. Off,
-/// a step costs one relaxed load.
+/// Perfetto opens it). An embedding host can call [`enable_log_sink`] to mirror
+/// span events and begin markers to Horizon's logger. Times are microseconds
+/// since the process started. Off, a step costs one relaxed load.
 pub mod startup {
     use super::HeapTag;
     use std::{
@@ -297,6 +298,9 @@ pub mod startup {
     };
 
     static ON: AtomicBool = AtomicBool::new(false);
+    /// An embedding host without a writable trace file can mirror spans to
+    /// Horizon's logger. Set before [`init`] so the first loader stage is kept.
+    static LOG_SINK: AtomicBool = AtomicBool::new(false);
     static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     static NEXT_THREAD: AtomicU32 = AtomicU32::new(1);
@@ -313,7 +317,17 @@ pub mod startup {
             let path = std::env::var_os("HORIZON_STARTUP_TRACE")?;
             std::fs::File::create(&path).ok().map(Mutex::new)
         });
-        ON.store(sink.is_some(), Ordering::Relaxed);
+        ON.store(
+            sink.is_some() || LOG_SINK.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Mirror startup spans to `log::info!` as well as any configured trace
+    /// file. Embedders can call this before entry initialization when their
+    /// platform has a console logger but cannot create trace files.
+    pub fn enable_log_sink() {
+        LOG_SINK.store(true, Ordering::Relaxed);
     }
 
     /// Whether a trace is being written.
@@ -329,9 +343,10 @@ pub mod startup {
     }
 
     fn write(event: std::fmt::Arguments) {
-        let Some(Some(sink)) = SINK.get() else {
-            return;
-        };
+        if LOG_SINK.load(Ordering::Relaxed) {
+            log::info!("Horizon startup trace: {event}");
+        }
+        let Some(Some(sink)) = SINK.get() else { return };
         let tid = THREAD.with(|id| {
             if id.get() == 0 {
                 id.set(NEXT_THREAD.fetch_add(1, Ordering::Relaxed));
@@ -387,13 +402,21 @@ pub mod startup {
         #[cfg(not(feature = "heap-census"))]
         let heap_census = false;
         (traced || heap_census).then(|| {
+            let started = Instant::now();
+            if traced && LOG_SINK.load(Ordering::Relaxed) {
+                log::info!(
+                    "Horizon startup stage begin name={} ts={}",
+                    name,
+                    micros(started)
+                );
+            }
             #[cfg(feature = "heap-census")]
             let heap = horizon_threads::heap_tag(name);
             #[cfg(not(feature = "heap-census"))]
             let heap = ();
             Step {
                 name,
-                started: Instant::now(),
+                started,
                 traced,
                 _heap: heap,
             }
