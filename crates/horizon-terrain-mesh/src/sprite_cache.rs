@@ -141,16 +141,24 @@ impl SpriteCache {
         if !self.dirty {
             return self.valid;
         }
-        let temporary = self
-            .path
-            .with_extension(format!("{}.tmp", std::process::id()));
-        self.valid = fs::write(&temporary, serialize(self.fingerprint, &self.entries)).is_ok()
-            && fs::rename(&temporary, &self.path).is_ok();
-        if !self.valid {
-            let _ = fs::remove_file(&temporary);
+        #[cfg(target_os = "cafe")]
+        {
+            false
         }
-        self.dirty = !self.valid;
-        self.valid
+
+        #[cfg(not(target_os = "cafe"))]
+        {
+            let temporary = self
+                .path
+                .with_extension(format!("{}.tmp", std::process::id()));
+            self.valid = fs::write(&temporary, serialize(self.fingerprint, &self.entries)).is_ok()
+                && fs::rename(&temporary, &self.path).is_ok();
+            if !self.valid {
+                let _ = fs::remove_file(&temporary);
+            }
+            self.dirty = !self.valid;
+            self.valid
+        }
     }
 }
 
