@@ -36,21 +36,36 @@ pub const SCHEMA: u32 = 1;
 /// (cores, clocks, VRAM, drive, screen, power, form), 2026-10-23.
 pub const CONSENT_VERSION: u32 = 2;
 
-/// The ingest server (`crates/horizon-telemetry-server`, on Railway). `HORIZON_TELEMETRY_URL`
-/// overrides it (a local server); `HORIZON_TELEMETRY_URL=off` sends nothing at all, no ping
-/// either (tests and automated runs). What is sent still depends on the player's switches.
+/// The primary ingest server (`crates/horizon-telemetry-server`, on Railway).
+/// `HORIZON_TELEMETRY_URL` overrides the default endpoints with one server (a local server);
+/// `HORIZON_TELEMETRY_URL=off` sends nothing at all, no ping either (tests and automated runs).
+/// What is sent still depends on the player's switches.
 pub const DEFAULT_ENDPOINT: &str = "https://telemetry.playhorizon.dev";
+/// A second ingest server that receives the same telemetry as [`DEFAULT_ENDPOINT`].
+pub const SECONDARY_ENDPOINT: &str = "https://horizontelemetry.bytesdirect.com";
+/// Default destinations for telemetry reports, in send order.
+pub const DEFAULT_ENDPOINTS: [&str; 2] = [DEFAULT_ENDPOINT, SECONDARY_ENDPOINT];
 
-/// Where items are sent, if anywhere.
-pub fn endpoint() -> Option<String> {
-    resolve(std::env::var("HORIZON_TELEMETRY_URL").ok().as_deref())
+/// Where telemetry is reported, if anywhere. An explicit URL override remains a single target.
+pub fn endpoints() -> Option<Vec<String>> {
+    resolve_endpoints(std::env::var("HORIZON_TELEMETRY_URL").ok().as_deref())
 }
 
-fn resolve(var: Option<&str>) -> Option<String> {
+/// The primary endpoint, for read-only status and display callers.
+pub fn endpoint() -> Option<String> {
+    endpoints().and_then(|endpoints| endpoints.into_iter().next())
+}
+
+fn resolve_endpoints(var: Option<&str>) -> Option<Vec<String>> {
     match var.map(str::trim) {
         Some("off" | "none" | "0") => None,
-        Some(url) if !url.is_empty() => Some(url.trim_end_matches('/').to_owned()),
-        _ => Some(DEFAULT_ENDPOINT.to_owned()),
+        Some(url) if !url.is_empty() => Some(vec![url.trim_end_matches('/').to_owned()]),
+        _ => Some(
+            DEFAULT_ENDPOINTS
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect(),
+        ),
     }
 }
 
@@ -115,13 +130,30 @@ mod tests {
 
     #[test]
     fn the_endpoint_defaults_to_the_server_and_can_be_moved_or_turned_off() {
-        assert_eq!(resolve(None).as_deref(), Some(DEFAULT_ENDPOINT));
-        assert_eq!(resolve(Some(" ")).as_deref(), Some(DEFAULT_ENDPOINT));
+        let defaults = resolve_endpoints(None).unwrap();
+        assert_eq!(defaults.first().map(String::as_str), Some(DEFAULT_ENDPOINT));
         assert_eq!(
-            resolve(Some("http://127.0.0.1:8080/")).as_deref(),
-            Some("http://127.0.0.1:8080")
+            resolve_endpoints(Some(" ")).unwrap(),
+            vec![DEFAULT_ENDPOINT.to_owned(), SECONDARY_ENDPOINT.to_owned()]
         );
-        assert_eq!(resolve(Some("off")), None);
+        assert_eq!(
+            resolve_endpoints(Some("http://127.0.0.1:8080/")),
+            Some(vec!["http://127.0.0.1:8080".to_owned()])
+        );
+        assert_eq!(resolve_endpoints(Some("off")), None);
         assert!(DEFAULT_ENDPOINT.starts_with("https://") && !DEFAULT_ENDPOINT.ends_with('/'));
+    }
+
+    #[test]
+    fn default_reports_are_mirrored_but_an_override_remains_single() {
+        assert_eq!(
+            resolve_endpoints(None).unwrap(),
+            vec![DEFAULT_ENDPOINT.to_owned(), SECONDARY_ENDPOINT.to_owned()]
+        );
+        assert_eq!(
+            resolve_endpoints(Some("https://local.test/")),
+            Some(vec!["https://local.test".to_owned()])
+        );
+        assert_eq!(resolve_endpoints(Some("off")), None);
     }
 }

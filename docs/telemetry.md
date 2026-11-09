@@ -17,7 +17,7 @@ Two exceptions:
 
 - `version` is the consent version the player answered (`CONSENT_VERSION`). It goes up when what is collected changes. The launcher then asks again, and until the player answers nothing new is kept or sent.
 - `answered` is when they answered, in seconds since 1970 (UTC).
-- `install_id` is 128 random bits, made the first time the player says yes to anything. It ties their items together so they can be deleted, and nothing else. "Delete my data" asks the server to delete everything under it, then replaces it.
+- `install_id` is 128 random bits, made the first time the player says yes to anything. It ties their items together so they can be deleted, and nothing else. "Delete my data" asks every configured endpoint to delete everything under it, then replaces it.
 
 Nothing leaves the machine without consent:
 
@@ -67,7 +67,8 @@ Never sent: account names or UUIDs, world names, server or LAN addresses, chat, 
 - `telemetry/outbox/` holds one JSON file per item, `<day>-<kind>-<random>.json`. It never holds more than 200 items or 2 MiB, and the oldest go first. `kept.json` counts today's items per kind against the caps above.
 - The launcher sends the outbox when it starts and when it closes. Items go as one JSON batch (`{"schema":1,"install_id":…,"items":[…]}`, up to 64 items and 1 MiB), compressed with zstd: `POST /v1/batch` with `Content-Encoding: zstd`. A day's perf summaries are under 2 KB on the wire.
 - After a failure the launcher waits a minute, doubling up to a day, and sends at most 8 batches a day. A batch the server refuses with a 4xx (not 429) is dropped.
-- The server is `https://telemetry.playhorizon.dev` (`DEFAULT_ENDPOINT`), on Railway in the EU (`europe-west4`, Amsterdam). `HORIZON_TELEMETRY_URL` names another one (a local server); `HORIZON_TELEMETRY_URL=off` sends nothing at all, no ping either. Tests, CI and the benchmark and test harnesses set `off`.
+- By default, consented batches and the anonymous live ping are sent to both `https://telemetry.playhorizon.dev` and `https://horizontelemetry.bytesdirect.com` in the same reporting cycle. `HORIZON_TELEMETRY_URL` replaces both with one endpoint (for example, a local server); `HORIZON_TELEMETRY_URL=off` sends nothing at all, no ping either. Tests, CI and the benchmark and test harnesses set `off`.
+- `GET /v1/live` and the launcher's player-count display use the primary `telemetry.playhorizon.dev` endpoint. "Delete my data" asks every configured endpoint to delete the install ID; the local outbox is cleared either way.
 - What is sent still depends on the switches: with every switch off nothing but the ping leaves, and the outbox stays empty.
 - `SCHEMA` versions the format. New optional fields keep it. A field that changes meaning or goes bumps it, and the server keeps reading the older ones.
 
@@ -75,7 +76,7 @@ Never sent: account names or UUIDs, world names, server or LAN addresses, chat, 
 
 Ludovic decided on 2026-10-22 to count every player, with or without consent, and to tell them. The launcher's first-run question and Settings → Data collection show it as an "Always on" row next to the switches. Players who answered the question before the ping existed see the same text once on the Play page. The privacy page on playhorizon.dev says the same.
 
-While the game runs (not a dedicated server, a benchmark or a run that quits by itself), a thread of its own (`crates/horizon-client/src/heartbeat.rs`) sends `POST /v1/live` once a minute. It also sends one at once when a world is opened to or closed from LAN or friends:
+While the game runs (not a dedicated server, a benchmark or a run that quits by itself), a thread of its own (`crates/horizon-client/src/heartbeat.rs`) sends the same `POST /v1/live` ping to both configured endpoints once a minute. Each endpoint keeps its own retry cadence. It also sends one at once to both when a world is opened to or closed from LAN or friends:
 
 ```json
 { "session": "9b1c…", "version": "v2026.10.22", "platform": "macos", "lan": false }
@@ -85,7 +86,7 @@ While the game runs (not a dedicated server, a benchmark or a run that quits by 
 - `version` is the release, `platform` is `linux`, `macos`, `windows` or `other`, and `lan` says whether a LAN or play-with-friends world is open.
 - Nothing else: no account, install ID, world, server, settings or hardware. The server checks each field (`live::Ping::check`) and refuses anything more.
 
-The server keeps sessions in memory only, never on disk, and never with the sender's address. A session counts while its last ping is under 2 minutes old. `GET /v1/live` gives the exact count; versions past the 12 most played are summed under `other`:
+The primary `horizon-telemetry-server` keeps sessions in memory only, never on disk, and never with the sender's address. A session counts while its last ping is under 2 minutes old. `GET /v1/live` at the primary endpoint gives the exact count; versions past the 12 most played are summed under `other`:
 
 ```json
 { "playing": 1243, "lan": 87, "versions": { "v2026.10.22": 1102, "other": 141 }, "platforms": { "linux": 301, "macos": 238, "windows": 704 } }

@@ -7,7 +7,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::Thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use horizon_telemetry::live::{self, Ping};
 
@@ -24,12 +24,12 @@ pub fn start() {
     if PINGER.get().is_some() || std::env::var_os("HORIZON_NO_HEARTBEAT").is_some() {
         return;
     }
-    let Some(endpoint) = horizon_telemetry::endpoint() else {
+    let Some(endpoints) = horizon_telemetry::endpoints() else {
         return;
     };
     let spawned = std::thread::Builder::new()
         .name("Heartbeat".into())
-        .spawn(move || run(&endpoint));
+        .spawn(move || run(&endpoints));
     match spawned {
         Ok(handle) => {
             let _ = PINGER.set(handle.thread().clone());
@@ -47,28 +47,49 @@ pub fn set_lan(open: bool) {
     }
 }
 
-fn run(endpoint: &str) {
+fn run(endpoints: &[String]) {
     let session = live::session_id();
     let version = crate::telemetry::version();
-    let mut wait = live::INTERVAL;
-    let mut failed = false;
+    let mut retry_waits = vec![live::INTERVAL; endpoints.len()];
+    let mut failed = vec![false; endpoints.len()];
+    let mut next_pings = vec![Instant::now(); endpoints.len()];
+    let mut last_lan = LAN.load(Ordering::Relaxed);
     loop {
-        let ping = Ping::new(&session, &version, LAN.load(Ordering::Relaxed));
-        match live::send(endpoint, &ping) {
-            Ok(()) => {
-                wait = live::INTERVAL;
-                failed = false;
+        let lan = LAN.load(Ordering::Relaxed);
+        let lan_changed = lan != last_lan;
+        last_lan = lan;
+        let now = Instant::now();
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            if !lan_changed && now < next_pings[index] {
+                continue;
             }
-            Err(e) => {
-                // Said once, not every minute the server is away.
-                if !failed {
-                    log::info!("Horizon: the live count ping failed ({e}); trying again later");
+            let ping = Ping::new(&session, &version, lan);
+            match live::send(endpoint, &ping) {
+                Ok(()) => {
+                    retry_waits[index] = live::INTERVAL;
+                    failed[index] = false;
+                    next_pings[index] = Instant::now() + live::INTERVAL;
                 }
-                failed = true;
-                wait = (wait * 2).min(MAX_WAIT);
+                Err(error) => {
+                    // A quiet endpoint shouldn't slow down or suppress the other mirror.
+                    if !failed[index] {
+                        log::info!(
+                            "Horizon: the live count ping failed for {endpoint} ({error}); trying again later"
+                        );
+                    }
+                    failed[index] = true;
+                    retry_waits[index] = (retry_waits[index] * 2).min(MAX_WAIT);
+                    next_pings[index] = Instant::now() + retry_waits[index];
+                }
             }
         }
-        // Woken early by `set_lan`; a spurious wake only sends one ping more.
-        std::thread::park_timeout(wait);
+        // A world-state change wakes all mirrors immediately; otherwise each keeps its own cadence.
+        let now = Instant::now();
+        let next = next_pings
+            .iter()
+            .min()
+            .copied()
+            .unwrap_or(now + live::INTERVAL);
+        std::thread::park_timeout(next.saturating_duration_since(now));
     }
 }

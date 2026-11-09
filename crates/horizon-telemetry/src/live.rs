@@ -126,9 +126,14 @@ pub fn fetch(endpoint: &str) -> Result<Count, String> {
 
 #[cfg(feature = "live")]
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(5))
-        .build()
+    let builder = ureq::AgentBuilder::new();
+    #[cfg(target_os = "cafe")]
+    let builder = builder
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(5));
+    #[cfg(not(target_os = "cafe"))]
+    let builder = builder.timeout(Duration::from_secs(5));
+    builder.build()
 }
 
 #[cfg(test)]

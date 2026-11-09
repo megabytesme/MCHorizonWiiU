@@ -230,13 +230,13 @@ pub fn delete_my_data() -> Result<String, String> {
     let home = home();
     let mut consent = Consent::load(&home);
     outbox::clear(&home).map_err(|e| e.to_string())?;
-    let remote = match horizon_telemetry::endpoint() {
+    let remote = match horizon_telemetry::endpoints() {
         _ if consent.install_id.is_empty() => "Nothing was ever sent from here.",
         None => {
             "Sending is turned off here (HORIZON_TELEMETRY_URL=off), so the server was not asked."
         }
-        Some(url) => {
-            upload::delete_remote(&url, &consent.install_id)
+        Some(endpoints) => {
+            upload::delete_remotes(&endpoints, &consent.install_id)
                 .map_err(|e| format!("The server could not be reached ({e}). Try again later."))?;
             "The server deleted everything sent from here."
         }
@@ -339,8 +339,8 @@ pub fn label(kind: Kind) -> &'static str {
 
 /// Sends what is waiting, if there is a server and the player allows it.
 pub fn send() -> Flush {
-    match horizon_telemetry::endpoint() {
-        Some(url) => upload::flush(&home(), &url),
+    match horizon_telemetry::endpoints() {
+        Some(endpoints) => upload::flush_endpoints(&home(), &endpoints),
         None => Flush::Nothing,
     }
 }
@@ -361,6 +361,7 @@ pub fn status_json() -> serde_json::Value {
         "install_id": consent.install_id,
         "waiting": outbox::pending(&home()).len(),
         "server": horizon_telemetry::endpoint(),
+        "servers": horizon_telemetry::endpoints(),
         "ping": PING,
     })
 }

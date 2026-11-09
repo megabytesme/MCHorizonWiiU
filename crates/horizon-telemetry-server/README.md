@@ -5,7 +5,7 @@ This server receives what players choose to send (performance summaries, crash a
     cargo run --release                     # in this folder: its own workspace, like the launcher's
     PORT=8080 HORIZON_TELEMETRY_DB=/data/telemetry.sqlite3 horizon-telemetry-server
 
-It runs at **https://telemetry.playhorizon.dev** (`DEFAULT_ENDPOINT` in `crates/horizon-telemetry`). The game and the launcher use it unless `HORIZON_TELEMETRY_URL` names another server, or is `off` (tests and automated runs send nothing).
+The primary server runs at **https://telemetry.playhorizon.dev** (`DEFAULT_ENDPOINT` in `crates/horizon-telemetry`). By default, the game and launcher mirror live pings and consented batch uploads to **https://horizontelemetry.bytesdirect.com** in the same reporting cycle; live-count reads still use the primary endpoint. `HORIZON_TELEMETRY_URL` replaces both defaults with one endpoint, while `HORIZON_TELEMETRY_URL=off` disables all sends (tests and automated runs).
 
 ## Endpoints
 
