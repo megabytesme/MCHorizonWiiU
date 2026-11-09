@@ -5,29 +5,43 @@
 //! duplicate events. Coordinates are calibrated at 1920×1080 and scaled to the
 //! actual physical DRC output viewport before Horizon applies GUI scaling.
 
-use horizon_client_platform::{ClientWindowEvent, KeyState, MouseButton, PhysicalPosition};
+use horizon_client_platform::{
+    ClientWindowEvent, KeyState, MouseButton, MouseScrollDelta, PhysicalPosition, TouchPhase,
+};
 
 use crate::{FreshTouchRelease, VpadState, VpadTouch};
 
 const CALIBRATED_WIDTH: f64 = 1920.0;
 const CALIBRATED_HEIGHT: f64 = 1080.0;
+const GESTURE_THRESHOLD: f64 = 12.0;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Gesture {
+    #[default]
+    Idle,
+    Pending,
+    Scrolling,
+    Moved,
+}
 
 /// Converts one physical GamePad contact into Horizon mouse events.
 pub struct TouchMapper {
-    captured: bool,
+    gesture: Gesture,
     focused: bool,
     suppress_until_release: bool,
     contact_seen: bool,
+    start_position: Option<PhysicalPosition<f64>>,
     last_position: Option<PhysicalPosition<f64>>,
 }
 
 impl Default for TouchMapper {
     fn default() -> Self {
         Self {
-            captured: false,
+            gesture: Gesture::Idle,
             focused: true,
             suppress_until_release: false,
             contact_seen: false,
+            start_position: None,
             last_position: None,
         }
     }
@@ -37,13 +51,13 @@ impl TouchMapper {
     /// Emit pointer events for the current cached VPAD state.
     ///
     /// `viewport` is the physical pixel size of the DRC render target (normally
-    /// 854×480). A contact with no valid point does not start a click. Once a
-    /// click starts, invalid coordinates and cached no-sample/busy state retain
-    /// capture and the last pointer position until a real release or reset.
-    /// After reset/focus loss, a contact already held must be physically
-    /// released before it can start another click. This freshness-free helper
-    /// never re-arms suppression; hardware hosts should use
-    /// [`Self::events_with_freshness`] and pass each poll's marker once.
+    /// 854×480). A contact with no valid point does not start a gesture. Short
+    /// contacts become taps on release; vertical gestures become wheel events.
+    /// Cached no-sample/busy state retains the last pointer position until a
+    /// real release or reset. After reset/focus loss, a held contact must be
+    /// physically released before it can start another gesture. This
+    /// freshness-free helper never re-arms suppression; hardware hosts should
+    /// use [`Self::events_with_freshness`] and pass each poll's marker once.
     pub fn events(&mut self, state: &VpadState, viewport: [u32; 2]) -> Vec<ClientWindowEvent> {
         self.events_with_freshness(state, viewport, None)
     }
@@ -86,7 +100,7 @@ impl TouchMapper {
                 // An inactive cache/reset is not evidence of a physical release.
                 self.suppress_until_release = true;
             }
-            return self.release();
+            return self.finish_contact();
         }
         self.contact_seen = true;
 
@@ -97,31 +111,62 @@ impl TouchMapper {
             return Vec::new();
         };
 
-        let mut events = Vec::with_capacity(2);
-        if !self.captured {
-            // The shared menu handler must receive the pointer position before
-            // its mouse press so hit testing uses the contact location.
-            events.push(cursor_event(position));
-            events.push(button_event(KeyState::Pressed));
-            self.captured = true;
-        } else if self.last_position != Some(position) {
-            events.push(cursor_event(position));
+        if self.gesture == Gesture::Idle {
+            self.gesture = Gesture::Pending;
+            self.start_position = Some(position);
+            self.last_position = Some(position);
+            return vec![cursor_event(position)];
+        }
+
+        let previous = self.last_position.unwrap_or(position);
+        if previous == position {
+            return Vec::new();
         }
         self.last_position = Some(position);
+
+        let mut events = Vec::with_capacity(3);
+        match self.gesture {
+            Gesture::Idle => unreachable!("a valid contact starts pending above"),
+            Gesture::Pending => {
+                let start = self.start_position.unwrap_or(previous);
+                let dx = position.x - start.x;
+                let dy = position.y - start.y;
+                if dy.abs() >= GESTURE_THRESHOLD && dy.abs() > dx.abs() {
+                    self.gesture = Gesture::Scrolling;
+                    // Emit the full displacement accumulated while the gesture
+                    // was undecided, so slow first movements are not lost.
+                    events.push(cursor_event(position));
+                    events.push(wheel_event(dy));
+                } else if dx.abs().max(dy.abs()) >= GESTURE_THRESHOLD {
+                    // Horizontal and diagonal movement is not a tap, but it is
+                    // not scrolling either. Keep it click-free so a swipe over
+                    // an actionable button cannot activate it.
+                    self.gesture = Gesture::Moved;
+                    events.push(cursor_event(position));
+                } else {
+                    events.push(cursor_event(position));
+                }
+            }
+            Gesture::Scrolling => {
+                events.push(cursor_event(position));
+                events.push(wheel_event(position.y - previous.y));
+            }
+            Gesture::Moved => events.push(cursor_event(position)),
+        }
         events
     }
 
-    /// Release a captured click on controller loss or host reset.
+    /// Cancel a pending tap on controller loss or host reset.
     ///
     /// Re-arming requires observing a physical release, preventing a held touch
     /// from becoming a fresh click after a reset.
     pub fn reset(&mut self, state: &VpadState) -> Vec<ClientWindowEvent> {
-        let was_captured = self.captured;
-        let events = self.release();
-        if was_captured || self.contact_seen || state.touch_active() {
+        let events = self.cancel_contact();
+        if self.contact_seen || state.touch_active() {
             self.suppress_until_release = true;
         }
         self.last_position = None;
+        self.start_position = None;
         events
     }
 
@@ -129,14 +174,14 @@ impl TouchMapper {
     /// until focus returns, and a contact held across the transition is ignored
     /// until it is physically released.
     pub fn focus_lost(&mut self, state: &VpadState) -> Vec<ClientWindowEvent> {
-        let was_captured = self.captured;
-        let events = self.release();
+        let events = self.cancel_contact();
         self.focused = false;
-        if state.touch_active() || was_captured || self.contact_seen {
+        if state.touch_active() || self.contact_seen {
             self.suppress_until_release = true;
             self.contact_seen = true;
         }
         self.last_position = None;
+        self.start_position = None;
         events
     }
 
@@ -149,6 +194,7 @@ impl TouchMapper {
             self.contact_seen = true;
         }
         self.last_position = None;
+        self.start_position = None;
     }
 
     fn observe_unfocused(&mut self, state: &VpadState) {
@@ -158,12 +204,27 @@ impl TouchMapper {
         }
     }
 
-    fn release(&mut self) -> Vec<ClientWindowEvent> {
-        if std::mem::take(&mut self.captured) {
-            vec![button_event(KeyState::Released)]
-        } else {
-            Vec::new()
-        }
+    fn finish_contact(&mut self) -> Vec<ClientWindowEvent> {
+        let events = match self.gesture {
+            Gesture::Pending => vec![
+                button_event(KeyState::Pressed),
+                button_event(KeyState::Released),
+            ],
+            Gesture::Scrolling | Gesture::Moved | Gesture::Idle => Vec::new(),
+        };
+        self.clear_gesture();
+        events
+    }
+
+    fn cancel_contact(&mut self) -> Vec<ClientWindowEvent> {
+        self.clear_gesture();
+        Vec::new()
+    }
+
+    fn clear_gesture(&mut self) {
+        self.gesture = Gesture::Idle;
+        self.start_position = None;
+        self.last_position = None;
     }
 }
 
@@ -186,6 +247,13 @@ fn button_event(state: KeyState) -> ClientWindowEvent {
     ClientWindowEvent::MouseInput {
         state,
         button: MouseButton::Left,
+    }
+}
+
+fn wheel_event(delta_y: f64) -> ClientWindowEvent {
+    ClientWindowEvent::MouseWheel {
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, delta_y)),
+        phase: TouchPhase::Moved,
     }
 }
 
@@ -224,44 +292,92 @@ mod tests {
     }
 
     #[test]
-    fn start_scales_to_drc_and_orders_cursor_before_press() {
+    fn start_scales_to_drc_without_activating_until_release() {
         let state = state(1, 1, 960, 540);
         let mut mapper = TouchMapper::default();
         assert_eq!(
             mapper.events(&state, [854, 480]),
-            vec![
-                cursor_event(PhysicalPosition::new(427.0, 240.0)),
-                button_event(KeyState::Pressed),
-            ]
+            vec![cursor_event(PhysicalPosition::new(427.0, 240.0))]
         );
     }
 
     #[test]
-    fn moves_only_on_position_change_and_real_release_ends_capture() {
+    fn short_contact_becomes_one_click_on_release() {
         let mut mapper = TouchMapper::default();
         let start = state(1, 1, 200, 300);
-        let _ = mapper.events(&start, [854, 480]);
+        assert_eq!(mapper.events(&start, [854, 480]).len(), 1);
         assert!(mapper.events(&start, [854, 480]).is_empty());
 
-        let moved = state(1, 1, 400, 600);
+        let moved = state(1, 1, 208, 308);
         assert_eq!(
             mapper.events(&moved, [854, 480]),
             vec![cursor_event(PhysicalPosition::new(
-                400.0 * 854.0 / 1920.0,
-                600.0 * 480.0 / 1080.0,
+                208.0 * 854.0 / 1920.0,
+                308.0 * 480.0 / 1080.0,
             ))]
         );
 
         let released = state(0, 0, 0, 0);
         assert_eq!(
             mapper.events(&released, [854, 480]),
-            vec![button_event(KeyState::Released)]
+            vec![
+                button_event(KeyState::Pressed),
+                button_event(KeyState::Released),
+            ]
         );
         assert!(mapper.events(&released, [854, 480]).is_empty());
     }
 
     #[test]
-    fn invalid_contact_defers_press_then_preserves_capture_until_release() {
+    fn vertical_swipe_emits_accumulated_wheel_delta_without_clicking() {
+        let mut mapper = TouchMapper::default();
+        let start = state(1, 1, 500, 500);
+        let _ = mapper.events(&start, [854, 480]);
+
+        let first = state(1, 1, 500, 520);
+        assert_eq!(mapper.events(&first, [854, 480]).len(), 1);
+
+        let threshold = state(1, 1, 500, 530);
+        let y0 = 500.0 * 480.0 / 1080.0;
+        let y1 = 530.0 * 480.0 / 1080.0;
+        assert_eq!(
+            mapper.events(&threshold, [854, 480]),
+            vec![
+                cursor_event(PhysicalPosition::new(500.0 * 854.0 / 1920.0, y1)),
+                wheel_event(y1 - y0),
+            ]
+        );
+
+        let continued = state(1, 1, 500, 550);
+        let y2 = 550.0 * 480.0 / 1080.0;
+        assert_eq!(
+            mapper.events(&continued, [854, 480]),
+            vec![
+                cursor_event(PhysicalPosition::new(500.0 * 854.0 / 1920.0, y2)),
+                wheel_event(y2 - y1),
+            ]
+        );
+        assert!(mapper.events(&state(0, 0, 0, 0), [854, 480]).is_empty());
+    }
+
+    #[test]
+    fn horizontal_swipe_cancels_tap_without_pressing_its_origin() {
+        let mut mapper = TouchMapper::default();
+        let start = state(1, 1, 500, 500);
+        let _ = mapper.events(&start, [854, 480]);
+        let moved = state(1, 1, 560, 500);
+        assert_eq!(
+            mapper.events(&moved, [854, 480]),
+            vec![cursor_event(PhysicalPosition::new(
+                560.0 * 854.0 / 1920.0,
+                500.0 * 480.0 / 1080.0,
+            ))]
+        );
+        assert!(mapper.events(&state(0, 0, 0, 0), [854, 480]).is_empty());
+    }
+
+    #[test]
+    fn invalid_contact_does_not_start_until_coordinates_are_valid() {
         let mut mapper = TouchMapper::default();
         let mut invalid_start = state(1, 0, 0, 0);
         assert!(mapper.events(&invalid_start, [854, 480]).is_empty());
@@ -273,7 +389,7 @@ mod tests {
             touch_y: 200,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&invalid_start, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&invalid_start, [854, 480]).len(), 1);
 
         // The VpadState retains the last valid point through invalid coordinates.
         invalid_start.update(Some(VpadSample {
@@ -284,25 +400,25 @@ mod tests {
         assert!(mapper.events(&invalid_start, [854, 480]).is_empty());
 
         // Cached state models no-sample/busy: identical repeated calls do not
-        // release the held click or synthesize extra moves.
+        // synthesize early taps or extra moves.
         assert!(mapper.events(&invalid_start, [854, 480]).is_empty());
         assert_eq!(
             mapper.events(&state(0, 0, 0, 0), [854, 480]),
-            vec![button_event(KeyState::Released)]
+            vec![
+                button_event(KeyState::Pressed),
+                button_event(KeyState::Released),
+            ]
         );
     }
 
     #[test]
-    fn zero_sized_viewport_defers_press_and_reset_releases_capture() {
+    fn zero_sized_viewport_defers_gesture_and_reset_cancels_pending_tap() {
         let mut mapper = TouchMapper::default();
         let contact = state(1, 1, 1919, 1079);
         assert!(mapper.events(&contact, [0, 480]).is_empty());
         assert!(mapper.events(&contact, [854, 0]).is_empty());
-        assert_eq!(mapper.events(&contact, [854, 480]).len(), 2);
-        assert_eq!(
-            mapper.reset(&contact),
-            vec![button_event(KeyState::Released)]
-        );
+        assert_eq!(mapper.events(&contact, [854, 480]).len(), 1);
+        assert!(mapper.reset(&contact).is_empty());
         assert!(mapper.reset(&contact).is_empty());
     }
 
@@ -310,7 +426,7 @@ mod tests {
     fn resize_repositions_an_active_contact_and_edges_clamp_inside_drc() {
         let mut mapper = TouchMapper::default();
         let contact = state(1, 1, 1919, 1079);
-        assert_eq!(mapper.events(&contact, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&contact, [854, 480]).len(), 1);
         assert_eq!(
             mapper.events(&contact, [1280, 720]),
             vec![cursor_event(PhysicalPosition::new(1279.0, 719.0))]
@@ -321,11 +437,8 @@ mod tests {
     fn held_contact_across_focus_loss_does_not_click_again_until_released() {
         let mut mapper = TouchMapper::default();
         let contact = state(1, 1, 250, 350);
-        assert_eq!(mapper.events(&contact, [854, 480]).len(), 2);
-        assert_eq!(
-            mapper.focus_lost(&contact),
-            vec![button_event(KeyState::Released)]
-        );
+        assert_eq!(mapper.events(&contact, [854, 480]).len(), 1);
+        assert!(mapper.focus_lost(&contact).is_empty());
 
         mapper.focus_gained(&contact);
         assert!(mapper.events(&contact, [854, 480]).is_empty());
@@ -336,7 +449,7 @@ mod tests {
             .events_with_freshness(&released, [854, 480], release)
             .is_empty());
         let next_contact = state(1, 1, 600, 700);
-        assert_eq!(mapper.events(&next_contact, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&next_contact, [854, 480]).len(), 1);
     }
 
     #[test]
@@ -353,7 +466,7 @@ mod tests {
         mapper.focus_gained(&released);
 
         let next_contact = state(1, 1, 600, 700);
-        assert_eq!(mapper.events(&next_contact, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&next_contact, [854, 480]).len(), 1);
     }
 
     #[test]
@@ -380,7 +493,7 @@ mod tests {
         assert!(mapper
             .events_with_freshness(&released_again, [854, 480], release_again)
             .is_empty());
-        assert_eq!(mapper.events(&held, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&held, [854, 480]).len(), 1);
     }
 
     #[test]
@@ -396,11 +509,8 @@ mod tests {
             touch_y: 350,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&vpad, [854, 480]).len(), 2);
-        assert_eq!(
-            mapper.focus_lost(&vpad),
-            vec![button_event(KeyState::Released)]
-        );
+        assert_eq!(mapper.events(&vpad, [854, 480]).len(), 1);
+        assert!(mapper.focus_lost(&vpad).is_empty());
 
         // A controller reset clears the cached held bit but is not a physical
         // release sample, so it must not re-arm the mapper.
@@ -425,7 +535,7 @@ mod tests {
             touch_y: 400,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&vpad, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&vpad, [854, 480]).len(), 1);
     }
 
     #[test]
@@ -440,11 +550,8 @@ mod tests {
             touch_y: 300,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&previous, [854, 480]).len(), 2);
-        assert_eq!(
-            mapper.focus_lost(&previous),
-            vec![button_event(KeyState::Released)]
-        );
+        assert_eq!(mapper.events(&previous, [854, 480]).len(), 1);
+        assert!(mapper.focus_lost(&previous).is_empty());
 
         // A new default state carries no one-shot release evidence.
         let mut replacement = VpadState::default();
@@ -465,21 +572,18 @@ mod tests {
             touch_y: 500,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&replacement, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&replacement, [854, 480]).len(), 1);
     }
 
     #[test]
-    fn reset_after_vpad_reset_keeps_capture_suppressed_until_fresh_release() {
+    fn reset_after_vpad_reset_keeps_tap_suppressed_until_fresh_release() {
         let mut mapper = TouchMapper::default();
         let contact = state(1, 1, 250, 350);
-        assert_eq!(mapper.events(&contact, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&contact, [854, 480]).len(), 1);
 
         let mut reset_vpad = contact;
         reset_vpad.reset();
-        assert_eq!(
-            mapper.reset(&reset_vpad),
-            vec![button_event(KeyState::Released)]
-        );
+        assert!(mapper.reset(&reset_vpad).is_empty());
         mapper.focus_gained(&reset_vpad);
         assert!(mapper.events(&reset_vpad, [854, 480]).is_empty());
 
@@ -494,7 +598,7 @@ mod tests {
             touch_y: 400,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&reset_vpad, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&reset_vpad, [854, 480]).len(), 1);
     }
 
     #[test]
@@ -521,6 +625,6 @@ mod tests {
             touch_y: 400,
             ..Default::default()
         }));
-        assert_eq!(mapper.events(&reset_vpad, [854, 480]).len(), 2);
+        assert_eq!(mapper.events(&reset_vpad, [854, 480]).len(), 1);
     }
 }
