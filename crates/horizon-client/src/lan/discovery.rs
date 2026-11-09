@@ -75,6 +75,12 @@ pub struct Pinger {
 impl Pinger {
     pub fn start(motd: String, port: u16) -> io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+        // Cafe's blocking nsysnet sendto can wait indefinitely in Cemu. Keep
+        // its announcement call nonblocking so a stalled network stack cannot
+        // prevent Pinger from being dropped; desktop sockets keep their usual
+        // blocking behavior.
+        #[cfg(target_os = "cafe")]
+        socket.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let message = ping_string(&motd, port);
@@ -83,7 +89,14 @@ impl Pinger {
             .spawn(move || {
                 let target = SocketAddr::V4(SocketAddrV4::new(GROUP, PORT));
                 while !flag.load(Ordering::Relaxed) {
-                    let _ = socket.send_to(message.as_bytes(), target);
+                    if let Err(error) = socket.send_to(message.as_bytes(), target)
+                        && error.kind() != io::ErrorKind::WouldBlock
+                    {
+                        crate::multiplayer::trace_cafe(format_args!(
+                            "LAN announcement send error kind={:?}",
+                            error.kind()
+                        ));
+                    }
                     let mut slept = Duration::ZERO;
                     while slept < INTERVAL && !flag.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(50));
