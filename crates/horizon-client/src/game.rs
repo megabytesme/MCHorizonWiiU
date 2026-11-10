@@ -22518,6 +22518,19 @@ impl Loading {
     ) {
         use horizon_client::gamepad::{Button, GlyphStyle};
 
+        #[cfg(target_os = "cafe")]
+        let trace_first_dispatch = {
+            static FIRST_PAD_DISPATCH_TRACE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            FIRST_PAD_DISPATCH_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_first_dispatch = false;
+
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch begin");
+        }
+
         if self
             .settings
             .controller
@@ -22528,31 +22541,67 @@ impl Loading {
         {
             state = state.by_letter();
         }
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch glyph remap complete");
+        }
         let changes = self
             .pad_edges
             .update(&state, self.settings.controller.trigger_threshold);
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch edge update complete");
+        }
         let viewport = self.viewport;
         let now = Instant::now();
         self.menu
             .pad_stick_scroll(state, &self.settings, now, viewport);
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch stick scroll complete");
+        }
         let stick_navigation = self.pad_stick_navigation_button(state, now);
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch stick navigation complete");
+        }
         if !self.settings.controller.enabled {
+            if trace_first_dispatch {
+                cafe_game_stage!("first pad dispatch controller disabled return");
+            }
             self.pad_edges.cancel();
             return;
         }
         if let Some(button) = stick_navigation {
+            if trace_first_dispatch {
+                cafe_game_stage!("first pad dispatch stick button begin");
+            }
             self.menu_pad_button(event_loop, button, true);
+            if trace_first_dispatch {
+                cafe_game_stage!("first pad dispatch stick button complete");
+            }
         }
         let mut back_dispatched = false;
         for (button, down) in changes {
+            if trace_first_dispatch {
+                cafe_game_stage!("first pad dispatch button edge begin");
+            }
             if matches!(button, Button::East | Button::Start) {
                 if down && !back_dispatched {
+                    if trace_first_dispatch {
+                        cafe_game_stage!("first pad dispatch escape begin");
+                    }
                     self.menu_pad_escape(event_loop);
+                    if trace_first_dispatch {
+                        cafe_game_stage!("first pad dispatch escape complete");
+                    }
                     back_dispatched = true;
                 }
             } else {
                 self.menu_pad_button(event_loop, button, down);
             }
+            if trace_first_dispatch {
+                cafe_game_stage!("first pad dispatch button edge complete");
+            }
+        }
+        if trace_first_dispatch {
+            cafe_game_stage!("first pad dispatch complete");
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas

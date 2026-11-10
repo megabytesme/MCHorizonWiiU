@@ -130,7 +130,12 @@ impl<'a> LoadingHost<'a> {
         unsafe { horizon_wiiu_app_is_running() != 0 }
     }
 
-    fn dispatch_touch(&mut self, session: &mut CafeLoadingSession, release: Option<horizon_wiiu_platform::FreshTouchRelease>) {
+    fn dispatch_touch(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        release: Option<horizon_wiiu_platform::FreshTouchRelease>,
+        trace: bool,
+    ) {
         if self.touch_blocked_until_release {
             if release.is_none() {
                 return;
@@ -138,21 +143,39 @@ impl<'a> LoadingHost<'a> {
             self.touch_blocked_until_release = false;
         }
         let mut dimensions = [0u32; 4];
+        if trace {
+            startup_report!("first touch dimensions query begin");
+        }
         // SAFETY: dimensions points to four writable u32 values; C queries
         // WHB's current TV/DRC targets synchronously.
         let result = unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) };
+        if trace {
+            startup_report!("first touch dimensions query complete");
+        }
         if result != 0 {
             self.failure = Some("WHB TV/DRC colour buffers are unavailable".into());
             return;
         }
         let viewport = [dimensions[2], dimensions[3]];
-        for event in self
+        if trace {
+            startup_report!("first touch event mapping begin");
+        }
+        let events = self
             .touch
-            .events_with_freshness(&self.vpad, viewport, release)
-        {
+            .events_with_freshness(&self.vpad, viewport, release);
+        if trace {
+            startup_report!("first touch event mapping complete");
+        }
+        for event in events {
+            if trace {
+                startup_report!("first touch event dispatch begin");
+            }
             // Dispatch each event immediately with the exact poll/release
             // evidence that produced it. Pointer position precedes press.
             session.dispatch_event(self, event);
+            if trace {
+                startup_report!("first touch event dispatch complete");
+            }
         }
     }
 
@@ -208,6 +231,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut trace_focus = true;
         let mut trace_poll = true;
         let mut trace_vpad = true;
+        let mut trace_pad_dispatch = true;
+        let mut trace_touch_dispatch = true;
+        let mut trace_input_failure_check = true;
         let mut trace_draw = true;
         loop {
             if !self.running() || self.control.get() == EventLoopControl::Exit {
@@ -264,6 +290,18 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 startup_report!("loading first VPAD sample complete");
                 trace_vpad = false;
             }
+            if trace_pad_dispatch {
+                log::info!(
+                    "Horizon: first Cafe pad sample fresh={} terminal_error={} buttons={:#010x} left={:?} right={:?} triggers={:?}",
+                    fresh_sample.is_some(),
+                    terminal_error,
+                    pad.buttons,
+                    pad.left,
+                    pad.right,
+                    pad.triggers
+                );
+                startup_report!("loading first pad dispatch begin");
+            }
             if terminal_error {
                 // Deliver neutral immediately to release any menu edge, but
                 // do not treat an error-created default as fresh rearm proof.
@@ -281,9 +319,30 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 // Horizon's typed menu path; no keyboard events are synthesized.
                 session.dispatch_pad_state(self, pad);
             }
-            self.dispatch_touch(session, fresh_release);
+            if trace_pad_dispatch {
+                startup_report!("loading first pad dispatch complete");
+                trace_pad_dispatch = false;
+            }
+            if trace_touch_dispatch {
+                startup_report!("loading first touch dispatch begin");
+            }
+            self.dispatch_touch(session, fresh_release, trace_touch_dispatch);
+            if trace_touch_dispatch {
+                startup_report!("loading first touch dispatch complete");
+                trace_touch_dispatch = false;
+            }
+            if trace_input_failure_check {
+                startup_report!("loading first input failure check begin");
+            }
             if self.failure.is_some() {
+                if trace_input_failure_check {
+                    startup_report!("loading first input failure detected");
+                }
                 break;
+            }
+            if trace_input_failure_check {
+                startup_report!("loading first input failure check complete");
+                trace_input_failure_check = false;
             }
 
             if trace_draw {

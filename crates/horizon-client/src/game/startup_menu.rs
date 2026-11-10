@@ -163,6 +163,19 @@ impl StartupMenu {
     ) -> Option<horizon_client::gamepad::Button> {
         use horizon_client::gamepad::Button;
 
+        #[cfg(target_os = "cafe")]
+        let trace_first_direction = {
+            static FIRST_PAD_DIRECTION_TRACE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            FIRST_PAD_DIRECTION_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_first_direction = false;
+
+        if trace_first_direction {
+            cafe_game_stage!("first pad direction begin");
+        }
+
         const INITIAL_REPEAT: Duration = Duration::from_millis(350);
         const REPEAT_INTERVAL: Duration = Duration::from_millis(120);
         const DIRECTION_HYSTERESIS: f32 = 0.12;
@@ -175,8 +188,17 @@ impl StartupMenu {
         ]
         .into_iter()
         .any(|button| state.held(button));
+        if trace_first_direction {
+            cafe_game_stage!("first pad direction dpad scan complete");
+        }
         let direction = if enabled && !dpad_held {
+            if trace_first_direction {
+                cafe_game_stage!("first pad direction radial begin");
+            }
             let [x, y] = horizon_client::gamepad::radial(state.left, deadzone);
+            if trace_first_direction {
+                cafe_game_stage!("first pad direction radial complete");
+            }
             let horizontal = if x == 0.0 {
                 false
             } else if y == 0.0 {
@@ -207,15 +229,24 @@ impl StartupMenu {
         } else {
             None
         };
+        if trace_first_direction {
+            cafe_game_stage!("first pad direction select complete");
+        }
 
         let Some(direction) = direction else {
             self.pad_navigation = None;
             self.pad_navigation_repeat_at = None;
+            if trace_first_direction {
+                cafe_game_stage!("first pad direction neutral return");
+            }
             return None;
         };
         if self.pad_navigation != Some(direction) {
             self.pad_navigation = Some(direction);
             self.pad_navigation_repeat_at = Some(now + INITIAL_REPEAT);
+            if trace_first_direction {
+                cafe_game_stage!("first pad direction initial repeat set");
+            }
             return Some(direction);
         }
         if self
@@ -223,7 +254,13 @@ impl StartupMenu {
             .is_some_and(|repeat_at| now >= repeat_at)
         {
             self.pad_navigation_repeat_at = Some(now + REPEAT_INTERVAL);
+            if trace_first_direction {
+                cafe_game_stage!("first pad direction repeat update");
+            }
             return Some(direction);
+        }
+        if trace_first_direction {
+            cafe_game_stage!("first pad direction no repeat return");
         }
         None
     }
@@ -997,16 +1034,42 @@ impl Loading {
         state: horizon_client::gamepad::PadState,
         now: Instant,
     ) -> Option<horizon_client::gamepad::Button> {
+        #[cfg(target_os = "cafe")]
+        let trace_first_navigation = {
+            static FIRST_PAD_NAVIGATION_TRACE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            FIRST_PAD_NAVIGATION_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_first_navigation = false;
+
+        if trace_first_navigation {
+            cafe_game_stage!("first pad navigation wrapper begin");
+        }
         let options_capturing = self.menu.options_open
             && (self.menu.options.selected_key.is_some()
                 || self.menu.options.selected_pad_action.is_some());
+        if trace_first_navigation {
+            cafe_game_stage!("first pad navigation options check complete");
+        }
         let enabled = self.settings.controller.enabled
             && self.gui.is_some()
             && self.menu.pending.is_none()
             && self.menu.win.is_none()
             && !options_capturing;
-        self.menu
-            .pad_stick_direction(state, self.settings.controller.move_deadzone, now, enabled)
+        if trace_first_navigation {
+            cafe_game_stage!("first pad navigation enabled check complete");
+        }
+        let direction = self.menu.pad_stick_direction(
+            state,
+            self.settings.controller.move_deadzone,
+            now,
+            enabled,
+        );
+        if trace_first_navigation {
+            cafe_game_stage!("first pad navigation direction call complete");
+        }
+        direction
     }
 
     /// Route the GamePad's Back/Menu controls through the same Escape handler

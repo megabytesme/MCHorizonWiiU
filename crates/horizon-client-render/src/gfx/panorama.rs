@@ -1,10 +1,35 @@
 //! Vanilla 26.3's CubeMapTexture and CubeMap, separate from the pixel-filtered GUI atlas.
-use crate::{Result, hud::decode_bytes};
+use crate::{
+    Result,
+    hud::{decode_bytes, decode_bytes_with_trace},
+};
 use glam::Mat4;
 mod wgpu_renderer;
 pub(super) use wgpu_renderer::Panorama;
 
 use std::{path::Path, sync::Mutex};
+
+macro_rules! cafe_panorama_stage {
+    ($trace:expr, $($arg:tt)*) => {{
+        #[cfg(target_os = "cafe")]
+        if $trace {
+            log::info!($($arg)*);
+        }
+    }};
+}
+
+fn first_cafe_panorama_trace() -> bool {
+    #[cfg(target_os = "cafe")]
+    {
+        static FIRST_PANORAMA_TRACE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(true);
+        FIRST_PANORAMA_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        false
+    }
+}
 
 /// Native cube order: +X, -X, +Y, -Y, +Z, -Z (CubeMapTexture.SUFFIXES).
 const FACE_ORDER: [u8; 6] = [1, 3, 5, 4, 0, 2];
@@ -33,13 +58,27 @@ impl Faces {
     /// falls back to the grey placeholder that an installation without the
     /// imported panorama shows.
     pub fn load(root: &Path, defaults: &Path) -> Self {
-        Self::try_load(root, defaults).unwrap_or_else(|error| {
-            log::warn!(
-                "Horizon: no title panorama ({error}); prepare the game again in the launcher \
+        #[allow(unused_variables)]
+        let trace = first_cafe_panorama_trace();
+        cafe_panorama_stage!(trace, "Horizon panorama: first load begin");
+        match Self::try_load(root, defaults, trace) {
+            Ok(faces) => {
+                cafe_panorama_stage!(
+                    trace,
+                    "Horizon panorama: all faces loaded size={}",
+                    faces.size
+                );
+                faces
+            }
+            Err(error) => {
+                cafe_panorama_stage!(trace, "Horizon panorama: face loading failed");
+                log::warn!(
+                    "Horizon: no title panorama ({error}); prepare the game again in the launcher \
                  (or run horizon-prepare panorama)"
-            );
-            Self::colour([96, 110, 111, 255])
-        })
+                );
+                Self::colour([96, 110, 111, 255])
+            }
+        }
     }
 
     /// A one-texel cube of one colour.
@@ -52,12 +91,22 @@ impl Faces {
         }
     }
 
-    fn try_load(root: &Path, defaults: &Path) -> Result<Self> {
+    fn try_load(
+        root: &Path,
+        defaults: &Path,
+        #[allow(unused_variables)] trace: bool,
+    ) -> Result<Self> {
         let mut size = 0;
         let mut files = Vec::with_capacity(FACE_ORDER.len());
         let mut texels = Vec::new();
         for face in FACE_ORDER {
-            let (path, file, (w, h, data)) = load_face(root, defaults, face)?;
+            cafe_panorama_stage!(trace, "Horizon panorama: face {face} begin");
+            let (path, file, (w, h, data)) = load_face(root, defaults, face, trace)?;
+            cafe_panorama_stage!(
+                trace,
+                "Horizon panorama: face {face} read and decode complete bytes={} dimensions={w}x{h}",
+                file.len()
+            );
             if w != h || (size != 0 && w != size) {
                 return Err(format!(
                     "{}: panorama faces must be equally sized squares",
@@ -71,7 +120,9 @@ impl Faces {
                 texels.extend_from_slice(row);
             }
             files.push(file);
+            cafe_panorama_stage!(trace, "Horizon panorama: face {face} row copy complete");
         }
+        cafe_panorama_stage!(trace, "Horizon panorama: face loop complete");
         // Decoded once here to check them, and kept for the first cube.
         Ok(Self {
             size,
@@ -141,6 +192,7 @@ fn load_face(
     root: &Path,
     defaults: &Path,
     face: u8,
+    #[allow(unused_variables)] trace: bool,
 ) -> Result<(std::path::PathBuf, Vec<u8>, (u32, u32, Vec<u8>))> {
     let name = format!("panorama_{face}.png");
     let mut tried: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -150,15 +202,33 @@ fn load_face(
         if tried.first().is_some_and(|(seen, _)| *seen == path) {
             continue;
         }
-        let read = std::fs::read(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|file| {
-                let image = decode_bytes(&file).map_err(|e| e.to_string())?;
-                Ok((file, image))
-            });
-        match read {
-            Ok((file, image)) => return Ok((path, file, image)),
-            Err(error) => tried.push((path, error)),
+        cafe_panorama_stage!(trace, "Horizon panorama: face {face} read begin");
+        match std::fs::read(&path) {
+            Ok(file) => {
+                cafe_panorama_stage!(
+                    trace,
+                    "Horizon panorama: face {face} read complete bytes={}",
+                    file.len()
+                );
+                cafe_panorama_stage!(trace, "Horizon panorama: face {face} decode begin");
+                match decode_bytes_with_trace(&file, trace).map_err(|e| e.to_string()) {
+                    Ok(image) => {
+                        cafe_panorama_stage!(
+                            trace,
+                            "Horizon panorama: face {face} decode complete"
+                        );
+                        return Ok((path, file, image));
+                    }
+                    Err(error) => {
+                        cafe_panorama_stage!(trace, "Horizon panorama: face {face} decode failed");
+                        tried.push((path, error));
+                    }
+                }
+            }
+            Err(error) => {
+                cafe_panorama_stage!(trace, "Horizon panorama: face {face} read failed");
+                tried.push((path, error.to_string()));
+            }
         }
     }
     let tried: Vec<String> = tried

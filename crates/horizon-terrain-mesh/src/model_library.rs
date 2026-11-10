@@ -52,7 +52,10 @@ impl ParsedModels {
     /// Every `models/**.json` of a namespace directory, by identifier.
     pub fn load(root: &Path) -> Self {
         cafe_model_stage!("Horizon model library: enumeration begin");
-        let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
+        cafe_model_stage!("Horizon model library: assets namespace read_dir begin");
+        let namespaces = fs::read_dir(root.join("assets"));
+        cafe_model_stage!("Horizon model library: assets namespace read_dir returned");
+        let Ok(namespaces) = namespaces else {
             cafe_model_stage!("Horizon model library: assets directory unavailable");
             return Self {
                 root: root.to_owned(),
@@ -64,7 +67,18 @@ impl ParsedModels {
         let mut files = Vec::new();
         #[cfg(target_os = "cafe")]
         let mut directories = 0usize;
+        #[cfg(target_os = "cafe")]
+        let mut first_namespace = true;
+        #[cfg(target_os = "cafe")]
+        let mut first_models_read_dir = true;
+        #[cfg(target_os = "cafe")]
+        let mut enumerated_entries = 0usize;
         for ns in namespaces.flatten() {
+            #[cfg(target_os = "cafe")]
+            if first_namespace {
+                log::info!("Horizon model library: first assets namespace yielded");
+                first_namespace = false;
+            }
             let namespace = ns.file_name().to_string_lossy().into_owned();
             let base = ns.path().join("models");
             let mut stack = vec![base.clone()];
@@ -79,10 +93,37 @@ impl ParsedModels {
                         );
                     }
                 }
-                let Ok(entries) = fs::read_dir(&dir) else {
+                #[cfg(target_os = "cafe")]
+                if first_models_read_dir {
+                    log::info!("Horizon model library: first models read_dir begin");
+                }
+                let entries = fs::read_dir(&dir);
+                #[cfg(target_os = "cafe")]
+                if first_models_read_dir {
+                    if entries.is_ok() {
+                        log::info!("Horizon model library: first models read_dir complete");
+                    } else {
+                        log::info!("Horizon model library: first models read_dir failed");
+                    }
+                    first_models_read_dir = false;
+                }
+                let Ok(entries) = entries else {
                     continue;
                 };
                 for e in entries.flatten() {
+                    #[cfg(target_os = "cafe")]
+                    {
+                        enumerated_entries += 1;
+                        if enumerated_entries == 1 {
+                            log::info!("Horizon model library: first models-tree entry yielded");
+                        }
+                        if enumerated_entries % 512 == 0 {
+                            log::info!(
+                                "Horizon model library: enumerated entries={enumerated_entries} files={}",
+                                files.len()
+                            );
+                        }
+                    }
                     let path = e.path();
                     // The entry's own type saves a stat per file; a link
                     // (content roots link into the base) is followed.

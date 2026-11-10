@@ -7,6 +7,15 @@ use std::{
 
 use horizon_client_core::Result;
 
+macro_rules! cafe_image_stage {
+    ($trace:expr, $($arg:tt)*) => {{
+        #[cfg(target_os = "cafe")]
+        if $trace {
+            log::info!($($arg)*);
+        }
+    }};
+}
+
 /// `TextureMetadataSection`'s `blur` and `clamp`: how vanilla samples a
 /// standalone texture (`ReloadableTexture.setSampler`: linear rather than
 /// nearest filtering, clamp-to-edge rather than repeat addressing).
@@ -35,14 +44,40 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
 
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    decode_bytes_with_trace(data, false)
+}
+
+/// Decode a PNG while tracing its first Cafe caller's decoder stages.
+#[doc(hidden)]
+pub fn decode_bytes_with_trace(
+    data: &[u8],
+    #[allow(unused_variables)] trace: bool,
+) -> Result<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    cafe_image_stage!(trace, "Horizon PNG: read_info begin bytes={}", data.len());
     let mut reader = decoder.read_info()?;
-    let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
+    cafe_image_stage!(trace, "Horizon PNG: read_info complete");
+    let output_size = reader.output_buffer_size().ok_or("image too large")?;
+    cafe_image_stage!(
+        trace,
+        "Horizon PNG: output buffer size complete bytes={output_size}"
+    );
+    let mut bytes = vec![0; output_size];
+    cafe_image_stage!(trace, "Horizon PNG: output buffer allocation complete");
+    cafe_image_stage!(trace, "Horizon PNG: next_frame begin");
     let info = reader.next_frame(&mut bytes)?;
+    cafe_image_stage!(
+        trace,
+        "Horizon PNG: next_frame complete dimensions={}x{} bytes={}",
+        info.width,
+        info.height,
+        info.buffer_size()
+    );
     let channels = info.color_type.samples();
     let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
+    cafe_image_stage!(trace, "Horizon PNG: RGBA expansion begin");
     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
         rgba.extend(match channels {
             4 => [p[0], p[1], p[2], p[3]],
@@ -51,6 +86,11 @@ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
             _ => [p[0], p[0], p[0], 255],
         });
     }
+    cafe_image_stage!(
+        trace,
+        "Horizon PNG: RGBA expansion complete pixels={}",
+        rgba.len() / 4
+    );
     Ok((info.width, info.height, rgba))
 }
 
@@ -94,23 +134,107 @@ pub fn png_size(path: &Path) -> Option<(u32, u32)> {
     png_bytes_size(&horizon_core::prepared_files::read_head(path, 24).ok()?)
 }
 pub fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    walk_inner(dir, out, false, &mut WalkProgress::default());
+}
+
+/// Walk one texture subtree while reporting bounded Cafe progress markers.
+#[doc(hidden)]
+pub fn walk_with_trace(dir: &Path, out: &mut Vec<PathBuf>, trace: bool) {
+    walk_inner(dir, out, trace, &mut WalkProgress::default());
+}
+
+#[derive(Default)]
+struct WalkProgress {
+    directories: usize,
+    entries: usize,
+}
+
+fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut WalkProgress) {
+    progress.directories += 1;
+    let directory = progress.directories;
+    let detailed_directory = trace && (directory <= 32 || directory % 64 == 0);
+    cafe_image_stage!(
+        detailed_directory,
+        "Horizon texture walk: directory begin index={directory} path={}",
+        dir.display()
+    );
     // A prepared root's folder: from its data file, without listing the disk.
-    if let Some(files) = horizon_core::prepared_files::files_under(dir) {
+    cafe_image_stage!(
+        detailed_directory,
+        "Horizon texture walk: prepared files lookup begin index={directory} path={}",
+        dir.display()
+    );
+    let prepared_files = horizon_core::prepared_files::files_under(dir);
+    cafe_image_stage!(
+        detailed_directory,
+        "Horizon texture walk: prepared files lookup complete index={directory} found={}",
+        prepared_files.is_some()
+    );
+    if let Some(files) = prepared_files {
+        let before = out.len();
         out.extend(
             files
                 .iter()
                 .filter(|file| file.ends_with(".png"))
                 .map(|file| dir.join(file)),
         );
+        cafe_image_stage!(
+            detailed_directory,
+            "Horizon texture walk: prepared texture entries complete index={directory} added={}",
+            out.len() - before
+        );
         return;
     }
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+    cafe_image_stage!(
+        detailed_directory,
+        "Horizon texture walk: read_dir begin index={directory} path={}",
+        dir.display()
+    );
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => {
+            cafe_image_stage!(
+                detailed_directory,
+                "Horizon texture walk: read_dir returned index={directory}"
+            );
+            entries
+        }
+        Err(error) => {
+            cafe_image_stage!(
+                detailed_directory,
+                "Horizon texture walk: read_dir failed index={directory} error={error}"
+            );
+            return;
+        }
     };
     for entry in entries.flatten() {
+        progress.entries += 1;
+        let entry_index = progress.entries;
+        if entry_index == 1 {
+            cafe_image_stage!(
+                trace,
+                "Horizon texture walk: first filesystem entry yielded directory_index={directory}"
+            );
+        } else if trace && entry_index % 512 == 0 {
+            cafe_image_stage!(
+                trace,
+                "Horizon texture walk: filesystem progress entries={entry_index} directories={}",
+                progress.directories
+            );
+        }
         let path = entry.path();
-        if path.is_dir() {
-            walk(&path, out);
+        let is_first_entry = entry_index == 1;
+        cafe_image_stage!(
+            is_first_entry,
+            "Horizon texture walk: first entry metadata begin path={}",
+            path.display()
+        );
+        let is_directory = path.is_dir();
+        cafe_image_stage!(
+            is_first_entry,
+            "Horizon texture walk: first entry metadata complete is_directory={is_directory}"
+        );
+        if is_directory {
+            walk_inner(&path, out, trace, progress);
         } else if path.extension().is_some_and(|e| e == "png") {
             out.push(path);
         }
