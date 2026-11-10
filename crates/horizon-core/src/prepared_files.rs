@@ -28,6 +28,16 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
+#[cfg(target_os = "cafe")]
+macro_rules! prepared_trace {
+    ($($arg:tt)*) => { log::info!($($arg)*) };
+}
+
+#[cfg(not(target_os = "cafe"))]
+macro_rules! prepared_trace {
+    ($($arg:tt)*) => {{}};
+}
+
 /// The file, in the prepared folder's root.
 pub const FILE_NAME: &str = "horizon-data.bin";
 /// The file it checks its preparation against.
@@ -106,16 +116,27 @@ impl PreparedFiles {
     fn open(root: &Path) -> io::Result<Option<Self>> {
         let path = root.join(FILE_NAME);
         // A mirror's link to another root's file.
-        if fs::symlink_metadata(&path)?.file_type().is_symlink() {
+        prepared_trace!(
+            "Horizon prepared files: symlink check begin root={}",
+            root.display()
+        );
+        let metadata = fs::symlink_metadata(&path)?;
+        prepared_trace!("Horizon prepared files: symlink check complete");
+        if metadata.file_type().is_symlink() {
             return Ok(None);
         }
+        prepared_trace!("Horizon prepared files: file open begin");
         let mut file = File::open(&path)?;
+        prepared_trace!("Horizon prepared files: file open complete");
         let size = file.metadata()?.len();
+        prepared_trace!("Horizon prepared files: header read begin size={size}");
         let mut header = [0; HEADER];
         file.read_exact(&mut header)?;
+        prepared_trace!("Horizon prepared files: header read complete");
         let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
         let u64_at = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
         if header[..8] != MAGIC || u32_at(8) != VERSION {
+            prepared_trace!("Horizon prepared files: header rejected");
             return Ok(None);
         }
         let (count, root_len, source_len, pool_len) =
@@ -123,22 +144,41 @@ impl PreparedFiles {
         let index_len = count * ENTRY as u64;
         let index_end = HEADER as u64 + pad(root_len) + pad(source_len) + index_len + pad(pool_len);
         if index_end > size {
+            prepared_trace!(
+                "Horizon prepared files: index bounds rejected end={index_end} size={size}"
+            );
             return Ok(None);
         }
+        prepared_trace!(
+            "Horizon prepared files: index read begin count={count} bytes={}",
+            index_end - HEADER as u64
+        );
         let mut index = vec![0; (index_end - HEADER as u64) as usize];
         file.read_exact(&mut index)?;
+        prepared_trace!("Horizon prepared files: index read complete");
         let (written_root, rest) = index.split_at(pad(root_len) as usize);
         let (source, rest) = rest.split_at(pad(source_len) as usize);
         let (raw_entries, pool) = rest.split_at(index_len as usize);
-        if written_root[..root_len as usize]
-            != *fs::canonicalize(root)?.as_os_str().as_encoded_bytes()
-            || source[..source_len as usize] != *fs::read(root.join(SOURCE))?
-        {
+        prepared_trace!("Horizon prepared files: root validation begin");
+        let root_matches = written_root[..root_len as usize]
+            == *fs::canonicalize(root)?.as_os_str().as_encoded_bytes();
+        prepared_trace!("Horizon prepared files: root validation complete matches={root_matches}");
+        if !root_matches {
             return Ok(None);
         }
+        prepared_trace!("Horizon prepared files: source validation begin");
+        let source_matches = source[..source_len as usize] == *fs::read(root.join(SOURCE))?;
+        prepared_trace!(
+            "Horizon prepared files: source validation complete matches={source_matches}"
+        );
+        if !source_matches {
+            return Ok(None);
+        }
+        prepared_trace!("Horizon prepared files: name pool parse begin bytes={pool_len}");
         let Ok(names) = std::str::from_utf8(&pool[..pool_len as usize]) else {
             return Ok(None);
         };
+        prepared_trace!("Horizon prepared files: entry parse begin count={count}");
         let entries: Box<[Entry]> = raw_entries
             .chunks_exact(ENTRY)
             .map(|e| {
@@ -159,6 +199,10 @@ impl PreparedFiles {
             entries,
         };
         // Every name in the pool, in strict order; every file's bytes inside the file.
+        prepared_trace!(
+            "Horizon prepared files: entry validation begin count={}",
+            files.entries.len()
+        );
         let mut last: Option<&str> = None;
         for e in files.entries.iter() {
             let (at, len) = (e.name.0 as usize, e.name.1 as usize);
@@ -173,19 +217,38 @@ impl PreparedFiles {
             }
             last = name;
         }
+        prepared_trace!("Horizon prepared files: entry validation complete");
         Ok(Some(files))
     }
 }
 
 /// `root`'s file, opened once per process; `None` when it has no usable one.
 pub fn open(root: &Path) -> Option<Arc<PreparedFiles>> {
+    open_with_trace(root, false)
+}
+
+fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>> {
     type Opened = Vec<(PathBuf, Option<Arc<PreparedFiles>>)>;
     static OPENED: Mutex<Opened> = Mutex::new(Vec::new());
+    if trace_lock {
+        prepared_trace!(
+            "Horizon prepared files: cache lock wait begin root={}",
+            root.display()
+        );
+    }
     let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
+    if trace_lock {
+        prepared_trace!("Horizon prepared files: cache lock acquired");
+    }
     if let Some((_, files)) = opened.iter().find(|(r, _)| r == root) {
+        if trace_lock {
+            prepared_trace!("Horizon prepared files: cache hit");
+        }
         return files.clone();
     }
+    prepared_trace!("Horizon prepared files: cache miss root={}", root.display());
     let files = if std::env::var_os("HORIZON_NO_DATA_FILE").is_some() {
+        prepared_trace!("Horizon prepared files: disabled by environment");
         None
     } else {
         match PreparedFiles::open(root) {
@@ -204,13 +267,46 @@ pub fn open(root: &Path) -> Option<Arc<PreparedFiles>> {
 /// The file holding `path` (a file or folder under a prepared root) and
 /// `path` from that root; `None` when no root above it has a usable file.
 pub fn find(path: &Path) -> Option<(Arc<PreparedFiles>, String)> {
-    path.ancestors().skip(1).find_map(|root| {
+    find_with_trace(path, false)
+}
+
+fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, String)> {
+    if trace_lock {
+        prepared_trace!("Horizon prepared files: traced ancestor search begin");
+    }
+    let mut index = 0;
+    let found = path.ancestors().skip(1).find_map(|root| {
+        let candidate_index = index;
+        if trace_lock {
+            prepared_trace!(
+                "Horizon prepared files: traced ancestor candidate index={candidate_index}"
+            );
+            index += 1;
+        }
         // Only a root holding one of the folders: no lookup for other paths.
         let rel = path.strip_prefix(root).ok()?;
         let rel = rel.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
         holds_folder(&rel).then_some(())?;
-        Some((open(root)?, rel))
-    })
+        if trace_lock {
+            prepared_trace!(
+                "Horizon prepared files: traced ancestor matched index={candidate_index}"
+            );
+        }
+        let files = open_with_trace(root, trace_lock)?;
+        if trace_lock {
+            prepared_trace!(
+                "Horizon prepared files: traced ancestor open complete index={candidate_index}"
+            );
+        }
+        Some((files, rel))
+    });
+    if trace_lock {
+        prepared_trace!(
+            "Horizon prepared files: traced ancestor search complete found={}",
+            found.is_some()
+        );
+    }
+    found
 }
 
 /// `path`'s bytes: from its prepared root's data file when that holds it,
@@ -231,14 +327,39 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
 /// without listing the disk: empty when it holds none there. `None` when no
 /// data file holds `dir` (walk the folder).
 pub fn files_under(dir: &Path) -> Option<Vec<String>> {
-    let (files, rel) = find(dir)?;
+    #[cfg(target_os = "cafe")]
+    static TRACE_FIRST_LIST: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(true);
+    #[cfg(target_os = "cafe")]
+    let trace = TRACE_FIRST_LIST.swap(false, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "cafe"))]
+    let trace = false;
+    if trace {
+        prepared_trace!(
+            "Horizon prepared files: first directory listing begin path={}",
+            dir.display()
+        );
+        prepared_trace!("Horizon prepared files: first directory listing find begin");
+    }
+    let Some((files, rel)) = find_with_trace(dir, trace) else {
+        if trace {
+            prepared_trace!(
+                "Horizon prepared files: first directory listing has no prepared-file source"
+            );
+        }
+        return None;
+    };
     let names = files.list(&rel).unwrap_or_default();
-    Some(
+    let result = Some(
         names
             .into_iter()
             .map(|name| name[rel.len() + 1..].to_owned())
             .collect(),
-    )
+    );
+    if trace {
+        prepared_trace!("Horizon prepared files: first directory listing complete");
+    }
+    result
 }
 
 /// At most the first `max` bytes of `path`, from where [`read`] takes them:
