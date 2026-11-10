@@ -270,43 +270,111 @@ pub fn find(path: &Path) -> Option<(Arc<PreparedFiles>, String)> {
     find_with_trace(path, false)
 }
 
+#[cfg(target_os = "cafe")]
 fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, String)> {
+    // Cafe's Path::ancestors stalls while producing the first parent of the
+    // title resource path. Scan string prefixes here; other targets keep the
+    // original Path-based lookup below.
     if trace_lock {
-        prepared_trace!("Horizon prepared files: traced ancestor search begin");
+        prepared_trace!("Horizon prepared files: Cafe root-prefix scan begin");
     }
+    let text = path.to_str()?;
+    let mut end = text.len();
     let mut index = 0;
-    let found = path.ancestors().skip(1).find_map(|root| {
-        let candidate_index = index;
+    while let Some(separator) = text[..end].rfind(std::path::MAIN_SEPARATOR) {
+        let root_end = if separator == 0 { 1 } else { separator };
+        let root = Path::new(&text[..root_end]);
         if trace_lock {
-            prepared_trace!(
-                "Horizon prepared files: traced ancestor candidate index={candidate_index}"
-            );
+            prepared_trace!("Horizon prepared files: Cafe separator candidate index={index}");
+        }
+        let suffix = &text[separator + 1..];
+        if cafe_holds_folder(suffix) {
+            let rel = cafe_relative(suffix);
+            if trace_lock {
+                prepared_trace!(
+                    "Horizon prepared files: Cafe separator candidate matched index={index}"
+                );
+            }
+            if let Some(files) = open_with_trace(root, trace_lock) {
+                if trace_lock {
+                    prepared_trace!(
+                        "Horizon prepared files: Cafe separator candidate opened index={index}"
+                    );
+                }
+                return Some((files, rel));
+            }
+        }
+        if trace_lock {
             index += 1;
         }
+        end = separator;
+    }
+    // A relative path's final ancestor is the empty path; preserve that lookup.
+    if !text.starts_with(std::path::MAIN_SEPARATOR) {
+        if trace_lock {
+            prepared_trace!(
+                "Horizon prepared files: Cafe separator candidate index={index} root=empty"
+            );
+        }
+        if cafe_holds_folder(text) {
+            let rel = cafe_relative(text);
+            if trace_lock {
+                prepared_trace!(
+                    "Horizon prepared files: Cafe separator candidate matched index={index}"
+                );
+            }
+            if let Some(files) = open_with_trace(Path::new(""), trace_lock) {
+                if trace_lock {
+                    prepared_trace!(
+                        "Horizon prepared files: Cafe separator candidate opened index={index}"
+                    );
+                }
+                return Some((files, rel));
+            }
+        }
+    }
+    if trace_lock {
+        prepared_trace!("Horizon prepared files: Cafe root-prefix scan complete without source");
+    }
+    None
+}
+
+#[cfg(target_os = "cafe")]
+fn cafe_holds_folder(path: &str) -> bool {
+    let mut components = path
+        .split(std::path::MAIN_SEPARATOR)
+        .filter(|component| !component.is_empty() && *component != ".");
+    match components.next() {
+        Some("assets" | "data") => true,
+        Some("worldgen") => components.next() == Some("structure"),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "cafe")]
+fn cafe_relative(path: &str) -> String {
+    let mut relative = String::with_capacity(path.len());
+    for component in path.split(std::path::MAIN_SEPARATOR) {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if !relative.is_empty() {
+            relative.push('/');
+        }
+        relative.push_str(component);
+    }
+    relative
+}
+
+#[cfg(not(target_os = "cafe"))]
+fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, String)> {
+    path.ancestors().skip(1).find_map(|root| {
         // Only a root holding one of the folders: no lookup for other paths.
         let rel = path.strip_prefix(root).ok()?;
         let rel = rel.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
         holds_folder(&rel).then_some(())?;
-        if trace_lock {
-            prepared_trace!(
-                "Horizon prepared files: traced ancestor matched index={candidate_index}"
-            );
-        }
-        let files = open_with_trace(root, trace_lock)?;
-        if trace_lock {
-            prepared_trace!(
-                "Horizon prepared files: traced ancestor open complete index={candidate_index}"
-            );
-        }
-        Some((files, rel))
-    });
-    if trace_lock {
-        prepared_trace!(
-            "Horizon prepared files: traced ancestor search complete found={}",
-            found.is_some()
-        );
-    }
-    found
+        Some((open_with_trace(root, trace_lock)?, rel))
+    })
 }
 
 /// `path`'s bytes: from its prepared root's data file when that holds it,
