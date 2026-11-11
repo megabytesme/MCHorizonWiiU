@@ -103,7 +103,7 @@ pub const PACK_ICON_SIZE: u32 = 128;
 pub const TRIM_SLOTS: usize = 32;
 #[cfg(test)]
 use horizon_client_font::image::within_budget;
-use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk};
+use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk_with_trace};
 pub use horizon_client_font::image::{decode, decode_bytes, decode_bytes_with_trace};
 /// The image formats [`decode_image_bytes`] reads, told apart by their own
 /// leading bytes rather than by a file name: what a server sends has no name,
@@ -708,7 +708,24 @@ impl HudAtlas {
     pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
         let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
 
+        #[cfg(target_os = "cafe")]
+        let trace = {
+            static FIRST_ATLAS_SHADER_TRACE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            FIRST_ATLAS_SHADER_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace = false;
+        #[cfg(target_os = "cafe")]
+        if trace {
+            log::info!(target: "horizon.atlas", "Horizon atlas: text shader load begin");
+        }
         atlas.text_shader = pack_text::load(root, defaults);
+        #[cfg(target_os = "cafe")]
+        if trace {
+            log::info!(target: "horizon.atlas", "Horizon atlas: text shader load complete");
+            log::info!(target: "horizon.atlas", "Horizon atlas: line shader load begin");
+        }
 
         atlas.lines_shader = pack_text::load_core(
             root,
@@ -717,6 +734,10 @@ impl HudAtlas {
             &[],
             &crate::core_lines_glue::GLUE,
         );
+        #[cfg(target_os = "cafe")]
+        if trace {
+            log::info!(target: "horizon.atlas", "Horizon atlas: line shader load complete");
+        }
 
         Ok(atlas)
     }
@@ -966,13 +987,31 @@ impl HudAtlas {
         full: bool,
         mod_image: bool,
     ) -> Result<Self> {
+        #[cfg(target_os = "cafe")]
+        let trace = {
+            static FIRST_ATLAS_TRACE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            FIRST_ATLAS_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace = false;
+        #[allow(unused_variables)]
+        macro_rules! atlas_stage {
+            ($($arg:tt)*) => {{
+                #[cfg(target_os = "cafe")]
+                if trace {
+                    log::info!(target: "horizon.atlas", $($arg)*);
+                }
+            }};
+        }
+        atlas_stage!("Horizon atlas: pack begin full={full}");
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
         let mut files = Vec::new();
         for folder in folders {
             let folder_path = textures.join(folder);
-            walk(&folder_path, &mut files);
+            walk_with_trace(&folder_path, &mut files, trace);
         }
         // Content mods' entity textures: their equipment assets name them as
         // `<ns>:<path>`, and native mods draw their block entities with them
@@ -982,9 +1021,10 @@ impl HudAtlas {
         for folder in ["entity", "mob_effect"] {
             if folders.contains(&folder) {
                 for namespace in &namespaces {
-                    walk(
+                    walk_with_trace(
                         &root.join(format!("assets/{namespace}/textures/{folder}")),
                         &mut files,
+                        trace,
                     );
                 }
             }
@@ -997,7 +1037,7 @@ impl HudAtlas {
         {
             for ns in namespaces.flatten() {
                 if ns.file_name() != "minecraft" {
-                    walk(&ns.path().join("textures/particle"), &mut files);
+                    walk_with_trace(&ns.path().join("textures/particle"), &mut files, trace);
                 }
             }
         }
@@ -1005,10 +1045,11 @@ impl HudAtlas {
         if full && let Ok(namespaces) = fs::read_dir(&assets) {
             for ns in namespaces.flatten() {
                 if ns.file_name() != "minecraft" {
-                    walk(&ns.path().join("textures/gui"), &mut files);
+                    walk_with_trace(&ns.path().join("textures/gui"), &mut files, trace);
                 }
             }
         }
+        atlas_stage!("Horizon atlas: texture walk complete pngs={}", files.len());
         files.retain(|p| {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("presets")
@@ -1016,18 +1057,28 @@ impl HudAtlas {
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).
         let random_textures = if folders.contains(&"entity") {
-            horizon_optifine::random_textures::RandomTextures::scan(root)
+            atlas_stage!("Horizon atlas: RandomTextures::scan begin");
+            let result = horizon_optifine::random_textures::RandomTextures::scan(root);
+            atlas_stage!("Horizon atlas: RandomTextures::scan complete");
+            result
         } else {
             Default::default()
         };
         let blinks = if folders.contains(&"entity") {
-            horizon_optifine::blink::Blinks::scan(root, &random_textures)
+            atlas_stage!("Horizon atlas: Blinks::scan begin");
+            let result = horizon_optifine::blink::Blinks::scan(root, &random_textures);
+            atlas_stage!("Horizon atlas: Blinks::scan complete");
+            result
         } else {
             Default::default()
         };
         let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
+            atlas_stage!("Horizon atlas: Emissive::scan begin");
             let mut e = horizon_optifine::emissive::Emissive::scan(root, &random_textures);
+            atlas_stage!("Horizon atlas: Emissive::scan complete");
+            atlas_stage!("Horizon atlas: Emissive::pair_beside begin");
             e.pair_beside(root, blinks.files());
+            atlas_stage!("Horizon atlas: Emissive::pair_beside complete");
             e
         } else {
             Default::default()
@@ -1086,6 +1137,10 @@ impl HudAtlas {
             extra.sort();
             files.extend(extra);
         }
+        atlas_stage!(
+            "Horizon atlas: texture selection complete decode_files={}",
+            files.len()
+        );
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
             let name = if let Some(name) = named.get(path) {
@@ -1160,14 +1215,30 @@ impl HudAtlas {
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
+        #[cfg(target_os = "cafe")]
+        let decode_total = files.len();
+        #[cfg(target_os = "cafe")]
+        let decode_progress = trace.then(std::sync::atomic::AtomicUsize::default);
+        atlas_stage!("Horizon atlas: texture decode begin files={decode_total} workers={threads}");
         let decoded: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = files
                 .chunks(chunk)
                 .map(|part| {
+                    #[cfg(target_os = "cafe")]
+                    let decode_progress = &decode_progress;
                     scope.spawn(move || {
                         part.iter()
                             .filter_map(|path| {
                                 let image = decode_one(path);
+                                #[cfg(target_os = "cafe")]
+                                if let Some(progress) = decode_progress.as_ref() {
+                                    let done = progress
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                        + 1;
+                                    if done % 256 == 0 || done == decode_total {
+                                        atlas_stage!("Horizon atlas: texture decode progress {done}/{decode_total}");
+                                    }
+                                }
                                 image
                             })
                             .collect::<Vec<_>>()
@@ -1179,6 +1250,10 @@ impl HudAtlas {
                 .flat_map(|h| h.join().unwrap_or_default())
                 .collect()
         });
+        atlas_stage!(
+            "Horizon atlas: texture decode complete decoded={}",
+            decoded.len()
+        );
         let mut flags = HashMap::new();
         let mut gui_sizes = HashMap::new();
         let mut animated: Vec<String> = Vec::new();
@@ -1197,9 +1272,11 @@ impl HudAtlas {
         }
         let mut cit_names = HashSet::new();
         if full {
+            atlas_stage!("Horizon atlas: generated atlas sprite gathering begin");
             let (more, more_animated) = atlas_sprites(root, &images);
             images.extend(more);
             animated.extend(more_animated);
+            atlas_stage!("Horizon atlas: CIT sprite gathering begin");
             for (image, image_flags, is_animated) in cit_sprites(root, &images) {
                 cit_names.insert(image.0.clone());
                 if let Some(f) = image_flags {
@@ -1210,6 +1287,11 @@ impl HudAtlas {
                 }
                 images.push(image);
             }
+            atlas_stage!(
+                "Horizon atlas: sprite gathering complete images={} animated={}",
+                images.len(),
+                animated.len()
+            );
         }
         // The title screen's "JAVA EDITION" banner reads "RUST EDITION".
         if let Some(edition) = images
@@ -1251,12 +1333,22 @@ impl HudAtlas {
             }
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+        atlas_stage!("Horizon atlas: layout begin images={}", images.len());
         let (width, placements, glyph_region) =
             Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)?;
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
+        atlas_stage!(
+            "Horizon atlas: layout complete width={width} height={height} glyph_region={glyph_region} images={}",
+            images.len()
+        );
+        atlas_stage!(
+            "Horizon atlas: pixel allocation begin bytes={}",
+            (width * height * 4) as usize
+        );
         let mut pixels = vec![0u8; (width * height * 4) as usize];
+        atlas_stage!("Horizon atlas: pixel allocation complete");
         let mut sprites = HashMap::new();
         let mut translucent = HashSet::new();
         for ((name, w, h, data), (px, py)) in images.iter().zip(placements) {
@@ -1288,6 +1380,10 @@ impl HudAtlas {
                 },
             );
         }
+        atlas_stage!(
+            "Horizon atlas: pixel packing complete sprites={}",
+            sprites.len()
+        );
         // Every animated sprite animates: the packed strip is the raw first
         // frame, while the mcmeta's frame list may start anywhere, so each
         // animation's frame(0) overwrites its atlas rect before drawing.
@@ -1323,9 +1419,14 @@ impl HudAtlas {
             }
             sprite_animations.push((rect, animation));
         }
+        atlas_stage!(
+            "Horizon atlas: animated sprite frames complete count={}",
+            sprite_animations.len()
+        );
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
+        atlas_stage!("Horizon atlas: font load begin");
         let font = crate::font::Font::load(
             root,
             &sprites,
@@ -1334,6 +1435,7 @@ impl HudAtlas {
             (glyph_region, height - glyph_region),
             white,
         );
+        atlas_stage!("Horizon atlas: font load complete");
         let revision = Self::next_revision();
         let galactic_widths = galactic_widths(&sprites, &pixels, width, height);
         let atlas = Self {
