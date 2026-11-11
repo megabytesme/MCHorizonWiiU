@@ -270,6 +270,9 @@ fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut Wa
             "Horizon texture walk: first entry metadata begin path={}",
             path.display()
         );
+        #[cfg(target_os = "cafe")]
+        let is_directory = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+        #[cfg(not(target_os = "cafe"))]
         let is_directory = path.is_dir();
         cafe_image_stage!(
             is_first_entry,
