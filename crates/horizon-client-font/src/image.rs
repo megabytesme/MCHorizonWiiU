@@ -143,6 +143,30 @@ pub fn walk_with_trace(dir: &Path, out: &mut Vec<PathBuf>, trace: bool) {
     walk_inner(dir, out, trace, &mut WalkProgress::default());
 }
 
+/// Whether a path has the exact, lowercase `png` extension.
+///
+/// Cafe's `Path::extension()` component walk stalls on asset paths, so use the
+/// encoded bytes directly on that target.
+#[cfg(any(test, target_os = "cafe"))]
+fn has_png_extension_bytes(bytes: &[u8]) -> bool {
+    let name = bytes
+        .rsplit(|byte| *byte == b'/')
+        .next()
+        .unwrap_or_default();
+    name.len() > b".png".len() && name.ends_with(b".png")
+}
+
+pub(crate) fn has_png_extension(path: &Path) -> bool {
+    #[cfg(target_os = "cafe")]
+    {
+        has_png_extension_bytes(path.as_os_str().as_encoded_bytes())
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        path.extension().is_some_and(|extension| extension == "png")
+    }
+}
+
 #[derive(Default)]
 struct WalkProgress {
     directories: usize,
@@ -175,7 +199,7 @@ fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut Wa
         out.extend(
             files
                 .iter()
-                .filter(|file| file.ends_with(".png"))
+                .filter(|file| has_png_extension(Path::new(file)))
                 .map(|file| dir.join(file)),
         );
         cafe_image_stage!(
@@ -235,8 +259,48 @@ fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut Wa
         );
         if is_directory {
             walk_inner(&path, out, trace, progress);
-        } else if path.extension().is_some_and(|e| e == "png") {
+        } else if has_png_extension(&path) {
             out.push(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_png_extension, has_png_extension_bytes};
+    use std::path::Path;
+
+    #[test]
+    fn png_extension_bytes_match_path_extension_semantics() {
+        let cases: &[(&[u8], bool)] = &[
+            (b".png", false),
+            (b"image", false),
+            (b"image.png", true),
+            (b"image.tar.png", true),
+            (b".hidden.png", true),
+            (b"image.PNG", false),
+            (b"nested/image.png", true),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(has_png_extension_bytes(path), *expected, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn png_extension_path_matches_host_path_semantics() {
+        let cases = [
+            (".png", false),
+            ("image", false),
+            ("image.png", true),
+            ("image.tar.png", true),
+            (".hidden.png", true),
+            ("image.PNG", false),
+            ("nested/image.png", true),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(has_png_extension(Path::new(path)), expected, "{path}");
         }
     }
 }

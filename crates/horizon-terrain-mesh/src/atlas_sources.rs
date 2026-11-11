@@ -206,10 +206,7 @@ pub fn list_textures(root: &Path) -> Vec<String> {
                 };
                 if dir {
                     stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "png")
-                    && let Ok(rel) = p.strip_prefix(&base)
-                {
-                    let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
+                } else if let Some(rel) = texture_name(&p, &base) {
                     out.push(format!("{namespace}:{rel}"));
                 }
             }
@@ -218,6 +215,77 @@ pub fn list_textures(root: &Path) -> Vec<String> {
     out.sort();
     out
 }
+
+fn texture_name(path: &Path, root: &Path) -> Option<String> {
+    #[cfg(target_os = "cafe")]
+    {
+        texture_name_bytes(
+            path.as_os_str().as_encoded_bytes(),
+            root.as_os_str().as_encoded_bytes(),
+        )
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        if !path.extension().is_some_and(|extension| extension == "png") {
+            return None;
+        }
+        let relative = path.strip_prefix(root).ok()?;
+        Some(
+            relative
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        )
+    }
+}
+
+#[cfg(any(test, target_os = "cafe"))]
+fn texture_name_bytes(path: &[u8], root: &[u8]) -> Option<String> {
+    let mut root_len = root.len();
+    let minimum_root_len = usize::from(root.starts_with(b"/"));
+    while root_len > minimum_root_len && root[root_len - 1] == b'/' {
+        root_len -= 1;
+    }
+    let root = &root[..root_len];
+    if root.is_empty() {
+        return None;
+    }
+
+    let mut relative = path.strip_prefix(root)?;
+    if root != b"/" && !relative.starts_with(b"/") {
+        return None;
+    }
+    while relative.starts_with(b"/") {
+        relative = &relative[1..];
+    }
+    let relative = relative.strip_suffix(b".png")?;
+    let file_name = relative.rsplit(|byte| *byte == b'/').next()?;
+    // `Path::extension` treats a file named `.png` as extensionless.
+    if file_name.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(relative).replace('\\', "/"))
+}
+
+#[cfg(target_os = "cafe")]
+fn cafe_atlas_json_name(path: &Path) -> Option<String> {
+    let file_name = path
+        .as_os_str()
+        .as_encoded_bytes()
+        .rsplit(|byte| *byte == b'/')
+        .next()?;
+    atlas_json_stem_bytes(file_name)
+}
+
+#[cfg(any(test, target_os = "cafe"))]
+fn atlas_json_stem_bytes(file_name: &[u8]) -> Option<String> {
+    let stem = file_name.strip_suffix(b".json")?;
+    if stem.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(stem).into_owned())
+}
+
 /// The file of a texture identifier. A Custom Item Textures id (`cit_assets`) names its
 /// resource path, wherever the folder: `directory` is not used for it. An id whose path would
 /// leave the root (a pack's model may write any) names a file that is never there.
@@ -409,9 +477,18 @@ pub fn atlases(root: &Path) -> BTreeMap<String, Vec<SpriteSource>> {
         };
         for f in files.flatten() {
             let path = f.path();
+            #[cfg(target_os = "cafe")]
+            let name = {
+                let Some(name) = cafe_atlas_json_name(&path) else {
+                    continue;
+                };
+                name
+            };
+            #[cfg(not(target_os = "cafe"))]
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
+            #[cfg(not(target_os = "cafe"))]
             let name = path.file_stem().unwrap_or_default().to_string_lossy();
             if let Some(sources) = fs::read_to_string(&path).ok().and_then(|t| decode(&t)) {
                 out.insert(format!("{namespace}:{name}"), sources);
@@ -424,6 +501,52 @@ pub fn atlases(root: &Path) -> BTreeMap<String, Vec<SpriteSource>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cafe_texture_name_bytes_match_png_resource_paths() {
+        let root = b"assets/minecraft/textures/";
+        assert_eq!(
+            texture_name_bytes(
+                b"assets/minecraft/textures/gui/panorama/panorama_0.png",
+                root
+            ),
+            Some("gui/panorama/panorama_0".into())
+        );
+        assert_eq!(
+            texture_name_bytes(b"assets/minecraft/textures/gui/foo.bar.png", root),
+            Some("gui/foo.bar".into())
+        );
+        assert_eq!(
+            texture_name_bytes(b"assets/minecraft/textures/gui/.png", root),
+            None
+        );
+        assert_eq!(
+            texture_name_bytes(b"assets/minecraft/textures-extra/gui/a.png", root),
+            None
+        );
+        assert_eq!(
+            texture_name_bytes(b"assets/minecraft/textures/gui/a.PNG", root),
+            None
+        );
+    }
+
+    #[test]
+    fn cafe_atlas_json_stem_bytes_match_path_extension_and_file_stem() {
+        for (file_name, expected) in [
+            (b"blocks.json".as_slice(), Some("blocks")),
+            (b"foo.bar.json".as_slice(), Some("foo.bar")),
+            (b".foo.json".as_slice(), Some(".foo")),
+            (b"foo..json".as_slice(), Some("foo.")),
+            (b".json".as_slice(), None),
+            (b"blocks.JSON".as_slice(), None),
+        ] {
+            assert_eq!(
+                atlas_json_stem_bytes(file_name).as_deref(),
+                expected,
+                "atlas file name {file_name:?}"
+            );
+        }
+    }
 
     fn textures() -> Vec<String> {
         let mut t: Vec<String> = [

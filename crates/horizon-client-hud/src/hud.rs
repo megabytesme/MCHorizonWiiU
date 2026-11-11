@@ -12,28 +12,6 @@ use std::{
 
 use crate::pack_text;
 
-macro_rules! cafe_hud_stage {
-    ($trace:expr, $($arg:tt)*) => {{
-        #[cfg(target_os = "cafe")]
-        if $trace {
-            log::info!($($arg)*);
-        }
-    }};
-}
-
-fn first_cafe_hud_trace() -> bool {
-    #[cfg(target_os = "cafe")]
-    {
-        static FIRST_HUD_TRACE: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(true);
-        FIRST_HUD_TRACE.swap(false, std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(not(target_os = "cafe"))]
-    {
-        false
-    }
-}
-
 pub use horizon_client_core::ui_geometry::Rect;
 pub use horizon_client_font::image::TextureFlags;
 pub struct HudAtlas {
@@ -125,7 +103,7 @@ pub const PACK_ICON_SIZE: u32 = 128;
 pub const TRIM_SLOTS: usize = 32;
 #[cfg(test)]
 use horizon_client_font::image::within_budget;
-use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk, walk_with_trace};
+use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk};
 pub use horizon_client_font::image::{decode, decode_bytes, decode_bytes_with_trace};
 /// The image formats [`decode_image_bytes`] reads, told apart by their own
 /// leading bytes rather than by a file name: what a server sends has no name,
@@ -728,20 +706,10 @@ impl HudAtlas {
     /// draws one: the slot costs 4 MiB of pixels, so a game without native
     /// mods holds none of them.
     pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
-        #[allow(unused_variables)]
-        let trace = first_cafe_hud_trace();
-        cafe_hud_stage!(trace, "Horizon HUD: first atlas build begin");
-        let mut atlas = Self::pack(
-            root,
-            defaults,
-            WALKED_TEXTURE_FOLDERS,
-            true,
-            mod_image,
-            trace,
-        )?;
-        cafe_hud_stage!(trace, "Horizon HUD: atlas packing complete");
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
+
         atlas.text_shader = pack_text::load(root, defaults);
-        cafe_hud_stage!(trace, "Horizon HUD: text shader load complete");
+
         atlas.lines_shader = pack_text::load_core(
             root,
             defaults,
@@ -749,7 +717,7 @@ impl HudAtlas {
             &[],
             &crate::core_lines_glue::GLUE,
         );
-        cafe_hud_stage!(trace, "Horizon HUD: lines shader load complete");
+
         Ok(atlas)
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
@@ -997,45 +965,20 @@ impl HudAtlas {
         folders: &[&str],
         full: bool,
         mod_image: bool,
-        #[allow(unused_variables)] trace: bool,
     ) -> Result<Self> {
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
         let mut files = Vec::new();
-        cafe_hud_stage!(trace, "Horizon HUD: texture walk begin");
         for folder in folders {
             let folder_path = textures.join(folder);
-            cafe_hud_stage!(
-                trace,
-                "Horizon HUD: texture folder scan begin folder={folder}"
-            );
-            if trace && *folder == "gui" {
-                walk_with_trace(&folder_path, &mut files, true);
-            } else {
-                walk(&folder_path, &mut files);
-            }
-            cafe_hud_stage!(
-                trace,
-                "Horizon HUD: texture folder scan complete folder={folder} files={}",
-                files.len()
-            );
+            walk(&folder_path, &mut files);
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: base texture walk complete files={}",
-            files.len()
-        );
         // Content mods' entity textures: their equipment assets name them as
         // `<ns>:<path>`, and native mods draw their block entities with them
         // (`native_draw_quad`: `<ns>:entity/...`); and their mob effects'
         // icons, `<ns>:mob_effect/<path>`.
         let namespaces = horizon_items::content_namespaces::namespaces(root);
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: content namespace scan complete count={}",
-            namespaces.len()
-        );
         for folder in ["entity", "mob_effect"] {
             if folders.contains(&folder) {
                 for namespace in &namespaces {
@@ -1066,11 +1009,6 @@ impl HudAtlas {
                 }
             }
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: extension texture scans complete files={}",
-            files.len()
-        );
         files.retain(|p| {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("presets")
@@ -1094,7 +1032,6 @@ impl HudAtlas {
         } else {
             Default::default()
         });
-        cafe_hud_stage!(trace, "Horizon HUD: OptiFine texture scans complete");
         let mut named: HashMap<PathBuf, String> = HashMap::new();
         let extra = random_textures
             .files()
@@ -1149,25 +1086,33 @@ impl HudAtlas {
             extra.sort();
             files.extend(extra);
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: texture list complete files={} named={}",
-            files.len(),
-            named.len()
-        );
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
             let name = if let Some(name) = named.get(path) {
                 name.clone()
             } else {
-                match path.strip_prefix(&textures) {
-                    Ok(rel) => rel.with_extension("").to_string_lossy().replace('\\', "/"),
-                    Err(_) => {
-                        let rel = path.strip_prefix(&assets).ok()?.with_extension("");
-                        let rel = rel.to_string_lossy().replace('\\', "/");
-                        let (namespace, rest) = rel.split_once("/textures/")?;
-                        format!("{namespace}:{rest}")
-                    }
+                #[cfg(target_os = "cafe")]
+                let texture_name =
+                    horizon_client_platform::path::resource_png_name(path, &textures);
+                #[cfg(not(target_os = "cafe"))]
+                let texture_name = path
+                    .strip_prefix(&textures)
+                    .ok()
+                    .map(|rel| rel.with_extension("").to_string_lossy().replace('\\', "/"));
+                if let Some(name) = texture_name {
+                    name
+                } else {
+                    #[cfg(target_os = "cafe")]
+                    let asset_name =
+                        horizon_client_platform::path::resource_png_name(path, &assets);
+                    #[cfg(not(target_os = "cafe"))]
+                    let asset_name = path
+                        .strip_prefix(&assets)
+                        .ok()
+                        .map(|rel| rel.with_extension("").to_string_lossy().replace('\\', "/"));
+                    let rel = asset_name?;
+                    let (namespace, rest) = rel.split_once("/textures/")?;
+                    format!("{namespace}:{rest}")
                 }
             };
             // LabPBR's maps beside a texture are the world's (sprites.rs), not images to draw.
@@ -1179,9 +1124,12 @@ impl HudAtlas {
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
-            let mcmeta =
-                horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
-                    .ok();
+            #[cfg(target_os = "cafe")]
+            let mcmeta_path = horizon_client_platform::path::resource_png_mcmeta_path(path);
+            #[cfg(not(target_os = "cafe"))]
+            let mcmeta_path = Some(path.with_extension("png.mcmeta"));
+            let mcmeta = mcmeta_path
+                .and_then(|path| horizon_core::prepared_files::read_to_string(&path).ok());
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
             let frames =
@@ -1212,35 +1160,14 @@ impl HudAtlas {
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
-        #[allow(unused_variables)]
-        let total_files = files.len();
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: image decode begin files={total_files} workers={threads} chunk={chunk}"
-        );
-        #[cfg(target_os = "cafe")]
-        let decode_progress = std::sync::atomic::AtomicUsize::new(0);
         let decoded: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = files
                 .chunks(chunk)
                 .map(|part| {
-                    #[cfg(target_os = "cafe")]
-                    let decode_progress = &decode_progress;
                     scope.spawn(move || {
                         part.iter()
                             .filter_map(|path| {
                                 let image = decode_one(path);
-                                #[cfg(target_os = "cafe")]
-                                if trace {
-                                    let completed = decode_progress
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                        + 1;
-                                    if completed % 512 == 0 {
-                                        log::info!(
-                                            "Horizon HUD: image decode progress {completed}/{total_files}"
-                                        );
-                                    }
-                                }
                                 image
                             })
                             .collect::<Vec<_>>()
@@ -1252,11 +1179,6 @@ impl HudAtlas {
                 .flat_map(|h| h.join().unwrap_or_default())
                 .collect()
         });
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: image decode complete decoded={}",
-            decoded.len()
-        );
         let mut flags = HashMap::new();
         let mut gui_sizes = HashMap::new();
         let mut animated: Vec<String> = Vec::new();
@@ -1273,11 +1195,6 @@ impl HudAtlas {
             }
             images.push(image);
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: decoded images indexed count={}",
-            images.len()
-        );
         let mut cit_names = HashSet::new();
         if full {
             let (more, more_animated) = atlas_sprites(root, &images);
@@ -1294,11 +1211,6 @@ impl HudAtlas {
                 images.push(image);
             }
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: generated and CIT sprites complete images={}",
-            images.len()
-        );
         // The title screen's "JAVA EDITION" banner reads "RUST EDITION".
         if let Some(edition) = images
             .iter_mut()
@@ -1344,11 +1256,6 @@ impl HudAtlas {
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: atlas layout complete images={} width={width} height={height}",
-            images.len()
-        );
         let mut pixels = vec![0u8; (width * height * 4) as usize];
         let mut sprites = HashMap::new();
         let mut translucent = HashSet::new();
@@ -1381,11 +1288,6 @@ impl HudAtlas {
                 },
             );
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: atlas pixel copy complete sprites={}",
-            sprites.len()
-        );
         // Every animated sprite animates: the packed strip is the raw first
         // frame, while the mcmeta's frame list may start anywhere, so each
         // animation's frame(0) overwrites its atlas rect before drawing.
@@ -1421,16 +1323,9 @@ impl HudAtlas {
             }
             sprite_animations.push((rect, animation));
         }
-        cafe_hud_stage!(
-            trace,
-            "Horizon HUD: animated texture patching complete count={}",
-            sprite_animations.len()
-        );
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
-        cafe_hud_stage!(trace, "Horizon HUD: glint texture loads complete");
-        cafe_hud_stage!(trace, "Horizon HUD: font load begin");
         let font = crate::font::Font::load(
             root,
             &sprites,
@@ -1439,11 +1334,8 @@ impl HudAtlas {
             (glyph_region, height - glyph_region),
             white,
         );
-        cafe_hud_stage!(trace, "Horizon HUD: font load complete");
         let revision = Self::next_revision();
-        cafe_hud_stage!(trace, "Horizon HUD: galactic glyph scan begin");
         let galactic_widths = galactic_widths(&sprites, &pixels, width, height);
-        cafe_hud_stage!(trace, "Horizon HUD: galactic glyph scan complete");
         let atlas = Self {
             revision,
             galactic_widths,
@@ -1466,7 +1358,6 @@ impl HudAtlas {
             font,
             white,
         };
-        cafe_hud_stage!(trace, "Horizon HUD: atlas pack complete");
         Ok(atlas)
     }
     /// `misc/<name>.png` on its own, or a transparent texel if the resource

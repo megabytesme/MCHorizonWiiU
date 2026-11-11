@@ -1458,6 +1458,7 @@ dependencies = [
  "horizon-assets",
  "horizon-client-core",
  "horizon-client-font",
+ "horizon-client-platform",
  "horizon-core",
  "horizon-hud-data",
  "horizon-items",

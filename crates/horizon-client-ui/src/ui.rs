@@ -111,6 +111,13 @@ pub fn read_metadata(root: &Path) -> UiMetadata {
         else {
             continue;
         };
+        #[cfg(target_os = "cafe")]
+        let key = horizon_client_platform::path::resource_png_name(
+            Path::new(&format!("{stripped}.png")),
+            &base,
+        )
+        .unwrap_or_default();
+        #[cfg(not(target_os = "cafe"))]
         let key = Path::new(stripped)
             .strip_prefix(&base)
             .map(|r| r.to_string_lossy().replace('\\', "/"))

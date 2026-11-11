@@ -16,7 +16,7 @@ pub fn slot_size(root: &Path) -> (u32, u32) {
         for layer in layers.flatten() {
             for f in fs::read_dir(layer.path()).into_iter().flatten().flatten() {
                 let path = f.path();
-                if path.extension().is_some_and(|e| e == "png")
+                if crate::image::has_png_extension(&path)
                     && let Some((w, h)) = png_size(&path)
                 {
                     size = (size.0.max(w.min(512)), size.1.max(h.min(512)));

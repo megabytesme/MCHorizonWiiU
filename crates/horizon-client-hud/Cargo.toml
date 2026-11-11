@@ -29,5 +29,8 @@ horizon-terrain-mesh = { path = "../horizon-terrain-mesh", default-features = fa
 [target.'cfg(not(target_has_atomic = "64"))'.dependencies]
 portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
 
+[target.'cfg(target_os = "cafe")'.dependencies]
+horizon-client-platform = { path = "../horizon-client-platform" }
+
 [lints]
 workspace = true

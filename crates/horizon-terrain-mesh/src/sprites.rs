@@ -1,12 +1,32 @@
 //! Shared nearest-sampled sprite array for block and item textures.
 use crate::Result;
 use horizon_assets::animation::{AnimationClip, AnimationMetadata};
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+#[cfg(target_os = "cafe")]
+use std::ffi::OsString;
 
 #[cfg(not(target_has_atomic = "64"))]
 use portable_atomic::AtomicU64;
 #[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
+
+fn png_mcmeta_path(path: &Path) -> PathBuf {
+    #[cfg(target_os = "cafe")]
+    {
+        let mut metadata_path = OsString::from(path.as_os_str());
+        metadata_path.push(".mcmeta");
+        PathBuf::from(metadata_path)
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        path.with_extension("png.mcmeta")
+    }
+}
 
 #[derive(Clone)]
 pub struct SpriteAnimation {
@@ -461,9 +481,8 @@ impl Sprites {
         per_tile: bool,
     ) -> Result<Vec<Option<u32>>> {
         let path = crate::atlas_sources::texture_path(root, name, "textures");
-        let metadata = match horizon_core::prepared_files::read_to_string(
-            &path.with_extension("png.mcmeta"),
-        ) {
+        let metadata_path = png_mcmeta_path(&path);
+        let metadata = match horizon_core::prepared_files::read_to_string(&metadata_path) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
             >(&text)?),
@@ -572,9 +591,8 @@ impl Sprites {
         Self::decode_file(&path, name)
     }
     fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
-        let metadata = match horizon_core::prepared_files::read_to_string(
-            &path.with_extension("png.mcmeta"),
-        ) {
+        let metadata_path = png_mcmeta_path(path);
+        let metadata = match horizon_core::prepared_files::read_to_string(&metadata_path) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
             >(&text)?),
@@ -877,6 +895,30 @@ pub fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, available: u
 mod tests {
     use super::*;
     use std::fs::{self, File};
+
+    #[test]
+    fn png_mcmeta_path_replaces_only_the_final_png_extension() {
+        for (png, expected) in [
+            (
+                "assets/example/textures/block/stone.png",
+                "assets/example/textures/block/stone.png.mcmeta",
+            ),
+            (
+                "assets/example/textures/block/stone.polished.png",
+                "assets/example/textures/block/stone.polished.png.mcmeta",
+            ),
+            (
+                "assets/example/textures/block/.hidden.png",
+                "assets/example/textures/block/.hidden.png.mcmeta",
+            ),
+        ] {
+            assert_eq!(
+                png_mcmeta_path(Path::new(png)),
+                std::path::PathBuf::from(expected)
+            );
+        }
+    }
+
     #[test]
     fn the_texture_budget_picks_the_largest_side_that_fits() {
         // 1300 layers: vanilla's count, about.
