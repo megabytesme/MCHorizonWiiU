@@ -42,6 +42,20 @@ pub fn decode(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     decode_bytes(&horizon_core::prepared_files::read(path)?)
 }
 
+/// Decode a Cafe asset while tracing its file read and PNG decoder stages.
+#[cfg(target_os = "cafe")]
+#[doc(hidden)]
+pub fn decode_path_with_trace(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
+    log::info!("Horizon PNG: asset read begin path={}", path.display());
+    let bytes = horizon_core::prepared_files::read(path)?;
+    log::info!(
+        "Horizon PNG: asset read complete path={} bytes={}",
+        path.display(),
+        bytes.len()
+    );
+    decode_bytes_with_trace(&bytes, true)
+}
+
 /// A PNG in memory as RGBA pixels.
 pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     decode_bytes_with_trace(data, false)

@@ -101,6 +101,8 @@ pub const PACK_ICON_SIZE: u32 = 128;
 /// Atlas slots for armour trim textures made at run time (`trims`), each the
 /// size of the largest trim texture.
 pub const TRIM_SLOTS: usize = 32;
+#[cfg(target_os = "cafe")]
+use horizon_client_font::image::decode_path_with_trace;
 #[cfg(test)]
 use horizon_client_font::image::within_budget;
 use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk_with_trace};
@@ -1202,6 +1204,13 @@ impl HudAtlas {
                     path.display()
                 );
             }
+            #[cfg(target_os = "cafe")]
+            let decoded_image = if trace_index.is_some_and(|index| index <= 16) {
+                decode_path_with_trace(path)
+            } else {
+                decode(path)
+            };
+            #[cfg(not(target_os = "cafe"))]
             let decoded_image = decode(path);
             #[cfg(target_os = "cafe")]
             if trace_index.is_some_and(|index| index <= 16 || index % 64 == 0) {
