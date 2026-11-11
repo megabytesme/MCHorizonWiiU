@@ -135,48 +135,47 @@ impl<'a> LoadingHost<'a> {
         session: &mut CafeLoadingSession,
         release: Option<horizon_wiiu_platform::FreshTouchRelease>,
         trace: bool,
-    ) {
+    ) -> bool {
         if self.touch_blocked_until_release {
             if release.is_none() {
-                return;
+                return false;
             }
             self.touch_blocked_until_release = false;
         }
         let mut dimensions = [0u32; 4];
-        if trace {
-            startup_report!("first touch dimensions query begin");
-        }
         // SAFETY: dimensions points to four writable u32 values; C queries
         // WHB's current TV/DRC targets synchronously.
         let result = unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) };
-        if trace {
-            startup_report!("first touch dimensions query complete");
-        }
         if result != 0 {
             self.failure = Some("WHB TV/DRC colour buffers are unavailable".into());
-            return;
+            return false;
         }
         let viewport = [dimensions[2], dimensions[3]];
-        if trace {
-            startup_report!("first touch event mapping begin");
-        }
         let events = self
             .touch
             .events_with_freshness(&self.vpad, viewport, release);
-        if trace {
-            startup_report!("first touch event mapping complete");
+        if trace && !events.is_empty() {
+            startup_report!("touch event batch ready");
+            startup_report!("loading first touch dispatch begin");
         }
+        let mut activation_dispatched = false;
         for event in events {
             if trace {
-                startup_report!("first touch event dispatch begin");
+                startup_report!("touch event dispatch begin");
             }
+            let activation = matches!(
+                &event,
+                horizon_client_platform::ClientWindowEvent::MouseInput { .. }
+            );
             // Dispatch each event immediately with the exact poll/release
             // evidence that produced it. Pointer position precedes press.
             session.dispatch_event(self, event);
+            activation_dispatched |= activation;
             if trace {
-                startup_report!("first touch event dispatch complete");
+                startup_report!("touch event dispatch complete");
             }
         }
+        activation_dispatched
     }
 
     fn release_on_exit(&mut self, session: &mut CafeLoadingSession) {
@@ -323,12 +322,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 startup_report!("loading first pad dispatch complete");
                 trace_pad_dispatch = false;
             }
-            if trace_touch_dispatch {
-                startup_report!("loading first touch dispatch begin");
-            }
-            self.dispatch_touch(session, fresh_release, trace_touch_dispatch);
-            if trace_touch_dispatch {
-                startup_report!("loading first touch dispatch complete");
+            let touch_activation_dispatched =
+                self.dispatch_touch(session, fresh_release, trace_touch_dispatch);
+            if trace_touch_dispatch && touch_activation_dispatched {
+                startup_report!("first touch activation dispatched");
                 trace_touch_dispatch = false;
             }
             if trace_input_failure_check {
