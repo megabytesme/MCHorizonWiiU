@@ -58,12 +58,12 @@ provided through the normal Horizon options.
   `wiiu/package_rpx.cmake`, and `wiiu/loading_host/CMakeLists.txt`. It still
   requires a Cafe stage1 Rust compiler/sysroot, devkitPro WUT, Cafe GLSL tools,
   Cargo target dependencies, and scratch overlays/patches for the Horizon
-  dependency graph and Cafe std. In particular, the full client currently
-  needs the TLS-key virtualization patch in `wiiu/rust-std-tls`; the unpatched
-  Cafe std reached by the latest isolated Cemu run aborts with `out of TLS
-  keys`. That patch is under target validation. CMake passes WUT headers and
-  PowerPC Cafe ABI flags into this directory and child presenter targets, but
-  does not install or apply external compiler patches.
+  dependency graph and Cafe std. Full-client builds need the TLS-key
+  virtualization patch in `wiiu/rust-std-tls`; an unpatched Cafe std previously
+  aborted with `out of TLS keys`. A later Cemu title checkpoint built with the
+  patched sysroot passed that stage. CMake passes WUT headers and PowerPC Cafe
+  ABI flags into this directory and child presenter targets, but does not
+  install or apply external compiler patches.
 
 Cafe resource selection is already adapted in the original `Options::parse`:
 it uses the relative `.local/horizon-client/<version>` default when
@@ -83,11 +83,17 @@ cmake --build /tmp/horizonwiiu-loading-app --parallel
 
 The resulting RPX is
 `/tmp/horizonwiiu-loading-app/horizon_wiiu_loading_app.rpx`. Native CMake
-configure/link was validated with a prebuilt full-client archive. An isolated
-Cemu launch entered the WUT host and original Horizon entry, logged
-`Horizon 0.1.0`, then aborted in the unpatched Cafe std at TLS-key exhaustion.
-This confirms RPX startup integration only; this run did not verify a title
-frame. The TLS patch and a rebuilt full-client archive are required before the
-next Cemu menu check. ProcUI focus lifetime and actual Cafe hardware behavior
-remain unverified. Full acceptance also requires Loading-to-Game handoff and
-Cafe Game movement/look input.
+configure/link was validated with a prebuilt full-client archive. On 2026-11-11,
+the clean RPX (`4924ea2a2e88529878305227f4e4110a83920d822f664ea9b774bf181ff4b2d5`)
+ran in Cemu 2.6's interpreter and reached Horizon's `title.shown` marker while
+the original title frame was presented through GX2. The archived Cemu log is
+`%TEMP%\HorizonWiiU-title-draw-interpreter-20261111.log` (SHA-256
+`D23254B58B79D1832E7F7D0AA1204AA488E50A1104FB34F3C0FCCB556055D250`). The same
+RPX also reproducibly exits during Cemu's recompiler run while loading animated
+texture metadata, before `title.shown`; its archived log is
+`%TEMP%\HorizonWiiU-title-draw-clean-recompiler-repeat-20261111.log` (SHA-256
+`634409359D43ADC5849A964396B49F410023DC538C882A431308AEB341E11B20`). This
+does not identify a Horizon source fault or a guest instruction address.
+ProcUI focus lifetime and actual Cafe hardware behavior remain unverified.
+Full acceptance still requires Loading-to-Game handoff and Cafe Game
+movement/look input.
