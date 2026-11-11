@@ -2205,8 +2205,25 @@ impl UiResources {
     /// From a resource root layering packs over `defaults`, the game's own
     /// resources (`root` itself when no pack is on).
     pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
-        // The title screen waits for both: the panorama's six faces decode
-        // beside the atlas.
+        #[cfg(target_os = "cafe")]
+        {
+            // Cafe's scoped panorama worker stalls while joining in Cemu.
+            // Keep Horizon's loader intact, but run it on the resource-loader
+            // thread so title startup can continue into the HUD atlas.
+            let panorama = startup::time("ui.panorama", || {
+                horizon_client::gfx::panorama::Faces::load(root, defaults)
+            });
+            let mod_image = crate::game::mods::built_with_native_mods();
+            let atlas = startup::time("ui.atlas", || {
+                HudAtlas::build_over_with_image(root, defaults, mod_image)
+            });
+            Ok(Self {
+                atlas: atlas?,
+                panorama: Arc::new(panorama),
+            })
+        }
+
+        #[cfg(not(target_os = "cafe"))]
         std::thread::scope(|scope| {
             let panorama = named_scope(scope, "panorama", || {
                 startup::time("ui.panorama", || {
