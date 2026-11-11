@@ -951,25 +951,55 @@ impl Loading {
     /// The real mouse before the screen takes it: a move, a press or a
     /// scroll hands the pointer back from the keyboard (a press or a scroll
     /// where the mouse left it), and a left press focuses what it lands on.
-    fn menu_key_focus_mouse(&mut self, event: &WindowEvent) {
+    fn menu_key_focus_mouse(&mut self, event: &WindowEvent, trace_cafe_touch_press: bool) {
         match event {
             WindowEvent::CursorMoved { .. } => {
                 self.menu.key_focus_release();
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if self.menu.key_focus_release() {
+                if trace_cafe_touch_press {
+                    cafe_game_stage!("first Cafe touch press key focus release begin");
+                }
+                let released_focus = self.menu.key_focus_release();
+                if trace_cafe_touch_press {
+                    log::info!(
+                        "Horizon Cafe touch: key focus release returned had_focus={released_focus}"
+                    );
+                    cafe_game_stage!("first Cafe touch press key focus release complete");
+                }
+                if released_focus {
+                    if trace_cafe_touch_press {
+                        cafe_game_stage!("first Cafe touch press cursor update begin");
+                    }
                     self.update_menu_cursor();
+                    if trace_cafe_touch_press {
+                        cafe_game_stage!("first Cafe touch press cursor update complete");
+                    }
                 }
                 if *state == ElementState::Pressed && *button == MouseButton::Left {
                     let (cx, cy) = self.menu.cursor;
-                    self.menu.key_origin = self
-                        .menu_key_targets()
+                    let targets = self.menu_key_targets_with_trace(trace_cafe_touch_press);
+                    if trace_cafe_touch_press {
+                        log::info!(
+                            "Horizon Cafe touch: focus target hit-test begin cursor=({cx},{cy}) targets={}",
+                            targets.len()
+                        );
+                        cafe_game_stage!("first Cafe touch press focus target hit-test begin");
+                    }
+                    let key_origin = targets
                         .into_iter()
                         .find(|t| {
                             let [x, y, w, h] = t.rect;
                             cx >= x && cy >= y && cx < x + w && cy < y + h
                         })
                         .map(|t| t.rect);
+                    if trace_cafe_touch_press {
+                        log::info!(
+                            "Horizon Cafe touch: focus target hit-test complete selected={key_origin:?}"
+                        );
+                        cafe_game_stage!("first Cafe touch press focus target hit-test complete");
+                    }
+                    self.menu.key_origin = key_origin;
                 }
             }
             WindowEvent::MouseWheel { .. } if self.menu.key_focus_release() => {
@@ -978,16 +1008,45 @@ impl Loading {
             _ => {}
         }
     }
-
     /// What the keyboard can focus on the screen last drawn.
     fn menu_key_targets(&self) -> Vec<Target> {
-        let batch = HudBatch::new(self.menu_size());
-        key_focus::keyboard_targets(
-            key_focus::on_screen(key_focus::drawn_targets(), (batch.width, batch.height)),
-            false,
-        )
+        self.menu_key_targets_with_trace(false)
     }
 
+    fn menu_key_targets_with_trace(&self, trace_cafe_touch_press: bool) -> Vec<Target> {
+        if trace_cafe_touch_press {
+            cafe_game_stage!("first Cafe touch press focus viewport begin");
+        }
+        let batch = HudBatch::new(self.menu_size());
+        if trace_cafe_touch_press {
+            cafe_game_stage!("first Cafe touch press focus viewport complete");
+            cafe_game_stage!("first Cafe touch press drawn targets begin");
+        }
+        let drawn = key_focus::drawn_targets();
+        if trace_cafe_touch_press {
+            log::info!("Horizon Cafe touch: drawn focus targets={}", drawn.len());
+            cafe_game_stage!("first Cafe touch press drawn targets complete");
+            cafe_game_stage!("first Cafe touch press on-screen filter begin");
+        }
+        let on_screen = key_focus::on_screen(drawn, (batch.width, batch.height));
+        if trace_cafe_touch_press {
+            log::info!(
+                "Horizon Cafe touch: on-screen focus targets={}",
+                on_screen.len()
+            );
+            cafe_game_stage!("first Cafe touch press on-screen filter complete");
+            cafe_game_stage!("first Cafe touch press keyboard filter begin");
+        }
+        let targets = key_focus::keyboard_targets(on_screen, false);
+        if trace_cafe_touch_press {
+            log::info!(
+                "Horizon Cafe touch: keyboard focus targets={}",
+                targets.len()
+            );
+            cafe_game_stage!("first Cafe touch press keyboard filter complete");
+        }
+        targets
+    }
     /// `Screen.keyPressed`'s focus navigation on the title shown while
     /// resources load, as `Game::key_focus_key` does it in the game (the
     /// pointer sits on the focus; a step past a list's visible rows doesn't
@@ -1303,7 +1362,7 @@ impl Loading {
         // The real mouse takes the pointer back from the keyboard's focus.
         let synthetic = self.menu.key_synthetic;
         if !synthetic {
-            self.menu_key_focus_mouse(&event);
+            self.menu_key_focus_mouse(&event, trace_cafe_touch_press);
         }
         if trace_cafe_touch_press {
             cafe_game_stage!("first Cafe touch press focus handoff complete");
