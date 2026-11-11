@@ -165,8 +165,7 @@ target_link_options(horizon_wiiu_loading_app PRIVATE
    "-Wl,--defsym=__end__=ADDR(.bss)+SIZEOF(.bss)")
 target_link_libraries(horizon_wiiu_loading_app PRIVATE
    horizon_wiiu_loading_rustlib
-   horizon_wiiu_loading_host
-   wut m)
+   horizon_wiiu_loading_host)
 target_compile_options(horizon_wiiu_loading_app PRIVATE -Wall -Wextra -Werror)
 
 set(PACKAGE_ELF "${CMAKE_CURRENT_BINARY_DIR}/loading_app.package.elf")

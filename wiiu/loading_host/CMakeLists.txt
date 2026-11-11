@@ -38,4 +38,5 @@ add_library(horizon_wiiu_loading_host STATIC
 target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(horizon_wiiu_loading_host
-   PUBLIC horizon_gx2_hud horizon_gx2_panorama)
+   PUBLIC horizon_gx2_hud horizon_gx2_panorama
+   PRIVATE wut m)
