@@ -76,9 +76,8 @@ fn decode_png<R: std::io::BufRead + std::io::Seek>(
     #[allow(unused_variables)] trace: bool,
 ) -> Result<(u32, u32, Vec<u8>)> {
     decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     #[cfg(target_os = "cafe")]
-    if trace {
+    let header = {
         cafe_image_stage!(trace, "Horizon PNG: read_header_info begin");
         let header = decoder.read_header_info()?;
         cafe_image_stage!(
@@ -87,10 +86,68 @@ fn decode_png<R: std::io::BufRead + std::io::Seek>(
             header.width,
             header.height
         );
+        header
+    };
+    #[cfg(target_os = "cafe")]
+    let indexed_palette = header.color_type == png::ColorType::Indexed
+        && matches!(
+            header.bit_depth,
+            png::BitDepth::One | png::BitDepth::Two | png::BitDepth::Four | png::BitDepth::Eight
+        );
+    #[cfg(target_os = "cafe")]
+    {
+        decoder.set_transformations(if indexed_palette {
+            png::Transformations::IDENTITY
+        } else {
+            png::Transformations::EXPAND | png::Transformations::STRIP_16
+        });
     }
+    #[cfg(not(target_os = "cafe"))]
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     cafe_image_stage!(trace, "Horizon PNG: read_info begin bytes={}", data.len());
     let mut reader = decoder.read_info()?;
     cafe_image_stage!(trace, "Horizon PNG: read_info complete");
+
+    #[cfg(target_os = "cafe")]
+    if indexed_palette {
+        let bit_depth = reader.info().bit_depth;
+        let palette = reader
+            .info()
+            .palette
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec();
+        let transparency = reader.info().trns.as_deref().unwrap_or_default().to_vec();
+        rgba_size(reader.info().width, reader.info().height)?;
+        let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
+        cafe_image_stage!(trace, "Horizon PNG: output buffer allocation complete");
+        cafe_image_stage!(trace, "Horizon PNG: next_frame begin");
+        let info = reader.next_frame(&mut bytes)?;
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: next_frame complete dimensions={}x{} bytes={}",
+            info.width,
+            info.height,
+            info.buffer_size()
+        );
+        cafe_image_stage!(trace, "Horizon PNG: indexed RGBA expansion begin");
+        let rgba = expand_indexed(
+            &bytes[..info.buffer_size()],
+            info.width,
+            info.height,
+            info.line_size,
+            bit_depth,
+            &palette,
+            &transparency,
+        )?;
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: indexed RGBA expansion complete pixels={}",
+            rgba.len() / 4
+        );
+        return Ok((info.width, info.height, rgba));
+    }
+
     let output_size = reader.output_buffer_size().ok_or("image too large")?;
     cafe_image_stage!(
         trace,
@@ -124,6 +181,64 @@ fn decode_png<R: std::io::BufRead + std::io::Seek>(
         rgba.len() / 4
     );
     Ok((info.width, info.height, rgba))
+}
+
+fn rgba_size(width: u32, height: u32) -> Result<usize> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "image too large".into())
+}
+
+fn expand_indexed(
+    packed: &[u8],
+    width: u32,
+    height: u32,
+    line_size: usize,
+    bit_depth: png::BitDepth,
+    palette: &[u8],
+    transparency: &[u8],
+) -> Result<Vec<u8>> {
+    let (bits, byte_indices) = match bit_depth {
+        png::BitDepth::One => (1, false),
+        png::BitDepth::Two => (2, false),
+        png::BitDepth::Four => (4, false),
+        png::BitDepth::Eight => (8, true),
+        _ => return Err("expected indexed PNG with 1, 2, 4, or 8-bit indices".into()),
+    };
+    let output_size = rgba_size(width, height)?;
+    let mut rgba = Vec::with_capacity(output_size);
+    let width = width as usize;
+    let height = height as usize;
+    // Match png 0.18.1: an invalid tRNS table with more entries than PLTE is ignored whole.
+    let transparency = if transparency.len() <= palette.len() / 3 {
+        transparency
+    } else {
+        &[]
+    };
+    for y in 0..height {
+        let row_start = y.checked_mul(line_size).ok_or("image too large")?;
+        for x in 0..width {
+            let bit = x.checked_mul(bits).ok_or("image too large")?;
+            let byte_at = row_start.checked_add(bit / 8).ok_or("image too large")?;
+            let byte = packed.get(byte_at).ok_or("truncated indexed PNG")?;
+            let index = if byte_indices {
+                usize::from(*byte)
+            } else {
+                let shift = 8 - bits - (bit % 8);
+                usize::from((byte >> shift) & ((1 << bits) - 1))
+            };
+            let palette_at = index.checked_mul(3).ok_or("image too large")?;
+            if let Some(rgb) = palette.get(palette_at..palette_at + 3) {
+                rgba.extend_from_slice(rgb);
+                rgba.push(transparency.get(index).copied().unwrap_or(255));
+            } else {
+                rgba.extend_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
+    debug_assert_eq!(rgba.len(), output_size);
+    Ok(rgba)
 }
 
 /// The variant images (and `overlays`) the atlas packs: every variant before any overlay, by
@@ -302,7 +417,7 @@ fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut Wa
 
 #[cfg(test)]
 mod tests {
-    use super::{has_png_extension, has_png_extension_bytes};
+    use super::{expand_indexed, has_png_extension, has_png_extension_bytes};
     use std::path::Path;
 
     #[test]
@@ -337,5 +452,83 @@ mod tests {
         for (path, expected) in cases {
             assert_eq!(has_png_extension(Path::new(path)), expected, "{path}");
         }
+    }
+
+    #[test]
+    fn indexed_subbyte_expansion_is_msb_first_and_respects_row_padding() {
+        let packed = [0b0001_1011, 0b1111_0000, 0b1100_0100, 0b0011_0000];
+        let palette = [
+            10, 11, 12, // index 0
+            20, 21, 22, // index 1
+            30, 31, 32, // index 2
+        ];
+        let rgba = expand_indexed(
+            &packed,
+            3,
+            2,
+            2,
+            png::BitDepth::Two,
+            &palette,
+            &[255, 64, 0],
+        )
+        .unwrap();
+
+        assert_eq!(
+            rgba,
+            [
+                10, 11, 12, 255, // first row: index 0
+                20, 21, 22, 64, // index 1
+                30, 31, 32, 0, // index 2
+                0, 0, 0, 255, // second row index 3 missing from PLTE
+                10, 11, 12, 255, // padding bits from prior row were skipped
+                20, 21, 22, 64,
+            ]
+        );
+
+        let invalid_transparency = expand_indexed(
+            &packed,
+            3,
+            2,
+            2,
+            png::BitDepth::Two,
+            &palette,
+            &[255, 64, 0, 7],
+        )
+        .unwrap();
+        let no_transparency =
+            expand_indexed(&packed, 3, 2, 2, png::BitDepth::Two, &palette, &[]).unwrap();
+        assert_eq!(invalid_transparency, no_transparency);
+    }
+
+    #[test]
+    fn indexed_eight_bit_expansion_uses_row_stride_and_ignores_overlong_trns() {
+        let packed = [0, 1, 2, 99, 2, 3, 0, 88];
+        let palette = [
+            10, 11, 12, // index 0
+            20, 21, 22, // index 1
+            30, 31, 32, // index 2
+        ];
+        // Four alpha entries for three palette entries invalidates the whole tRNS table.
+        let rgba = expand_indexed(
+            &packed,
+            3,
+            2,
+            4,
+            png::BitDepth::Eight,
+            &palette,
+            &[0, 64, 128, 192],
+        )
+        .unwrap();
+
+        assert_eq!(
+            rgba,
+            [
+                10, 11, 12, 255, // index 0: invalid tRNS ignored
+                20, 21, 22, 255, 30, 31, 32, 255, 30, 31, 32,
+                255, // second row starts at line_size, not width
+                0, 0, 0, 255, // index 3 is absent from PLTE
+                10, 11, 12, 255,
+            ]
+        );
     }
 }
