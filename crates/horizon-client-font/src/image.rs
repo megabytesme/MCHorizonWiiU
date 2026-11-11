@@ -16,6 +16,58 @@ macro_rules! cafe_image_stage {
     }};
 }
 
+/// A cursor that exposes PNG parser read boundaries in the Cafe startup trace.
+#[cfg(target_os = "cafe")]
+struct TraceCursor<'a> {
+    inner: std::io::Cursor<&'a [u8]>,
+    trace: bool,
+}
+
+#[cfg(target_os = "cafe")]
+impl std::io::Read for TraceCursor<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.inner, buffer)
+    }
+}
+
+#[cfg(target_os = "cafe")]
+impl std::io::BufRead for TraceCursor<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        let trace = self.trace;
+        let offset = self.inner.position();
+        cafe_image_stage!(trace, "Horizon PNG: reader fill_buf begin offset={offset}");
+        let buffer = std::io::BufRead::fill_buf(&mut self.inner)?;
+        let available = buffer.len();
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: reader fill_buf complete offset={offset} bytes={available}"
+        );
+        Ok(buffer)
+    }
+
+    fn consume(&mut self, amount: usize) {
+        let trace = self.trace;
+        let offset = self.inner.position();
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: reader consume begin offset={offset} bytes={amount}"
+        );
+        std::io::BufRead::consume(&mut self.inner, amount);
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: reader consume complete offset={}",
+            self.inner.position()
+        );
+    }
+}
+
+#[cfg(target_os = "cafe")]
+impl std::io::Seek for TraceCursor<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.inner, position)
+    }
+}
+
 /// `TextureMetadataSection`'s `blur` and `clamp`: how vanilla samples a
 /// standalone texture (`ReloadableTexture.setSampler`: linear rather than
 /// nearest filtering, clamp-to-edge rather than repeat addressing).
@@ -53,9 +105,33 @@ pub fn decode_bytes_with_trace(
     data: &[u8],
     #[allow(unused_variables)] trace: bool,
 ) -> Result<(u32, u32, Vec<u8>)> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+    #[cfg(target_os = "cafe")]
+    if trace {
+        let decoder = png::Decoder::new(TraceCursor {
+            inner: std::io::Cursor::new(data),
+            trace,
+        });
+        return decode_png(data, decoder, trace);
+    }
+
+    decode_png(data, png::Decoder::new(std::io::Cursor::new(data)), trace)
+}
+
+fn decode_png<R: std::io::BufRead + std::io::Seek>(
+    data: &[u8],
+    mut decoder: png::Decoder<R>,
+    #[allow(unused_variables)] trace: bool,
+) -> Result<(u32, u32, Vec<u8>)> {
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    cafe_image_stage!(trace, "Horizon PNG: read_header_info begin");
+    let header = decoder.read_header_info()?;
+    #[allow(unused_variables)]
+    let (header_width, header_height) = (header.width, header.height);
+    cafe_image_stage!(
+        trace,
+        "Horizon PNG: read_header_info complete dimensions={header_width}x{header_height}"
+    );
     cafe_image_stage!(trace, "Horizon PNG: read_info begin bytes={}", data.len());
     let mut reader = decoder.read_info()?;
     cafe_image_stage!(trace, "Horizon PNG: read_info complete");
