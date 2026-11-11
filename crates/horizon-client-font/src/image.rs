@@ -95,8 +95,14 @@ fn decode_png<R: std::io::BufRead + std::io::Seek>(
             png::BitDepth::One | png::BitDepth::Two | png::BitDepth::Four | png::BitDepth::Eight
         );
     #[cfg(target_os = "cafe")]
+    let subbyte_grayscale = header.color_type == png::ColorType::Grayscale
+        && matches!(
+            header.bit_depth,
+            png::BitDepth::One | png::BitDepth::Two | png::BitDepth::Four
+        );
+    #[cfg(target_os = "cafe")]
     {
-        decoder.set_transformations(if indexed_palette {
+        decoder.set_transformations(if indexed_palette || subbyte_grayscale {
             png::Transformations::IDENTITY
         } else {
             png::Transformations::EXPAND | png::Transformations::STRIP_16
@@ -143,6 +149,44 @@ fn decode_png<R: std::io::BufRead + std::io::Seek>(
         cafe_image_stage!(
             trace,
             "Horizon PNG: indexed RGBA expansion complete pixels={}",
+            rgba.len() / 4
+        );
+        return Ok((info.width, info.height, rgba));
+    }
+
+    #[cfg(target_os = "cafe")]
+    if subbyte_grayscale {
+        let bit_depth = reader.info().bit_depth;
+        let transparency = reader
+            .info()
+            .trns
+            .as_deref()
+            .and_then(|transparency| transparency.first())
+            .copied();
+        rgba_size(reader.info().width, reader.info().height)?;
+        let mut bytes = vec![0; reader.output_buffer_size().ok_or("image too large")?];
+        cafe_image_stage!(trace, "Horizon PNG: output buffer allocation complete");
+        cafe_image_stage!(trace, "Horizon PNG: next_frame begin");
+        let info = reader.next_frame(&mut bytes)?;
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: next_frame complete dimensions={}x{} bytes={}",
+            info.width,
+            info.height,
+            info.buffer_size()
+        );
+        cafe_image_stage!(trace, "Horizon PNG: grayscale RGBA expansion begin");
+        let rgba = expand_grayscale(
+            &bytes[..info.buffer_size()],
+            info.width,
+            info.height,
+            info.line_size,
+            bit_depth,
+            transparency,
+        )?;
+        cafe_image_stage!(
+            trace,
+            "Horizon PNG: grayscale RGBA expansion complete pixels={}",
             rgba.len() / 4
         );
         return Ok((info.width, info.height, rgba));
@@ -235,6 +279,47 @@ fn expand_indexed(
             } else {
                 rgba.extend_from_slice(&[0, 0, 0, 255]);
             }
+        }
+    }
+    debug_assert_eq!(rgba.len(), output_size);
+    Ok(rgba)
+}
+
+fn expand_grayscale(
+    packed: &[u8],
+    width: u32,
+    height: u32,
+    line_size: usize,
+    bit_depth: png::BitDepth,
+    transparency: Option<u8>,
+) -> Result<Vec<u8>> {
+    let bits = match bit_depth {
+        png::BitDepth::One => 1usize,
+        png::BitDepth::Two => 2,
+        png::BitDepth::Four => 4,
+        _ => return Err("expected grayscale PNG with 1, 2, or 4-bit samples".into()),
+    };
+    let max_sample = (1usize << bits) - 1;
+    let scale = 255 / max_sample;
+    let output_size = rgba_size(width, height)?;
+    let mut rgba = Vec::with_capacity(output_size);
+    let width = width as usize;
+    let height = height as usize;
+    for y in 0..height {
+        let row_start = y.checked_mul(line_size).ok_or("image too large")?;
+        for x in 0..width {
+            let bit = x.checked_mul(bits).ok_or("image too large")?;
+            let byte_at = row_start.checked_add(bit / 8).ok_or("image too large")?;
+            let byte = packed.get(byte_at).ok_or("truncated grayscale PNG")?;
+            let shift = 8 - bits - (bit % 8);
+            let sample = usize::from((byte >> shift) & (max_sample as u8));
+            let gray = (sample * scale) as u8;
+            let alpha = if transparency == Some(sample as u8) {
+                0
+            } else {
+                255
+            };
+            rgba.extend_from_slice(&[gray, gray, gray, alpha]);
         }
     }
     debug_assert_eq!(rgba.len(), output_size);
@@ -417,7 +502,7 @@ fn walk_inner(dir: &Path, out: &mut Vec<PathBuf>, trace: bool, progress: &mut Wa
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_indexed, has_png_extension, has_png_extension_bytes};
+    use super::{expand_grayscale, expand_indexed, has_png_extension, has_png_extension_bytes};
     use std::path::Path;
 
     #[test]
@@ -530,5 +615,45 @@ mod tests {
                 10, 11, 12, 255,
             ]
         );
+    }
+
+    #[test]
+    fn grayscale_one_bit_expansion_is_msb_first_and_respects_row_padding_and_trns() {
+        let packed = [0b1010_0000, 0xff, 0b0100_0000, 0x00];
+        let rgba = expand_grayscale(&packed, 3, 2, 2, png::BitDepth::One, Some(1)).unwrap();
+
+        assert_eq!(
+            rgba,
+            [
+                255, 255, 255, 0, // first row: transparent white
+                0, 0, 0, 255, // then opaque black
+                255, 255, 255, 0, // then transparent white
+                0, 0, 0, 255, // second row starts after the first row's padding byte
+                255, 255, 255, 0, 0, 0, 0, 255,
+            ]
+        );
+    }
+
+    #[test]
+    fn grayscale_two_and_four_bit_samples_scale_to_eight_bit_rgba() {
+        let two_bit = expand_grayscale(
+            &[0b00_01_10_11, 0xff, 0b11_10_01_00, 0x00],
+            4,
+            2,
+            2,
+            png::BitDepth::Two,
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(
+            two_bit,
+            [
+                0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 0, 255, 255, 255, 255, 255, 255, 255,
+                255, 170, 170, 170, 0, 85, 85, 85, 255, 0, 0, 0, 255,
+            ]
+        );
+
+        let four_bit = expand_grayscale(&[0x0f], 2, 1, 1, png::BitDepth::Four, None).unwrap();
+        assert_eq!(four_bit, [0, 0, 0, 255, 255, 255, 255, 255]);
     }
 }
