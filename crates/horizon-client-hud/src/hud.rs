@@ -1141,8 +1141,25 @@ impl HudAtlas {
             "Horizon atlas: texture selection complete decode_files={}",
             files.len()
         );
+        #[cfg(target_os = "cafe")]
+        let decode_total = files.len();
+        #[cfg(target_os = "cafe")]
+        let decode_file_index = trace.then(std::sync::atomic::AtomicUsize::default);
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
+            #[cfg(target_os = "cafe")]
+            let trace_index = decode_file_index
+                .as_ref()
+                .map(|index| index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+            #[cfg(target_os = "cafe")]
+            if trace_index.is_some_and(|index| index <= 16 || index % 64 == 0) {
+                let index = trace_index.unwrap_or_default();
+                log::info!(
+                    target: "horizon.atlas",
+                    "Horizon atlas: texture candidate begin file={index} candidates={decode_total} path={}",
+                    path.display()
+                );
+            }
             let name = if let Some(name) = named.get(path) {
                 name.clone()
             } else {
@@ -1176,7 +1193,26 @@ impl HudAtlas {
             {
                 return None;
             }
-            let image = decode(path)
+            #[cfg(target_os = "cafe")]
+            if trace_index.is_some_and(|index| index <= 16 || index % 64 == 0) {
+                let index = trace_index.unwrap_or_default();
+                log::info!(
+                    target: "horizon.atlas",
+                    "Horizon atlas: PNG decode begin file={index} candidates={decode_total} path={}",
+                    path.display()
+                );
+            }
+            let decoded_image = decode(path);
+            #[cfg(target_os = "cafe")]
+            if trace_index.is_some_and(|index| index <= 16 || index % 64 == 0) {
+                let index = trace_index.unwrap_or_default();
+                log::info!(
+                    target: "horizon.atlas",
+                    "Horizon atlas: PNG decode complete file={index} candidates={decode_total} path={}",
+                    path.display()
+                );
+            }
+            let image = decoded_image
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
             #[cfg(target_os = "cafe")]
@@ -1215,8 +1251,6 @@ impl HudAtlas {
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
-        #[cfg(target_os = "cafe")]
-        let decode_total = files.len();
         #[cfg(target_os = "cafe")]
         let decode_progress = trace.then(std::sync::atomic::AtomicUsize::default);
         atlas_stage!("Horizon atlas: texture decode begin files={decode_total} workers={threads}");
