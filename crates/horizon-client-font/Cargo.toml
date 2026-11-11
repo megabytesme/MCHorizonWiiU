@@ -10,6 +10,7 @@ description = "Horizon client font loading and text shaping"
 ab_glyph = "0.2.32"
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input", default-features = false }
+horizon-assets = { path = "../horizon-assets" }
 horizon-core = { path = "../horizon-core" }
 horizon-hud-data = { path = "../horizon-hud-data" }
 horizon-resource-zip = { path = "../horizon-resource-zip" }

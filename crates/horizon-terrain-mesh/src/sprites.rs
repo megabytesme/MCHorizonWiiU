@@ -760,31 +760,44 @@ impl Sprites {
 /// when it holds the texture: no file opened per texture, nor for its absent
 /// LabPBR maps.
 fn read_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
-    let bytes = horizon_core::prepared_files::read(path)?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.ignore_checksums(true);
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info()?;
-    let mut bytes = vec![
-        0;
-        reader
-            .output_buffer_size()
-            .ok_or("sprite exceeds decoder limits")?
-    ];
-    let info = reader.next_frame(&mut bytes)?;
-    let channels = info.color_type.samples();
-    let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
-    for pixel in bytes[..info.buffer_size()].chunks_exact(channels) {
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => [pixel[0], pixel[1], pixel[2], pixel[3]],
-            png::ColorType::Rgb => [pixel[0], pixel[1], pixel[2], 255],
-            png::ColorType::Grayscale => [pixel[0], pixel[0], pixel[0], 255],
-            png::ColorType::GrayscaleAlpha => [pixel[0], pixel[0], pixel[0], pixel[1]],
-            _ => return Err("unsupported expanded sprite format".into()),
-        };
-        pixels.extend(rgba);
+    #[cfg(target_os = "cafe")]
+    let trace = {
+        static SPRITE_PNG_TRACE: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        SPRITE_PNG_TRACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 64
+    };
+    #[cfg(not(target_os = "cafe"))]
+    let trace = false;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            target: "horizon.sprite",
+            "Horizon sprite PNG: read begin path={}",
+            path.display()
+        );
     }
-    Ok((info.width, info.height, pixels))
+    let bytes = horizon_core::prepared_files::read(path)?;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            target: "horizon.sprite",
+            "Horizon sprite PNG: read complete path={} bytes={}",
+            path.display(),
+            bytes.len()
+        );
+    }
+    let decoded = horizon_assets::image::decode_png_rgba_with_trace(&bytes, trace)?;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            target: "horizon.sprite",
+            "Horizon sprite PNG: decode complete path={} dimensions={}x{}",
+            path.display(),
+            decoded.0,
+            decoded.1
+        );
+    }
+    Ok(decoded)
 }
 
 /// Companion frames use the colour image's grid; a single-frame map stays static.

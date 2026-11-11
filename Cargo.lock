@@ -1438,6 +1438,7 @@ name = "horizon-client-font"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "horizon-assets",
  "horizon-client-core",
  "horizon-client-input",
  "horizon-core",

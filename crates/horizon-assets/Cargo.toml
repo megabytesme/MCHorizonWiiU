@@ -9,11 +9,9 @@ description = "Horizon version-specific model and resource decoding"
 [dependencies]
 horizon-core = { path = "../horizon-core" }
 log = "0.4"
+png = "0.18"
 serde = "1.0.229"
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-png = "0.18"
