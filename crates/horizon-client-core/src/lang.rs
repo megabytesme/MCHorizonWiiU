@@ -434,6 +434,19 @@ impl Language {
         let mut all: Vec<&dyn ResourceSource> = vec![&bundled];
         all.extend_from_slice(sources);
         let sources = all.as_slice();
+        #[cfg(target_os = "cafe")]
+        let mut namespaces: Vec<String> = sources
+            .iter()
+            .flat_map(|source| source.namespaces())
+            .collect();
+        #[cfg(target_os = "cafe")]
+        {
+            // Avoid the Cafe BTreeSet path that stalled during language loading.
+            // Preserve its ascending unique order without using that iterator.
+            namespaces.sort_unstable();
+            namespaces.dedup();
+        }
+        #[cfg(not(target_os = "cafe"))]
         let namespaces: std::collections::BTreeSet<String> =
             sources.iter().flat_map(|s| s.namespaces()).collect();
         for c in codes {
