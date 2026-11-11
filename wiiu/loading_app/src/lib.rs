@@ -106,6 +106,8 @@ struct LoadingHost<'a> {
     focused: bool,
     touch_blocked_until_release: bool,
     pad_blocked_until_neutral: bool,
+    touch_trace_remaining: u8,
+    trace_touch_draw_this_frame: bool,
     exited: bool,
     failure: Option<String>,
 }
@@ -120,6 +122,10 @@ impl<'a> LoadingHost<'a> {
             focused: true,
             touch_blocked_until_release: false,
             pad_blocked_until_neutral: false,
+            // Keep the serial trace finite even if a finger is held on the
+            // screen and the device emits cursor events every frame.
+            touch_trace_remaining: 32,
+            trace_touch_draw_this_frame: false,
             exited: false,
             failure: None,
         }
@@ -156,23 +162,50 @@ impl<'a> LoadingHost<'a> {
             .events_with_freshness(&self.vpad, viewport, release);
         if trace && !events.is_empty() {
             startup_report!("touch event batch ready");
-            startup_report!("loading first touch dispatch begin");
         }
         let mut activation_dispatched = false;
         for event in events {
-            if trace {
-                startup_report!("touch event dispatch begin");
+            let trace_event = self.touch_trace_remaining > 0;
+            if trace_event {
+                self.touch_trace_remaining -= 1;
+                self.trace_touch_draw_this_frame = true;
             }
+            let (event_kind, x, y) = match &event {
+                horizon_client_platform::ClientWindowEvent::CursorMoved { position } => {
+                    ("cursor", Some(position.x), Some(position.y))
+                }
+                horizon_client_platform::ClientWindowEvent::MouseInput { state, .. } => {
+                    let kind = match state {
+                        horizon_client_platform::KeyState::Pressed => "press",
+                        horizon_client_platform::KeyState::Released => "release",
+                    };
+                    (kind, None, None)
+                }
+                _ => ("other", None, None),
+            };
             let activation = matches!(
                 &event,
                 horizon_client_platform::ClientWindowEvent::MouseInput { .. }
             );
+            let dispatch_started = Instant::now();
+            if trace_event {
+                log::info!(
+                    "Horizon Cafe touch: dispatch begin kind={} x={:?} y={:?}",
+                    event_kind,
+                    x,
+                    y
+                );
+            }
             // Dispatch each event immediately with the exact poll/release
             // evidence that produced it. Pointer position precedes press.
             session.dispatch_event(self, event);
             activation_dispatched |= activation;
-            if trace {
-                startup_report!("touch event dispatch complete");
+            if trace_event {
+                log::info!(
+                    "Horizon Cafe touch: dispatch complete kind={} elapsed_ms={}",
+                    event_kind,
+                    dispatch_started.elapsed().as_millis()
+                );
             }
         }
         activation_dispatched
@@ -234,6 +267,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut trace_touch_dispatch = true;
         let mut trace_input_failure_check = true;
         let mut trace_draw = true;
+        let mut progress_report_at = Instant::now();
+        let mut frames_since_progress_report = 0u32;
         loop {
             if !self.running() || self.control.get() == EventLoopControl::Exit {
                 self.exited = true;
@@ -345,14 +380,33 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if trace_draw {
                 startup_report!("loading first draw begin");
             }
+            let draw_started = Instant::now();
             let draw_result = session.draw(self.presenter);
             if trace_draw {
                 startup_report!("loading first draw returned");
                 trace_draw = false;
             }
+            if self.trace_touch_draw_this_frame {
+                self.trace_touch_draw_this_frame = false;
+                log::info!(
+                    "Horizon Cafe touch: current frame draw returned elapsed_ms={}",
+                    draw_started.elapsed().as_millis()
+                );
+            }
             if let Err(error) = draw_result {
                 self.failure = Some(error.to_string());
                 break;
+            }
+            frames_since_progress_report = frames_since_progress_report.saturating_add(1);
+            if progress_report_at.elapsed() >= Duration::from_secs(5) {
+                log::info!(
+                    "Horizon Cafe loop heartbeat: frames={} status={:?} failure={}",
+                    frames_since_progress_report,
+                    session.status(),
+                    self.failure.is_some()
+                );
+                progress_report_at = Instant::now();
+                frames_since_progress_report = 0;
             }
             match session.status() {
                 CafeLoadingStatus::Loading => {}
