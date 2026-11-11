@@ -1269,6 +1269,27 @@ impl Loading {
         key: Option<KeyCode>,
         keyboard: Option<horizon_client_platform::KeyboardEvent>,
     ) -> Result<()> {
+        #[cfg(target_os = "cafe")]
+        let trace_cafe_touch_press = {
+            static FIRST_TOUCH_PRESS: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
+            !self.menu.key_synthetic
+                && matches!(
+                    &event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    }
+                )
+                && FIRST_TOUCH_PRESS.swap(false, std::sync::atomic::Ordering::Relaxed)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_cafe_touch_press = false;
+
+        if trace_cafe_touch_press {
+            cafe_game_stage!("first Cafe touch press entered title menu handler");
+        }
         if let (Some(event), Some(key)) = (keyboard.as_ref(), key) {
             if event.state == horizon_client_platform::KeyState::Pressed {
                 self.menu.physical_keys.insert(key);
@@ -1284,11 +1305,17 @@ impl Loading {
         if !synthetic {
             self.menu_key_focus_mouse(&event);
         }
+        if trace_cafe_touch_press {
+            cafe_game_stage!("first Cafe touch press focus handoff complete");
+        }
         // Fullscreen (F11) is the window's: not the screen's input; the
         // keyboard's own clicks aren't the mouse.
         let f11 = key == Some(KeyCode::F11);
         if !f11 && !synthetic {
             super::narrator::narrate_input(&mut self.menu.narration, &event, self.menu.cursor, key);
+        }
+        if trace_cafe_touch_press {
+            cafe_game_stage!("first Cafe touch press narration complete");
         }
         // Screen.keyPressed: Tab, the arrows and Enter move and press the
         // focus, unless the focused widget or the screen keeps them.
@@ -1401,30 +1428,60 @@ impl Loading {
                 button: MouseButton::Left,
                 ..
             } => {
+                if trace_cafe_touch_press {
+                    cafe_game_stage!("first Cafe touch press left-button branch begin");
+                }
                 let batch = HudBatch::new(self.menu_size());
                 if let (Some(title), Some(gui)) = (&mut self.menu.title, &self.gui) {
+                    if trace_cafe_touch_press {
+                        cafe_game_stage!("first Cafe touch press title resources available");
+                    }
                     if state == ElementState::Released {
                         title.release();
                         title.release_field();
                     } else {
-                        let (action, _) = title.click(
+                        if trace_cafe_touch_press {
+                            cafe_game_stage!("first Cafe touch press Title::click begin");
+                        }
+                        let (action, activated) = title.click(
                             self.menu.cursor.0,
                             self.menu.cursor.1,
                             (batch.width, batch.height),
                         );
+                        if trace_cafe_touch_press {
+                            log::info!(
+                                "Horizon Cafe touch: Title::click returned cursor={:?} viewport={:?} activated={} action={action:?}",
+                                self.menu.cursor,
+                                [batch.width, batch.height],
+                                activated
+                            );
+                            cafe_game_stage!("first Cafe touch press Title::click complete");
+                        }
                         title.press_field(
                             &gui.atlas,
                             self.menu.cursor,
                             (batch.width, batch.height),
                             self.menu.modifiers.shift_key(),
                         );
+                        if trace_cafe_touch_press {
+                            cafe_game_stage!("first Cafe touch press field handling complete");
+                        }
                         title.press_rules(
                             &gui.atlas,
                             self.menu.cursor,
                             (batch.width, batch.height),
                         );
+                        if trace_cafe_touch_press {
+                            cafe_game_stage!("first Cafe touch press rules handling complete");
+                            cafe_game_stage!("first Cafe touch press menu action begin");
+                        }
                         self.menu_action(event_loop, action);
+                        if trace_cafe_touch_press {
+                            cafe_game_stage!("first Cafe touch press menu action complete");
+                        }
                     }
+                } else if trace_cafe_touch_press {
+                    cafe_game_stage!("first Cafe touch press title resources unavailable");
                 }
             }
             // AbstractSelectionList.mouseClicked: a world row takes a click
