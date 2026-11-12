@@ -808,7 +808,7 @@ impl Game<'_> {
                     Kind::Slider { .. } => {}
                     Kind::Field => {
                         self.pad_click_at(event_loop, focus.center(), false);
-                        self.pad_open_keyboard();
+                        self.pad_open_keyboard(event_loop);
                     }
                     Kind::Button | Kind::Tab(_) => {
                         self.pad_pointer_to(event_loop, focus.center());
@@ -829,7 +829,7 @@ impl Game<'_> {
                     && !self.pad_focusing()
                     && field_at(&self.pad_targets(), self.cursor)
                 {
-                    self.pad_open_keyboard();
+                    self.pad_open_keyboard(event_loop);
                 }
             }
             // Y in an inventory: a shift-click (quick move).
@@ -1385,7 +1385,7 @@ impl Game<'_> {
                 self.pad_step(event_loop, button);
             }
         }
-        self.pad_auto_keyboard();
+        self.pad_auto_keyboard(event_loop);
         // Vanilla's keyboard focus leaves the mouse pointer alone.
         self.pad_show_os_pointer(self.pad.menu.pos.is_none() || self.pad.menu.keyboard);
     }
@@ -2112,7 +2112,14 @@ impl Game<'_> {
     /// Open the on-screen keyboard over the focused field: Horizon's, or
     /// Steam's on a Steam Deck (`steam://open/keyboard`, which types into
     /// the window like a real keyboard).
-    fn pad_open_keyboard(&mut self) {
+    fn pad_open_keyboard(&mut self, event_loop: &dyn EventLoopCtl) {
+        #[cfg(target_os = "cafe")]
+        if event_loop.open_text_input("", 1024) {
+            return;
+        }
+        #[cfg(not(target_os = "cafe"))]
+        let _ = event_loop;
+
         // Without xdg-open (macOS, Windows), Horizon's keyboard instead.
         if gamepad::steam_keyboard(self.settings.controller.keyboard)
             && std::process::Command::new("xdg-open")
@@ -2132,7 +2139,7 @@ impl Game<'_> {
     /// opens with it (once per screen; B closes it for good). Not the chat a
     /// sleeper gets (`InBedChatScreen`): the game opens that one, not the
     /// player, so the keyboard waits for A on its chat box.
-    fn pad_auto_keyboard(&mut self) {
+    fn pad_auto_keyboard(&mut self, event_loop: &dyn EventLoopCtl) {
         let menu = &self.pad.menu;
         if osk_auto_opens(
             menu.osk.is_some(),
@@ -2144,7 +2151,7 @@ impl Game<'_> {
                     || self.sign_edit.is_some()),
         ) {
             self.pad.menu.osk_dismissed = true;
-            self.pad_open_keyboard();
+            self.pad_open_keyboard(event_loop);
         }
     }
 
