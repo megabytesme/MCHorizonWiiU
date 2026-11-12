@@ -22451,15 +22451,128 @@ impl CafeGameSession {
         if let Some(error) = &self.game.error {
             return Err(error.to_string().into());
         }
-        self.game.dispatch_platform_window_event(
-            event_loop,
-            WindowEvent::RedrawRequested,
-            input_trace::InputOrigin::Game,
-        );
-        if let Some(error) = &self.game.error {
-            return Err(error.to_string().into());
-        }
         Ok(())
+    }
+
+    /// Present a supported world-entry loading frame through the Cafe host.
+    /// Returns `None` after the original loading screen has ended.
+    pub fn draw_loading(
+        &mut self,
+        presenter: &mut dyn CafeLoadingPresenter,
+    ) -> Result<Option<bool>> {
+        self.present_loading_frame(presenter)
+    }
+
+    /// Reuse the original Game loading HUD while its integrated server opens
+    /// the selected world. Cafe has no world renderer yet; once this screen is
+    /// gone, the host keeps the last presented shell until a Cafe renderer is
+    /// available in a later slice.
+    fn present_loading_frame(
+        &mut self,
+        presenter: &mut dyn CafeLoadingPresenter,
+    ) -> Result<Option<bool>> {
+        let game = &mut self.game;
+        let size = presenter.layout_viewport();
+        if size.contains(&0) {
+            return Err("Cafe loading presenter returned an empty viewport".into());
+        }
+
+        game.gui.atlas.pack_pixels();
+        game.pack.render.pixels.pack();
+        game.gui.atlas.font.begin_frame();
+        if game.clock.still() {
+            game.gui.atlas.font.reseed(game.visual_ticks() as i64);
+        }
+        let mut hud = HudBatch::new(size);
+        if let Some(starting) = &game.integrated_starting {
+            let upgrade = starting.handle.upgrade();
+            if upgrade.is_file_fixing() {
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new(
+                        "file_fixer",
+                        screen_info::tr("upgradeWorld.title", &[]),
+                    )
+                });
+                horizon_client::level_loading::draw_file_fixer(
+                    &mut hud,
+                    &game.gui.atlas,
+                    upgrade,
+                    game.cursor,
+                );
+            } else {
+                let progress = Some(starting.handle.load_view())
+                    .filter(|view| view.has_progress())
+                    .map(|view| view.server_progress());
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(progress, &screen_info::tr)
+                });
+                let (width, height) = (hud.width, hud.height);
+                horizon_client::ui::menu_background(
+                    &mut hud,
+                    &game.gui.atlas,
+                    0.0,
+                    0.0,
+                    width,
+                    height,
+                    false,
+                );
+                let view = game
+                    .integrated_starting
+                    .as_ref()
+                    .map(|starting| starting.handle.load_view().clone());
+                let status = |x: i32, z: i32| view.as_ref().and_then(|view| view.status(x, z));
+                let progress = view
+                    .as_ref()
+                    .is_some_and(|view| view.has_progress())
+                    .then_some(game.loading_progress);
+                horizon_client::level_loading::draw(
+                    &mut hud,
+                    &game.gui.atlas,
+                    Some(&status),
+                    progress,
+                );
+            }
+        } else if game.pending_entry.is_some() {
+            let Some(loader) = game.rest_loader.as_ref() else {
+                return Ok(None);
+            };
+            horizon_client::widgets::begin_screen(|| {
+                screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
+            });
+            horizon_client::level_loading::draw_progress(
+                &mut hud,
+                &game.gui.atlas,
+                loader.progress.line(),
+                loader.progress.fraction(),
+            );
+        } else {
+            return Ok(None);
+        }
+
+        let artwork = CafeLoadingArtwork {
+            atlas: &game.gui.atlas,
+            panorama: Some(&game.gui.panorama),
+            generation: game.gui.atlas.revision,
+        };
+        presenter.prepare_loading(CafeLoadingArtwork {
+            atlas: artwork.atlas,
+            panorama: artwork.panorama,
+            generation: artwork.generation,
+        })?;
+        let targets = presenter.target_viewports();
+        if targets.iter().any(|rect| rect[2] == 0 || rect[3] == 0) {
+            return Err("Cafe loading presenter returned an empty viewport".into());
+        }
+        let frame = loading_frame(&hud);
+        let presented = presenter.present_loading(
+            artwork,
+            &frame,
+            size,
+            targets,
+            game.visual_ticks(),
+            game.settings.horizon.animated_textures,
+        )?;
+        Ok(Some(presented))
     }
 
     pub fn shutdown(&mut self) {

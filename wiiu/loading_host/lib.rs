@@ -445,11 +445,38 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
             height: u32,
         ) -> i32 {
             let draw = unsafe { &mut *context.cast::<Draw<'_, '_, '_>>() };
-            if draw.result.is_err()
-                || target > 1
-                || draw.presenter.outputs[target as usize] != [width, height]
-            {
-                draw.result = Err("Cafe host supplied an unexpected GX2 target");
+            if draw.result.is_err() {
+                return -1;
+            }
+            if target > 1 {
+                unsafe {
+                    OSReport(
+                        "Horizon GX2: invalid target index=%u size=%ux%u\n\0"
+                            .as_ptr()
+                            .cast(),
+                        target,
+                        width,
+                        height,
+                    );
+                }
+                draw.result = Err("Cafe host supplied an invalid GX2 target index");
+                return -1;
+            }
+            let expected = draw.presenter.outputs[target as usize];
+            if expected != [width, height] {
+                unsafe {
+                    OSReport(
+                        "Horizon GX2: target=%u actual=%ux%u expected=%ux%u\n\0"
+                            .as_ptr()
+                            .cast(),
+                        target,
+                        width,
+                        height,
+                        expected[0],
+                        expected[1],
+                    );
+                }
+                draw.result = Err("Cafe host supplied a GX2 target with an unexpected size");
                 return -1;
             }
             let target_index = target as usize;
@@ -493,6 +520,51 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
                 )
             };
             if let Err(error) = hud_result {
+                if error == horizon_wiiu_platform::hud::Error::Unsupported {
+                    let source = draw.presenter.layout;
+                    let target = draw.targets[target_index];
+                    let target_scaled =
+                        u64::from(target[2]) * u64::from(source[1]);
+                    let source_scaled =
+                        u64::from(target[3]) * u64::from(source[0]);
+                    let bad_aspect = u32::from(
+                        target_scaled.abs_diff(source_scaled)
+                            > target_scaled.max(source_scaled) / 200,
+                    );
+                    let runs = draw.frame.hud.runs();
+                    let unsupported_blend = runs.iter().find_map(|(_, blend)| match blend {
+                            horizon_client::hud::Blend::Alpha
+                            | horizon_client::hud::Blend::Additive => None,
+                            horizon_client::hud::Blend::Invert => Some(1),
+                            horizon_client::hud::Blend::Depth(_) => Some(3),
+                            horizon_client::hud::Blend::Vignette => Some(4),
+                            horizon_client::hud::Blend::EndPortal => Some(5),
+                            horizon_client::hud::Blend::CitGlint(_) => Some(6),
+                        })
+                        .unwrap_or(0);
+                    let unsupported_glint = u32::from(
+                        draw.frame
+                            .hud
+                            .vertices
+                            .iter()
+                            .any(|vertex| vertex.uv[0] >= 2.0),
+                    );
+                    unsafe {
+                        OSReport(
+                                "Horizon GX2 HUD unsupported: text_shader=%u blend=%u glint=%u aspect=%u source=%ux%u target=%ux%u\n\0"
+                                .as_ptr()
+                                .cast(),
+                            u32::from(draw.atlas.text_shader.is_some()),
+                            unsupported_blend,
+                            unsupported_glint,
+                            bad_aspect,
+                            source[0],
+                            source[1],
+                            target[2],
+                            target[3],
+                        );
+                    }
+                }
                 draw.result = Err(hud_error_message(error));
                 return -1;
             }
