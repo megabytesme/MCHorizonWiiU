@@ -1169,7 +1169,9 @@ impl Loading {
                 })
                 .unwrap_or_else(|| (String::new(), 1024))
         };
-        if event_loop.open_text_input(&initial, max_utf16_units.clamp(1, 1024)) {
+        if self.settings.controller.keyboard == horizon_client::gamepad::TextKeyboard::Auto
+            && event_loop.open_text_input(&initial, max_utf16_units.clamp(1, 1024))
+        {
             self.menu.native_osk = true;
             if self.menu.options_open {
                 if let Some(gui) = &self.gui {
