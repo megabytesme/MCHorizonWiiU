@@ -853,10 +853,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
-            let (pad, fresh_sample, fresh_release, terminal_error) = match self
-                .vpad
-                .poll_with_evidence()
-            {
+            let vpad_result = self.vpad.poll_with_evidence();
+            if trace_vpad {
+                startup_report!("Cafe VPAD Rust adapter returned");
+            }
+            let (pad, fresh_sample, fresh_release, terminal_error) = match vpad_result {
                 Ok((pad, fresh_sample, fresh_release)) => (pad, fresh_sample, fresh_release, false),
                 // VPAD busy means no new sample. Retain the previous state and
                 // never claim a physical touch release.
@@ -869,9 +870,30 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     (self.vpad.reset(), None, None, true)
                 }
             };
-            let controller_button_active = fresh_sample.is_some()
-                && (pad.buttons != 0 || pad.triggers.iter().any(|value| *value != 0.0));
-            let touch_contact_active = fresh_sample.is_some() && self.vpad.touch_active();
+            if trace_vpad {
+                startup_report!("Cafe VPAD host state mapping complete");
+            }
+            let has_fresh_sample = fresh_sample.is_some();
+            if trace_vpad {
+                startup_report!("Cafe VPAD freshness check complete");
+            }
+            let controller_button_active = has_fresh_sample && pad.buttons != 0;
+            if trace_vpad {
+                startup_report!("Cafe VPAD button activity check complete");
+            }
+            let touch_contact_active = has_fresh_sample && self.vpad.touch_active();
+            if trace_vpad {
+                startup_report!("Cafe VPAD touch activity check complete");
+            }
+            if trace_vpad {
+                if controller_button_active {
+                    startup_report!("Cafe VPAD button activity observed");
+                } else if touch_contact_active {
+                    startup_report!("Cafe VPAD touch activity observed");
+                } else {
+                    startup_report!("Cafe VPAD sample is neutral");
+                }
+            }
             if (controller_button_active || touch_contact_active)
                 && post_input_trace_frames == 0
                 && post_input_trace_bursts > 0
@@ -884,11 +906,17 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
+            if trace_vpad {
+                startup_report!("Cafe VPAD activity arming complete");
+            }
             if trace_this_iteration {
                 log::info!(
                     "Horizon Cafe host loop trace iteration={} phase=vpad_poll.end",
                     host_loop_iteration
                 );
+            }
+            if trace_vpad {
+                startup_report!("Cafe VPAD poll-end trace complete");
             }
             let trace_touch_sample_this_frame =
                 trace_first_touch_sample && fresh_sample.is_some() && self.vpad.touch_active();
@@ -900,6 +928,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     startup_report!("first Cafe VPAD touch sample has no valid point");
                 }
                 trace_first_touch_sample = false;
+            }
+            if trace_vpad {
+                startup_report!("Cafe VPAD touch trace complete");
             }
             if trace_vpad {
                 startup_report!("loading first VPAD sample complete");
