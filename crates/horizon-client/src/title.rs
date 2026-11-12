@@ -3119,7 +3119,12 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let lines = wrapped(atlas, &message, box_w - 8.0);
                 self.message_lines.set(lines.len());
                 let top = warning_top(h, lines.len());
-                let header = Text::translate("multiplayerWarning.header", &[]).bold();
+                let header = Text::translate_with_fallback(
+                    "multiplayerWarning.header",
+                    "Caution: Third-Party Online Play",
+                    &[],
+                )
+                .bold();
                 batch.text_styled(
                     atlas,
                     &header,

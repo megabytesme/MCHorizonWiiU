@@ -209,8 +209,7 @@ fn servers_file_of(player: Option<&Path>, saves: &Path) -> PathBuf {
     if let Some(player) = player {
         return player.join("servers.dat");
     }
-    saves
-        .parent()
+    horizon_client_platform::path::parent_dir(saves)
         .map_or_else(|| PathBuf::from("servers.dat"), |p| p.join("servers.dat"))
 }
 /// `FaviconTexture.upload`: a PNG of exactly 64x64 pixels, else no icon.
