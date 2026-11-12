@@ -4,7 +4,7 @@
 //! library only runs on that initialized GX2 thread.
 
 use horizon_client::game::{
-    CafeLoadingHost, CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
+    CafeGameSession, CafeLoadingHost, CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
 };
 use horizon_client_platform::{ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent};
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
@@ -37,6 +37,7 @@ const READY_WITHOUT_GAME_HANDOFF: i32 = 1;
 const LOADING_FAILED: i32 = 2;
 const PRESENTER_FAILED: i32 = 3;
 const APP_ROOT_FAILED: i32 = 4;
+const LOCAL_WORLD_START_FAILED: i32 = 5;
 
 const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
 
@@ -93,6 +94,9 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     startup_report!("Horizon entry call begin");
     let outcome = horizon_client::entry::main_with_cafe_host(Default::default(), &mut host);
     startup_report!("Horizon entry call returned");
+    if host.local_world_start_failed {
+        return LOCAL_WORLD_START_FAILED;
+    }
     if host.failure.is_some() {
         return LOADING_FAILED;
     }
@@ -109,6 +113,7 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
         CafeRunOutcome::Loading(session) => match session.status() {
             CafeLoadingStatus::Loading => LOADING_FAILED,
             CafeLoadingStatus::ReadyForHandoff => READY_WITHOUT_GAME_HANDOFF,
+            CafeLoadingStatus::LocalWorldStartFailed => LOCAL_WORLD_START_FAILED,
             CafeLoadingStatus::Failed => LOADING_FAILED,
         },
     }
@@ -305,6 +310,7 @@ struct LoadingHost<'a> {
     trace_touch_draw_this_frame: bool,
     exited: bool,
     failure: Option<String>,
+    local_world_start_failed: bool,
 }
 
 impl<'a> LoadingHost<'a> {
@@ -328,6 +334,7 @@ impl<'a> LoadingHost<'a> {
             trace_touch_draw_this_frame: false,
             exited: false,
             failure: None,
+            local_world_start_failed: false,
         }
     }
 
@@ -542,6 +549,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut trace_draw = true;
         let mut progress_report_at = Instant::now();
         let mut frames_since_progress_report = 0u32;
+        let mut game_session: Option<CafeGameSession> = None;
         loop {
             if !self.running() || self.control.get() == EventLoopControl::Exit {
                 self.exited = true;
@@ -760,11 +768,41 @@ impl CafeLoadingHost for LoadingHost<'_> {
             }
             match session.status() {
                 CafeLoadingStatus::Loading => {}
-                // Ready means the original title was accepted by the presenter,
-                // not that a world was selected or transferred into Game.
-                // Keep the title interactive until the WUT process exits.
+                CafeLoadingStatus::ReadyForHandoff if game_session.is_none() => {
+                    match session.start_local_game() {
+                        Ok(Some(game)) => {
+                            startup_report!("original local Game initialized; world startup begins");
+                            game_session = Some(game);
+                        }
+                        Ok(None) => {
+                            // Remote-server handoff remains on its existing path.
+                        }
+                        Err(error) => {
+                            self.local_world_start_failed = true;
+                            self.failure = Some(error.to_string());
+                            log::error!("Horizon Cafe local world start failed: {error}");
+                            startup_report!("original local Game handoff failed");
+                            break;
+                        }
+                    }
+                }
                 CafeLoadingStatus::ReadyForHandoff => {}
+                CafeLoadingStatus::LocalWorldStartFailed => {
+                    self.local_world_start_failed = true;
+                    self.failure = session.failure_message();
+                    break;
+                }
                 CafeLoadingStatus::Failed => break,
+            }
+
+            if let Some(game) = &mut game_session {
+                if let Err(error) = game.step(self) {
+                    self.local_world_start_failed = true;
+                    self.failure = Some(error.to_string());
+                    log::error!("Horizon Cafe local world start failed: {error}");
+                    startup_report!("original local world startup failed");
+                    break;
+                }
             }
 
             // Bound the software loop to the display cadence while honoring
@@ -783,6 +821,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
         }
         // Every way out of the host loop releases touch and controller edges
         // while the Loading session and its event loop are still alive.
+        if let Some(game) = &mut game_session {
+            game.shutdown();
+        }
         self.release_on_exit(session);
         Ok(())
     }

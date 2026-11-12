@@ -22152,6 +22152,8 @@ struct Loading {
     /// (`ready_for_handoff`).
     ui_at: Option<Instant>,
     title_drawn: bool,
+    /// A Cafe local-world transition failed after the title menu submitted it.
+    local_world_failure: Option<String>,
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
 }
@@ -22202,6 +22204,7 @@ pub struct CafeLoadingSession {
 pub enum CafeLoadingStatus {
     Loading,
     ReadyForHandoff,
+    LocalWorldStartFailed,
     Failed,
 }
 
@@ -22282,10 +22285,109 @@ impl CafeLoadingSession {
         result
     }
 
-    /// Readiness is informational only: this does not take `Loaded`, consume
-    /// `menu.pending`, or launch a world/Game handoff.
+    /// Transfer a selected local world into Horizon's original Game path.
+    /// Remote-server selections intentionally stay on the loading shell.
+    pub fn start_local_game(&mut self) -> Result<Option<CafeGameSession>> {
+        if !matches!(self.loading.menu.pending, Some(PendingWorldEntry::Local { .. })) {
+            return Ok(None);
+        }
+        if self.status() != CafeLoadingStatus::ReadyForHandoff {
+            return Err("local Cafe world requested before Loading was ready".into());
+        }
+        let result = self.start_local_game_inner();
+        if let Err(error) = &result {
+            self.loading.local_world_failure = Some(error.to_string());
+        }
+        result
+    }
+
+    fn start_local_game_inner(&mut self) -> Result<Option<CafeGameSession>> {
+        let loaded = self
+            .loading
+            .loaded
+            .take()
+            .ok_or("Cafe Loading has no completed resources")??;
+        let Loaded {
+            game_cpu,
+            root,
+            pack_error,
+            resources,
+            rest_loader,
+            pack,
+            gui: loaded_gui,
+            ..
+        } = loaded;
+        let mut options = self
+            .loading
+            .options
+            .take()
+            .ok_or("Cafe Loading options were already consumed")?;
+        options.resources = root;
+        options.world = None;
+        options.server = None;
+        let gui = self
+            .loading
+            .gui
+            .take()
+            .or(loaded_gui)
+            .ok_or("Cafe Loading has no menu bundle")?;
+        let audio = self
+            .loading
+            .audio
+            .take()
+            .ok_or("Cafe Loading has no audio engine")?;
+        let res: &'static Arc<Resources> = Box::leak(Box::new(resources));
+        let Some(mut game) = start_game(
+            res,
+            pack,
+            gui,
+            options,
+            pack_error.or_else(|| self.loading.pack_error.take()),
+            audio,
+            self.loading.vanilla_root.clone(),
+            self.loading.started,
+            rest_loader,
+            Some(self.loading.settings.clone()),
+            game_cpu,
+        )? else {
+            return Err("Cafe local world handoff did not create Game".into());
+        };
+        let shell_pending = match self.loading.menu.pending.as_ref() {
+            Some(PendingWorldEntry::Local {
+                folder,
+                name,
+                seed,
+                creative,
+                create,
+            }) => Some(PendingWorldEntry::Local {
+                folder: folder.clone(),
+                name: name.clone(),
+                seed: *seed,
+                creative: *creative,
+                create: create.clone(),
+            }),
+            _ => None,
+        };
+        self.loading.menu.handoff(&mut game);
+        // Keep the original loading presenter showing its world-loading shell
+        // while Game opens the integrated server in the background.
+        self.loading.menu.pending = shell_pending;
+        game.apply_settings();
+        game.panorama_rotation = self.loading.panorama_rotation;
+        game.previous = Instant::now();
+        game.settings.file.set(
+            "startedCleanly",
+            horizon_client::options_file::V::Bool(true),
+        );
+        game.settings.save(&Game::options_path());
+        Ok(Some(CafeGameSession { game }))
+    }
+
+    /// Report whether Loading is still running, ready for a handoff, or failed.
     pub fn status(&self) -> CafeLoadingStatus {
-        if self.failure_message().is_some() {
+        if self.loading.local_world_failure.is_some() {
+            CafeLoadingStatus::LocalWorldStartFailed
+        } else if self.failure_message().is_some() {
             CafeLoadingStatus::Failed
         } else if self.loading.loaded.is_some() && self.loading.ready_for_handoff() {
             CafeLoadingStatus::ReadyForHandoff
@@ -22296,7 +22398,9 @@ impl CafeLoadingSession {
 
     /// The loader's concrete failure message, if it has failed.
     pub fn failure_message(&self) -> Option<String> {
-        if let Some(error) = &self.loading.error {
+        if let Some(error) = &self.loading.local_world_failure {
+            Some(error.clone())
+        } else if let Some(error) = &self.loading.error {
             Some(error.to_string())
         } else {
             match self.loading.loaded.as_ref() {
@@ -22304,6 +22408,36 @@ impl CafeLoadingSession {
                 _ => None,
             }
         }
+    }
+}
+
+/// Cafe-owned driver for Horizon's original Game after a local title
+/// selection. It deliberately has no Winit window or WGPU renderer.
+pub struct CafeGameSession {
+    game: Game<'static>,
+}
+
+impl CafeGameSession {
+    /// Advance world-entry services and one normal game frame. The Cafe host
+    /// continues to own VPAD/touch polling and GX2 title/loading presentation.
+    pub fn step(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
+        self.game.idle(event_loop);
+        if let Some(error) = &self.game.error {
+            return Err(error.to_string().into());
+        }
+        self.game.dispatch_platform_window_event(
+            event_loop,
+            WindowEvent::RedrawRequested,
+            input_trace::InputOrigin::Game,
+        );
+        if let Some(error) = &self.game.error {
+            return Err(error.to_string().into());
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(&mut self) {
+        self.game.shut_down();
     }
 }
 
@@ -22356,6 +22490,7 @@ impl Loading {
             shown: false,
             ui_at: None,
             title_drawn: false,
+            local_world_failure: None,
             menu,
             error: None,
         })

@@ -72,6 +72,9 @@ int main(void)
    case 4:
       OSReport("Horizon Wii U: cannot enter /vol/external01/wiiu/apps/HorizonWiiU; check that the SD card is mounted and the app is installed there\n");
       break;
+   case 5:
+      OSReport("Horizon Wii U: original local world startup failed; inspect the Cafe log\n");
+      break;
    default:
       OSReport("Horizon Wii U: native loading presenter setup failed\n");
       break;
