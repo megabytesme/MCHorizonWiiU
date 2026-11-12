@@ -312,6 +312,7 @@ struct LoadingHost<'a> {
     mouse_position: Option<PhysicalPosition<f64>>,
     native_keyboard_result: Vec<u8>,
     native_keyboard_active: bool,
+    keyboard_event_reported: bool,
     keyboard_initialized: bool,
     mouse_initialized: bool,
     focused: bool,
@@ -338,6 +339,7 @@ impl<'a> LoadingHost<'a> {
             mouse_position: None,
             native_keyboard_result: vec![0; 4097],
             native_keyboard_active: false,
+            keyboard_event_reported: false,
             keyboard_initialized: false,
             mouse_initialized: false,
             focused: true,
@@ -609,11 +611,15 @@ impl<'a> LoadingHost<'a> {
         match result {
             0 => {}
             1 if length < self.native_keyboard_result.len() => {
+                startup_report!("CafeOS keyboard accepted text input");
                 let text =
                     String::from_utf8_lossy(&self.native_keyboard_result[..length]).into_owned();
                 self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
             }
-            2 => self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Disabled)),
+            2 => {
+                startup_report!("CafeOS keyboard canceled text input");
+                self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Disabled));
+            }
             error => log::warn!("Horizon Cafe system keyboard result failed: {error}"),
         }
     }
@@ -669,11 +675,25 @@ impl EventLoopCtl for LoadingHost<'_> {
             initial_units.pop();
         }
         initial_units.push(0);
-        unsafe {
+        let result = unsafe {
             horizon_swkbd_request(
                 initial_units.as_ptr(),
                 max_utf16_units.clamp(1, 1024) as i32,
-            ) == 0
+            )
+        };
+        if result == 0 {
+            startup_report!("CafeOS keyboard open succeeded");
+            true
+        } else {
+            unsafe {
+                OSReport(
+                    "Horizon Wii U startup: CafeOS keyboard open failed result=%d\n\0"
+                        .as_ptr()
+                        .cast(),
+                    result,
+                );
+            }
+            false
         }
     }
 }
@@ -817,6 +837,22 @@ impl CafeLoadingHost for LoadingHost<'_> {
 
             self.keyboard_events.clear();
             self.keyboard.drain_into(&mut self.keyboard_events);
+            if !self.keyboard_event_reported
+                && self
+                    .keyboard_events
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        ClientWindowEvent::KeyboardInput {
+                            event,
+                            is_synthetic: false,
+                        } if event.state == horizon_client_platform::KeyState::Pressed
+                    ))
+            {
+                // Never include key values or typed text in the serial trace.
+                self.keyboard_event_reported = true;
+                startup_report!("first Cafe USB key press decoded");
+            }
             if native_input_this_frame || !focused {
                 // Do not replay stale USB keystrokes after CafeOS takes over
                 // the GamePad keyboard or ProcUI has moved to the background.
