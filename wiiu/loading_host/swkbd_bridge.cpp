@@ -179,13 +179,12 @@ extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
    if (nn::swkbd::IsNeedCalcSubThreadFont()) nn::swkbd::CalcSubThreadFont();
    if (nn::swkbd::IsNeedCalcSubThreadPredict()) nn::swkbd::CalcSubThreadPredict();
 
-   bool selected = false;
-   if (nn::swkbd::IsDecideOkButton(&selected) && selected) {
+   if (nn::swkbd::IsDecideOkButton(nullptr)) {
       remember_result(ResultState::Accepted);
       close_form();
       return 1;
    }
-   if (nn::swkbd::IsDecideCancelButton(&selected) && selected) {
+   if (nn::swkbd::IsDecideCancelButton(nullptr)) {
       remember_result(ResultState::Cancelled);
       close_form();
       return 2;
