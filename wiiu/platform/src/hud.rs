@@ -123,6 +123,7 @@ impl<'a> Prepared<'a> {
             // Never discard the payload of a Depth or CitGlint run.
             let blend = match blend {
                 Blend::Alpha => 0,
+                Blend::Invert => 1,
                 Blend::Additive => 2,
                 _ => return Err(Error::Unsupported),
             };

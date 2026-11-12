@@ -206,6 +206,12 @@ HorizonHudResult horizon_gx2_hud_draw_to(HorizonGx2Hud *hud, const HorizonHudFra
          GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE,
                             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
                             GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_ADD);
+      } else if (f->runs[i].blend == HORIZON_HUD_INVERT) {
+         /* Match Horizon's INVERT function: (1 - dst) * src + (1 - src) * dst. */
+         GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_INV_DST_COLOR,
+                            GX2_BLEND_MODE_INV_SRC_COLOR, GX2_BLEND_COMBINE_MODE_ADD,
+                            TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO,
+                            GX2_BLEND_COMBINE_MODE_ADD);
       } else {
          GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
                             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
