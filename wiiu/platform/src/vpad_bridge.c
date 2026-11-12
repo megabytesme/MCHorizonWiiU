@@ -7,6 +7,10 @@ static int32_t swkbd_input_occupied;
 static void
 update_swkbd(const VPADStatus *status)
 {
+   if (status == NULL) {
+      swkbd_input_occupied = horizon_swkbd_is_open() != 0;
+      return;
+   }
    int32_t result = horizon_swkbd_calc(status);
    swkbd_input_occupied = result != 0 || horizon_swkbd_is_open() != 0;
 }
