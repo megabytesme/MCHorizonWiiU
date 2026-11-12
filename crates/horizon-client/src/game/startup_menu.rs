@@ -977,29 +977,43 @@ impl Loading {
                     }
                 }
                 if *state == ElementState::Pressed && *button == MouseButton::Left {
-                    let (cx, cy) = self.menu.cursor;
-                    let targets = self.menu_key_targets_with_trace(trace_cafe_touch_press);
-                    if trace_cafe_touch_press {
-                        log::info!(
-                            "Horizon Cafe touch: focus target hit-test begin cursor=({cx},{cy}) targets={}",
-                            targets.len()
-                        );
-                        cafe_game_stage!("first Cafe touch press focus target hit-test begin");
+                    #[cfg(target_os = "cafe")]
+                    {
+                        // GamePad touch already supplies the pointer click. Do
+                        // not run the desktop mouse-to-key-focus hit-test here;
+                        // Cafe can hang in that target scan. No focus origin is
+                        // available without the hit-test, so discard any stale one.
+                        self.menu.key_origin = None;
+                        if trace_cafe_touch_press {
+                            cafe_game_stage!("first Cafe touch press focus target hit-test skipped");
+                        }
                     }
-                    let key_origin = targets
-                        .into_iter()
-                        .find(|t| {
-                            let [x, y, w, h] = t.rect;
-                            cx >= x && cy >= y && cx < x + w && cy < y + h
-                        })
-                        .map(|t| t.rect);
-                    if trace_cafe_touch_press {
-                        log::info!(
-                            "Horizon Cafe touch: focus target hit-test complete selected={key_origin:?}"
-                        );
-                        cafe_game_stage!("first Cafe touch press focus target hit-test complete");
+                    #[cfg(not(target_os = "cafe"))]
+                    {
+                        let (cx, cy) = self.menu.cursor;
+                        let targets = self.menu_key_targets_with_trace(trace_cafe_touch_press);
+                        if trace_cafe_touch_press {
+                            log::info!(
+                                "Horizon Cafe touch: focus target hit-test begin cursor=({cx},{cy}) targets={}",
+                                targets.len()
+                            );
+                            cafe_game_stage!("first Cafe touch press focus target hit-test begin");
+                        }
+                        let key_origin = targets
+                            .into_iter()
+                            .find(|t| {
+                                let [x, y, w, h] = t.rect;
+                                cx >= x && cy >= y && cx < x + w && cy < y + h
+                            })
+                            .map(|t| t.rect);
+                        if trace_cafe_touch_press {
+                            log::info!(
+                                "Horizon Cafe touch: focus target hit-test complete selected={key_origin:?}"
+                            );
+                            cafe_game_stage!("first Cafe touch press focus target hit-test complete");
+                        }
+                        self.menu.key_origin = key_origin;
                     }
-                    self.menu.key_origin = key_origin;
                 }
             }
             WindowEvent::MouseWheel { .. } if self.menu.key_focus_release() => {
