@@ -6,13 +6,9 @@
 //! instance's random.
 use horizon_core::random::RandomSource;
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-};
 #[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
 use std::collections::HashSet;
+use std::{collections::HashMap, fs, path::Path};
 
 /// `SoundManager.EMPTY_SOUND_LOCATION`.
 pub const EMPTY: &str = "minecraft:empty";
@@ -114,14 +110,92 @@ pub struct WeighedSoundEvents {
 }
 /// A `sounds.json` entry: event, `replace`, subtitle and sounds.
 type Registration = (String, bool, Option<String>, Vec<Sound>);
+
+/// Cafe's JSON object representation is a `BTreeMap`, whose iterator stalls
+/// under Cemu's interpreter for the large root `sounds.json` map. Deserialize
+/// only that root object into entries, then restore its sorted iteration order.
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+struct SoundEventEntries(Vec<(String, Value)>);
+
+#[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+impl<'de> serde::Deserialize<'de> for SoundEventEntries {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct EntriesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for EntriesVisitor {
+            type Value = SoundEventEntries;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a sound-event object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, Value>()? {
+                    entries.push(entry);
+                }
+                // BTreeMap keeps the last duplicate key and iterates keys in
+                // lexical order; stable sorting lets us retain both behaviors.
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut unique: Vec<(String, Value)> = Vec::with_capacity(entries.len());
+                for (name, value) in entries {
+                    if let Some((last_name, last_value)) = unique.last_mut() {
+                        if *last_name == name {
+                            *last_value = value;
+                            continue;
+                        }
+                    }
+                    unique.push((name, value));
+                }
+                Ok(SoundEventEntries(unique))
+            }
+        }
+
+        deserializer.deserialize_map(EntriesVisitor)
+    }
+}
+
 /// Parse a `sounds.json`; `None` when Gson would reject the whole file (a
 /// malformed entry anywhere in it).
 fn parse_file(namespace: &str, text: &[u8]) -> Option<Vec<Registration>> {
-    let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(text) else {
-        return None;
-    };
+    #[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+    {
+        let entries = match serde_json::from_slice::<SoundEventEntries>(text) {
+            Ok(entries) => entries.0,
+            Err(_) => return None,
+        };
+        return parse_entries(
+            namespace,
+            entries
+                .iter()
+                .map(|(name, definition)| (name.as_str(), definition)),
+        );
+    }
+    #[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
+    {
+        let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(text) else {
+            return None;
+        };
+        parse_entries(
+            namespace,
+            map.iter()
+                .map(|(name, definition)| (name.as_str(), definition)),
+        )
+    }
+}
+
+fn parse_entries<'a>(
+    namespace: &str,
+    entries: impl Iterator<Item = (&'a str, &'a Value)>,
+) -> Option<Vec<Registration>> {
     let mut parsed = Vec::new();
-    for (name, def) in &map {
+    for (name, def) in entries {
         let Value::Object(object) = def else {
             return None;
         };
