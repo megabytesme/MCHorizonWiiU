@@ -133,11 +133,44 @@ impl ParsedModels {
                     };
                     if is_dir {
                         stack.push(path);
-                    } else if path.extension().is_some_and(|x| x == "json")
-                        && let Ok(rel) = path.strip_prefix(&base)
-                    {
-                        let rel = rel.with_extension("").to_string_lossy().replace('\\', "/");
-                        files.push((format!("{namespace}:{rel}"), path));
+                    } else {
+                        #[cfg(target_os = "cafe")]
+                        let is_json = {
+                            // Cafe paths use `/` as their separator. Check the
+                            // last component directly; Path::extension stalls
+                            // here in the Cemu Cafe interpreter.
+                            let bytes = path.as_os_str().as_encoded_bytes();
+                            let file_name =
+                                bytes.rsplit(|byte| *byte == b'/').next().unwrap_or(&[]);
+                            match file_name.iter().rposition(|byte| *byte == b'.') {
+                                Some(dot) if dot > 0 => &file_name[dot + 1..] == b"json",
+                                _ => false,
+                            }
+                        };
+                        #[cfg(not(target_os = "cafe"))]
+                        let is_json = path.extension().is_some_and(|x| x == "json");
+                        if is_json {
+                            #[cfg(target_os = "cafe")]
+                            let rel = {
+                                // These paths are rooted at `base` and use
+                                // slash-separated child names on Cafe.
+                                let path = path.as_os_str().as_encoded_bytes();
+                                let base = base.as_os_str().as_encoded_bytes();
+                                path.strip_prefix(base)
+                                    .and_then(|relative| relative.strip_prefix(b"/"))
+                                    .and_then(|relative| relative.strip_suffix(b".json"))
+                                    .map(|relative| {
+                                        String::from_utf8_lossy(relative).replace('\\', "/")
+                                    })
+                            };
+                            #[cfg(not(target_os = "cafe"))]
+                            let rel = path.strip_prefix(&base).ok().map(|rel| {
+                                rel.with_extension("").to_string_lossy().replace('\\', "/")
+                            });
+                            if let Some(rel) = rel {
+                                files.push((format!("{namespace}:{rel}"), path));
+                            }
+                        }
                     }
                 }
             }
