@@ -618,6 +618,29 @@ impl Writer {
                 }
             }
             Tag::Compound(values) => {
+                #[cfg(target_os = "cafe")]
+                {
+                    let mut previous = None;
+                    loop {
+                        let entry = match previous {
+                            Some(key) => values
+                                .range((std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+                                .next(),
+                            None => values.first_key_value(),
+                        };
+                        let Some((name, value)) = entry else {
+                            break;
+                        };
+                        previous = Some(name);
+                        if matches!(value, Tag::End) {
+                            return Err(self.error("End cannot be a named value"));
+                        }
+                        self.put(&[value.id()])?;
+                        self.string(name)?;
+                        self.payload(value, depth + 1)?;
+                    }
+                }
+                #[cfg(not(target_os = "cafe"))]
                 for (name, value) in values {
                     if matches!(value, Tag::End) {
                         return Err(self.error("End cannot be a named value"));

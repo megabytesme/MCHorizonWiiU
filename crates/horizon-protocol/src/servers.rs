@@ -3,6 +3,8 @@
 //! acceptedCodeOfConduct?}]}`.
 use horizon_world::nbt::{self, JavaString, NamedTag, Tag};
 use std::path::Path;
+#[cfg(target_os = "cafe")]
+use std::path::PathBuf;
 
 macro_rules! cafe_server_stage {
     ($stage:literal) => {{
@@ -164,6 +166,16 @@ fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
     cafe_server_stage!("NBT serialization begin");
     let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
     cafe_server_stage!("NBT serialization complete");
+    #[cfg(target_os = "cafe")]
+    let tmp = {
+        // Cafe's `Path::with_extension` stalls in the std path code for the
+        // servers.dat path. This writer only receives that filename on Cafe;
+        // appending `_tmp` preserves its existing `servers.dat_tmp` sibling.
+        let mut name = path.as_os_str().to_os_string();
+        name.push("_tmp");
+        PathBuf::from(name)
+    };
+    #[cfg(not(target_os = "cafe"))]
     let tmp = path.with_extension("dat_tmp");
     cafe_server_stage!("temporary file write begin");
     std::fs::write(&tmp, bytes)?;
