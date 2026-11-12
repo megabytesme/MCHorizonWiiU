@@ -343,9 +343,36 @@ impl<'a> LoadingHost<'a> {
         unsafe { horizon_wiiu_app_is_running() != 0 }
     }
 
+    fn dispatch_event(
+        &mut self,
+        loading: &mut CafeLoadingSession,
+        game: Option<&mut CafeGameSession>,
+        event: ClientWindowEvent,
+    ) {
+        if let Some(game) = game {
+            game.dispatch_event(self, event);
+        } else {
+            loading.dispatch_event(self, event);
+        }
+    }
+
+    fn dispatch_pad_state(
+        &mut self,
+        loading: &mut CafeLoadingSession,
+        game: Option<&mut CafeGameSession>,
+        state: horizon_client::gamepad::PadState,
+    ) {
+        if let Some(game) = game {
+            game.feed_pad_state(state);
+        } else {
+            loading.dispatch_pad_state(self, state);
+        }
+    }
+
     fn dispatch_touch(
         &mut self,
         session: &mut CafeLoadingSession,
+        mut game: Option<&mut CafeGameSession>,
         release: Option<horizon_wiiu_platform::FreshTouchRelease>,
         trace: bool,
     ) -> bool {
@@ -405,7 +432,7 @@ impl<'a> LoadingHost<'a> {
             }
             // Dispatch each event immediately with the exact poll/release
             // evidence that produced it. Pointer position precedes press.
-            session.dispatch_event(self, event);
+            self.dispatch_event(session, game.as_deref_mut(), event);
             activation_dispatched |= activation;
             if trace_event {
                 log::info!(
@@ -418,18 +445,23 @@ impl<'a> LoadingHost<'a> {
         activation_dispatched
     }
 
-    fn release_on_exit(&mut self, session: &mut CafeLoadingSession) {
+    fn release_on_exit(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        mut game: Option<&mut CafeGameSession>,
+    ) {
         self.keyboard.release_all_into(&mut self.keyboard_events);
-        self.dispatch_queued_keyboard(session);
+        self.dispatch_queued_keyboard(session, game.as_deref_mut());
         let release = self.touch.reset(&self.vpad);
         for event in release {
-            session.dispatch_event(self, event);
+            self.dispatch_event(session, game.as_deref_mut(), event);
         }
         let neutral = self.vpad.reset();
         self.pad_blocked_until_neutral = true;
-        session.dispatch_pad_state(self, neutral);
-        session.dispatch_event(
-            self,
+        self.dispatch_pad_state(session, game.as_deref_mut(), neutral);
+        self.dispatch_event(
+            session,
+            game,
             horizon_client_platform::ClientWindowEvent::Focused(false),
         );
         unsafe { horizon_swkbd_close() };
@@ -442,10 +474,14 @@ impl<'a> LoadingHost<'a> {
         }
     }
 
-    fn dispatch_queued_keyboard(&mut self, session: &mut CafeLoadingSession) {
+    fn dispatch_queued_keyboard(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        mut game: Option<&mut CafeGameSession>,
+    ) {
         let mut events = std::mem::take(&mut self.keyboard_events);
         for event in events.drain(..) {
-            session.dispatch_event(self, event);
+            self.dispatch_event(session, game.as_deref_mut(), event);
         }
         self.keyboard_events = events;
     }
@@ -457,7 +493,11 @@ impl<'a> LoadingHost<'a> {
         self.keyboard_events.clear();
     }
 
-    fn poll_native_keyboard_result(&mut self, session: &mut CafeLoadingSession) {
+    fn poll_native_keyboard_result(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        game: Option<&mut CafeGameSession>,
+    ) {
         let mut length = 0usize;
         let result = unsafe {
             horizon_swkbd_take_result(
@@ -471,14 +511,18 @@ impl<'a> LoadingHost<'a> {
             1 if length < self.native_keyboard_result.len() => {
                 let text =
                     String::from_utf8_lossy(&self.native_keyboard_result[..length]).into_owned();
-                session.dispatch_event(self, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
+                self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
             }
-            2 => session.dispatch_event(self, ClientWindowEvent::Ime(ImeEvent::Disabled)),
+            2 => self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Disabled)),
             error => log::warn!("Horizon Cafe system keyboard result failed: {error}"),
         }
     }
 
-    fn update_focus(&mut self, session: &mut CafeLoadingSession) -> bool {
+    fn update_focus(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        mut game: Option<&mut CafeGameSession>,
+    ) -> bool {
         // SAFETY: ProcUI was initialized by WHBProcInit and is advanced by
         // WHBProcIsRunning on this same main thread.
         let focused = unsafe { horizon_wiiu_app_is_focused() != 0 };
@@ -491,16 +535,17 @@ impl<'a> LoadingHost<'a> {
         } else {
             self.touch_blocked_until_release = true;
             for event in self.touch.focus_lost(&self.vpad) {
-                session.dispatch_event(self, event);
+                self.dispatch_event(session, game.as_deref_mut(), event);
             }
             let neutral = self.vpad.reset();
             self.pad_blocked_until_neutral = true;
-            session.dispatch_pad_state(self, neutral);
+            self.dispatch_pad_state(session, game.as_deref_mut(), neutral);
             self.keyboard.release_all_into(&mut self.keyboard_events);
-            self.dispatch_queued_keyboard(session);
+            self.dispatch_queued_keyboard(session, game.as_deref_mut());
         }
-        session.dispatch_event(
-            self,
+        self.dispatch_event(
+            session,
+            game,
             horizon_client_platform::ClientWindowEvent::Focused(focused),
         );
         focused
@@ -558,7 +603,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if trace_focus {
                 startup_report!("loading first focus update begin");
             }
-            let focused = self.update_focus(session);
+            let focused = self.update_focus(session, game_session.as_mut());
             if trace_focus {
                 startup_report!("loading first focus update complete");
                 trace_focus = false;
@@ -624,21 +669,29 @@ impl CafeLoadingHost for LoadingHost<'_> {
             let mut native_input_this_frame =
                 self.native_keyboard_active || swkbd_occupied || swkbd_open;
             self.native_keyboard_active = swkbd_occupied || swkbd_open;
-            self.poll_native_keyboard_result(session);
+            self.poll_native_keyboard_result(session, game_session.as_mut());
             if native_input_this_frame && !self.native_keyboard_active {
-                // A result closed the system keyboard. The frame that contains
-                // that result still belongs to it; require fresh neutral input
-                // and a physical touch release before returning to the menu.
-                self.touch_blocked_until_release = true;
+                // A result closed the system keyboard. Keep the host gate only
+                // if a contact is still active; TouchMapper::reset retains its
+                // own release suppression for any previously seen contact.
+                self.touch_blocked_until_release = self.vpad.touch_active();
                 self.pad_blocked_until_neutral = true;
-                let release = self.touch.focus_lost(&self.vpad);
-                for event in release {
-                    session.dispatch_event(self, event);
+                // Cancel any gesture accumulated while CafeOS owned contact,
+                // without changing mapper focus or the VPAD state that the
+                // native-input branch will pair with this poll's marker.
+                for event in self.touch.reset(&self.vpad) {
+                    self.dispatch_event(session, game_session.as_mut(), event);
                 }
-                let neutral = self.vpad.reset();
-                session.dispatch_pad_state(self, neutral);
+                // Keep ProcUI focus and the poll's VPAD state intact. The
+                // native-input touch branch below consumes `fresh_release`
+                // once against this exact state; pad delivery resets separately.
+                self.dispatch_pad_state(
+                    session,
+                    game_session.as_mut(),
+                    horizon_client::gamepad::PadState::default(),
+                );
                 self.keyboard.release_all_into(&mut self.keyboard_events);
-                self.dispatch_queued_keyboard(session);
+                self.dispatch_queued_keyboard(session, game_session.as_mut());
             }
 
             self.keyboard_events.clear();
@@ -646,10 +699,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if native_input_this_frame || !focused {
                 // Do not replay stale USB keystrokes after CafeOS takes over
                 // the GamePad keyboard or ProcUI has moved to the background.
-                self.keyboard.release_all_into(&mut self.keyboard_events);
                 self.keyboard_events.clear();
+                self.keyboard.release_all_into(&mut self.keyboard_events);
+                self.dispatch_queued_keyboard(session, game_session.as_mut());
             } else {
-                self.dispatch_queued_keyboard(session);
+                self.dispatch_queued_keyboard(session, game_session.as_mut());
             }
 
             if trace_pad_dispatch {
@@ -667,22 +721,27 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if native_input_this_frame {
                 // VPADStatus was already passed to CafeOS's keyboard Calc.
                 // Do not also route the same pad sample through Horizon menus.
+                // CafeGameSession retains its fed state between polls, so
+                // explicitly clear it while CafeOS owns the controller.
+                if let Some(game) = game_session.as_mut() {
+                    game.feed_pad_state(horizon_client::gamepad::PadState::default());
+                }
             } else if terminal_error {
                 // Deliver neutral immediately to release any menu edge, but
                 // do not treat an error-created default as fresh rearm proof.
-                session.dispatch_pad_state(self, pad);
+                self.dispatch_pad_state(session, game_session.as_mut(), pad);
             } else if self.pad_blocked_until_neutral {
                 let neutral = pad.buttons == 0 && pad.triggers.iter().all(|value| *value == 0.0);
                 // Only a successful sample can rearm. Cached neutral state,
                 // no-sample/busy polls, and touch-release evidence do not.
                 if fresh_sample.is_some() && neutral {
                     self.pad_blocked_until_neutral = false;
-                    session.dispatch_pad_state(self, pad);
+                    self.dispatch_pad_state(session, game_session.as_mut(), pad);
                 }
             } else {
                 // Pass the actual canonical Cafe controller sample through
                 // Horizon's typed menu path; no keyboard events are synthesized.
-                session.dispatch_pad_state(self, pad);
+                self.dispatch_pad_state(session, game_session.as_mut(), pad);
             }
             if !native_input_this_frame && unsafe { horizon_swkbd_is_open() != 0 } {
                 // The south-button sample that opens CafeOS is still delivered
@@ -690,7 +749,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 native_input_this_frame = true;
                 self.native_keyboard_active = true;
                 self.keyboard.release_all_into(&mut self.keyboard_events);
-                self.dispatch_queued_keyboard(session);
+                self.dispatch_queued_keyboard(session, game_session.as_mut());
+                // This sample opened CafeOS, but the game frame below now
+                // belongs to its keyboard. Do not leave that sample latched.
+                if let Some(game) = game_session.as_mut() {
+                    game.feed_pad_state(horizon_client::gamepad::PadState::default());
+                }
             }
             if trace_pad_dispatch {
                 startup_report!("loading first pad dispatch complete");
@@ -703,16 +767,27 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 // Keep TouchMapper's contact/release state current while the
                 // CafeOS keyboard consumes the GamePad touchscreen.
                 let mut dimensions = [0u32; 4];
-                if unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) } == 0 {
-                    let _ = self.touch.events_with_freshness(
-                        &self.vpad,
-                        [dimensions[2], dimensions[3]],
-                        fresh_release,
-                    );
-                }
+                let viewport = if unsafe {
+                    horizon_loading_host_dimensions(dimensions.as_mut_ptr())
+                } == 0
+                {
+                    [dimensions[2], dimensions[3]]
+                } else {
+                    // A release marker is still valid without a drawable
+                    // target; TouchMapper consumes it before scaling points.
+                    [1, 1]
+                };
+                let _ = self
+                    .touch
+                    .events_with_freshness(&self.vpad, viewport, fresh_release);
                 false
             } else {
-                self.dispatch_touch(session, fresh_release, trace_touch_dispatch)
+                self.dispatch_touch(
+                    session,
+                    game_session.as_mut(),
+                    fresh_release,
+                    trace_touch_dispatch,
+                )
             };
             if trace_touch_sample_this_frame {
                 startup_report!("first Cafe VPAD touch mapping complete");
@@ -824,7 +899,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
         if let Some(game) = &mut game_session {
             game.shutdown();
         }
-        self.release_on_exit(session);
+        self.release_on_exit(session, game_session.as_mut());
         Ok(())
     }
 }

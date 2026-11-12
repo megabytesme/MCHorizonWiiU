@@ -22418,6 +22418,22 @@ pub struct CafeGameSession {
 }
 
 impl CafeGameSession {
+    /// Feed the host's canonical Cafe controller sample into the normal game
+    /// pad poll. `step` consumes it through `Game::poll_pads`, preserving the
+    /// game's bindings, edge detection, and controller settings.
+    pub fn feed_pad_state(&mut self, state: horizon_client::gamepad::PadState) {
+        self.game.pad.feed = Some(state);
+    }
+
+    /// Route a host window event through the same path used by native windows.
+    pub fn dispatch_event(&mut self, event_loop: &dyn EventLoopCtl, event: WindowEvent) {
+        self.game.dispatch_platform_window_event(
+            event_loop,
+            event,
+            input_trace::InputOrigin::User,
+        );
+    }
+
     /// Advance world-entry services and one normal game frame. The Cafe host
     /// continues to own VPAD/touch polling and GX2 title/loading presentation.
     pub fn step(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
