@@ -10,6 +10,8 @@ use horizon_client_platform::{EventLoopControl, EventLoopCtl};
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
 use horizon_wiiu_platform::{touch::TouchMapper, VpadState};
 use std::cell::Cell;
+use std::ffi::CString;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 unsafe extern "C" {
@@ -50,6 +52,7 @@ pub extern "C" fn horizon_wiiu_app_entropy_first() {
 #[no_mangle]
 pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     startup_report!("Rust app entry reached");
+    cafe_socket_setup_trace();
     // Cafe std's FS backend mounts the SD card at /vol/external01 when its
     // first filesystem operation initializes the FS client. Set a known app
     // working directory so Options' existing relative .local fallback and
@@ -95,6 +98,180 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
             CafeLoadingStatus::ReadyForHandoff => READY_WITHOUT_GAME_HANDOFF,
             CafeLoadingStatus::Failed => LOADING_FAILED,
         },
+    }
+}
+
+/// Opt-in, one-shot probe for the socket setup calls ureq makes before TLS.
+/// Enable only for a diagnostic build with HORIZON_CAFE_SOCKET_TRACE=1.
+fn cafe_socket_setup_trace() {
+    if option_env!("HORIZON_CAFE_SOCKET_TRACE") != Some("1") {
+        return;
+    }
+
+    unsafe {
+        OSReport("Horizon Cafe socket probe: DNS begin\n\0".as_ptr().cast());
+    }
+    let mut addresses = match ("telemetry.playhorizon.dev", 443).to_socket_addrs() {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            unsafe {
+                OSReport(
+                    "Horizon Cafe socket probe: DNS failed raw=%d\n\0"
+                        .as_ptr()
+                        .cast(),
+                    error.raw_os_error().unwrap_or(-1),
+                );
+            }
+            return;
+        }
+    };
+    let Some(address) = addresses.next() else {
+        unsafe {
+            OSReport(
+                "Horizon Cafe socket probe: DNS returned no addresses\n\0"
+                    .as_ptr()
+                    .cast(),
+            );
+        }
+        return;
+    };
+    unsafe {
+        OSReport(
+            "Horizon Cafe socket probe: DNS complete\n\0"
+                .as_ptr()
+                .cast(),
+        );
+        OSReport(
+            "Horizon Cafe socket probe: connect begin\n\0"
+                .as_ptr()
+                .cast(),
+        );
+    }
+    let stream = match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            unsafe {
+                OSReport(
+                    "Horizon Cafe socket probe: connect failed raw=%d\n\0"
+                        .as_ptr()
+                        .cast(),
+                    error.raw_os_error().unwrap_or(-1),
+                );
+            }
+            return;
+        }
+    };
+    unsafe {
+        OSReport(
+            "Horizon Cafe socket probe: connect complete\n\0"
+                .as_ptr()
+                .cast(),
+        );
+    }
+
+    if let Err(error) = stream.set_nodelay(true) {
+        unsafe {
+            OSReport(
+                "Horizon Cafe socket probe: TCP_NODELAY failed raw=%d\n\0"
+                    .as_ptr()
+                    .cast(),
+                error.raw_os_error().unwrap_or(-1),
+            );
+        }
+        return;
+    }
+    unsafe {
+        OSReport(
+            "Horizon Cafe socket probe: TCP_NODELAY complete\n\0"
+                .as_ptr()
+                .cast(),
+        );
+    }
+
+    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+        unsafe {
+            OSReport(
+                "Horizon Cafe socket probe: read timeout failed raw=%d\n\0"
+                    .as_ptr()
+                    .cast(),
+                error.raw_os_error().unwrap_or(-1),
+            );
+        }
+        return;
+    }
+    unsafe {
+        OSReport(
+            "Horizon Cafe socket probe: read timeout complete\n\0"
+                .as_ptr()
+                .cast(),
+        );
+    }
+
+    if let Err(error) = stream.set_write_timeout(None) {
+        unsafe {
+            OSReport(
+                "Horizon Cafe socket probe: clear write timeout failed raw=%d\n\0"
+                    .as_ptr()
+                    .cast(),
+                error.raw_os_error().unwrap_or(-1),
+            );
+        }
+        return;
+    }
+    unsafe {
+        OSReport(
+            "Horizon Cafe socket probe: pre-TLS socket setup complete\n\0"
+                .as_ptr()
+                .cast(),
+        );
+    }
+    drop(stream);
+
+    for (index, endpoint) in [
+        horizon_telemetry::DEFAULT_ENDPOINT,
+        horizon_telemetry::SECONDARY_ENDPOINT,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let endpoint = endpoint.to_owned();
+        let spawn = std::thread::Builder::new()
+            .name("Cafe HTTPS probe".into())
+            .spawn(move || match horizon_telemetry::live::fetch(&endpoint) {
+                Ok(count) => unsafe {
+                    OSReport(
+                        "Horizon Cafe HTTPS GET endpoint=%d succeeded playing=%u lan=%u\n\0"
+                            .as_ptr()
+                            .cast(),
+                        index as i32,
+                        count.playing as u32,
+                        count.lan as u32,
+                    );
+                },
+                Err(error) => {
+                    let error = CString::new(error).unwrap_or_default();
+                    unsafe {
+                        OSReport(
+                            "Horizon Cafe HTTPS GET endpoint=%d failed: %s\n\0"
+                                .as_ptr()
+                                .cast(),
+                            index as i32,
+                            error.as_ptr(),
+                        );
+                    }
+                }
+            });
+        if let Err(error) = spawn {
+            unsafe {
+                OSReport(
+                    "Horizon Cafe HTTPS probe thread=%d failed raw=%d\n\0"
+                        .as_ptr()
+                        .cast(),
+                    index as i32,
+                    error.raw_os_error().unwrap_or(-1),
+                );
+            }
+        }
     }
 }
 
@@ -265,6 +442,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut trace_vpad = true;
         let mut trace_pad_dispatch = true;
         let mut trace_touch_dispatch = true;
+        let mut trace_first_touch_sample = true;
         let mut trace_input_failure_check = true;
         let mut trace_draw = true;
         let mut progress_report_at = Instant::now();
@@ -320,6 +498,17 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     (self.vpad.reset(), None, None, true)
                 }
             };
+            let trace_touch_sample_this_frame =
+                trace_first_touch_sample && fresh_sample.is_some() && self.vpad.touch_active();
+            if trace_touch_sample_this_frame {
+                startup_report!("first Cafe VPAD touch sample observed");
+                if self.vpad.touch().is_some() {
+                    startup_report!("first Cafe VPAD touch sample has a valid point");
+                } else {
+                    startup_report!("first Cafe VPAD touch sample has no valid point");
+                }
+                trace_first_touch_sample = false;
+            }
             if trace_vpad {
                 startup_report!("loading first VPAD sample complete");
                 trace_vpad = false;
@@ -357,8 +546,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 startup_report!("loading first pad dispatch complete");
                 trace_pad_dispatch = false;
             }
+            if trace_touch_sample_this_frame {
+                startup_report!("first Cafe VPAD touch mapping begin");
+            }
             let touch_activation_dispatched =
                 self.dispatch_touch(session, fresh_release, trace_touch_dispatch);
+            if trace_touch_sample_this_frame {
+                startup_report!("first Cafe VPAD touch mapping complete");
+            }
             if trace_touch_dispatch && touch_activation_dispatched {
                 startup_report!("first touch activation dispatched");
                 trace_touch_dispatch = false;

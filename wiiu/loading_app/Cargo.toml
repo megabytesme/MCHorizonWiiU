@@ -13,6 +13,7 @@ horizon-wiiu-entropy = { path = "../entropy" }
 horizon-wiiu-loading-host = { path = "../loading_host" }
 horizon-wiiu-platform = { path = "../platform", default-features = false, features = ["cafe"] }
 horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+horizon-telemetry = { path = "../../crates/horizon-telemetry", default-features = false, features = ["live"] }
 log = "0.4"
 
 [workspace]
