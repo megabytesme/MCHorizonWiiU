@@ -14,6 +14,9 @@
 #define HORIZON_AUDIO_RING_FRAMES 16u
 #define HORIZON_AUDIO_MAX_FRAME_SAMPLES 256u
 #define HORIZON_AUDIO_QUEUE_FRAMES 32u
+/* AX priority 0 is free; persistent mixer voices use the no-drop priority. */
+#define HORIZON_AUDIO_AX_PRIORITY 31u
+#define HORIZON_AUDIO_MAX_OUTPUT_CHANNELS 6u
 
 typedef struct HorizonWiiUAudio {
    AXVoice *left_voice;
@@ -58,7 +61,7 @@ static void write_ring(int16_t *ring, uint32_t start, const int16_t *stereo,
 }
 
 static void configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
-                            AXDeviceType device, uint32_t bus)
+                            AXDeviceType device, uint32_t output_channel)
 {
    AXVoiceOffsets offsets = {
       .dataType = AX_VOICE_FORMAT_LPCM16,
@@ -68,13 +71,14 @@ static void configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
       .currentOffset = 0,
       .data = samples,
    };
-   AXVoiceDeviceMixData mix = { 0 };
-   mix.bus[bus].volume = 0x8000u;
+   /* AX expects one four-bus mix entry for each output channel. */
+   AXVoiceDeviceMixData mix[HORIZON_AUDIO_MAX_OUTPUT_CHANNELS] = { 0 };
+   mix[output_channel].bus[0].volume = 0x8000u;
 
    AXSetVoiceOffsets(voice, &offsets);
    AXSetVoiceSrcType(voice, AX_VOICE_SRC_TYPE_LINEAR);
    AXSetVoiceSrcRatio(voice, 1.0f);
-   AXSetVoiceDeviceMix(voice, device, 0, &mix);
+   AXSetVoiceDeviceMix(voice, device, 0, mix);
    AXSetVoiceState(voice, AX_VOICE_STATE_PLAYING);
 }
 
@@ -181,8 +185,8 @@ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
    DCFlushRange(audio->left_ring, ring_bytes);
    DCFlushRange(audio->right_ring, ring_bytes);
 
-   audio->left_voice = AXAcquireVoice(0, NULL, NULL);
-   audio->right_voice = AXAcquireVoice(0, NULL, NULL);
+   audio->left_voice = AXAcquireVoice(HORIZON_AUDIO_AX_PRIORITY, NULL, NULL);
+   audio->right_voice = AXAcquireVoice(HORIZON_AUDIO_AX_PRIORITY, NULL, NULL);
    if (audio->left_voice == NULL || audio->right_voice == NULL) {
       close_partial(audio);
       free(audio);
