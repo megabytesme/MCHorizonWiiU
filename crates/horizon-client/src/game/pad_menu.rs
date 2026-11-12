@@ -2114,7 +2114,9 @@ impl Game<'_> {
     /// the window like a real keyboard).
     fn pad_open_keyboard(&mut self, event_loop: &dyn EventLoopCtl) {
         #[cfg(target_os = "cafe")]
-        if event_loop.open_text_input("", 1024) {
+        if self.settings.controller.keyboard == gamepad::TextKeyboard::Auto
+            && event_loop.open_text_input("", 1024)
+        {
             return;
         }
         #[cfg(not(target_os = "cafe"))]
