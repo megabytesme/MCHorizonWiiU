@@ -833,16 +833,26 @@ impl Loading {
                 // Mods' settings pages open only in a running game.
                 // The HUD editor needs a world: its button is inactive here.
                 Event::NativeSettings(_) | Event::NativeButton(..) | Event::HudEditor => {}
+                // The startup menu shares the sound engine with the game, so
+                // ordinary clicks and category slider previews work here too.
+                Event::ButtonClick => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.play_button_click();
+                    }
+                }
+                Event::Volume(source, volume) => {
+                    if let Some(audio) = &mut self.audio {
+                        audio.preview(source, volume);
+                    }
+                }
                 // The startup menu runs before the game opens a control socket,
-                // and before its sound engine (no clicks, no volume previews,
-                // and no music tracks to list or play).
-                Event::ButtonClick
-                | Event::CopyAgentDetails
+                // and has no music tracks to list or play.
+                Event::CopyAgentDetails
                 | Event::ToggleRecording
                 | Event::ExportRepro
                 | Event::ListMusicTracks
                 | Event::PlayMusicTrack(..)
-                | Event::Volume(..) => {}
+                => {}
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");
                     let _ = std::fs::create_dir_all(&dir);
@@ -2361,6 +2371,7 @@ mod tests {
             viewport: [1280, 720],
             boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
+            audio: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
             video_modes: Default::default(),

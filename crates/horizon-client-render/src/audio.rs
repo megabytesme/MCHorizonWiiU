@@ -272,6 +272,9 @@ pub struct CapturedSound {
 
 pub struct Audio {
     _stream: Option<Stream>,
+    /// The client requested audio output even if its initial resources contain
+    /// no sounds yet. A later resource reload can then open the stream.
+    output_requested: bool,
     device_name: String,
     pub engine: SoundEngine,
     backend: MixerBackend,
@@ -972,19 +975,16 @@ impl Audio {
             );
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
-        let opened = if output {
-            Self::open_named(mixer.clone(), target_device)
-        } else {
-            Err("no output on a dedicated server".into())
-        };
-        let (stream, live) = match opened {
-            Ok(v) => (Some(v), true),
-            Err(e) => {
-                if output {
-                    log::warn!("Horizon: no sound: {e}");
+        let (stream, live) = if output && !registry.is_empty() {
+            match Self::open_named(mixer.clone(), target_device) {
+                Ok(stream) => (Some(stream), true),
+                Err(error) => {
+                    log::warn!("Horizon: no sound: {error}");
+                    (None, false)
                 }
-                (None, false)
             }
+        } else {
+            (None, false)
         };
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
@@ -1001,6 +1001,7 @@ impl Audio {
         };
         Self {
             _stream: stream,
+            output_requested: output,
             device_name: target_device.to_owned(),
             engine,
             backend: MixerBackend {
@@ -1201,6 +1202,7 @@ impl Audio {
         engine.loaded = self.backend.live;
         Self {
             _stream: None,
+            output_requested: false,
             device_name: self.device_name.clone(),
             engine,
             backend: MixerBackend {
@@ -1368,6 +1370,17 @@ impl Audio {
         let mut cache = self.backend.cache.lock().unwrap();
         cache.entries.clear();
         cache.bytes = 0;
+        drop(cache);
+        if self.output_requested && !self.engine.registry.is_empty() && self._stream.is_none() {
+            match Self::open_named(self.backend.mixer.clone(), &self.device_name) {
+                Ok(stream) => {
+                    self._stream = Some(stream);
+                    self.backend.live = true;
+                    self.engine.loaded = true;
+                }
+                Err(error) => log::warn!("Horizon: no sound: {error}"),
+            }
+        }
     }
     /// Play a sound event at a world position, as `ClientLevel.playLocalSound`
     /// (a `SimpleSoundInstance` seeded from the level random), or relative to

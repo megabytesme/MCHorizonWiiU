@@ -22130,6 +22130,8 @@ struct Loading {
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     boot: horizon_client::hud::HudAtlas,
     gui: Option<UiResources>,
+    /// One sound engine is shared by the startup menu and the running game.
+    audio: Option<Audio>,
     settings: Settings,
     fullscreen: horizon_client::window::FullscreenState,
     video_modes: horizon_client::window::VideoModeList<winit::monitor::MonitorHandle>,
@@ -22337,6 +22339,7 @@ impl Loading {
             viewport: [1280, 720],
             boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
+            audio: None,
             settings,
             fullscreen: horizon_client::window::FullscreenState::new(false),
             video_modes: Default::default(),
@@ -22632,6 +22635,19 @@ impl Loading {
             "Horizon: loading the title artwork after {} ms",
             self.started.elapsed().as_millis()
         );
+        if let Some(audio) = &mut self.audio {
+            audio.reload(&root);
+        } else {
+            self.audio = Some(if self
+                .options
+                .as_ref()
+                .is_some_and(|options| options.execution_role.is_client())
+            {
+                Audio::with_device(&root, &self.settings.sound_device)
+            } else {
+                Audio::silent(&root)
+            });
+        }
         self.menu.set_root(root, &self.settings);
         self.gui = Some(gui);
         self.title_drawn = false;
@@ -22800,12 +22816,8 @@ impl Loading {
             self.started.elapsed().as_millis()
         );
         let renderer_ms = renderer_at.elapsed().as_millis();
-        // Audio is created on the main thread, after the core is ready.
-        let audio = if !options.execution_role.is_client() {
-            Audio::silent(&options.resources)
-        } else {
-            Audio::with_device(&options.resources, &self.settings.sound_device)
-        };
+        // Keep the sound engine that already served the startup menu.
+        let audio = self.audio.take().ok_or("missing loading audio")?;
         let pack_error = loaded.pack_error.or_else(|| self.pack_error.take());
         // The game borrows its shared resources for the process's lifetime,
         // like the single copy an integrated server would share.
