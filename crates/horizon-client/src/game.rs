@@ -22434,6 +22434,16 @@ impl CafeGameSession {
         );
     }
 
+    /// Route a relative pointing-device event through the normal captured
+    /// mouse path for a host that owns its own device polling.
+    pub fn dispatch_device_event(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        event: ClientDeviceEvent,
+    ) {
+        self.game.dispatch_platform_device_event(event_loop, event);
+    }
+
     /// Advance world-entry services and one normal game frame. The Cafe host
     /// continues to own VPAD/touch polling and GX2 title/loading presentation.
     pub fn step(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {

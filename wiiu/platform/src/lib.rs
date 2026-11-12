@@ -7,6 +7,7 @@ use horizon_client_input::gamepad::{Button, PadState};
 
 pub mod hud;
 pub mod keyboard;
+pub mod mouse;
 pub mod touch;
 #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
 pub mod audio;

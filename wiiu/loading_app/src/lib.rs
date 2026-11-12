@@ -4,11 +4,18 @@
 //! library only runs on that initialized GX2 thread.
 
 use horizon_client::game::{
-    CafeGameSession, CafeLoadingHost, CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
+    CafeGameSession, CafeLoadingHost, CafeLoadingPresenter, CafeLoadingSession, CafeLoadingStatus,
+    CafeRunOutcome,
 };
-use horizon_client_platform::{ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent};
+use horizon_client_platform::{
+    ClientDeviceEvent, ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent,
+    PhysicalPosition,
+};
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
-use horizon_wiiu_platform::{keyboard::KeyboardAdapter, touch::TouchMapper, VpadState};
+use horizon_wiiu_platform::{
+    keyboard::KeyboardAdapter, mouse::{MouseAdapter, MouseOutput}, touch::TouchMapper,
+    VpadState,
+};
 use std::cell::Cell;
 use std::ffi::CString;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -300,9 +307,13 @@ struct LoadingHost<'a> {
     touch: TouchMapper,
     keyboard: KeyboardAdapter,
     keyboard_events: Vec<ClientWindowEvent>,
+    mouse: MouseAdapter,
+    mouse_events: Vec<MouseOutput>,
+    mouse_position: Option<PhysicalPosition<f64>>,
     native_keyboard_result: Vec<u8>,
     native_keyboard_active: bool,
     keyboard_initialized: bool,
+    mouse_initialized: bool,
     focused: bool,
     touch_blocked_until_release: bool,
     pad_blocked_until_neutral: bool,
@@ -322,9 +333,13 @@ impl<'a> LoadingHost<'a> {
             touch: TouchMapper::default(),
             keyboard: KeyboardAdapter::default(),
             keyboard_events: Vec::with_capacity(32),
+            mouse: MouseAdapter::default(),
+            mouse_events: Vec::with_capacity(16),
+            mouse_position: None,
             native_keyboard_result: vec![0; 4097],
             native_keyboard_active: false,
             keyboard_initialized: false,
+            mouse_initialized: false,
             focused: true,
             touch_blocked_until_release: false,
             pad_blocked_until_neutral: false,
@@ -450,6 +465,8 @@ impl<'a> LoadingHost<'a> {
         session: &mut CafeLoadingSession,
         mut game: Option<&mut CafeGameSession>,
     ) {
+        self.mouse.release_all_into(&mut self.mouse_events);
+        self.dispatch_mouse_events(session, game.as_deref_mut());
         self.keyboard.release_all_into(&mut self.keyboard_events);
         self.dispatch_queued_keyboard(session, game.as_deref_mut());
         let release = self.touch.reset(&self.vpad);
@@ -472,6 +489,13 @@ impl<'a> LoadingHost<'a> {
             }
             self.keyboard_initialized = false;
         }
+        if self.mouse_initialized {
+            let result = horizon_wiiu_platform::mouse::shutdown();
+            if result != 0 {
+                log::warn!("Horizon Cafe USB mouse teardown returned {result}");
+            }
+            self.mouse_initialized = false;
+        }
     }
 
     fn dispatch_queued_keyboard(
@@ -484,6 +508,82 @@ impl<'a> LoadingHost<'a> {
             self.dispatch_event(session, game.as_deref_mut(), event);
         }
         self.keyboard_events = events;
+    }
+
+    fn dispatch_mouse_events(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        mut game: Option<&mut CafeGameSession>,
+    ) {
+        if self.mouse_events.is_empty() {
+            return;
+        }
+
+        let mut dimensions = [0u32; 4];
+        let (width, height) = if unsafe {
+            horizon_loading_host_dimensions(dimensions.as_mut_ptr())
+        } == 0
+        {
+            (dimensions[2].max(1), dimensions[3].max(1))
+        } else {
+            let [width, height] = self.presenter.layout_viewport();
+            (width.max(1), height.max(1))
+        };
+        let width = f64::from(width);
+        let height = f64::from(height);
+        let mut position = self.mouse_position.unwrap_or(PhysicalPosition::new(
+            (width - 1.0) * 0.5,
+            (height - 1.0) * 0.5,
+        ));
+        if self.mouse_position.is_none() {
+            // Establish the DRC pointer before the first button-only report,
+            // including the first report after ProcUI focus returns.
+            self.dispatch_event(
+                session,
+                game.as_deref_mut(),
+                ClientWindowEvent::CursorMoved { position },
+            );
+        }
+
+        let mut events = std::mem::take(&mut self.mouse_events);
+        for event in events.drain(..) {
+            match event {
+                MouseOutput::Device(ClientDeviceEvent::MouseMotion { delta: (dx, dy) }) => {
+                    position.x = (position.x + dx).clamp(0.0, width - 1.0);
+                    position.y = (position.y + dy).clamp(0.0, height - 1.0);
+                    let motion = ClientDeviceEvent::MouseMotion { delta: (dx, dy) };
+                    if let Some(game) = game.as_deref_mut() {
+                        game.dispatch_device_event(self, motion);
+                    }
+                    self.dispatch_event(
+                        session,
+                        game.as_deref_mut(),
+                        ClientWindowEvent::CursorMoved { position },
+                    );
+                }
+                MouseOutput::Window(event) => {
+                    self.dispatch_event(session, game.as_deref_mut(), event);
+                }
+            }
+        }
+        self.mouse_position = Some(position);
+        self.mouse_events = events;
+    }
+
+    fn drain_mouse_input(
+        &mut self,
+        session: &mut CafeLoadingSession,
+        game: Option<&mut CafeGameSession>,
+    ) {
+        self.mouse.drain_into(&mut self.mouse_events);
+        self.dispatch_mouse_events(session, game);
+    }
+
+    fn discard_mouse_input(&mut self) {
+        self.mouse.drain_into(&mut self.mouse_events);
+        self.mouse_events.clear();
+        self.mouse.release_all_into(&mut self.mouse_events);
+        self.mouse_events.clear();
     }
 
     fn discard_keyboard_input(&mut self) {
@@ -542,6 +642,9 @@ impl<'a> LoadingHost<'a> {
             self.dispatch_pad_state(session, game.as_deref_mut(), neutral);
             self.keyboard.release_all_into(&mut self.keyboard_events);
             self.dispatch_queued_keyboard(session, game.as_deref_mut());
+            self.mouse.release_all_into(&mut self.mouse_events);
+            self.dispatch_mouse_events(session, game.as_deref_mut());
+            self.mouse_position = None;
         }
         self.dispatch_event(
             session,
@@ -584,6 +687,16 @@ impl CafeLoadingHost for LoadingHost<'_> {
             }
             Err(error) => log::warn!("Horizon Cafe USB keyboard initialization failed: {error}"),
         }
+        match horizon_wiiu_platform::mouse::initialize() {
+            Ok(()) => {
+                self.mouse_initialized = true;
+                // Drop any reports queued by a prior host lifetime before
+                // accepting new input in this session.
+                self.discard_mouse_input();
+                startup_report!("USB mouse initialized");
+            }
+            Err(error) => log::warn!("Horizon Cafe USB mouse initialization failed: {error}"),
+        }
         let mut trace_focus = true;
         let mut trace_poll = true;
         let mut trace_vpad = true;
@@ -619,6 +732,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if !alive {
                 self.exited = true;
                 break;
+            }
+
+            // USB mouse input is independent of VPAD and CafeOS's on-screen
+            // keyboard, so it remains available while native input owns touch.
+            if focused {
+                self.drain_mouse_input(session, game_session.as_mut());
+            } else {
+                self.discard_mouse_input();
             }
 
             if !focused {

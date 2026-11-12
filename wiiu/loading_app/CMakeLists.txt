@@ -156,6 +156,7 @@ add_executable(horizon_wiiu_loading_app
    main.c
    ../audio/audio.c
    ../platform/src/keyboard_bridge.c
+   ../platform/src/mouse_bridge.c
    ../platform/src/vpad_bridge.c
    "${HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}")
 target_include_directories(horizon_wiiu_loading_app PRIVATE ../audio ../platform/src)
