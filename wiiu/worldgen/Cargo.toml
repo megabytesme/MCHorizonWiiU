@@ -16,6 +16,7 @@ horizon-core = { path = "../../crates/horizon-core" }
 horizon-client-platform = { path = "../../crates/horizon-client-platform", default-features = false, features = ["cafe"] }
 horizon-items = { path = "../../crates/horizon-items" }
 horizon-terrain-data = { path = "../../crates/horizon-terrain-data" }
+horizon-wiiu-gx2-terrain = { path = "../gx2_terrain", features = ["atlas"] }
 horizon-terrain-mesh = { path = "../../crates/horizon-terrain-mesh", default-features = false }
 horizon-world = { path = "../../crates/horizon-world", features = ["cafe-terrain-only"] }
 log = "0.4"

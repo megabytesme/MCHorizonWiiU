@@ -3122,6 +3122,11 @@ struct Game<'a> {
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
+    /// A renderer-less host clears its native terrain on the next Cafe frame.
+    cafe_terrain_clear_pending: bool,
+    /// Remote storage can forget columns between Cafe frames, without a
+    /// Renderer available to receive the matching native section removal.
+    cafe_terrain_remove_pending: Vec<(i32, i32)>,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     /// Whether the renderer's section-occlusion graph is active for this view.
@@ -12946,6 +12951,8 @@ impl Game<'_> {
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             horizon_client::presentation::clear_sections(r, self.world.layout());
+        } else {
+            self.cafe_terrain_clear_pending = true;
         }
         self.apply_settings();
         self.streaming.sky_light = dim != Dim::Nether;
@@ -13187,6 +13194,8 @@ impl Game<'_> {
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             horizon_client::presentation::clear_sections(r, self.world.layout());
+        } else {
+            self.cafe_terrain_clear_pending = true;
         }
         // Clear sync data (registries, dialog tags) so dialogs don't leak
         // between worlds.
@@ -16165,10 +16174,10 @@ impl Game<'_> {
             scaled: false,
         });
     }
-    fn render(&mut self) -> Result<bool> {
+    fn render(&mut self, mut cafe_backend: Option<&mut dyn CafeGameBackend>) -> Result<bool> {
         // The window's GPU holds the atlas: its copy in memory is kept
         // compressed (a no-op once it is).
-        if self.renderer.is_some() {
+        if self.renderer.is_some() || cafe_backend.is_some() {
             self.gui.atlas.pack_pixels();
             self.pack.render.pixels.pack();
         }
@@ -16183,6 +16192,11 @@ impl Game<'_> {
             self.apply_ui_settings();
         }
         self.observe_screen();
+        let viewport = self
+            .renderer
+            .as_ref()
+            .map(|renderer| [renderer.config.width, renderer.config.height])
+            .or_else(|| cafe_backend.as_deref().map(|backend| backend.viewport_size()));
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
         if let Some(starting) = &self.integrated_starting {
@@ -16196,15 +16210,21 @@ impl Game<'_> {
                         screen_info::tr("upgradeWorld.title", &[]),
                     )
                 });
-                if let Some(renderer) = &mut self.renderer {
-                    let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                if let Some(size) = viewport {
+                    let mut hud = HudBatch::new(size);
                     horizon_client::level_loading::draw_file_fixer(
                         &mut hud,
                         &self.gui.atlas,
                         upgrade,
                         self.cursor,
                     );
-                    return horizon_client::presentation::present(renderer, &loading_frame(&hud));
+                    let frame = loading_frame(&hud);
+                    return present_game_frame(
+                        &mut self.renderer,
+                        &mut self.frame_drawn,
+                        cafe_backend.take(),
+                        &frame,
+                    );
                 }
                 return Ok(false);
             }
@@ -16215,8 +16235,8 @@ impl Game<'_> {
             horizon_client::widgets::begin_screen(|| {
                 screen_info::level_loading(progress, &screen_info::tr)
             });
-            if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+            if let Some(size) = viewport {
+                let mut hud = HudBatch::new(size);
                 let (w, h) = (hud.width, hud.height);
                 horizon_client::ui::menu_background(
                     &mut hud,
@@ -16243,31 +16263,43 @@ impl Game<'_> {
                     Some(&status),
                     progress,
                 );
-                return horizon_client::presentation::present(renderer, &loading_frame(&hud));
+                let frame = loading_frame(&hud);
+                return present_game_frame(
+                    &mut self.renderer,
+                    &mut self.frame_drawn,
+                    cafe_backend.take(),
+                    &frame,
+                );
             }
             return Ok(false);
         }
         if self.pending_entry.is_some() {
-            if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
+            if let (Some(size), Some(loader)) = (viewport, &self.rest_loader) {
                 horizon_client::widgets::begin_screen(|| {
                     screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
                 });
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                let mut hud = HudBatch::new(size);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
                     loader.progress.line(),
                     loader.progress.fraction(),
                 );
-                return horizon_client::presentation::present(renderer, &loading_frame(&hud));
+                let frame = loading_frame(&hud);
+                return present_game_frame(
+                    &mut self.renderer,
+                    &mut self.frame_drawn,
+                    cafe_backend.take(),
+                    &frame,
+                );
             }
             return Ok(false);
         }
         // A pack reload covers the frame with its progress
         // (`LoadingOverlay`) until `drive_pack_reload` applies it.
         if let Some(reload) = &self.pack_reload {
-            if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+            if let Some(size) = viewport {
+                let mut hud = HudBatch::new(size);
                 horizon_client::level_loading::draw_loading_overlay(
                     &mut hud,
                     &self.gui.atlas,
@@ -16275,15 +16307,17 @@ impl Game<'_> {
                     reload.progress.fraction(),
                     self.settings.file.bool("darkMojangStudiosBackground"),
                 );
-                return horizon_client::presentation::present(renderer, &loading_frame(&hud));
+                let frame = loading_frame(&hud);
+                return present_game_frame(
+                    &mut self.renderer,
+                    &mut self.frame_drawn,
+                    cafe_backend.take(),
+                    &frame,
+                );
             }
             return Ok(false);
         }
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = viewport else {
             return Ok(false);
         };
         let alpha = self.clock.fraction();
@@ -16836,14 +16870,20 @@ impl Game<'_> {
             },
             chunk_fade: self.settings.chunk_fade,
         };
-        let result = match self.renderer.as_mut() {
-            Some(renderer) => {
-                renderer.set_pass_timing(self.debug || self.gpu_passes);
-                horizon_client::spans::time("renderer", || {
-                    horizon_client::presentation::present(renderer, &frame)
-                })
+        let result = if let Some(backend) = cafe_backend.as_deref_mut() {
+            horizon_client::spans::time("renderer", || {
+                horizon_client::presentation::present(backend, &frame)
+            })
+        } else {
+            match self.renderer.as_mut() {
+                Some(renderer) => {
+                    renderer.set_pass_timing(self.debug || self.gpu_passes);
+                    horizon_client::spans::time("renderer", || {
+                        horizon_client::presentation::present(renderer, &frame)
+                    })
+                }
+                None => Err("renderer".into()),
             }
-            None => Err("renderer".into()),
         };
         // A frame the surface refused (occluded, lost, timed out) is `Ok(false)`.
         self.frame_drawn = matches!(result, Ok(true));
@@ -17600,6 +17640,13 @@ impl Game<'_> {
         }
     }
     fn update_world(&mut self) {
+        self.update_world_with_terrain(None);
+    }
+
+    fn update_world_with_terrain(
+        &mut self,
+        mut cafe_terrain: Option<&mut dyn horizon_client::presentation::TerrainBackend>,
+    ) {
         if let Err(e) = horizon_client::spans::time("poll_remote", || self.poll_remote()) {
             log::warn!("Horizon: {e}");
         }
@@ -17644,10 +17691,10 @@ impl Game<'_> {
             );
         }
         self.tick_pregen();
-        // A headless game has nothing to draw sections with: like a server's, they aren't
-        // meshed while it has no renderer.
+        // Servers stay unmeshed; a Cafe host can supply a native terrain backend
+        // even though this Game has no desktop Renderer.
         if self.options.headless {
-            self.streaming.mesh = self.renderer.is_some();
+            self.streaming.mesh = self.renderer.is_some() || cafe_terrain.is_some();
         }
         let areas = self.streaming.extra.len();
         let waiting = std::mem::take(&mut self.spawn_wait);
@@ -17729,7 +17776,26 @@ impl Game<'_> {
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z])
             .and_then(|camera| self.lod_aim(camera));
-        if let Some(renderer) = self.renderer.as_mut() {
+        let terrain_backend = cafe_terrain.take().or_else(|| {
+            self.renderer
+                .as_mut()
+                .map(|renderer| renderer as &mut dyn horizon_client::presentation::TerrainBackend)
+        });
+        if let Some(backend) = terrain_backend {
+            let terrain_cleared = self.cafe_terrain_clear_pending;
+            if terrain_cleared {
+                backend.clear_sections(self.world.layout());
+                self.cafe_terrain_clear_pending = false;
+                self.cafe_terrain_remove_pending.clear();
+            } else if !self.cafe_terrain_remove_pending.is_empty() {
+                // Remote unloads can arrive between Cafe frames. Apply those
+                // older removals before this frame's replacement meshes so
+                // a rapid reload of the same column keeps its new sections.
+                let mut deferred = std::mem::take(&mut self.cafe_terrain_remove_pending);
+                deferred.sort_unstable();
+                deferred.dedup();
+                horizon_client::presentation::remove_columns(backend, deferred);
+            }
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
@@ -17739,7 +17805,7 @@ impl Game<'_> {
                 let mut failed = Vec::new();
                 horizon_client::spans::time("upload", || {
                     for (key, mesh) in uploads {
-                        match horizon_client::presentation::upload_section(renderer, key, &mesh) {
+                        match horizon_client::presentation::upload_section(backend, key, &mesh) {
                             Ok(()) => uploaded.push((key, mesh)),
                             Err(error) => {
                                 log::warn!(
@@ -17809,7 +17875,7 @@ impl Game<'_> {
                     }
                     let (key, mesh) = pending.pop().expect("checked above");
                     if let Err(error) =
-                        horizon_client::presentation::upload_section(renderer, key, &mesh)
+                        horizon_client::presentation::upload_section(backend, key, &mesh)
                     {
                         log::warn!(
                             "Horizon: failed to upload section {key:?}; keeping it for retry: {error}"
@@ -17825,9 +17891,11 @@ impl Game<'_> {
                 self.streaming.free(spent);
             }
             horizon_client::presentation::remove_columns(
-                renderer,
+                backend,
                 unloaded.iter().map(|c| (c.x, c.z)),
             );
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
             // Meshes in the works are the view's terrain while it is new, then edits'.
             let meshing = self.streaming.busy() || !self.pending_uploads.is_empty();
             let sampling = self.lod.as_ref().is_some_and(|lod| lod.sampling());
@@ -18002,7 +18070,7 @@ impl Game<'_> {
         event: WindowEvent,
         origin: input_trace::InputOrigin,
     ) {
-        self.dispatch_platform_window_event_inner(event_loop, event, origin);
+        self.dispatch_platform_window_event_inner(event_loop, event, origin, None);
     }
 
     fn dispatch_platform_window_event_inner(
@@ -18010,6 +18078,7 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         mut event: WindowEvent,
         origin: input_trace::InputOrigin,
+        cafe_backend: Option<&mut dyn CafeGameBackend>,
     ) {
         self.window_event_key = None;
         follow_keymap(&mut event);
@@ -18065,7 +18134,7 @@ impl Game<'_> {
                 return;
             }
         }
-        self.handle_window_event_inner(event_loop, event, keyboard);
+        self.handle_window_event_inner(event_loop, event, keyboard, cafe_backend);
         if let Some((button, pressed, modifiers)) = mouse {
             self.native_mouse_button_post(button, pressed, modifiers);
         }
@@ -18114,6 +18183,7 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
         mut event: WindowEvent,
         mut keyboard: Option<horizon_client_platform::KeyboardEvent>,
+        mut cafe_backend: Option<&mut dyn CafeGameBackend>,
     ) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
@@ -19385,7 +19455,12 @@ impl Game<'_> {
                         }
                     }
                     if self.title.is_none() {
-                        horizon_client::spans::time("update_world", || self.update_world());
+                        let terrain_backend = cafe_backend
+                            .as_deref_mut()
+                            .map(|backend| backend as &mut dyn horizon_client::presentation::TerrainBackend);
+                        horizon_client::spans::time("update_world", || {
+                            self.update_world_with_terrain(terrain_backend)
+                        });
                         horizon_client::spans::time("spawn_player", || self.spawn_player())?;
                     }
                     let updated = Instant::now();
@@ -19431,7 +19506,7 @@ impl Game<'_> {
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
-                    let rendered = match self.render() {
+                    let rendered = match self.render(cafe_backend) {
                         // The callback can fire during this frame; rebuild on
                         // the next redraw rather than exiting on its error.
                         Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => {
@@ -20175,6 +20250,8 @@ impl<'a> Game<'a> {
             async_particle_culler: RefCell::new(Default::default()),
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
+            cafe_terrain_clear_pending: false,
+            cafe_terrain_remove_pending: Vec::new(),
             frame_graph: Default::default(),
             extras: Default::default(),
             pvp: Default::default(),
@@ -21821,6 +21898,23 @@ fn hwnd(window: &Window) -> Option<isize> {
     }
 }
 
+fn present_game_frame(
+    renderer: &mut Option<Renderer>,
+    frame_drawn: &mut bool,
+    cafe_backend: Option<&mut dyn CafeGameBackend>,
+    frame: &Frame<'_>,
+) -> Result<bool> {
+    let result = if let Some(backend) = cafe_backend {
+        horizon_client::presentation::present(backend, frame)
+    } else if let Some(renderer) = renderer.as_mut() {
+        horizon_client::presentation::present(renderer, frame)
+    } else {
+        Ok(false)
+    };
+    *frame_drawn = matches!(&result, Ok(true));
+    result
+}
+
 fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         weather: &[],
@@ -22167,6 +22261,18 @@ pub struct CafeLoadingArtwork<'a> {
     pub generation: u64,
 }
 
+/// Original Game artwork needed before laying out a Cafe frame. Resource data
+/// remains owned by Horizon; the backend copies native textures synchronously.
+pub struct CafeGameArtwork<'a> {
+    pub atlas: &'a HudAtlas,
+    pub panorama: &'a horizon_client::gfx::panorama::Faces,
+    pub terrain_pixels: &'a horizon_client::assets::SpritePixels,
+    pub terrain_sprite_size: u32,
+    pub terrain_layers: u32,
+    pub hud_generation: u64,
+    pub terrain_generation: u64,
+}
+
 /// Cafe presenter contract for the original title frame. `frame.hud` is laid
 /// out once using `layout_viewport`; both targets may draw that same batch.
 pub trait CafeLoadingPresenter {
@@ -22192,6 +22298,23 @@ pub trait CafeLoadingPresenter {
         tick: u64,
         animated_textures: bool,
     ) -> Result<bool>;
+}
+
+/// Native presentation and terrain upload boundary for original Game frames.
+/// `prepare_game_artwork` runs before Horizon builds the frame; it borrows the
+/// resource data only for this call, so implementations must copy any native
+/// texture data synchronously and may reuse it while both generations match.
+pub trait CafeGameBackend: horizon_client::presentation::PresentationBackend
+    + horizon_client::presentation::TerrainBackend
+{
+    fn prepare_game_artwork(&mut self, artwork: CafeGameArtwork<'_>) -> Result<()>;
+
+    /// Whether the last submitted frame reached the targets with only named,
+    /// unsupported passes omitted. This distinguishes an intentional partial
+    /// diagnostic frame from a rejected submission for atlas-cache recovery.
+    fn last_game_frame_was_partial(&self) -> bool {
+        false
+    }
 }
 
 /// Loading-owned session for an external Cafe event/render loop. It deliberately
@@ -22452,6 +22575,59 @@ impl CafeGameSession {
             return Err(error.to_string().into());
         }
         Ok(())
+    }
+
+    /// Run one original Game redraw through the Cafe host. This follows the
+    /// same redraw event path as desktop: world updates, player spawn, fixed
+    /// ticks, and then the original CPU Frame are produced in their normal
+    /// order. The host remains responsible for polling Cafe devices.
+    pub fn frame(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        backend: &mut dyn CafeGameBackend,
+    ) -> Result<bool> {
+        self.game.idle(event_loop);
+        if let Some(error) = &self.game.error {
+            return Err(error.to_string().into());
+        }
+        if self.game.pending_save.is_some() {
+            return Ok(false);
+        }
+
+        backend.prepare_game_artwork(CafeGameArtwork {
+            atlas: &self.game.gui.atlas,
+            panorama: &self.game.gui.panorama,
+            terrain_pixels: &self.game.pack.render.pixels,
+            terrain_sprite_size: self.game.pack.render.sprite_size,
+            terrain_layers: self.game.pack.render.texture_layers,
+            hud_generation: self.game.gui.atlas.revision,
+            terrain_generation: self.game.pack.render.generation,
+        })?;
+        self.game.frame_drawn = false;
+        self.game.dispatch_platform_window_event_inner(
+            event_loop,
+            WindowEvent::RedrawRequested,
+            input_trace::InputOrigin::Game,
+            Some(backend),
+        );
+        let frame_drawn = self.game.frame_drawn;
+        if !frame_drawn && !backend.last_game_frame_was_partial() {
+            // The batch for a rejected Cafe frame may contain glyphs that the
+            // native atlas did not receive. Rebuild them from Horizon state
+            // before the next layout, matching renderer-recreation recovery.
+            self.game.gui.atlas.font.reset_cache();
+            horizon_client::ui_theme::reset_atlas();
+        }
+        if let Some(error) = &self.game.error {
+            return Err(error.to_string().into());
+        }
+        Ok(frame_drawn)
+    }
+
+    /// Whether Horizon's original world-entry loading overlays have ended.
+    /// This is independent of whether the platform accepted the latest frame.
+    pub fn world_loading_complete(&self) -> bool {
+        self.game.integrated_starting.is_none() && self.game.pending_entry.is_none()
     }
 
     /// Present a supported world-entry loading frame through the Cafe host.

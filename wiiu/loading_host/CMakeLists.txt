@@ -9,9 +9,12 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../gx2_hud"
                  "${CMAKE_CURRENT_BINARY_DIR}/gx2_hud")
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../gx2_panorama"
                  "${CMAKE_CURRENT_BINARY_DIR}/gx2_panorama")
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../gx2_terrain"
+                 "${CMAKE_CURRENT_BINARY_DIR}/gx2_terrain")
 
 set(HUD_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/hud_gfd.o")
 set(PANORAMA_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/panorama_gfd.o")
+set(TERRAIN_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_gfd.o")
 add_custom_command(
    OUTPUT "${HUD_GFD_OBJECT}"
    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -21,6 +24,18 @@ add_custom_command(
    DEPENDS horizon_gx2_hud_shader
    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
    VERBATIM)
+add_custom_command(
+   OUTPUT "${TERRAIN_GFD_OBJECT}"
+   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${CMAKE_CURRENT_BINARY_DIR}/gx2_terrain/terrain.gsh" terrain.gsh
+   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
+      -I binary -O elf32-powerpc -B powerpc:common terrain.gsh terrain_gfd.o
+   DEPENDS horizon_gx2_terrain_shader
+   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+   VERBATIM)
+set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+   PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+
 add_custom_command(
    OUTPUT "${PANORAMA_GFD_OBJECT}"
    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -34,10 +49,10 @@ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"
    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
 
 add_library(horizon_wiiu_loading_host STATIC
-   loading_host.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}")
+   loading_host.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}")
 set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(horizon_wiiu_loading_host
-   PUBLIC horizon_gx2_hud horizon_gx2_panorama
+   PUBLIC horizon_gx2_hud horizon_gx2_panorama horizon_gx2_terrain
    PRIVATE wut m)

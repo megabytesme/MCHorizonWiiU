@@ -72,6 +72,7 @@ pub struct HorizonPresenter<'shader> {
     presenter: super::Presenter<'shader>,
     atlas_revision: u64,
     atlas_size: [u32; 2],
+    pack_text_shader: bool,
     animations: horizon_client_hud::sprite_animations::States,
 }
 
@@ -94,6 +95,7 @@ impl<'shader> HorizonPresenter<'shader> {
             presenter,
             atlas_revision: atlas.revision,
             atlas_size: [atlas.width, atlas.height],
+            pack_text_shader: atlas.text_shader.is_some(),
             animations: horizon_client_hud::sprite_animations::track(&atlas.sprite_animations),
         })
     }
@@ -148,6 +150,49 @@ impl<'shader> HorizonPresenter<'shader> {
             tick,
             animated_textures,
         )
+    }
+
+    /// Draw a previously prepared atlas's new Horizon batch without borrowing
+    /// the atlas again. This is used by Cafe's live Game callback, whose HUD
+    /// artwork is prepared before frame construction and then consumed from
+    /// the presentation contract.
+    ///
+    /// # Safety
+    /// The render thread must have a valid GX2 color target bound.
+    pub unsafe fn draw_batch_to(
+        &mut self,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: [u32; 4],
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        let frame = BatchFrame {
+            batch,
+            runs: batch.runs(),
+            viewport: layout_viewport,
+            pack_text_shader: self.pack_text_shader,
+        };
+        let update = prepare_animations(
+            &mut self.animations,
+            self.atlas_size,
+            tick,
+            animated_textures,
+        );
+        if let Some(update) = update {
+            let frame = frame.frame();
+            unsafe {
+                self.presenter
+                    .draw_with_patches_to(&frame, update.patches(), target)?;
+            }
+            update.commit();
+        } else {
+            let frame = frame.frame();
+            unsafe {
+                self.presenter.draw_to(&frame, target)?;
+            }
+        }
+        Ok(())
     }
 
     unsafe fn draw_inner(

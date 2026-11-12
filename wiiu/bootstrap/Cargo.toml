@@ -16,5 +16,6 @@ wiiu-worldgen-render = []
 libm = "=0.2.16"
 horizon-core = { path = "../../crates/horizon-core", default-features = false, features = ["wiiu-core"], optional = true }
 horizon-terrain-data = { path = "../../crates/horizon-terrain-data" }
+horizon-wiiu-gx2-terrain = { path = "../gx2_terrain" }
 
 [workspace]

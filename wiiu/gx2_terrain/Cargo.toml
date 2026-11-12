@@ -1,0 +1,14 @@
+[package]
+name = "horizon-wiiu-gx2-terrain"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+atlas = []
+
+[dependencies]
+horizon-terrain-data = { path = "../../crates/horizon-terrain-data" }
+
+[workspace]

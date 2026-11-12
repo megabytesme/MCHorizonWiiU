@@ -11,6 +11,7 @@ use core::panic::PanicInfo;
 #[cfg(feature = "diagnostic-fixture")]
 use horizon_core::position::ChunkPos;
 use horizon_terrain_data::TerrainVertex;
+use horizon_wiiu_gx2_terrain::{for_each_quad_vertex, light_uv as terrain_light_uv};
 
 #[cfg(all(not(test), feature = "diagnostic-fixture"))]
 mod allocator;
@@ -21,7 +22,6 @@ mod world;
 const WORLD_VERTEX_CAPACITY: u32 = world::MAX_VERTEX_COUNT as u32;
 #[cfg(all(test, feature = "diagnostic-fixture"))]
 const WORLD_TRIANGLE_CAPACITY: u32 = WORLD_VERTEX_CAPACITY / 4 * 6;
-const TRIANGLE_VERTICES: [usize; 6] = [0, 1, 2, 0, 2, 3];
 const GX2_VERTEX_SCALARS: usize = 12;
 const DEGREES_TO_RADIANS: f32 = core::f32::consts::PI / 180.0;
 
@@ -72,40 +72,6 @@ fn project_position(position: [f32; 3], section_origin: [f32; 3], camera: Camera
         view_z * depth_scale + depth_offset,
         depth,
     ]
-}
-
-/// Maps Horizon's packed sky/block light to the captured 16x16 lightmap.
-fn terrain_light_uv(light: u16) -> [f32; 2] {
-    let sky = f32::from((light & 0x00FF).min(240));
-    let block = f32::from((light >> 8).min(240));
-    let texel_center = 0.5 / 16.0;
-    [block / 256.0 + texel_center, sky / 256.0 + texel_center]
-}
-
-fn write_gx2_vertex(
-    vertices: &mut [f32],
-    index: usize,
-    terrain_vertex: TerrainVertex,
-    section_origin: [f32; 3],
-    camera: Camera,
-) {
-    let projected = project_position(terrain_vertex.pos, section_origin, camera);
-    let color = terrain_vertex
-        .rgba()
-        .map(|component| f32::from(component) / 255.0);
-    let uv = terrain_vertex.uv();
-    let light_uv = terrain_light_uv(terrain_vertex.light);
-    let base = index * GX2_VERTEX_SCALARS;
-
-    vertices[base..base + 4].copy_from_slice(&projected);
-    vertices[base + 4..base + 7].copy_from_slice(&color[..3]);
-    vertices[base + 7..base + 9].copy_from_slice(&uv);
-    vertices[base + 9] = if terrain_vertex.layer & 0x8000 == 0 {
-        1.0
-    } else {
-        0.0
-    };
-    vertices[base + 10..base + 12].copy_from_slice(&light_uv);
 }
 
 /// Generates a bounded chunk with Horizon's seeded 26.3 Perlin noise, stores
@@ -172,9 +138,10 @@ pub extern "C" fn horizon_wiiu_encode_terrain_quads(
         return 0;
     };
 
-    // SAFETY: the C caller supplies a readable TerrainVertex array and a
-    // writable GX2 float buffer matching the counts checked above.
+    // SAFETY: the C caller supplies a readable TerrainVertex array matching
+    // the checked count.
     let source = unsafe { core::slice::from_raw_parts(source, source_vertex_count as usize) };
+    // SAFETY: output_capacity is in vertices, with twelve floats per output.
     let output = unsafe { core::slice::from_raw_parts_mut(output, output_scalar_count) };
     // SAFETY: C supplies nine camera floats for this call.
     let camera_values = unsafe { core::slice::from_raw_parts(camera_values, 9) };
@@ -195,16 +162,29 @@ pub extern "C" fn horizon_wiiu_encode_terrain_quads(
         far: camera_values[8],
         perspective: perspective == 1,
     };
-    let section_origin = [section_x, section_y, section_z];
-    let mut next_vertex = 0;
-    for quad in source.chunks_exact(4) {
-        for corner in TRIANGLE_VERTICES {
-            write_gx2_vertex(output, next_vertex, quad[corner], section_origin, camera);
+    let mut next_vertex = 0usize;
+    let Some(expanded_count) = for_each_quad_vertex(
+        source,
+        [section_x, section_y, section_z],
+        |mut vertex, light_uv| {
+            vertex.position = project_position(
+                [vertex.position[0], vertex.position[1], vertex.position[2]],
+                [0.0; 3],
+                camera,
+            );
+            let base = next_vertex * GX2_VERTEX_SCALARS;
+            output[base..base + 4].copy_from_slice(&vertex.position);
+            output[base + 4..base + 7].copy_from_slice(&vertex.color);
+            output[base + 7..base + 9].copy_from_slice(&vertex.uv);
+            output[base + 9] = vertex.cutout;
+            output[base + 10..base + 12].copy_from_slice(&light_uv);
             next_vertex += 1;
-        }
-    }
+        },
+    ) else {
+        return 0;
+    };
 
-    next_vertex as u32
+    expanded_count as u32
 }
 
 /// Resolves GamePad-relative movement into Minecraft world X/Z at the current yaw.

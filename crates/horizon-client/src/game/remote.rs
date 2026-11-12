@@ -1036,6 +1036,8 @@ impl Game<'_> {
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             horizon_client::presentation::clear_sections(r, self.world.layout());
+        } else {
+            self.cafe_terrain_clear_pending = true;
         }
         self.apply_settings();
         self.clear_waypoints();
@@ -1283,6 +1285,8 @@ impl Game<'_> {
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
             horizon_client::presentation::clear_sections(r, self.world.layout());
+        } else {
+            self.cafe_terrain_clear_pending = true;
         }
         let saves = std::env::current_dir()?.join("saves");
         let mut title = horizon_client::title::Title::new(saves.clone(), &self.options.resources)
@@ -2330,6 +2334,8 @@ impl Game<'_> {
             self.pending_uploads.clear();
             if let Some(renderer) = self.renderer.as_mut() {
                 horizon_client::presentation::clear_sections(renderer, self.world.layout());
+            } else {
+                self.cafe_terrain_clear_pending = true;
             }
             // The new ClientLevel is told before setLevel drops the old one.
             let old = self.remote.as_mut().and_then(|r| {
@@ -2395,6 +2401,8 @@ impl Game<'_> {
         }
         if let Some(renderer) = self.renderer.as_mut() {
             horizon_client::presentation::remove_columns(renderer, gone.iter().copied());
+        } else {
+            self.cafe_terrain_remove_pending.extend(gone.iter().copied());
         }
         horizon_client::chunk::free_columns(freed, gone.len());
         self.world

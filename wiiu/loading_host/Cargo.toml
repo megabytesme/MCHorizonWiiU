@@ -10,5 +10,7 @@ path = "lib.rs"
 [dependencies]
 horizon-client = { path = "../../crates/horizon-client", default-features = false }
 horizon-wiiu-platform = { path = "../platform", default-features = false, features = ["cafe", "horizon-hud"] }
+horizon-wiiu-gx2-terrain = { path = "../gx2_terrain", features = ["atlas"] }
+horizon-shaders = { path = "../../crates/horizon-shaders" }
 
 [workspace]

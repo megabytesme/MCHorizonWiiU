@@ -17,6 +17,7 @@ use horizon_terrain_mesh::{
     models::load_visibility,
     LeafCullingMode, MeshChunk, MeshSectionView, SectionMesh, OPAQUE_LAYER,
 };
+use horizon_wiiu_gx2_terrain::TerrainAtlas;
 use horizon_world::worldgen::generator::{
     FlatSettings, GeneratorData, GeneratorWorker, OverworldGenerator, ProtoChunk, StageTimings,
 };
@@ -43,151 +44,17 @@ pub extern "C" fn horizon_wiiu_log_init() {
     }
 }
 
-struct TerrainAtlas {
-    pixels: Box<[u8]>,
-    width: u32,
-    height: u32,
-    sprite_size: u32,
-    cell_size: u32,
-    columns: u32,
-    layers: u32,
-}
-
-impl TerrainAtlas {
-    fn from_render_assets(render: &RenderAssets) -> Result<Self, String> {
-        let sprite_size = render.sprite_size;
-        let layers = render.texture_layers;
-        if sprite_size == 0 || layers == 0 {
-            return Err(format!(
-                "Horizon sprite atlas has invalid dimensions: {layers} layers at {sprite_size}px"
-            ));
-        }
-        if layers > u32::from(OPAQUE_LAYER) {
-            return Err(format!(
-                "Horizon has {layers} sprite layers; terrain vertices reserve layer {} as a flag",
-                OPAQUE_LAYER
-            ));
-        }
-        let cell_size = sprite_size
-            .checked_add(2)
-            .ok_or_else(|| "Horizon sprite cell size overflow".to_owned())?;
-        let source = render.pixels.get();
-        let expected = usize::try_from(layers)
-            .ok()
-            .and_then(|layers| layers.checked_mul(sprite_size as usize))
-            .and_then(|bytes| bytes.checked_mul(sprite_size as usize))
-            .and_then(|bytes| bytes.checked_mul(4))
-            .ok_or_else(|| "Horizon sprite layer byte count overflow".to_owned())?;
-        if source.len() != expected {
-            return Err(format!(
-                "Horizon sprite pixels have {} bytes, expected {expected}",
-                source.len()
-            ));
-        }
-
-        // Choose a power-of-two cell grid and texture dimensions to keep GX2
-        // allocation predictable while minimizing unused atlas space.
-        let mut columns = 1u32;
-        let mut best = None::<(u64, u32, u32, u32)>;
-        while columns <= layers.next_power_of_two() {
-            let rows = layers.div_ceil(columns);
-            let raw_width = columns
-                .checked_mul(cell_size)
-                .ok_or_else(|| "Horizon atlas width overflow".to_owned())?;
-            let raw_height = rows
-                .checked_mul(cell_size)
-                .ok_or_else(|| "Horizon atlas height overflow".to_owned())?;
-            let width = raw_width
-                .checked_next_power_of_two()
-                .ok_or_else(|| "Horizon atlas width overflow".to_owned())?;
-            let height = raw_height
-                .checked_next_power_of_two()
-                .ok_or_else(|| "Horizon atlas height overflow".to_owned())?;
-            if width <= 8192 && height <= 8192 {
-                let area = u64::from(width) * u64::from(height);
-                if best.is_none_or(|(best_area, _, _, _)| area < best_area) {
-                    best = Some((area, columns, width, height));
-                }
-            }
-            columns = columns
-                .checked_mul(2)
-                .ok_or_else(|| "Horizon atlas column count overflow".to_owned())?;
-        }
-        let Some((_, columns, width, height)) = best else {
-            return Err(format!(
-                "Horizon's {layers} sprite layers at {sprite_size}px exceed the GX2 8192px atlas limit"
-            ));
-        };
-        let pixel_bytes = usize::try_from(width)
-            .ok()
-            .and_then(|width| width.checked_mul(height as usize))
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| "Horizon atlas byte count overflow".to_owned())?;
-        let mut pixels = vec![0; pixel_bytes];
-        for layer in 0..layers {
-            let cell_x = (layer % columns) * cell_size;
-            let cell_y = (layer / columns) * cell_size;
-            let source_layer = layer as usize * sprite_size as usize * sprite_size as usize * 4;
-            for y in 0..cell_size {
-                let source_y = y.saturating_sub(1).min(sprite_size - 1) as usize;
-                for x in 0..cell_size {
-                    let source_x = x.saturating_sub(1).min(sprite_size - 1) as usize;
-                    let source_at = source_layer + (source_y * sprite_size as usize + source_x) * 4;
-                    let target_at =
-                        (((cell_y + y) as usize * width as usize) + (cell_x + x) as usize) * 4;
-                    pixels[target_at..target_at + 4]
-                        .copy_from_slice(&source[source_at..source_at + 4]);
-                }
-            }
-        }
-        Ok(Self {
-            pixels: pixels.into_boxed_slice(),
-            width,
-            height,
-            sprite_size,
-            cell_size,
-            columns,
-            layers,
-        })
-    }
-
-    fn remap_vertex(&self, vertex: &mut TerrainVertex) -> Result<(), String> {
-        let layer = u32::from(vertex.layer & !OPAQUE_LAYER);
-        if layer >= self.layers {
-            return Err(format!(
-                "Horizon mesh references sprite layer {layer}, atlas has {} layers",
-                self.layers
-            ));
-        }
-        let cell_x = (layer % self.columns) * self.cell_size;
-        let cell_y = (layer / self.columns) * self.cell_size;
-        let [u, v] = vertex.uv();
-        // Horizon's terrain sampler clamps each sprite's UV to its edge.
-        // Sample texel centers inside the padded atlas cell to match that path.
-        let inset = 1.5;
-        let span = (self.sprite_size - 1) as f32;
-        let atlas_uv = [
-            (cell_x as f32 + inset + u.clamp(0.0, 1.0) * span) / self.width as f32,
-            (cell_y as f32 + inset + v.clamp(0.0, 1.0) * span) / self.height as f32,
-        ];
-        vertex.uv = TerrainVertex::new(
-            vertex.pos,
-            atlas_uv,
-            vertex.layer & OPAQUE_LAYER,
-            vertex.color,
-            vertex.light,
-        )
-        .uv;
-        vertex.layer &= OPAQUE_LAYER;
-        Ok(())
-    }
+fn terrain_atlas(render: &RenderAssets) -> Result<TerrainAtlas, String> {
+    let pixels = render.pixels.get();
+    TerrainAtlas::from_layers(&pixels, render.sprite_size, render.texture_layers)
+        .map_err(str::to_owned)
 }
 
 /// Build the padded 2D RGBA atlas used by the Wii U terrain renderer from
 /// Horizon's canonical baked sprite layers.
 pub fn build_terrain_atlas(render: &RenderAssets) -> Result<(Vec<u8>, u32, u32), String> {
-    let atlas = TerrainAtlas::from_render_assets(render)?;
-    Ok((atlas.pixels.into_vec(), atlas.width, atlas.height))
+    let atlas = terrain_atlas(render)?;
+    Ok((atlas.pixels, atlas.width, atlas.height))
 }
 
 fn write_status(status: &str) {
@@ -450,7 +317,7 @@ fn load_world(root: &Path, seed: i64, profile: u32) -> Result<WorldContext, Stri
             ));
         })
         .map_err(|error| format!("Horizon block models and sprites: {error}"))?;
-    let terrain_atlas = TerrainAtlas::from_render_assets(&render)?;
+    let terrain_atlas = terrain_atlas(&render)?;
     let facts = BlockFacts::load(root, registry)
         .map_err(|error| format!("Horizon block facts: {error}"))?;
     let visibility = load_visibility(root, registry)
@@ -1264,7 +1131,7 @@ mod tests {
     #[test]
     fn atlas_uv_remapping_matches_clamp_to_edge_and_preserves_cutout_flag() {
         let atlas = TerrainAtlas {
-            pixels: Vec::new().into_boxed_slice(),
+            pixels: Vec::new(),
             width: 64,
             height: 64,
             sprite_size: 4,

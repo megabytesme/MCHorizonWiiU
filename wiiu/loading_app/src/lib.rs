@@ -667,34 +667,55 @@ impl EventLoopCtl for LoadingHost<'_> {
     }
 
     fn open_text_input(&self, initial_text: &str, max_utf16_units: usize) -> bool {
-        let mut initial_units: Vec<u16> = initial_text.encode_utf16().take(1023).collect();
-        if initial_units
-            .last()
-            .is_some_and(|unit| (0xD800..=0xDBFF).contains(unit))
-        {
-            initial_units.pop();
+        request_text_input(initial_text, max_utf16_units)
+    }
+}
+
+/// A frame only needs event-loop control and the CafeOS keyboard callback.
+/// Borrowing this adapter lets `CafeGameSession::frame` borrow the presenter
+/// mutably at the same time without re-borrowing the whole LoadingHost.
+struct LoadingFrameEventLoop<'a> {
+    control: &'a Cell<EventLoopControl>,
+}
+
+impl EventLoopCtl for LoadingFrameEventLoop<'_> {
+    fn set_control_flow(&self, control: EventLoopControl) {
+        self.control.set(control);
+    }
+
+    fn open_text_input(&self, initial_text: &str, max_utf16_units: usize) -> bool {
+        request_text_input(initial_text, max_utf16_units)
+    }
+}
+
+fn request_text_input(initial_text: &str, max_utf16_units: usize) -> bool {
+    let mut initial_units: Vec<u16> = initial_text.encode_utf16().take(1023).collect();
+    if initial_units
+        .last()
+        .is_some_and(|unit| (0xD800..=0xDBFF).contains(unit))
+    {
+        initial_units.pop();
+    }
+    initial_units.push(0);
+    let result = unsafe {
+        horizon_swkbd_request(
+            initial_units.as_ptr(),
+            max_utf16_units.clamp(1, 1024) as i32,
+        )
+    };
+    if result == 0 {
+        startup_report!("CafeOS keyboard open succeeded");
+        true
+    } else {
+        unsafe {
+            OSReport(
+                "Horizon Wii U startup: CafeOS keyboard open failed result=%d\n\0"
+                    .as_ptr()
+                    .cast(),
+                result,
+            );
         }
-        initial_units.push(0);
-        let result = unsafe {
-            horizon_swkbd_request(
-                initial_units.as_ptr(),
-                max_utf16_units.clamp(1, 1024) as i32,
-            )
-        };
-        if result == 0 {
-            startup_report!("CafeOS keyboard open succeeded");
-            true
-        } else {
-            unsafe {
-                OSReport(
-                    "Horizon Wii U startup: CafeOS keyboard open failed result=%d\n\0"
-                        .as_ptr()
-                        .cast(),
-                    result,
-                );
-            }
-            false
-        }
+        false
     }
 }
 
@@ -1164,15 +1185,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
             }
             let mut world_start_failed = false;
             let draw_result = if let Some(game) = &mut game_session {
-                match game.step(self) {
-                    Ok(()) => match game.draw_loading(self.presenter) {
-                        Ok(Some(_)) => Ok(()),
-                        Ok(None) => {
-                            world_loading_complete = true;
-                            session.draw(self.presenter).map(|_| ())
-                        }
-                        Err(error) => Err(error),
-                    },
+                let event_loop = LoadingFrameEventLoop {
+                    control: &self.control,
+                };
+                match game.frame(&event_loop, self.presenter) {
+                    Ok(_frame_drawn) => {
+                        world_loading_complete |= game.world_loading_complete();
+                        Ok(())
+                    }
                     Err(error) => {
                         world_start_failed = !world_loading_complete;
                         Err(error)
