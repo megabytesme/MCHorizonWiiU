@@ -23098,7 +23098,6 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
         cafe_game_stage!("heartbeat start begin");
         horizon_client::heartbeat::start();
         cafe_game_stage!("heartbeat start complete");
-        #[cfg(not(target_os = "cafe"))]
         {
             let player_dir = horizon_client::logging::player_dir();
             cafe_game_stage!("official server seed begin");
@@ -23112,8 +23111,6 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
             }
             cafe_game_stage!("partner server seed complete");
         }
-        #[cfg(target_os = "cafe")]
-        cafe_game_stage!("official and partner server seeding skipped");
     }
     cafe_game_stage!("mod components registration begin");
     mods::register_components(&vanilla_root)?;
