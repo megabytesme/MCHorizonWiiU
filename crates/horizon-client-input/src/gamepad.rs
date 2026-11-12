@@ -710,7 +710,13 @@ impl PadSettings {
             "pointerSpeed:{}\nscrollSpeed:{}\nrepeatDelay:{}\nrepeatInterval:{}\n",
             self.pointer_speed, self.scroll_speed, self.repeat_delay, self.repeat_interval,
         ));
-        for (action, button) in &self.bindings {
+        // Keep the explicit iterator loop: the Cafe-targeted `for` form stalled
+        // in Cemu on non-empty bindings, while this form completes the settings write.
+        let mut bindings = self.bindings.iter();
+        loop {
+            let Some((action, button)) = bindings.next() else {
+                break;
+            };
             text.push_str(&format!(
                 "bind_{action}:{}\n",
                 button.map_or("none", Button::name)
@@ -1763,6 +1769,17 @@ bind_key.hotbar.2:north
         assert_eq!(s.binding("key.togglePerspective"), Some(Button::DPadUp));
         assert_eq!(s.binding("key.playerlist"), Some(Button::Select));
         assert!(!s.conflicts("key.advancements"));
+        let legacy = PadSettings::parse("keyboard:horizon\n");
+        let round_trip = PadSettings::parse(&legacy.serialize());
+        for (action, button) in [
+            ("key.drop", Some(Button::East)),
+            ("key.togglePerspective", Some(Button::DPadUp)),
+            ("key.chat", Some(Button::DPadRight)),
+            ("key.playerlist", Some(Button::Select)),
+            ("key.advancements", Some(Button::DPadDown)),
+        ] {
+            assert_eq!(round_trip.bindings.get(action), Some(&button), "{action}");
+        }
         // Advancements moved by hand stays moved, and the file stays this way from then on.
         let s = PadSettings::parse("bind_key.advancements:left\nbind_key.drop:down\n");
         assert_eq!(s.binding("key.advancements"), Some(Button::DPadLeft));
