@@ -22601,12 +22601,16 @@ impl Loading {
             }
             if matches!(button, Button::East | Button::Start) {
                 if down && !back_dispatched {
-                    if trace_first_dispatch {
-                        cafe_game_stage!("first pad dispatch escape begin");
-                    }
-                    self.menu_pad_escape(event_loop);
-                    if trace_first_dispatch {
-                        cafe_game_stage!("first pad dispatch escape complete");
+                    if self.menu_osk_open() {
+                        self.menu_pad_button(event_loop, button, true);
+                    } else {
+                        if trace_first_dispatch {
+                            cafe_game_stage!("first pad dispatch escape begin");
+                        }
+                        self.menu_pad_escape(event_loop);
+                        if trace_first_dispatch {
+                            cafe_game_stage!("first pad dispatch escape complete");
+                        }
                     }
                     back_dispatched = true;
                 }

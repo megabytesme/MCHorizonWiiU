@@ -15,3 +15,7 @@ _Static_assert(sizeof(HorizonVpadSample) == 32, "unexpected VPAD bridge layout")
 
 /* Returns 1 for a sample, VPAD_READ_NO_SAMPLES for no sample, or a VPAD error. */
 int32_t horizon_wiiu_vpad_read(HorizonVpadSample *sample);
+
+/* True while CafeOS swkbd owns the current VPAD sample, including the frame
+   on which the user accepts or cancels it. */
+int32_t horizon_wiiu_swkbd_input_occupied(void);

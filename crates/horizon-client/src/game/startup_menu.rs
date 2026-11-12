@@ -9,8 +9,8 @@ use horizon_client::{
     widgets::{Kind, Target},
 };
 use horizon_client_platform::{
-    ClientWindowEvent as WindowEvent, KeyCode, KeyLocation, KeyState as ElementState, LogicalKey,
-    Modifiers, MouseButton,
+    ClientWindowEvent as WindowEvent, ImeEvent, KeyCode, KeyLocation, KeyState as ElementState,
+    LogicalKey, Modifiers, MouseButton,
 };
 
 #[derive(Default)]
@@ -56,6 +56,12 @@ pub(super) struct StartupMenu {
     key_synthetic: bool,
     /// The screen the keyboard's focus is on (`key_screen`).
     key_screen: u64,
+    /// Cafe's controller keyboard for the title's active text field.
+    osk: Option<horizon_client::osk::Keyboard>,
+    /// CafeOS's native DRC keyboard owns input for the focused text field.
+    native_osk: bool,
+    /// Draw the controller keyboard at the top when its field is in the lower half.
+    osk_at_top: bool,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
     /// Browse mods' worker (`mod_browser`).
@@ -1086,6 +1092,20 @@ impl Loading {
         if !down {
             return;
         }
+        if let Some(keyboard) = &mut self.menu.osk {
+            let output = keyboard.button(button);
+            if let Some(output) = output
+                && let Err(error) = self.menu_osk_output(event_loop, output)
+            {
+                log::warn!("Horizon: startup on-screen keyboard: {error}");
+            }
+            return;
+        }
+        #[cfg(target_os = "cafe")]
+        if button == Button::South && self.menu_text_field_focused() {
+            self.menu_open_osk(event_loop);
+            return;
+        }
         let nav = match button {
             Button::DPadUp => Nav::Arrow(Button::DPadUp),
             Button::DPadDown => Nav::Arrow(Button::DPadDown),
@@ -1100,6 +1120,157 @@ impl Loading {
             _ => return,
         };
         self.menu_navigation(event_loop, nav, true);
+    }
+
+    /// Whether East/Start should be sent to the title's open controller keyboard
+    /// instead of the normal menu Escape action.
+    pub(super) fn menu_osk_open(&self) -> bool {
+        self.menu.osk.is_some() || self.menu.native_osk
+    }
+
+    #[cfg(target_os = "cafe")]
+    fn menu_text_field_focused(&mut self) -> bool {
+        if self.menu.options_open {
+            self.menu.options.typing()
+        } else {
+            self.menu
+                .title
+                .as_mut()
+                .is_some_and(|title| title.has_caret_field() || title.focused_field().is_some())
+        }
+    }
+
+    #[cfg(target_os = "cafe")]
+    fn menu_open_osk(&mut self, event_loop: &dyn EventLoopCtl) {
+        if !self.menu_text_field_focused() || self.menu_osk_open() {
+            return;
+        }
+
+        let (initial, max_utf16_units) = if self.menu.options_open {
+            (String::new(), 1024usize)
+        } else {
+            self.menu
+                .title
+                .as_mut()
+                .and_then(|title| {
+                    title
+                        .focused_field()
+                        .map(|(_, value, max)| (value.clone(), max))
+                })
+                .unwrap_or_else(|| (String::new(), 1024))
+        };
+        if event_loop.open_text_input(&initial, max_utf16_units.clamp(1, 1024)) {
+            self.menu.native_osk = true;
+            if self.menu.options_open {
+                if let Some(gui) = &self.gui {
+                    self.menu.options.shortcut(
+                        &gui.atlas,
+                        horizon_client::clipboard::EditShortcut::SelectAll,
+                        &mut self.menu.clipboard,
+                    );
+                }
+            } else if let Some(title) = &mut self.menu.title {
+                title.field_shortcut(
+                    horizon_client::clipboard::EditShortcut::SelectAll,
+                    &mut self.menu.clipboard,
+                );
+            }
+        } else {
+            let batch = HudBatch::new(self.menu_size());
+            self.menu.osk_at_top = self.menu.cursor.1 > batch.height / 2.0;
+            self.menu.osk = Some(horizon_client::osk::Keyboard::default());
+        }
+    }
+
+    fn menu_osk_output(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        output: horizon_client::osk::Output,
+    ) -> Result<()> {
+        use horizon_client::osk::Output;
+
+        match output {
+            Output::Text(text) => {
+                if self.menu.options_open {
+                    if let Some(gui) = &self.gui {
+                        self.menu.options.type_text(&gui.atlas, &text);
+                    }
+                } else if let Some(title) = &mut self.menu.title {
+                    title.type_text(&text);
+                }
+            }
+            Output::Backspace => {
+                if self.menu.options_open {
+                    if let Some(gui) = &self.gui {
+                        let events = self.menu.options.key(
+                            &mut self.settings,
+                            &gui.atlas,
+                            KeyCode::Backspace,
+                            None,
+                        );
+                        self.menu_option_events(events);
+                    }
+                } else if let Some(title) = &mut self.menu.title {
+                    title.backspace();
+                }
+            }
+            Output::Enter => {
+                self.menu.osk = None;
+                if self.menu.options_open {
+                    return Ok(());
+                }
+                let size = HudBatch::new(self.menu_size());
+                let action = self.menu.title.as_mut().map_or(Action::None, |title| {
+                    title.confirm_key_size((size.width, size.height)).0
+                });
+                self.menu_action(event_loop, action);
+            }
+            Output::Close => self.menu.osk = None,
+        }
+        Ok(())
+    }
+
+    fn menu_ime_commit(&mut self, text: &str) {
+        let replace = std::mem::take(&mut self.menu.native_osk);
+        if self.menu.options_open {
+            if let Some(gui) = &self.gui {
+                if replace {
+                    self.menu.options.shortcut(
+                        &gui.atlas,
+                        horizon_client::clipboard::EditShortcut::SelectAll,
+                        &mut self.menu.clipboard,
+                    );
+                }
+                self.menu.options.type_text(&gui.atlas, text);
+            }
+        } else if let Some(title) = &mut self.menu.title {
+            if replace {
+                title.field_shortcut(
+                    horizon_client::clipboard::EditShortcut::SelectAll,
+                    &mut self.menu.clipboard,
+                );
+            }
+            title.type_text(text);
+        }
+    }
+
+    fn menu_ime_disabled(&mut self) {
+        if !std::mem::take(&mut self.menu.native_osk) {
+            return;
+        }
+        if self.menu.options_open {
+            if let Some(gui) = &self.gui {
+                let events = self.menu.options.key(
+                    &mut self.settings,
+                    &gui.atlas,
+                    KeyCode::ArrowRight,
+                    None,
+                );
+                self.menu_option_events(events);
+            }
+        } else if let Some(title) = &mut self.menu.title {
+            title.field_key(KeyCode::ArrowRight, false, false);
+        }
     }
 
     pub(super) fn pad_stick_navigation_button(
@@ -1360,6 +1531,36 @@ impl Loading {
         #[cfg(not(target_os = "cafe"))]
         let trace_cafe_touch_press = false;
 
+        #[cfg(target_os = "cafe")]
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = &event
+            && self.menu.osk.is_some()
+        {
+            let Some(gui) = &self.gui else {
+                return Ok(());
+            };
+            let (cursor, size) = {
+                let mut batch = HudBatch::new(self.menu_size());
+                let ui =
+                    horizon_client::ui_theme::Ui::new(&gui.atlas, &mut batch, self.menu.cursor);
+                (ui.cursor, (ui.w, ui.h))
+            };
+            let keyboard_press = self
+                .menu
+                .osk
+                .as_mut()
+                .map(|keyboard| keyboard.pointer_press(cursor, size, self.menu.osk_at_top));
+            if let Some((true, output)) = keyboard_press {
+                if let Some(output) = output {
+                    self.menu_osk_output(event_loop, output)?;
+                }
+                return Ok(());
+            }
+        }
+
         if trace_cafe_touch_press {
             cafe_game_stage!("first Cafe touch press entered title menu handler");
         }
@@ -1425,6 +1626,9 @@ impl Loading {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.menu.modifiers = modifiers;
             }
+            WindowEvent::Ime(ImeEvent::Commit(text)) => self.menu_ime_commit(&text),
+            WindowEvent::Ime(ImeEvent::Disabled) => self.menu_ime_disabled(),
+            WindowEvent::Ime(ImeEvent::Enabled | ImeEvent::Preedit(_, _)) => {}
             // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
             // joins the Create New World screen's data packs.
             WindowEvent::DroppedFile(path) => {
@@ -1489,6 +1693,8 @@ impl Loading {
                     if state == ElementState::Pressed {
                         self.menu.dragging = button == MouseButton::Left;
                         self.menu_options_click(false, button == MouseButton::Right);
+                        #[cfg(target_os = "cafe")]
+                        self.menu_open_osk(event_loop);
                     } else if button == MouseButton::Left {
                         self.menu.dragging = false;
                         let events = self.menu.options.release();
@@ -1549,6 +1755,10 @@ impl Loading {
                             cafe_game_stage!("first Cafe touch press menu action begin");
                         }
                         self.menu_action(event_loop, action);
+                        #[cfg(target_os = "cafe")]
+                        if state == ElementState::Pressed {
+                            self.menu_open_osk(event_loop);
+                        }
                         if trace_cafe_touch_press {
                             cafe_game_stage!("first Cafe touch press menu action complete");
                         }
@@ -1695,6 +1905,38 @@ impl Loading {
                 self.settings.file.bool("hideSplashTexts"),
                 self.settings.file.bool("hideServerAddress"),
             );
+        }
+        #[cfg(target_os = "cafe")]
+        {
+            let text_field_active = self.menu.pending.is_none()
+                && self.menu.win.is_none()
+                && if self.menu.options_open {
+                    self.menu.options.typing()
+                } else {
+                    self.menu.title.as_mut().is_some_and(|title| {
+                        title.has_caret_field() || title.focused_field().is_some()
+                    })
+                };
+            if !text_field_active {
+                self.menu.osk = None;
+                self.menu.native_osk = false;
+            }
+            if let (Some(keyboard), Some(gui)) = (&self.menu.osk, &self.gui) {
+                let mut ui = horizon_client::ui_theme::Ui::new(&gui.atlas, batch, self.menu.cursor);
+                let glyphs = self
+                    .settings
+                    .controller
+                    .glyphs
+                    .resolve(horizon_client::gamepad::GlyphStyle::Nintendo);
+                keyboard.draw(
+                    &mut ui,
+                    self.menu.osk_at_top,
+                    glyphs,
+                    glyphs == horizon_client::gamepad::GlyphStyle::Nintendo
+                        && self.settings.controller.nintendo_letters,
+                );
+                ui.finish();
+            }
         }
         if let Some(focus) = self.menu.key_focus
             && self.menu.pending.is_none()

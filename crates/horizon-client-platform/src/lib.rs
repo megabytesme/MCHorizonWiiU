@@ -26,6 +26,13 @@ pub enum EventLoopControl {
 pub trait EventLoopCtl {
     fn set_control_flow(&self, control: EventLoopControl);
 
+    /// Ask the platform to open its native text input for the focused field.
+    /// Returns `true` only when the platform accepted the request; callers can
+    /// then fall back to Horizon's own on-screen keyboard when it returns false.
+    fn open_text_input(&self, _initial_text: &str, _max_utf16_units: usize) -> bool {
+        false
+    }
+
     /// Ends the loop after the current iteration.
     fn exit(&self) {
         self.set_control_flow(EventLoopControl::Exit);

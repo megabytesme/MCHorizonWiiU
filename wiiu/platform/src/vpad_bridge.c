@@ -1,5 +1,21 @@
 #include "vpad_bridge.h"
 #include <vpad/input.h>
+#include "swkbd_bridge.h"
+
+static int32_t swkbd_input_occupied;
+
+static void
+update_swkbd(const VPADStatus *status)
+{
+   int32_t result = horizon_swkbd_calc(status);
+   swkbd_input_occupied = result != 0 || horizon_swkbd_is_open() != 0;
+}
+
+int32_t
+horizon_wiiu_swkbd_input_occupied(void)
+{
+   return swkbd_input_occupied;
+}
 
 int32_t
 horizon_wiiu_vpad_read(HorizonVpadSample *sample)
@@ -8,11 +24,14 @@ horizon_wiiu_vpad_read(HorizonVpadSample *sample)
    VPADReadError error = VPAD_READ_SUCCESS;
    int32_t count = VPADRead(VPAD_CHAN_0, &status, 1, &error);
    if (error != VPAD_READ_SUCCESS) {
+      update_swkbd(NULL);
       return (int32_t)error;
    }
    if (count <= 0) {
+      update_swkbd(NULL);
       return VPAD_READ_NO_SAMPLES;
    }
+   update_swkbd(&status);
    sample->buttons = status.hold;
    sample->left_x = status.leftStick.x;
    sample->left_y = status.leftStick.y;

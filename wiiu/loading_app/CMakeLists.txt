@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
-project(horizon_wiiu_loading_app C)
+project(horizon_wiiu_loading_app C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(CARGO_WIIU_EXECUTABLE cargo-wiiu REQUIRED)
@@ -153,6 +155,7 @@ add_executable(horizon_wiiu_loading_app
    "${WUT_CRT0_OBJECT}"
    main.c
    ../audio/audio.c
+   ../platform/src/keyboard_bridge.c
    ../platform/src/vpad_bridge.c
    "${HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}")
 target_include_directories(horizon_wiiu_loading_app PRIVATE ../audio ../platform/src)

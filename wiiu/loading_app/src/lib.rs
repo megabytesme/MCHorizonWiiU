@@ -6,9 +6,9 @@
 use horizon_client::game::{
     CafeLoadingHost, CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
 };
-use horizon_client_platform::{EventLoopControl, EventLoopCtl};
+use horizon_client_platform::{ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent};
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
-use horizon_wiiu_platform::{touch::TouchMapper, VpadState};
+use horizon_wiiu_platform::{keyboard::KeyboardAdapter, touch::TouchMapper, VpadState};
 use std::cell::Cell;
 use std::ffi::CString;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -18,6 +18,15 @@ unsafe extern "C" {
     fn OSReport(format: *const std::ffi::c_char, ...);
     fn horizon_wiiu_app_is_running() -> i32;
     fn horizon_wiiu_app_is_focused() -> i32;
+    fn horizon_wiiu_swkbd_input_occupied() -> i32;
+    fn horizon_swkbd_request(initial_text: *const u16, max_utf16_units: i32) -> i32;
+    fn horizon_swkbd_is_open() -> i32;
+    fn horizon_swkbd_take_result(
+        utf8: *mut std::ffi::c_char,
+        capacity: usize,
+        length: *mut usize,
+    ) -> i32;
+    fn horizon_swkbd_close();
     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
 }
 
@@ -36,7 +45,11 @@ macro_rules! startup_report {
         // Fixed static format strings keep these early startup markers free of
         // allocator and logger initialization dependencies.
         unsafe {
-            OSReport(concat!("Horizon Wii U startup: ", $stage, "\n\0").as_ptr().cast());
+            OSReport(
+                concat!("Horizon Wii U startup: ", $stage, "\n\0")
+                    .as_ptr()
+                    .cast(),
+            );
         }
     }};
 }
@@ -280,6 +293,11 @@ struct LoadingHost<'a> {
     control: Cell<EventLoopControl>,
     vpad: VpadState,
     touch: TouchMapper,
+    keyboard: KeyboardAdapter,
+    keyboard_events: Vec<ClientWindowEvent>,
+    native_keyboard_result: Vec<u8>,
+    native_keyboard_active: bool,
+    keyboard_initialized: bool,
     focused: bool,
     touch_blocked_until_release: bool,
     pad_blocked_until_neutral: bool,
@@ -296,6 +314,11 @@ impl<'a> LoadingHost<'a> {
             control: Cell::new(EventLoopControl::Poll),
             vpad: VpadState::default(),
             touch: TouchMapper::default(),
+            keyboard: KeyboardAdapter::default(),
+            keyboard_events: Vec::with_capacity(32),
+            native_keyboard_result: vec![0; 4097],
+            native_keyboard_active: false,
+            keyboard_initialized: false,
             focused: true,
             touch_blocked_until_release: false,
             pad_blocked_until_neutral: false,
@@ -389,6 +412,8 @@ impl<'a> LoadingHost<'a> {
     }
 
     fn release_on_exit(&mut self, session: &mut CafeLoadingSession) {
+        self.keyboard.release_all_into(&mut self.keyboard_events);
+        self.dispatch_queued_keyboard(session);
         let release = self.touch.reset(&self.vpad);
         for event in release {
             session.dispatch_event(self, event);
@@ -400,6 +425,50 @@ impl<'a> LoadingHost<'a> {
             self,
             horizon_client_platform::ClientWindowEvent::Focused(false),
         );
+        unsafe { horizon_swkbd_close() };
+        if self.keyboard_initialized {
+            let result = horizon_wiiu_platform::keyboard::shutdown();
+            if result != 0 {
+                log::warn!("Horizon Cafe USB keyboard teardown returned {result}");
+            }
+            self.keyboard_initialized = false;
+        }
+    }
+
+    fn dispatch_queued_keyboard(&mut self, session: &mut CafeLoadingSession) {
+        let mut events = std::mem::take(&mut self.keyboard_events);
+        for event in events.drain(..) {
+            session.dispatch_event(self, event);
+        }
+        self.keyboard_events = events;
+    }
+
+    fn discard_keyboard_input(&mut self) {
+        self.keyboard_events.clear();
+        self.keyboard.drain_into(&mut self.keyboard_events);
+        self.keyboard.release_all_into(&mut self.keyboard_events);
+        self.keyboard_events.clear();
+    }
+
+    fn poll_native_keyboard_result(&mut self, session: &mut CafeLoadingSession) {
+        let mut length = 0usize;
+        let result = unsafe {
+            horizon_swkbd_take_result(
+                self.native_keyboard_result.as_mut_ptr().cast(),
+                self.native_keyboard_result.len(),
+                &mut length,
+            )
+        };
+        match result {
+            0 => {}
+            1 if length < self.native_keyboard_result.len() => {
+                let text =
+                    String::from_utf8_lossy(&self.native_keyboard_result[..length]).into_owned();
+                session.dispatch_event(self, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
+            }
+            2 => session.dispatch_event(self, ClientWindowEvent::Ime(ImeEvent::Disabled)),
+            error => log::warn!("Horizon Cafe system keyboard result failed: {error}"),
+        }
     }
 
     fn update_focus(&mut self, session: &mut CafeLoadingSession) -> bool {
@@ -420,6 +489,8 @@ impl<'a> LoadingHost<'a> {
             let neutral = self.vpad.reset();
             self.pad_blocked_until_neutral = true;
             session.dispatch_pad_state(self, neutral);
+            self.keyboard.release_all_into(&mut self.keyboard_events);
+            self.dispatch_queued_keyboard(session);
         }
         session.dispatch_event(
             self,
@@ -433,10 +504,34 @@ impl EventLoopCtl for LoadingHost<'_> {
     fn set_control_flow(&self, control: EventLoopControl) {
         self.control.set(control);
     }
+
+    fn open_text_input(&self, initial_text: &str, max_utf16_units: usize) -> bool {
+        let mut initial_units: Vec<u16> = initial_text.encode_utf16().take(1023).collect();
+        if initial_units
+            .last()
+            .is_some_and(|unit| (0xD800..=0xDBFF).contains(unit))
+        {
+            initial_units.pop();
+        }
+        initial_units.push(0);
+        unsafe {
+            horizon_swkbd_request(
+                initial_units.as_ptr(),
+                max_utf16_units.clamp(1, 1024) as i32,
+            ) == 0
+        }
+    }
 }
 
 impl CafeLoadingHost for LoadingHost<'_> {
     fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> horizon_client::Result<()> {
+        match horizon_wiiu_platform::keyboard::initialize() {
+            Ok(()) => {
+                self.keyboard_initialized = true;
+                startup_report!("USB keyboard initialized");
+            }
+            Err(error) => log::warn!("Horizon Cafe USB keyboard initialization failed: {error}"),
+        }
         let mut trace_focus = true;
         let mut trace_poll = true;
         let mut trace_vpad = true;
@@ -476,6 +571,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if !focused {
                 // WHBGfx frees foreground buffers on a ProcUI release. Keep
                 // loader/menu services moving but do not touch GX2 or VPAD.
+                self.discard_keyboard_input();
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
@@ -483,10 +579,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if trace_vpad {
                 startup_report!("loading first VPAD sample begin");
             }
-            let (pad, fresh_sample, fresh_release, terminal_error) = match self.vpad.poll_with_evidence() {
-                Ok((pad, fresh_sample, fresh_release)) => {
-                    (pad, fresh_sample, fresh_release, false)
-                }
+            let (pad, fresh_sample, fresh_release, terminal_error) = match self
+                .vpad
+                .poll_with_evidence()
+            {
+                Ok((pad, fresh_sample, fresh_release)) => (pad, fresh_sample, fresh_release, false),
                 // VPAD busy means no new sample. Retain the previous state and
                 // never claim a physical touch release.
                 Err(-4) => (self.vpad.update(None), None, None, false),
@@ -513,6 +610,40 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 startup_report!("loading first VPAD sample complete");
                 trace_vpad = false;
             }
+
+            let swkbd_occupied = unsafe { horizon_wiiu_swkbd_input_occupied() != 0 };
+            let swkbd_open = unsafe { horizon_swkbd_is_open() != 0 };
+            let mut native_input_this_frame =
+                self.native_keyboard_active || swkbd_occupied || swkbd_open;
+            self.native_keyboard_active = swkbd_occupied || swkbd_open;
+            self.poll_native_keyboard_result(session);
+            if native_input_this_frame && !self.native_keyboard_active {
+                // A result closed the system keyboard. The frame that contains
+                // that result still belongs to it; require fresh neutral input
+                // and a physical touch release before returning to the menu.
+                self.touch_blocked_until_release = true;
+                self.pad_blocked_until_neutral = true;
+                let release = self.touch.focus_lost(&self.vpad);
+                for event in release {
+                    session.dispatch_event(self, event);
+                }
+                let neutral = self.vpad.reset();
+                session.dispatch_pad_state(self, neutral);
+                self.keyboard.release_all_into(&mut self.keyboard_events);
+                self.dispatch_queued_keyboard(session);
+            }
+
+            self.keyboard_events.clear();
+            self.keyboard.drain_into(&mut self.keyboard_events);
+            if native_input_this_frame || !focused {
+                // Do not replay stale USB keystrokes after CafeOS takes over
+                // the GamePad keyboard or ProcUI has moved to the background.
+                self.keyboard.release_all_into(&mut self.keyboard_events);
+                self.keyboard_events.clear();
+            } else {
+                self.dispatch_queued_keyboard(session);
+            }
+
             if trace_pad_dispatch {
                 log::info!(
                     "Horizon: first Cafe pad sample fresh={} terminal_error={} buttons={:#010x} left={:?} right={:?} triggers={:?}",
@@ -525,7 +656,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 );
                 startup_report!("loading first pad dispatch begin");
             }
-            if terminal_error {
+            if native_input_this_frame {
+                // VPADStatus was already passed to CafeOS's keyboard Calc.
+                // Do not also route the same pad sample through Horizon menus.
+            } else if terminal_error {
                 // Deliver neutral immediately to release any menu edge, but
                 // do not treat an error-created default as fresh rearm proof.
                 session.dispatch_pad_state(self, pad);
@@ -542,6 +676,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 // Horizon's typed menu path; no keyboard events are synthesized.
                 session.dispatch_pad_state(self, pad);
             }
+            if !native_input_this_frame && unsafe { horizon_swkbd_is_open() != 0 } {
+                // The south-button sample that opens CafeOS is still delivered
+                // to Horizon; suppress touch/pad dispatch for the rest of it.
+                native_input_this_frame = true;
+                self.native_keyboard_active = true;
+                self.keyboard.release_all_into(&mut self.keyboard_events);
+                self.dispatch_queued_keyboard(session);
+            }
             if trace_pad_dispatch {
                 startup_report!("loading first pad dispatch complete");
                 trace_pad_dispatch = false;
@@ -549,8 +691,21 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if trace_touch_sample_this_frame {
                 startup_report!("first Cafe VPAD touch mapping begin");
             }
-            let touch_activation_dispatched =
-                self.dispatch_touch(session, fresh_release, trace_touch_dispatch);
+            let touch_activation_dispatched = if native_input_this_frame {
+                // Keep TouchMapper's contact/release state current while the
+                // CafeOS keyboard consumes the GamePad touchscreen.
+                let mut dimensions = [0u32; 4];
+                if unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) } == 0 {
+                    let _ = self.touch.events_with_freshness(
+                        &self.vpad,
+                        [dimensions[2], dimensions[3]],
+                        fresh_release,
+                    );
+                }
+                false
+            } else {
+                self.dispatch_touch(session, fresh_release, trace_touch_dispatch)
+            };
             if trace_touch_sample_this_frame {
                 startup_report!("first Cafe VPAD touch mapping complete");
             }

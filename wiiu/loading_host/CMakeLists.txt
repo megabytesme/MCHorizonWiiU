@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
-project(horizon_wiiu_loading_host C)
+project(horizon_wiiu_loading_host C CXX)
 find_program(POWERPC_OBJCOPY_EXECUTABLE powerpc-eabi-objcopy REQUIRED)
 
 # Keep all generated files under the caller's binary tree. These are the
@@ -34,7 +34,8 @@ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"
    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
 
 add_library(horizon_wiiu_loading_host STATIC
-   loading_host.c "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}")
+   loading_host.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}")
+set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(horizon_wiiu_loading_host

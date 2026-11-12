@@ -35,6 +35,10 @@ enum Key {
 /// A row of keys and their widths in key units (every row is 10 wide).
 type Row = &'static [(Key, f32)];
 
+const KEY_UNIT: f32 = 50.0;
+const KEY_GAP: f32 = 6.0;
+const KEY_HEIGHT: f32 = 38.0;
+
 const fn c(ch: char) -> (Key, f32) {
     (Key::Char(ch), 1.0)
 }
@@ -271,15 +275,51 @@ impl Keyboard {
         }
     }
 
+    /// Press a key using the same design coordinates as [`Self::draw`].
+    /// Returns whether the pointer landed on the keyboard panel and any output.
+    pub fn pointer_press(
+        &mut self,
+        at: (f32, f32),
+        size: (f32, f32),
+        at_top: bool,
+    ) -> (bool, Option<Output>) {
+        let width = 10.0 * KEY_UNIT + 9.0 * KEY_GAP;
+        let height = 5.0 * KEY_HEIGHT + 4.0 * KEY_GAP + 24.0 + 30.0;
+        let x0 = ((size.0 - width) / 2.0).round();
+        let y0 = if at_top { 16.0 } else { size.1 - height - 16.0 };
+        if at.0 < x0 - 12.0
+            || at.0 >= x0 + width + 12.0
+            || at.1 < y0 - 12.0
+            || at.1 >= y0 - 12.0 + height
+        {
+            return (false, None);
+        }
+
+        for (row_index, row) in self.rows().iter().enumerate() {
+            let y = y0 + row_index as f32 * (KEY_HEIGHT + KEY_GAP);
+            if at.1 < y || at.1 >= y + KEY_HEIGHT {
+                continue;
+            }
+            for (col_index, (key, units)) in row.iter().enumerate() {
+                let (left, _) = Self::span(row, col_index);
+                let x = x0 + left * (KEY_UNIT + KEY_GAP);
+                let key_width = units * KEY_UNIT + (units - 1.0) * KEY_GAP;
+                if at.0 >= x && at.0 < x + key_width {
+                    self.row = row_index;
+                    self.col = col_index;
+                    return (true, self.press());
+                }
+            }
+        }
+        (true, None)
+    }
+
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half. `by_letter`: the pad goes by its letters
     /// and the glyphs are Nintendo's, so a hint names the button playing its part.
     pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle, by_letter: bool) {
-        const UNIT: f32 = 50.0;
-        const GAP: f32 = 6.0;
-        const KEY_H: f32 = 38.0;
-        let width = 10.0 * UNIT + 9.0 * GAP;
-        let height = 5.0 * KEY_H + 4.0 * GAP + 24.0 + 30.0;
+        let width = 10.0 * KEY_UNIT + 9.0 * KEY_GAP;
+        let height = 5.0 * KEY_HEIGHT + 4.0 * KEY_GAP + 24.0 + 30.0;
         let x0 = ((ui.w - width) / 2.0).round();
         let y0 = if at_top { 16.0 } else { ui.h - height - 16.0 };
         ui.rounded(
@@ -299,11 +339,11 @@ impl Keyboard {
             color::BORDER,
         );
         for (r, row) in self.rows().iter().enumerate() {
-            let y = y0 + r as f32 * (KEY_H + GAP);
+            let y = y0 + r as f32 * (KEY_HEIGHT + KEY_GAP);
             for (i, (key, units)) in row.iter().enumerate() {
                 let (left, _) = Self::span(row, i);
-                let x = x0 + left * (UNIT + GAP);
-                let w = units * UNIT + (units - 1.0) * GAP;
+                let x = x0 + left * (KEY_UNIT + KEY_GAP);
+                let w = units * KEY_UNIT + (units - 1.0) * KEY_GAP;
                 let focused = r == self.row && i == self.col;
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
@@ -314,7 +354,7 @@ impl Keyboard {
                 } else {
                     (color::RAISED, color::TEXT)
                 };
-                ui.rounded(x, y, w, KEY_H, ui_theme::RADIUS, plate);
+                ui.rounded(x, y, w, KEY_HEIGHT, ui_theme::RADIUS, plate);
                 let label = match key {
                     Key::Char(ch) => self.letter(*ch),
                     Key::Shift if self.caps => "CAPS".into(),
@@ -329,7 +369,7 @@ impl Keyboard {
                 ui.text_line(
                     Face::Medium,
                     ui_theme::BODY,
-                    KEY_H,
+                    KEY_HEIGHT,
                     x + ((w - lw) / 2.0).round(),
                     y,
                     ink,
@@ -357,7 +397,7 @@ impl Keyboard {
             Face::Regular,
             ui_theme::SMALL,
             x0 + width / 2.0,
-            y0 + 5.0 * (KEY_H + GAP) + 2.0,
+            y0 + 5.0 * (KEY_HEIGHT + KEY_GAP) + 2.0,
             color::MUTED,
             &line.join("   "),
         );

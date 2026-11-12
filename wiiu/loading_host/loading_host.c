@@ -1,4 +1,5 @@
 #include "loading_host.h"
+#include "swkbd_bridge.h"
 
 #include <whb/gfx.h>
 #include <gx2/surface.h>
@@ -48,12 +49,14 @@ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context)
 
    WHBGfxBeginRenderTV();
    WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-   if (draw(context, 0, dimensions[0], dimensions[1]) != 0) result = -2;
+   if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+       horizon_swkbd_draw(0) != 0) result = -2;
    WHBGfxFinishRenderTV();
 
    WHBGfxBeginRenderDRC();
    WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-   if (draw(context, 1, dimensions[2], dimensions[3]) != 0) result = -3;
+   if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+       horizon_swkbd_draw(1) != 0) result = -3;
    WHBGfxFinishRenderDRC();
 
    WHBGfxFinishRender();
