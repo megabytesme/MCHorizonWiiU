@@ -7,10 +7,12 @@
 use horizon_core::random::RandomSource;
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::Path,
 };
+#[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
+use std::collections::HashSet;
 
 /// `SoundManager.EMPTY_SOUND_LOCATION`.
 pub const EMPTY: &str = "minecraft:empty";
@@ -229,6 +231,7 @@ fn parse_sound(v: &Value) -> Option<Sound> {
     })
 }
 /// The files under a namespace's `sounds/`, as `sounds/<path>` with `/`.
+#[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
 fn sound_files(namespace: &Path) -> HashSet<String> {
     let mut files = HashSet::new();
     let mut stack = vec![namespace.join("sounds")];
@@ -270,11 +273,18 @@ impl SoundRegistry {
         namespaces.sort();
         // Each namespace's sound files are listed once, as the resource manager
         // lists a pack, instead of one file lookup per sound (thousands).
+        #[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
         let files: HashMap<&str, HashSet<String>> = namespaces
             .iter()
             .map(|ns| (ns.as_str(), sound_files(&assets.join(ns))))
             .collect();
+        #[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
         let exists = |ns: &str, path: &str| files.get(ns).is_some_and(|f| f.contains(path));
+        #[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+        // Cemu's Cafe FS stalled at assets/minecraft/sounds/ui/toast. Sound files open
+        // lazily, so accept declarations without listing them; a missing file may later
+        // fail to play instead of being filtered from the event's weighted choices.
+        let exists = |_: &str, _: &str| true;
         let mut registry = Self::default();
         for namespace in &namespaces {
             let Ok(text) = fs::read(assets.join(namespace).join("sounds.json")) else {
@@ -455,7 +465,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let sounds = &r.get("minecraft:note").unwrap().sounds;
         let kept: Vec<&str> = sounds.iter().map(|s| s.location.as_str()).collect();
+        #[cfg(not(all(target_arch = "powerpc", target_os = "cafe")))]
         assert_eq!(kept, ["minecraft:block/note/harp"]);
+        #[cfg(all(target_arch = "powerpc", target_os = "cafe"))]
+        assert_eq!(
+            kept,
+            ["minecraft:block/note/harp", "minecraft:block/note/gone"]
+        );
     }
 
     #[test]
