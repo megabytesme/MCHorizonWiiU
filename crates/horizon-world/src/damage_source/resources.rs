@@ -90,17 +90,27 @@ pub fn resource_tags<T: Clone + Ord>(
     let exported = root.join("damage-tags.json");
     if exported.exists() {
         cafe_damage_trace!("Horizon Cafe exported damage tags read begin");
-        let value: Value = serde_json::from_slice(&fs::read(exported)?)?;
-        for (id, json) in value
+        let exported_bytes = fs::read(exported)?;
+        cafe_damage_trace!(
+            "Horizon Cafe exported damage tags read complete bytes={}",
+            exported_bytes.len()
+        );
+        let value: Value = serde_json::from_slice(&exported_bytes)?;
+        cafe_damage_trace!("Horizon Cafe exported damage tags decode complete");
+        let object = value
             .as_object()
-            .ok_or_else(|| invalid("expected damage tags"))?
-        {
+            .ok_or_else(|| invalid("expected damage tags"))?;
+        cafe_damage_trace!(
+            "Horizon Cafe exported damage tags iteration begin entries={}",
+            object.len()
+        );
+        for (id, json) in object {
             files
                 .entry(id.clone())
                 .or_default()
                 .push(string(json)?.as_bytes().to_vec());
         }
-        cafe_damage_trace!("Horizon Cafe exported damage tags read complete");
+        cafe_damage_trace!("Horizon Cafe exported damage tags iteration complete");
     }
     cafe_damage_trace!("Horizon Cafe damage tag files begin");
     for (id, bytes) in resource_files(root, "tags/damage_type")? {
