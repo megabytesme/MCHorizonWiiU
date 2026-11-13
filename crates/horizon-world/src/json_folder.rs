@@ -5,6 +5,8 @@
 //! costs. The first reader lists and reads the folder; later readers share
 //! those bytes for as long as one of them holds the [`Folder`], then it is
 //! gone (nothing is kept past the load).
+#[cfg(any(target_os = "cafe", test))]
+use std::ffi::OsStr;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -33,6 +35,36 @@ pub struct Folder {
 
 static OPEN: Mutex<Vec<(PathBuf, Weak<Folder>)>> = Mutex::new(Vec::new());
 
+#[cfg(any(target_os = "cafe", test))]
+fn has_json_extension(file_name: &OsStr) -> bool {
+    let file_name = file_name.as_encoded_bytes();
+    file_name.len() > b".json".len() && file_name.ends_with(b".json")
+}
+
+#[cfg(any(target_os = "cafe", test))]
+fn cafe_resource_name(path: &Path, dir: &Path) -> String {
+    let path = path.as_os_str().as_encoded_bytes();
+    let dir = dir.as_os_str().as_encoded_bytes();
+    let relative = path
+        .strip_prefix(dir)
+        .and_then(|relative| {
+            if dir.ends_with(b"/") {
+                Some(relative)
+            } else {
+                relative.strip_prefix(b"/")
+            }
+        })
+        .unwrap_or(path);
+    String::from_utf8_lossy(relative.strip_suffix(b".json").unwrap_or(relative)).into_owned()
+}
+
+#[cfg(any(target_os = "cafe", test))]
+fn cafe_path_key_matches(left: &Path, right: &Path) -> bool {
+    // Cafe Path equality compares components backwards. Exact path bytes keep
+    // this lookup simple; differently spelled aliases miss and are read again.
+    left.as_os_str().as_encoded_bytes() == right.as_os_str().as_encoded_bytes()
+}
+
 #[cfg(target_os = "cafe")]
 fn trace_damage_type_folder(dir: &Path) -> bool {
     let path = dir.to_string_lossy();
@@ -48,9 +80,17 @@ fn trace_damage_type_folder(dir: &Path) -> bool {
 }
 
 fn find(open: &[(PathBuf, Weak<Folder>)], dir: &Path) -> Option<Arc<Folder>> {
-    open.iter()
-        .find(|(d, _)| d == dir)
-        .and_then(|(_, f)| f.upgrade())
+    let (_, folder) = open.iter().find(|(candidate, _)| {
+        #[cfg(target_os = "cafe")]
+        {
+            cafe_path_key_matches(candidate, dir)
+        }
+        #[cfg(not(target_os = "cafe"))]
+        {
+            candidate == dir
+        }
+    })?;
+    folder.upgrade()
 }
 
 /// `dir`'s files if another reader holds them, without reading anything.
@@ -323,6 +363,9 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
                         "Horizon Cafe json folder extension check begin index={entries_seen}"
                     );
                 }
+                #[cfg(target_os = "cafe")]
+                let is_json = has_json_extension(&entry.file_name());
+                #[cfg(not(target_os = "cafe"))]
                 let is_json = path.extension().is_some_and(|e| e == "json");
                 #[cfg(target_os = "cafe")]
                 if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
@@ -366,9 +409,15 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     let mut named: Vec<(String, PathBuf)> = files
         .into_iter()
         .map(|path| {
-            let inside = path.strip_prefix(dir).unwrap_or(&path).with_extension("");
-            let name: Vec<_> = inside.iter().map(|c| c.to_string_lossy()).collect();
-            (name.join("/"), path)
+            #[cfg(target_os = "cafe")]
+            let name = cafe_resource_name(&path, dir);
+            #[cfg(not(target_os = "cafe"))]
+            let name = {
+                let inside = path.strip_prefix(dir).unwrap_or(&path).with_extension("");
+                let components: Vec<_> = inside.iter().map(|c| c.to_string_lossy()).collect();
+                components.join("/")
+            };
+            (name, path)
         })
         .collect();
     // Vanilla lists resources by id, in a map keyed by it
@@ -388,6 +437,54 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_file_name_extension_filter_has_path_semantics() {
+        for (name, expected) in [
+            ("arrow.json", true),
+            (".json", false),
+            ("..json", true),
+            ("notes.txt", false),
+            ("arrow.JSON", false),
+            ("..", false),
+        ] {
+            assert_eq!(has_json_extension(OsStr::new(name)), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn cafe_resource_name_is_relative_and_without_json_suffix() {
+        for (path, dir, expected) in [
+            ("data/arrow.json", "data", "arrow"),
+            ("data/nested/arrow.json", "data", "nested/arrow"),
+            ("data/arrow.json", "data/", "arrow"),
+            ("./data/arrow.json", "./data", "arrow"),
+            ("/arrow.json", "/", "arrow"),
+            ("datab/arrow.json", "data", "datab/arrow"),
+        ] {
+            assert_eq!(
+                cafe_resource_name(Path::new(path), Path::new(dir)),
+                expected,
+                "{path} under {dir}"
+            );
+        }
+    }
+
+    #[test]
+    fn cafe_cache_path_key_matches_exact_encoded_paths() {
+        assert!(cafe_path_key_matches(
+            Path::new(".local/data/recipes"),
+            Path::new(".local/data/recipes")
+        ));
+        assert!(!cafe_path_key_matches(
+            Path::new(".local/data/recipes"),
+            Path::new("./.local/data/recipes")
+        ));
+        assert!(!cafe_path_key_matches(
+            Path::new(".local/data/recipes"),
+            Path::new(".local//data/recipes")
+        ));
+    }
 
     fn folder(tag: &str) -> PathBuf {
         let dir =
