@@ -36,7 +36,15 @@ pub fn resource_files(root: &Path, kind: &str) -> io::Result<BTreeMap<String, Ve
         }
         let ns = namespace.file_name().to_string_lossy().into_owned();
         cafe_damage_trace!("Horizon Cafe damage folder begin kind={kind} namespace={ns}");
-        let folder = match crate::json_folder::read(&namespace.path().join(kind)) {
+        let folder_path = namespace.path().join(kind);
+        #[cfg(target_os = "cafe")]
+        if kind == "damage_type" && ns == "minecraft" {
+            log::info!(
+                "Horizon Cafe damage folder target path={}",
+                folder_path.display()
+            );
+        }
+        let folder = match crate::json_folder::read(&folder_path) {
             Ok(folder) => folder,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 cafe_damage_trace!("Horizon Cafe damage folder absent kind={kind} namespace={ns}");
