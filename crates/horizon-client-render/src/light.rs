@@ -167,24 +167,34 @@ impl LightTables {
         let mut by_geometry: HashMap<Vec<u64>, u16> = HashMap::new();
         let mut by_shape: HashMap<*const VoxelShape, [u16; 6]> = HashMap::new();
         let _state_scan = crate::spans::startup::step("light.occlusion_state_scan");
+        #[cfg(target_os = "cafe")]
+        macro_rules! trace_state_scan_progress {
+            ($id:expr) => {
+                if ($id + 1) % 128 == 0 || $id + 1 == facts.states.len() {
+                    log::info!(
+                        "Horizon Cafe light occlusion scan completed states={}/{}",
+                        $id + 1,
+                        facts.states.len()
+                    );
+                }
+            };
+        }
         for (id, cell) in tables.cells.iter_mut().enumerate() {
-            #[cfg(target_os = "cafe")]
-            if (id + 1) % 2048 == 0 || id + 1 == facts.states.len() {
-                log::info!(
-                    "Horizon Cafe light occlusion scan at state id {} of {}",
-                    id,
-                    facts.states.len()
-                );
-            }
             let state = &facts.states[id];
             // LightEngine.isEmptyShape: !canOcclude || !useShapeForLightOcclusion.
             if !state.can_occlude || !state.shape_occlusion {
+                #[cfg(target_os = "cafe")]
+                trace_state_scan_progress!(id);
                 continue;
             }
             let Some(shape) = occlusion.cached_shape(BlockStateId(id as u32))? else {
+                #[cfg(target_os = "cafe")]
+                trace_state_scan_progress!(id);
                 continue;
             };
             if shape.is_empty() {
+                #[cfg(target_os = "cafe")]
+                trace_state_scan_progress!(id);
                 continue;
             }
             let faces = if let Some(faces) = by_shape.get(&std::ptr::from_ref(shape)) {
@@ -223,6 +233,8 @@ impl LightTables {
             };
             cell.faces = faces;
             cell.shaped = faces.iter().any(|f| *f != EMPTY);
+            #[cfg(target_os = "cafe")]
+            trace_state_scan_progress!(id);
         }
         #[cfg(target_os = "cafe")]
         log::info!(
