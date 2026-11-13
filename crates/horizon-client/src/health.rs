@@ -137,24 +137,29 @@ impl HealthResources {
         let read = |name: &str| -> Result<serde_json::Value> {
             Ok(serde_json::from_slice(&fs::read(root.join(name))?)?)
         };
+        let _ids_step = crate::spans::startup::step("health.player_float_ids");
         let ids = read("player-float-ids.json")?;
+        drop(_ids_step);
         let id = |name: &str| -> Result<u8> {
             Ok(u8::try_from(
                 ids[name].as_u64().ok_or("missing player float ID")?,
             )?)
         };
+        let _damage_catalog_step = crate::spans::startup::step("health.damage_catalog");
         let damage = Catalog::load(root, &horizon_world::loot::PackOverlay::NONE)?;
+        drop(_damage_catalog_step);
+        let _damage_validation_step = crate::spans::startup::step("health.damage_validation");
         for name in ["minecraft:fall", "minecraft:stalagmite", "minecraft:starve"] {
             if damage.id(name).is_none() {
                 return Err(format!("missing damage type {name}").into());
             }
         }
+        let health = id("health")?;
+        let absorption = id("absorption")?;
+        drop(_damage_validation_step);
         Ok(Self {
             damage,
-            ids: PlayerFloatIds {
-                health: id("health")?,
-                absorption: id("absorption")?,
-            },
+            ids: PlayerFloatIds { health, absorption },
         })
     }
     /// A world's frozen damage registry at open, or reloaded tags against

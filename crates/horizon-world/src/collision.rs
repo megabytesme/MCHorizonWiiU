@@ -80,11 +80,19 @@ impl<'r> CachedCollisionRegistry<'r> {
         if entries.len() > registry.len() {
             return Err(invalid("too many cached collision shapes"));
         }
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe collision conversion begin shapes={} states={}",
+            entries.len(),
+            registry.len()
+        );
+        #[cfg(target_os = "cafe")]
+        let shape_checkpoint_every = entries.len().div_ceil(16).max(1);
         let mut shapes = Vec::with_capacity(entries.len());
         let mut canonical_identities = true;
         let mut seen_canonical = [false; 3];
         let mut grids = HashMap::<GridKey, VoxelShape>::new();
-        for entry in entries {
+        for (_entry_index, entry) in entries.iter().enumerate() {
             let canonical = match entry.get("canonical") {
                 None => {
                     canonical_identities = false;
@@ -205,10 +213,33 @@ impl<'r> CachedCollisionRegistry<'r> {
             };
             grids.entry(key).or_insert_with(|| shape.clone());
             shapes.push(shape);
+            #[cfg(target_os = "cafe")]
+            if (_entry_index + 1) % shape_checkpoint_every == 0
+                || _entry_index + 1 == entries.len()
+            {
+                log::info!(
+                    "Horizon Cafe collision conversion progress shapes={}/{} unique_grids={}",
+                    _entry_index + 1,
+                    entries.len(),
+                    grids.len()
+                );
+            }
         }
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe collision conversion complete shapes={} unique_grids={}",
+            shapes.len(),
+            grids.len()
+        );
         let Some(Tag::IntArray(state_shapes)) = tag.get("cached_shapes") else {
             return Err(invalid("missing cached shape mapping"));
         };
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe collision state mapping validation begin mappings={} states={}",
+            state_shapes.len(),
+            registry.len()
+        );
         if state_shapes.len() != registry.len()
             || state_shapes
                 .iter()
@@ -216,13 +247,23 @@ impl<'r> CachedCollisionRegistry<'r> {
         {
             return Err(invalid("invalid cached shape mapping"));
         }
-        Ok(Self {
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe collision state mapping validation complete");
+        let result = Self {
             registry,
             shapes,
             state_shapes: state_shapes.clone(),
             grid_count: grids.len(),
             canonical_identities,
-        })
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe collision registry ready shapes={} unique_grids={} mapped_states={}",
+            result.shapes.len(),
+            result.grid_count,
+            result.state_shapes.iter().filter(|id| **id >= 0).count()
+        );
+        Ok(result)
     }
     /// Older exports omit native canonical identities. Such imports retain their
     /// local alias graph but cannot support identity-dependent world iteration.

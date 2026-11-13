@@ -94,19 +94,36 @@ impl MotionResources {
         assets: &Assets,
         facts: &crate::blocks::BlockFacts,
     ) -> Result<Self> {
+        let _attributes_step = crate::spans::startup::step("motion.attributes");
         let attributes = Arc::new(Catalog::from_json(&serde_json::from_slice(&fs::read(
             root.join("attributes.json"),
         )?)?)?);
+        drop(_attributes_step);
+
+        let _properties_file_step = crate::spans::startup::step("motion.properties_file");
         let file = BlockTableFile::open(&root.join("movement-properties.nbt"), assets.registry)?;
+        drop(_properties_file_step);
+
+        let _properties_decode_step = crate::spans::startup::step("motion.properties_decode");
         let properties = MovementProperties::from_table(file.table("movement")?)?;
+        drop(_properties_decode_step);
+
+        let _tag_bundle_step = crate::spans::startup::step("motion.tag_bundle");
         let bundle: BTreeMap<String, String> =
             serde_json::from_slice(&fs::read(root.join("block-tags.json"))?)?;
+        drop(_tag_bundle_step);
+
+        let _tag_apply_step = crate::spans::startup::step("motion.tag_apply");
         let mut definitions = TagDefinitions::default();
         for (name, text) in bundle {
             definitions.apply_json(&name, "vanilla", &text)?;
         }
+        drop(_tag_apply_step);
+
+        let _tag_build_step = crate::spans::startup::step("motion.tag_build");
         let built = definitions
             .build(|name, _| assets.registry.default_state(name).map(|_| name.to_owned()))?;
+        drop(_tag_build_step);
         if !built.missing.is_empty() {
             return Err("unresolved motion block tags".into());
         }
@@ -119,30 +136,53 @@ impl MotionResources {
                 .cloned()
                 .collect())
         };
+        let _climbing_step = crate::spans::startup::step("motion.climbing_registry");
         let climbing = ClimbingRegistry::new(
             assets.registry,
             &tag("minecraft:trapdoors")?,
             &tag("minecraft:climbable")?,
             &tag("minecraft:can_glide_through")?,
         )?;
+        drop(_climbing_step);
+
+        let landing = crate::spans::startup::time("motion.landing", || {
+            crate::landing::load(root, &properties)
+        })?;
+        let health = crate::spans::startup::time("motion.health", || {
+            crate::health::HealthResources::load(root)
+        })?;
+        let fluids =
+            crate::spans::startup::time("motion.fluids", || FluidResources::new(assets, facts))?;
+        let _movement_binding_step = crate::spans::startup::step("motion.movement_binding");
+        let blocks = properties.bind(&MovementTags {
+            fences: tag("minecraft:fences")?,
+            walls: tag("minecraft:walls")?,
+            suppresses_bounce: tag("minecraft:suppresses_bounce")?,
+        })?;
+        drop(_movement_binding_step);
+        let _motion_tags_step = crate::spans::startup::step("motion.tag_fields");
+        let climbable = tag("minecraft:climbable")?;
+        let causes_suffocation = tag("minecraft:causes_suffocation")?;
+        let soul_speed_blocks = tag("minecraft:soul_speed_blocks")?;
+        let fall_reset = tag("minecraft:fall_damage_resetting")?;
+        let inside_step_sound = tag("minecraft:inside_step_sound_blocks")?;
+        let combination_step_sound = tag("minecraft:combination_step_sound_blocks")?;
+        let crystal_sound = tag("minecraft:crystal_sound_blocks")?;
+        drop(_motion_tags_step);
         Ok(Self {
-            landing: crate::landing::load(root, &properties)?,
-            health: crate::health::HealthResources::load(root)?,
-            fluids: FluidResources::new(assets, facts)?,
+            landing,
+            health,
+            fluids,
             attributes,
-            blocks: properties.bind(&MovementTags {
-                fences: tag("minecraft:fences")?,
-                walls: tag("minecraft:walls")?,
-                suppresses_bounce: tag("minecraft:suppresses_bounce")?,
-            })?,
-            climbable: tag("minecraft:climbable")?,
-            causes_suffocation: tag("minecraft:causes_suffocation")?,
-            soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
+            blocks,
+            climbable,
+            causes_suffocation,
+            soul_speed_blocks,
             climbing,
-            fall_reset: tag("minecraft:fall_damage_resetting")?,
-            inside_step_sound: tag("minecraft:inside_step_sound_blocks")?,
-            combination_step_sound: tag("minecraft:combination_step_sound_blocks")?,
-            crystal_sound: tag("minecraft:crystal_sound_blocks")?,
+            fall_reset,
+            inside_step_sound,
+            combination_step_sound,
+            crystal_sound,
         })
     }
 }

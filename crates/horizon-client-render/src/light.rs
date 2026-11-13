@@ -75,17 +75,18 @@ impl LightTables {
             info: Vec::new(),
             block_masks: Vec::new(),
         };
-        tables.rebuild_cache();
+        tables.rebuild_cache("initial");
         tables
     }
     /// Build the packed per-cell info and the per-configuration blocking masks
     /// used by `light_chunk`'s flood fill.
-    fn rebuild_cache(&mut self) {
+    fn rebuild_cache(&mut self, phase: &'static str) {
         let empty: (bool, [u16; 6]) = (false, [EMPTY; 6]);
         let mut by_config: HashMap<(bool, [u16; 6]), u16> = HashMap::new();
         by_config.insert(empty, 0);
         let mut configs: Vec<(bool, [u16; 6])> = vec![empty];
         let mut info = vec![0u32; self.cells.len()];
+        let _config_scan = crate::spans::startup::step("light.cache.config_scan");
         for (id, cell) in self.cells.iter().enumerate() {
             let ty = *by_config
                 .entry((cell.shaped, cell.faces))
@@ -95,13 +96,23 @@ impl LightTables {
                 });
             let packed = u32::from(ty) << 4 | u32::from(cell.dampening.min(15));
             info[id] = u32::from(cell.emission.min(15)) << 16 | packed;
+            #[cfg(target_os = "cafe")]
+            if (id + 1) % 8192 == 0 || id + 1 == self.cells.len() {
+                log::info!(
+                    "Horizon Cafe light {phase} cache configuration scan: {}/{}",
+                    id + 1,
+                    self.cells.len()
+                );
+            }
         }
+        drop(_config_scan);
         let types = configs.len();
         debug_assert!(
             types <= 4096,
             "light tables: {types} cell configurations exceed the 12-bit type field"
         );
         let mut block_masks = vec![0u8; types * types];
+        let _mask_build = crate::spans::startup::step("light.cache.block_masks");
         for a in 0..types {
             for b in 0..types {
                 let (shaped_a, faces_a) = configs[a];
@@ -119,7 +130,16 @@ impl LightTables {
                 }
                 block_masks[a * types + b] = mask;
             }
+            #[cfg(target_os = "cafe")]
+            if (a + 1) % 64 == 0 || a + 1 == types {
+                log::info!(
+                    "Horizon Cafe light {phase} cache mask rows: {}/{} types",
+                    a + 1,
+                    types
+                );
+            }
         }
+        drop(_mask_build);
         self.types = types;
         self.info = info;
         self.block_masks = block_masks;
@@ -127,14 +147,35 @@ impl LightTables {
     /// Full tables with the vanilla occlusion shapes from `occlusion.nbt`.
     pub fn load(root: &Path, registry: &BlockRegistry, facts: &BlockFacts) -> crate::Result<Self> {
         use horizon_world::{collision::CachedCollisionRegistry, registry::BlockTableFile};
+        let _occlusion_file = crate::spans::startup::step("light.occlusion_file");
         let file = BlockTableFile::open(&root.join("occlusion.nbt"), registry)?;
-        let occlusion = CachedCollisionRegistry::from_table(file.table("occlusion")?)?;
+        drop(_occlusion_file);
+
+        let _occlusion_table_step = crate::spans::startup::step("light.occlusion_table");
+        let table = file.table("occlusion")?;
+        drop(_occlusion_table_step);
+
+        let _occlusion_registry = crate::spans::startup::step("light.occlusion_registry");
+        let occlusion = CachedCollisionRegistry::from_table(table)?;
+        drop(_occlusion_registry);
+
+        let _initial_cache = crate::spans::startup::step("light.cache.initial");
         let mut tables = Self::new(facts);
+        drop(_initial_cache);
         let block = VoxelShape::block();
         let mut shapes: Vec<VoxelShape> = vec![VoxelShape::empty(), block.clone()];
         let mut by_geometry: HashMap<Vec<u64>, u16> = HashMap::new();
         let mut by_shape: HashMap<*const VoxelShape, [u16; 6]> = HashMap::new();
+        let _state_scan = crate::spans::startup::step("light.occlusion_state_scan");
         for (id, cell) in tables.cells.iter_mut().enumerate() {
+            #[cfg(target_os = "cafe")]
+            if (id + 1) % 2048 == 0 || id + 1 == facts.states.len() {
+                log::info!(
+                    "Horizon Cafe light occlusion scan at state id {} of {}",
+                    id,
+                    facts.states.len()
+                );
+            }
             let state = &facts.states[id];
             // LightEngine.isEmptyShape: !canOcclude || !useShapeForLightOcclusion.
             if !state.can_occlude || !state.shape_occlusion {
@@ -183,8 +224,16 @@ impl LightTables {
             cell.faces = faces;
             cell.shaped = faces.iter().any(|f| *f != EMPTY);
         }
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe light occlusion state scan complete: {}/{}",
+            facts.states.len(),
+            facts.states.len()
+        );
+        drop(_state_scan);
         let n = shapes.len();
         let mut occludes = vec![false; n * n];
+        let _face_pairs = crate::spans::startup::step("light.face_occlusion_pairs");
         for a in 0..n {
             for b in 0..n {
                 occludes[a * n + b] = if a == FULL as usize || b == FULL as usize {
@@ -197,10 +246,22 @@ impl LightTables {
                     !block.join_is_not_empty(&union, ShapeOp::ONLY_FIRST)?
                 };
             }
+            #[cfg(target_os = "cafe")]
+            if (a + 1) % 16 == 0 || a + 1 == n {
+                log::info!(
+                    "Horizon Cafe light face-occlusion rows: {}/{} shapes",
+                    a + 1,
+                    n
+                );
+            }
         }
+        drop(_face_pairs);
         tables.occludes = occludes;
         tables.faces = n;
-        tables.rebuild_cache();
+
+        let _final_cache = crate::spans::startup::step("light.cache.final");
+        tables.rebuild_cache("final");
+        drop(_final_cache);
         Ok(tables)
     }
     /// Assembled tables (tests and benchmarks): derives the packed light cache.
@@ -214,7 +275,7 @@ impl LightTables {
             info: Vec::new(),
             block_masks: Vec::new(),
         };
-        tables.rebuild_cache();
+        tables.rebuild_cache("test");
         tables
     }
     /// `LightEngine.shapeOccludes(from, to, direction)`.

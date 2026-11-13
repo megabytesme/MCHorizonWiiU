@@ -7,30 +7,65 @@ use crate::{
 use serde_json::Value;
 use std::{collections::BTreeMap, fs, io, path::Path};
 
+macro_rules! cafe_damage_trace {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "cafe")]
+        log::info!($($arg)*);
+    }};
+}
+
 /// The resource root's files of one damage registry kind, in every namespace.
 /// `json_folder` also reads prepared vanilla files from horizon-data.bin.
 pub fn resource_files(root: &Path, kind: &str) -> io::Result<BTreeMap<String, Vec<u8>>> {
+    cafe_damage_trace!("Horizon Cafe damage resources begin kind={kind}");
     let mut files = BTreeMap::new();
     let namespaces = match fs::read_dir(root.join("data")) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(files),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            cafe_damage_trace!("Horizon Cafe damage resources complete kind={kind} files=0");
+            return Ok(files);
+        }
         Err(e) => return Err(e),
     };
+    #[cfg(target_os = "cafe")]
+    let mut collected = 0usize;
     for namespace in namespaces {
         let namespace = namespace?;
         if !namespace.path().is_dir() {
             continue;
         }
         let ns = namespace.file_name().to_string_lossy().into_owned();
+        cafe_damage_trace!("Horizon Cafe damage folder begin kind={kind} namespace={ns}");
         let folder = match crate::json_folder::read(&namespace.path().join(kind)) {
             Ok(folder) => folder,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                cafe_damage_trace!("Horizon Cafe damage folder absent kind={kind} namespace={ns}");
+                continue;
+            }
             Err(e) => return Err(e),
         };
+        cafe_damage_trace!(
+            "Horizon Cafe damage folder loaded kind={kind} namespace={ns} entries={}",
+            folder.files.len()
+        );
         for file in &folder.files {
             files.insert(format!("{ns}:{}", file.name), file.bytes()?.to_vec());
+            #[cfg(target_os = "cafe")]
+            {
+                collected += 1;
+                if collected % 128 == 0 {
+                    log::info!(
+                        "Horizon Cafe damage resources progress kind={kind} files={collected}"
+                    );
+                }
+            }
         }
+        cafe_damage_trace!("Horizon Cafe damage folder complete kind={kind} namespace={ns}");
     }
+    cafe_damage_trace!(
+        "Horizon Cafe damage resources complete kind={kind} files={}",
+        files.len()
+    );
     Ok(files)
 }
 
@@ -42,9 +77,11 @@ pub fn resource_tags<T: Clone + Ord>(
     overlay: &PackOverlay<'_>,
     lookup: impl FnMut(&str, bool) -> Option<T>,
 ) -> io::Result<BTreeMap<String, Vec<T>>> {
+    cafe_damage_trace!("Horizon Cafe damage tags begin");
     let mut files: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
     let exported = root.join("damage-tags.json");
     if exported.exists() {
+        cafe_damage_trace!("Horizon Cafe exported damage tags read begin");
         let value: Value = serde_json::from_slice(&fs::read(exported)?)?;
         for (id, json) in value
             .as_object()
@@ -55,10 +92,13 @@ pub fn resource_tags<T: Clone + Ord>(
                 .or_default()
                 .push(string(json)?.as_bytes().to_vec());
         }
+        cafe_damage_trace!("Horizon Cafe exported damage tags read complete");
     }
+    cafe_damage_trace!("Horizon Cafe damage tag files begin");
     for (id, bytes) in resource_files(root, "tags/damage_type")? {
         files.entry(id).or_default().push(bytes);
     }
+    cafe_damage_trace!("Horizon Cafe damage tag files complete");
     for (id, versions) in overlay.tag_kind("damage_type") {
         files
             .entry(id)
@@ -72,8 +112,12 @@ pub fn resource_tags<T: Clone + Ord>(
         let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
         (format!("{path}.json"), ns.to_owned())
     });
+    let _stack_count = files.len();
+    cafe_damage_trace!("Horizon Cafe damage tag parsing begin stacks={_stack_count}");
+    #[cfg(target_os = "cafe")]
+    let checkpoint_every = _stack_count.div_ceil(16).max(1);
     let mut tags = TagDefinitions::default();
-    for (id, versions) in files {
+    for (_index, (id, versions)) in files.into_iter().enumerate() {
         for bytes in versions {
             let result = std::str::from_utf8(&bytes)
                 .map_err(|e| e.to_string())
@@ -85,8 +129,22 @@ pub fn resource_tags<T: Clone + Ord>(
                 log::warn!("Horizon: damage tag {id} is not read: {e}");
             }
         }
+        #[cfg(target_os = "cafe")]
+        if (_index + 1) % checkpoint_every == 0 || _index + 1 == _stack_count {
+            log::info!(
+                "Horizon Cafe damage tag parsing progress stacks={}/{}",
+                _index + 1,
+                _stack_count
+            );
+        }
     }
+    cafe_damage_trace!("Horizon Cafe damage tag build begin");
     let built = tags.build(lookup).map_err(|e| invalid(e.to_string()))?;
+    cafe_damage_trace!(
+        "Horizon Cafe damage tag build complete tags={} unresolved={}",
+        built.tags.len(),
+        built.missing.len()
+    );
     for id in built.missing.keys() {
         log::warn!("Horizon: damage tag {id} has unresolved required entries");
     }
@@ -177,9 +235,16 @@ impl Catalog {
     /// The exported vanilla definitions plus ordinary resource-root and
     /// enabled world-pack files. No definition is published on codec failure.
     pub fn load(root: &Path, overlay: &PackOverlay<'_>) -> io::Result<Self> {
+        cafe_damage_trace!("Horizon Cafe damage catalog read begin");
         let catalog = serde_json::from_slice(&fs::read(root.join("damage-catalog.json"))?)?;
+        cafe_damage_trace!("Horizon Cafe damage catalog decode complete");
         // Resolve tags only after custom definitions have joined the registry.
-        Self::from_json(&catalog, &serde_json::json!({}))?.with_packs(root, overlay)
+        let catalog = Self::from_json(&catalog, &serde_json::json!({}))?;
+        cafe_damage_trace!(
+            "Horizon Cafe damage catalog registry complete definitions={}",
+            catalog.definitions.len()
+        );
+        catalog.with_packs(root, overlay)
     }
 
     /// Names in a resolved tag, independently of local or network indices.
@@ -195,12 +260,17 @@ impl Catalog {
     /// indices stay stable; new names append in sorted order. Wire IDs remain
     /// the separately synchronized registry's, looked up by name.
     pub fn with_packs(&self, root: &Path, overlay: &PackOverlay<'_>) -> io::Result<Self> {
+        cafe_damage_trace!("Horizon Cafe damage definition resources begin");
         let mut files = resource_files(root, "damage_type")?;
         for (id, versions) in overlay.kind("damage_type") {
             files.insert(id.into(), PackOverlay::top(versions).to_vec());
         }
+        let _file_count = files.len();
+        cafe_damage_trace!("Horizon Cafe damage definition decode begin files={_file_count}");
+        #[cfg(target_os = "cafe")]
+        let checkpoint_every = _file_count.div_ceil(16).max(1);
         let mut catalog = self.clone();
-        for (id, bytes) in files {
+        for (_index, (id, bytes)) in files.into_iter().enumerate() {
             let definition = Definition::from_json(&id, &bytes)
                 .map_err(|e| invalid(format!("damage type {id}: {e}")))?;
             match catalog.ids.get(&id) {
@@ -212,18 +282,35 @@ impl Catalog {
                     catalog.definitions.push(definition);
                 }
             }
+            #[cfg(target_os = "cafe")]
+            if (_index + 1) % checkpoint_every == 0 || _index + 1 == _file_count {
+                log::info!(
+                    "Horizon Cafe damage definition decode progress files={}/{}",
+                    _index + 1,
+                    _file_count
+                );
+            }
         }
+        cafe_damage_trace!(
+            "Horizon Cafe damage definition decode complete definitions={}",
+            catalog.definitions.len()
+        );
         catalog.reload_tags(root, overlay)
     }
 
     /// MinecraftServer.reloadResources retains the frozen damage registry;
     /// only tags change, including when a pack containing a type is disabled.
     pub fn reload_tags(&self, root: &Path, overlay: &PackOverlay<'_>) -> io::Result<Self> {
+        cafe_damage_trace!("Horizon Cafe damage tag reload begin");
         let mut catalog = self.clone();
         catalog.tags = resource_tags(root, overlay, |id, _| catalog.ids.get(id).copied())?
             .into_iter()
             .map(|(id, values)| (id, values.into_iter().collect()))
             .collect();
+        cafe_damage_trace!(
+            "Horizon Cafe damage tag reload complete tags={}",
+            catalog.tags.len()
+        );
         Ok(catalog)
     }
 }
