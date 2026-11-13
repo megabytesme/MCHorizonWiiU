@@ -16,7 +16,7 @@ pub use movement::{
     block_floor_height, candidate_step_heights, entity_collision_bounds, resolve_shape_movement,
     resolve_step_movement, try_resolve_step_movement,
 };
-pub use shape::{ShapeError, ShapeOp, VoxelShape};
+pub use shape::{ShapeError, ShapeOp, VoxelShape, with_shape_load_trace};
 pub use sweep::sweep_intersected_blocks;
 pub use traversal::{TraversalError, traverse_blocks};
 

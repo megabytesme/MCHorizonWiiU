@@ -190,34 +190,45 @@ impl<'r> CachedCollisionRegistry<'r> {
                         cube
                     );
                 }
-                let shape = match entry.get("cube") {
-                    Some(Tag::Byte(0)) => {
-                        VoxelShape::from_mixed_grid(coords, &occupied, coordinate_cubes)
-                    }
-                    Some(Tag::Byte(1)) => {
-                        if *cube_axes != 7 {
-                            return Err(invalid("cube shape has array-coordinate metadata"));
+                let construct = || -> io::Result<VoxelShape> {
+                    match entry.get("cube") {
+                        Some(Tag::Byte(0)) => {
+                            VoxelShape::from_mixed_grid(coords, &occupied, coordinate_cubes)
+                                .map_err(|e| invalid(e.to_string()))
                         }
-                        let sizes = std::array::from_fn(|i| coords[i].len().saturating_sub(1));
-                        let shape = VoxelShape::from_cube(sizes, &occupied)
-                            .map_err(|e| invalid(e.to_string()))?;
-                        for axis in Axis::ALL {
-                            if shape
-                                .coordinates(axis)
-                                .iter()
-                                .map(|v| v.to_bits())
-                                .ne(coords[axis as usize].iter().map(|v| v.to_bits()))
-                            {
-                                return Err(invalid("cube collision coordinates differ"));
+                        Some(Tag::Byte(1)) => {
+                            if *cube_axes != 7 {
+                                return Err(invalid("cube shape has array-coordinate metadata"));
                             }
+                            let sizes = std::array::from_fn(|i| coords[i].len().saturating_sub(1));
+                            let shape = VoxelShape::from_cube(sizes, &occupied)
+                                .map_err(|e| invalid(e.to_string()))?;
+                            for axis in Axis::ALL {
+                                if shape
+                                    .coordinates(axis)
+                                    .iter()
+                                    .map(|v| v.to_bits())
+                                    .ne(coords[axis as usize].iter().map(|v| v.to_bits()))
+                                {
+                                    return Err(invalid("cube collision coordinates differ"));
+                                }
+                            }
+                            Ok(shape)
                         }
-                        Ok(shape)
+                        _ => Err(invalid("invalid collision cube flag")),
                     }
-                    _ => return Err(invalid("invalid collision cube flag")),
-                }
-                .map_err(|e| invalid(e.to_string()))?
-                .with_discrete_bounds(min, max)
-                .map_err(|e| invalid(e.to_string()))?;
+                };
+                #[cfg(target_os = "cafe")]
+                let shape = if _entry_index < 3 {
+                    horizon_core::geometry::with_shape_load_trace(_entry_index, construct)
+                } else {
+                    construct()
+                }?;
+                #[cfg(not(target_os = "cafe"))]
+                let shape = construct()?;
+                let shape = shape
+                    .with_discrete_bounds(min, max)
+                    .map_err(|e| invalid(e.to_string()))?;
                 #[cfg(target_os = "cafe")]
                 if _entry_index < 3 {
                     log::info!(

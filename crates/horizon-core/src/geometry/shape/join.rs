@@ -92,6 +92,7 @@ impl VoxelShape {
             &occupied,
             cube,
             coordinate_cubes,
+            None,
         )?;
         if shape.is_empty() {
             shape.with_discrete_bounds([i32::MAX; 3], [i32::MIN + 1; 3])

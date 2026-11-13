@@ -87,7 +87,7 @@ impl VoxelShape {
         }
         let mut cubes = self.coordinate_cubes;
         cubes[a] = true;
-        let mut result = Self::build(coords, &occupied, false, cubes)?;
+        let mut result = Self::build(coords, &occupied, false, cubes, None)?;
         result.discrete_min = min;
         result.discrete_max = max;
         result.bounds = Some(Aabb::new(

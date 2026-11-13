@@ -4,6 +4,49 @@ use super::{
 use crate::position::BlockPos;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+
+#[cfg(target_os = "cafe")]
+std::thread_local! {
+    static CAFE_SHAPE_LOAD_TRACE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(target_os = "cafe")]
+struct ShapeTraceReset(Option<usize>);
+
+#[cfg(target_os = "cafe")]
+impl Drop for ShapeTraceReset {
+    fn drop(&mut self) {
+        CAFE_SHAPE_LOAD_TRACE.with(|trace| trace.set(self.0));
+    }
+}
+
+/// Run one cached-shape conversion with Cafe-only phase tracing enabled.
+#[doc(hidden)]
+pub fn with_shape_load_trace<T>(entry: usize, convert: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "cafe")]
+    {
+        let previous = CAFE_SHAPE_LOAD_TRACE.with(|trace| trace.replace(Some(entry)));
+        let _reset = ShapeTraceReset(previous);
+        convert()
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        let _ = entry;
+        convert()
+    }
+}
+
+fn shape_load_trace_entry() -> Option<usize> {
+    #[cfg(target_os = "cafe")]
+    {
+        CAFE_SHAPE_LOAD_TRACE.with(std::cell::Cell::get)
+    }
+    #[cfg(not(target_os = "cafe"))]
+    {
+        None
+    }
+}
+
 mod create;
 mod face;
 mod join;
@@ -111,9 +154,18 @@ struct ShapeIdentity {
 
 impl VoxelShape {
     pub fn from_grid(coords: [Vec<f64>; 3], occupied: &[bool]) -> Result<Self, ShapeError> {
-        Self::build(coords, occupied, false, [false; 3])
+        Self::build(coords, occupied, false, [false; 3], None)
     }
     pub fn from_cube(sizes: [usize; 3], occupied: &[bool]) -> Result<Self, ShapeError> {
+        let trace = shape_load_trace_entry();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape cube begin entry={} sizes={sizes:?} occupied={}",
+                entry,
+                occupied.len()
+            );
+        }
         if sizes.contains(&0) {
             return Err(ShapeError::InvalidCoordinates);
         }
@@ -121,15 +173,37 @@ impl VoxelShape {
         if occupied.len() != volume {
             return Err(ShapeError::InvalidOccupancy);
         }
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape cube volume validated entry={} volume={volume}",
+                entry
+            );
+        }
         let coords = sizes.map(|size| (0..=size).map(|i| i as f64 / size as f64).collect());
-        Self::build(coords, occupied, true, [true; 3])
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!("Horizon Cafe voxel shape cube coordinates ready entry={entry}");
+        }
+        Self::build(coords, occupied, true, [true; 3], trace)
     }
     fn build(
         coords: [Vec<f64>; 3],
         occupied: &[bool],
         cube: bool,
         coordinate_cubes: [bool; 3],
+        trace: Option<usize>,
     ) -> Result<Self, ShapeError> {
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape build begin entry={} coordinate_sizes={:?} occupied={} cube={}",
+                entry,
+                coords.each_ref().map(Vec::len),
+                occupied.len(),
+                cube
+            );
+        }
         if coords.iter().any(|c| {
             c.is_empty()
                 || c.len() > 1_048_577
@@ -142,6 +216,13 @@ impl VoxelShape {
         let count = volume(sizes)?;
         if count != occupied.len() {
             return Err(ShapeError::InvalidOccupancy);
+        }
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape build validation complete entry={} sizes={sizes:?} cells={count}",
+                entry
+            );
         }
         let mut occupancy = vec![0; count.div_ceil(64)];
         let mut discrete_min = sizes.map(|v| v as i32);
@@ -160,6 +241,11 @@ impl VoxelShape {
                 }
             }
         }
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!("Horizon Cafe voxel shape occupancy complete entry={entry}");
+            log::info!("Horizon Cafe voxel shape decompose begin entry={entry}");
+        }
         let mut shape = Self {
             identity: Arc::new(ShapeIdentity::default()),
             coords: Coords::new(coords),
@@ -173,6 +259,14 @@ impl VoxelShape {
             discrete_max,
         };
         shape.boxes = shape.decompose().into();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape decompose complete entry={} boxes={}",
+                entry,
+                shape.boxes.len()
+            );
+        }
         shape.bounds = shape.boxes.iter().copied().reduce(Aabb::union_bounds);
         Ok(shape)
     }
@@ -243,6 +337,16 @@ impl VoxelShape {
         occupied: &[bool],
         coordinate_cubes: [bool; 3],
     ) -> Result<Self, ShapeError> {
+        let trace = shape_load_trace_entry();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape mixed grid begin entry={} coordinate_sizes={:?} occupied={} cube_axes={coordinate_cubes:?}",
+                entry,
+                coords.each_ref().map(Vec::len),
+                occupied.len()
+            );
+        }
         for i in 0..3 {
             if coordinate_cubes[i] {
                 let size = coords[i].len().saturating_sub(1);
@@ -256,7 +360,13 @@ impl VoxelShape {
                 }
             }
         }
-        Self::build(coords, occupied, false, coordinate_cubes)
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape mixed grid axis validation complete entry={entry}"
+            );
+        }
+        Self::build(coords, occupied, false, coordinate_cubes, trace)
     }
     pub fn min(&self, axis: Axis) -> f64 {
         let i = axis as usize;
