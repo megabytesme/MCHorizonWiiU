@@ -599,7 +599,7 @@ impl<'a> LoadingHost<'a> {
         &mut self,
         session: &mut CafeLoadingSession,
         game: Option<&mut CafeGameSession>,
-    ) {
+    ) -> bool {
         let mut length = 0usize;
         let result = unsafe {
             horizon_swkbd_take_result(
@@ -609,18 +609,25 @@ impl<'a> LoadingHost<'a> {
             )
         };
         match result {
-            0 => {}
+            0 => false,
             1 if length < self.native_keyboard_result.len() => {
                 startup_report!("CafeOS keyboard accepted text input");
                 let text =
                     String::from_utf8_lossy(&self.native_keyboard_result[..length]).into_owned();
+                log::info!("Horizon Cafe keyboard result phase=commit_dispatch.begin");
                 self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
+                log::info!("Horizon Cafe keyboard result phase=commit_dispatch.end");
+                true
             }
             2 => {
                 startup_report!("CafeOS keyboard canceled text input");
                 self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Disabled));
+                true
             }
-            error => log::warn!("Horizon Cafe system keyboard result failed: {error}"),
+            error => {
+                log::warn!("Horizon Cafe system keyboard result failed: {error}");
+                false
+            }
         }
     }
 
@@ -753,8 +760,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut host_loop_iteration = 0u32;
         let mut periodic_trace_windows = 0u8;
         // Trace one iteration every two seconds for at most a minute after
-        // startup, plus short input windows. This also catches no-input stalls.
-        let mut post_input_trace_frames = 0u8;
+        // startup, plus short input windows and a bounded post-keyboard window.
+        let mut post_input_trace_frames = 0u16;
         let mut post_input_trace_bursts = 3u8;
         let mut game_session: Option<CafeGameSession> = None;
         let mut world_loading_complete = false;
@@ -969,8 +976,27 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
-            self.poll_native_keyboard_result(session, game_session.as_mut());
+            let keyboard_result_received =
+                self.poll_native_keyboard_result(session, game_session.as_mut());
+            if keyboard_result_received {
+                // CafeOS keyboard completion is the boundary where text
+                // returns to the original form. Keep tracing the following
+                // host-loop iterations long enough to catch a delayed stall.
+                post_input_trace_frames = 480;
+                post_input_trace_bursts = 0;
+                trace_this_iteration = true;
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=keyboard_result.received",
+                    host_loop_iteration
+                );
+            }
             if native_input_this_frame && !self.native_keyboard_active {
+                if trace_this_iteration {
+                    log::info!(
+                        "Horizon Cafe host loop trace iteration={} phase=keyboard_close.begin",
+                        host_loop_iteration
+                    );
+                }
                 // A result closed the system keyboard. Keep the host gate only
                 // if a contact is still active; TouchMapper::reset retains its
                 // own release suppression for any previously seen contact.
@@ -992,6 +1018,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 );
                 self.keyboard.release_all_into(&mut self.keyboard_events);
                 self.dispatch_queued_keyboard(session, game_session.as_mut());
+                if trace_this_iteration {
+                    log::info!(
+                        "Horizon Cafe host loop trace iteration={} phase=keyboard_close.end",
+                        host_loop_iteration
+                    );
+                }
             }
 
             self.keyboard_events.clear();
@@ -1271,6 +1303,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 }
             }
         }
+        log::info!(
+            "Horizon Cafe host loop exited iteration={} failure={}",
+            host_loop_iteration,
+            self.failure.is_some()
+        );
         // Every way out of the host loop releases touch and controller edges
         // while the Loading session and its event loop are still alive.
         if let Some(game) = &mut game_session {
