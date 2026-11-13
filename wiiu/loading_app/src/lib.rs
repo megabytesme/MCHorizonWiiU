@@ -759,6 +759,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut periodic_trace_at = host_loop_started + Duration::from_secs(45);
         let mut host_loop_iteration = 0u32;
         let mut periodic_trace_windows = 0u8;
+        let mut last_loading_status = session.status();
         // Trace one iteration every two seconds for at most a minute after
         // startup, plus short input windows and a bounded post-keyboard window.
         let mut post_input_trace_frames = 0u16;
@@ -1170,7 +1171,17 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
-            match session.status() {
+            let loading_status = session.status();
+            if loading_status != last_loading_status {
+                log::info!(
+                    "Horizon Cafe loading status changed: {:?} -> {:?} elapsed_ms={}",
+                    last_loading_status,
+                    loading_status,
+                    host_loop_started.elapsed().as_millis()
+                );
+                last_loading_status = loading_status;
+            }
+            match loading_status {
                 CafeLoadingStatus::Loading => {}
                 CafeLoadingStatus::ReadyForHandoff if game_session.is_none() => {
                     match session.start_local_game() {
