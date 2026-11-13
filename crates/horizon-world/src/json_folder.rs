@@ -33,6 +33,11 @@ pub struct Folder {
 
 static OPEN: Mutex<Vec<(PathBuf, Weak<Folder>)>> = Mutex::new(Vec::new());
 
+#[cfg(target_os = "cafe")]
+fn trace_damage_type_folder(dir: &Path) -> bool {
+    dir.ends_with(Path::new("data").join("minecraft").join("damage_type"))
+}
+
 fn find(open: &[(PathBuf, Weak<Folder>)], dir: &Path) -> Option<Arc<Folder>> {
     open.iter()
         .find(|(d, _)| d == dir)
@@ -47,21 +52,94 @@ pub fn held(dir: &Path) -> Option<Arc<Folder>> {
 /// The `.json` files under `dir`: shared with any other reader holding them,
 /// else listed and read now. An error when `dir` itself can't be listed.
 pub fn read(dir: &Path) -> io::Result<Arc<Folder>> {
-    if let Some(folder) = held(dir) {
+    #[cfg(target_os = "cafe")]
+    let trace = trace_damage_type_folder(dir);
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder cache lookup begin path={}",
+            dir.display()
+        );
+    }
+    let cached = held(dir);
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder cache lookup complete hit={}",
+            cached.is_some()
+        );
+    }
+    if let Some(folder) = cached {
         return Ok(folder);
     }
-    let files = match prepared(dir) {
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!("Horizon Cafe json folder prepared lookup begin");
+    }
+    let prepared_files = prepared(dir);
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder prepared lookup complete hit={}",
+            prepared_files.is_some()
+        );
+    }
+    let files = match prepared_files {
         Some(files) => files,
-        None => list(dir)?
-            .into_iter()
-            .map(|(name, path)| {
-                let bytes = fs::read(&path)
-                    .map(Vec::into_boxed_slice)
-                    .map_err(|e| (e.kind(), e.to_string()));
-                File { name, path, bytes }
-            })
-            .collect(),
+        None => {
+            #[cfg(target_os = "cafe")]
+            if trace {
+                log::info!("Horizon Cafe json folder disk list begin");
+            }
+            let listed = list(dir)?;
+            let _file_count = listed.len();
+            #[cfg(target_os = "cafe")]
+            if trace {
+                log::info!("Horizon Cafe json folder disk list complete files={_file_count}");
+                log::info!("Horizon Cafe json folder disk reads begin files={_file_count}");
+            }
+            #[cfg(target_os = "cafe")]
+            let read_checkpoint_every = _file_count.div_ceil(16).max(1);
+            listed
+                .into_iter()
+                .enumerate()
+                .map(|(_index, (name, path))| {
+                    #[cfg(target_os = "cafe")]
+                    if trace
+                        && (_file_count <= 64 || _index < 64 || _index % read_checkpoint_every == 0)
+                    {
+                        log::info!(
+                            "Horizon Cafe json folder disk read begin file={}/{} name={}",
+                            _index + 1,
+                            _file_count,
+                            name
+                        );
+                    }
+                    let bytes = fs::read(&path)
+                        .map(Vec::into_boxed_slice)
+                        .map_err(|e| (e.kind(), e.to_string()));
+                    #[cfg(target_os = "cafe")]
+                    if trace
+                        && (_file_count <= 64
+                            || _index < 64
+                            || _index % read_checkpoint_every == 0
+                            || _index + 1 == _file_count)
+                    {
+                        log::info!(
+                            "Horizon Cafe json folder disk read progress completed={}/{}",
+                            _index + 1,
+                            _file_count
+                        );
+                    }
+                    File { name, path, bytes }
+                })
+                .collect()
+        }
     };
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!("Horizon Cafe json folder ready files={}", files.len());
+    }
     let folder = Arc::new(Folder { files });
     let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
     // Another reader may have read it meanwhile: share one copy.
@@ -76,14 +154,59 @@ pub fn read(dir: &Path) -> io::Result<Arc<Folder>> {
 /// `dir`'s `.json` files from its prepared root's `horizon-data.bin`, when
 /// that holds them: one open handle instead of a file opened for each.
 fn prepared(dir: &Path) -> Option<Vec<File>> {
+    #[cfg(target_os = "cafe")]
+    let trace = trace_damage_type_folder(dir);
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!("Horizon Cafe json folder prepared source lookup begin");
+    }
     let (data, rel) = horizon_core::prepared_files::find(dir)?;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!("Horizon Cafe json folder prepared source lookup complete rel={rel}");
+        log::info!("Horizon Cafe json folder prepared list begin");
+    }
     let prefix = format!("{rel}/");
-    let mut files: Vec<File> = data
-        .list(&rel)?
+    let names = data.list(&rel)?;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder prepared list complete files={}",
+            names.len()
+        );
+    }
+    let _file_count = names.len();
+    #[cfg(target_os = "cafe")]
+    let read_checkpoint_every = _file_count.div_ceil(16).max(1);
+    let mut files: Vec<File> = names
         .into_iter()
-        .filter_map(|full| {
+        .enumerate()
+        .filter_map(|(_index, full)| {
             let name = full.strip_prefix(&prefix)?.strip_suffix(".json")?;
-            let bytes = data.read(full)?;
+            #[cfg(target_os = "cafe")]
+            if trace && (_file_count <= 64 || _index < 64 || _index % read_checkpoint_every == 0) {
+                log::info!(
+                    "Horizon Cafe json folder prepared read begin file={}/{} name={name}",
+                    _index + 1,
+                    _file_count
+                );
+            }
+            let read = data.read(full);
+            #[cfg(target_os = "cafe")]
+            if trace
+                && (_file_count <= 64
+                    || _index < 64
+                    || _index % read_checkpoint_every == 0
+                    || _index + 1 == _file_count)
+            {
+                log::info!(
+                    "Horizon Cafe json folder prepared read progress completed={}/{} found={}",
+                    _index + 1,
+                    _file_count,
+                    read.is_some()
+                );
+            }
+            let bytes = read?;
             Some(File {
                 name: name.to_owned(),
                 path: dir.join(format!("{name}.json")),
@@ -93,6 +216,13 @@ fn prepared(dir: &Path) -> Option<Vec<File>> {
             })
         })
         .collect();
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder prepared files complete files={}",
+            files.len()
+        );
+    }
     // In `list`'s order: by id, not by file name.
     files.sort_by(|a, b| a.name.cmp(&b.name));
     Some(files)
@@ -104,8 +234,25 @@ fn prepared(dir: &Path) -> Option<Vec<File>> {
 /// can't be is warned and skipped, as vanilla's `PathPackResources` keeps
 /// what it found.
 pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+    #[cfg(target_os = "cafe")]
+    let trace = trace_damage_type_folder(dir);
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder traversal begin path={}",
+            dir.display()
+        );
+        log::info!("Horizon Cafe json folder root read_dir begin");
+    }
+    let root_entries = fs::read_dir(dir)?;
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!("Horizon Cafe json folder root read_dir complete");
+    }
     let mut files = Vec::new();
-    let mut stack = vec![fs::read_dir(dir)?];
+    let mut stack = vec![root_entries];
+    #[cfg(target_os = "cafe")]
+    let mut entries_seen = 0usize;
     while let Some(entries) = stack.pop() {
         for entry in entries {
             let entry = match entry {
@@ -116,15 +263,56 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
                 }
             };
             let path = entry.path();
+            #[cfg(target_os = "cafe")]
+            if trace {
+                entries_seen += 1;
+                if entries_seen <= 64 || entries_seen % 256 == 0 {
+                    log::info!(
+                        "Horizon Cafe json folder traversal entry begin index={} path={}",
+                        entries_seen,
+                        path.display()
+                    );
+                }
+            }
             if path.is_dir() {
+                #[cfg(target_os = "cafe")]
+                if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                    log::info!(
+                        "Horizon Cafe json folder nested read_dir begin path={}",
+                        path.display()
+                    );
+                }
                 match fs::read_dir(&path) {
-                    Ok(list) => stack.push(list),
+                    Ok(list) => {
+                        #[cfg(target_os = "cafe")]
+                        if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                            log::info!(
+                                "Horizon Cafe json folder nested read_dir complete path={}",
+                                path.display()
+                            );
+                        }
+                        stack.push(list);
+                    }
                     Err(e) => log::warn!("Horizon: failed to list {}: {e}", path.display()),
                 }
             } else if path.extension().is_some_and(|e| e == "json") {
                 files.push(path);
             }
+            #[cfg(target_os = "cafe")]
+            if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                log::info!(
+                    "Horizon Cafe json folder traversal entry complete index={entries_seen}"
+                );
+            }
         }
+    }
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder traversal complete entries={entries_seen} files={}",
+            files.len()
+        );
+        log::info!("Horizon Cafe json folder sort begin");
     }
     let mut named: Vec<(String, PathBuf)> = files
         .into_iter()
@@ -138,6 +326,13 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     // (`FallbackResourceManager`): `crushing` before `crushing/iron`, where
     // a path's components put the subfolder's file first.
     named.sort_by(|a, b| a.0.cmp(&b.0));
+    #[cfg(target_os = "cafe")]
+    if trace {
+        log::info!(
+            "Horizon Cafe json folder sort complete files={}",
+            named.len()
+        );
+    }
     Ok(named)
 }
 
