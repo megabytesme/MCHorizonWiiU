@@ -100,6 +100,70 @@ fn typed_fields_keep_defaults_duplicates_and_wrong_type_behavior() -> crate::Res
     assert_eq!(e.sound.step.id, None);
     assert_eq!(e.sound.hit.id, None);
     assert_eq!(e.outline.unwrap().get(), "[[0,1]]");
+
+    // The former Value conversions accept only unsigned integer Number values
+    // for u64, while as_f64 accepts integer and floating point Numbers.
+    let scalars_input = r#"{"states":[{"id":-0,"map_color":-0,"friction":-0,"push":"plain",
+             "render_shape":"escaped\u263a\n","sound":{"volume":3}},
+            {"id":-9223372036854775808,"map_color":-9223372036854775808,"friction":4},
+            {"id":9223372036854775807,"map_color":1.0,"friction":9223372036854775807},
+            {"id":18446744073709551615,"map_color":18446744073709551615,"friction":2.5},
+            {"id":7,"map_color":9,"friction":null,"emission":[],"dampening":{"nested":true},
+             "hardness":"wrong-shaped","sound":{"volume":[]},
+             "item":"plain","render_shape":"escaped\\ntext","unknown":{"nested":[1,true,null]}}]}"#;
+    let legacy: Value = serde_json::from_str(scalars_input)?;
+    assert_eq!(
+        (
+            legacy["states"][0]["id"].as_u64(),
+            legacy["states"][0]["map_color"].as_u64()
+        ),
+        (None, None) // JSON -0 is not an unsigned integer.
+    );
+    for input in ["null", "false", "[]", "{}", "\"text\""] {
+        let value: Value = serde_json::from_str(input)?;
+        let scalar: ScalarValue<'_> = serde_json::from_str(input)?;
+        assert_eq!(scalar.as_u64(), value.as_u64(), "{input}");
+        assert_eq!(scalar.as_f64(), value.as_f64(), "{input}");
+    }
+    let scalars: Gameplay<'_> = serde_json::from_str(scalars_input)?;
+    let scalars = scalars.states.0.unwrap();
+    assert_eq!(scalars[0].id, legacy["states"][0]["id"].as_u64());
+    assert_eq!(
+        scalars[0].map_color,
+        legacy["states"][0]["map_color"].as_u64()
+    );
+    assert_eq!(
+        scalars[0].friction.to_bits(),
+        legacy["states"][0]["friction"].as_f64().unwrap().to_bits()
+    );
+    assert_eq!(scalars[0].sound.volume, 3.0);
+    assert!(matches!(
+        scalars[0].push.as_ref(),
+        Some(Cow::Borrowed("plain"))
+    ));
+    assert!(matches!(
+        scalars[0].render_shape.as_ref(),
+        Some(Cow::Owned(s)) if s == "escaped☺\n"
+    ));
+    assert_eq!((scalars[1].id, scalars[1].map_color), (None, None));
+    assert_eq!(scalars[1].friction, 4.0);
+    assert_eq!(
+        (scalars[2].id, scalars[2].map_color),
+        (Some(i64::MAX as u64), None)
+    );
+    assert_eq!(scalars[2].friction, 9223372036854775807.0);
+    assert_eq!(
+        (scalars[3].id, scalars[3].map_color),
+        (Some(u64::MAX), Some(u64::MAX))
+    );
+    assert_eq!(scalars[3].friction, 2.5);
+    assert_eq!((scalars[4].id, scalars[4].map_color), (Some(7), Some(9)));
+    assert_eq!(scalars[4].friction, 0.0);
+    assert_eq!(scalars[4].emission.as_u64(), None);
+    assert_eq!(scalars[4].dampening.as_u64(), None);
+    assert_eq!(scalars[4].hardness.as_f64(), None);
+    assert_eq!(scalars[4].sound.volume, 1.0);
+    assert_eq!(scalars[4].render_shape.as_deref(), Some("escaped\\ntext"));
     for input in ["null", "[]", "{}", r#"{"states":null}"#, r#"{"states":{}}"#] {
         let parsed: Gameplay<'_> = serde_json::from_str(input)?;
         assert!(parsed.states.0.is_none());

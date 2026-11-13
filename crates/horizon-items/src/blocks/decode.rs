@@ -7,6 +7,7 @@ use serde::{
 };
 use serde_json::{Value, value::RawValue};
 use std::{
+    borrow::Cow,
     collections::{HashMap, hash_map::Entry as MapEntry},
     fmt,
     hash::{Hash, Hasher},
@@ -76,7 +77,7 @@ macro_rules! read_field {
         $map.next_value()?
     };
     ($map:ident, value($convert:expr)) => {
-        ($convert)($map.next_value::<Value>()?)
+        ($convert)($map.next_value::<ScalarValue<'_>>()?)
     };
 }
 macro_rules! object {
@@ -109,17 +110,106 @@ macro_rules! object {
         }
     };
 }
-fn number(v: Value) -> f64 {
+// A lightweight equivalent of the scalar portions of serde_json::Value. In
+// particular, retaining the JSON number category preserves Value::as_u64's
+// rejection of signed and floating point numbers.
+pub(super) enum ScalarValue<'a> {
+    Null,
+    Bool(bool),
+    U64(u64),
+    I64(i64),
+    F64(f64),
+    Text(Cow<'a, str>),
+}
+impl Default for ScalarValue<'_> {
+    fn default() -> Self {
+        Self::Null
+    }
+}
+struct ScalarVisitor(PhantomData<()>);
+impl<'de> Visitor<'de> for ScalarVisitor {
+    type Value = ScalarValue<'de>;
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a JSON value")
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Null)
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Null)
+    }
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Bool(v))
+    }
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(ScalarValue::U64(v))
+    }
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        // Match serde_json::Number's signed-integer conversion: nonnegative
+        // values are stored as unsigned integers.
+        Ok(if v >= 0 {
+            ScalarValue::U64(v as u64)
+        } else {
+            ScalarValue::I64(v)
+        })
+    }
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(ScalarValue::F64(v))
+    }
+    fn visit_borrowed_str<E: serde::de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Text(Cow::Borrowed(v)))
+    }
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Text(Cow::Owned(v.to_owned())))
+    }
+    fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+        Ok(ScalarValue::Text(Cow::Owned(v)))
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        while seq.next_element::<Validate>()?.is_some() {}
+        Ok(ScalarValue::Null)
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        while map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+            map.next_value::<Validate>()?;
+        }
+        Ok(ScalarValue::Null)
+    }
+}
+impl<'de> Deserialize<'de> for ScalarValue<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(ScalarVisitor(PhantomData))
+    }
+}
+impl ScalarValue<'_> {
+    pub(super) fn as_u64(&self) -> Option<u64> {
+        if let Self::U64(v) = self {
+            Some(*v)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::U64(v) => Some(*v as f64),
+            Self::I64(v) => Some(*v as f64),
+            Self::F64(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+fn number(v: ScalarValue<'_>) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
-fn flag(v: Value) -> bool {
-    v.as_bool().unwrap_or(false)
+fn flag(v: ScalarValue<'_>) -> bool {
+    matches!(v, ScalarValue::Bool(true))
 }
-fn unsigned(v: Value) -> Option<u64> {
+fn unsigned(v: ScalarValue<'_>) -> Option<u64> {
     v.as_u64()
 }
-fn text(v: Value) -> Option<String> {
-    if let Value::String(s) = v {
+fn text<'a>(v: ScalarValue<'a>) -> Option<Cow<'a, str>> {
+    if let ScalarValue::Text(s) = v {
         Some(s)
     } else {
         None
@@ -143,40 +233,43 @@ impl<'de> Deserialize<'de> for Entries<'de> {
     }
 }
 object!(Gameplay<'a> { states: Entries<'a> = Entries::default() => typed });
-object!(SoundId<'a> { id: Option<String> = None => value(text) });
+object!(SoundId<'a> { id: Option<Cow<'a, str>> = None => value(text) });
 object!(Sound<'a> {
-    volume: f64 = 1.0 => value(|v: Value| v.as_f64().unwrap_or(1.0)),
-    pitch: f64 = 1.0 => value(|v: Value| v.as_f64().unwrap_or(1.0)),
+    volume: f64 = 1.0 => value(|v: ScalarValue<'_>| scalar_f64(v, 1.0)),
+    pitch: f64 = 1.0 => value(|v: ScalarValue<'_>| scalar_f64(v, 1.0)),
     r#break: SoundId<'a> = SoundId::default() => typed,
     step: SoundId<'a> = SoundId::default() => typed,
     place: SoundId<'a> = SoundId::default() => typed,
     hit: SoundId<'a> = SoundId::default() => typed,
     fall: SoundId<'a> = SoundId::default() => typed,
 });
+fn scalar_f64(v: ScalarValue<'_>, default: f64) -> f64 {
+    v.as_f64().unwrap_or(default)
+}
 object!(Entry<'a> {
     id: Option<u64> = None => value(unsigned),
-    emission: Value = Value::Null => typed,
-    dampening: Value = Value::Null => typed,
+    emission: ScalarValue<'a> = ScalarValue::default() => typed,
+    dampening: ScalarValue<'a> = ScalarValue::default() => typed,
     skylight_down: bool = false => value(flag),
     shape_occlusion: bool = false => value(flag),
     can_occlude: bool = false => value(flag),
     solid_render: bool = false => value(flag),
-    hardness: Value = Value::Null => typed,
+    hardness: ScalarValue<'a> = ScalarValue::default() => typed,
     requires_tool: bool = false => value(flag),
     replaceable: bool = false => value(flag),
     random_ticks: bool = false => value(flag),
     block_entity: bool = false => value(flag),
     liquid: bool = false => value(flag),
     ignited_by_lava: bool = false => value(flag),
-    push: Option<String> = None => value(text),
-    render_shape: Option<String> = None => value(text),
+    push: Option<Cow<'a, str>> = None => value(text),
+    render_shape: Option<Cow<'a, str>> = None => value(text),
     full_collision: bool = false => value(flag),
     friction: f64 = 0.0 => value(number),
     explosion_resistance: f64 = 0.0 => value(number),
-    item: Option<String> = None => value(text),
+    item: Option<Cow<'a, str>> = None => value(text),
     sound: Sound<'a> = Sound::default() => typed,
     offset: bool = false => value(flag),
-    outline_offset: Option<bool> = None => value(|v: Value| v.as_bool()),
+    outline_offset: Option<bool> = None => value(|v: ScalarValue<'_>| if let ScalarValue::Bool(b) = v { Some(b) } else { None }),
     map_color: Option<u64> = None => value(unsigned),
     outline: Option<&'a RawValue> = None => typed,
     outline_edges: Option<&'a RawValue> = None => typed,
