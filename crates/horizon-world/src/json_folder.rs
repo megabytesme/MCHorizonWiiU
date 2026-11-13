@@ -283,7 +283,19 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
                     );
                 }
             }
-            if path.is_dir() {
+            #[cfg(target_os = "cafe")]
+            if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                log::info!("Horizon Cafe json folder directory check begin index={entries_seen}");
+            }
+            let is_dir = path.is_dir();
+            #[cfg(target_os = "cafe")]
+            if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                log::info!(
+                    "Horizon Cafe json folder directory check complete index={} is_dir={is_dir}",
+                    entries_seen
+                );
+            }
+            if is_dir {
                 #[cfg(target_os = "cafe")]
                 if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
                     log::info!(
@@ -304,8 +316,36 @@ pub fn list(dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
                     }
                     Err(e) => log::warn!("Horizon: failed to list {}: {e}", path.display()),
                 }
-            } else if path.extension().is_some_and(|e| e == "json") {
-                files.push(path);
+            } else {
+                #[cfg(target_os = "cafe")]
+                if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                    log::info!(
+                        "Horizon Cafe json folder extension check begin index={entries_seen}"
+                    );
+                }
+                let is_json = path.extension().is_some_and(|e| e == "json");
+                #[cfg(target_os = "cafe")]
+                if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                    log::info!(
+                        "Horizon Cafe json folder extension check complete index={} is_json={is_json}",
+                        entries_seen
+                    );
+                }
+                if is_json {
+                    #[cfg(target_os = "cafe")]
+                    if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                        log::info!(
+                            "Horizon Cafe json folder file append begin index={entries_seen}"
+                        );
+                    }
+                    files.push(path);
+                    #[cfg(target_os = "cafe")]
+                    if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
+                        log::info!(
+                            "Horizon Cafe json folder file append complete index={entries_seen}"
+                        );
+                    }
+                }
             }
             #[cfg(target_os = "cafe")]
             if trace && (entries_seen <= 64 || entries_seen % 256 == 0) {
