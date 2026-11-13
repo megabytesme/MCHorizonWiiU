@@ -35,7 +35,12 @@ static OPEN: Mutex<Vec<(PathBuf, Weak<Folder>)>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "cafe")]
 fn trace_damage_type_folder(dir: &Path) -> bool {
-    dir.ends_with(Path::new("data").join("minecraft").join("damage_type"))
+    dir.file_name().and_then(|name| name.to_str()) == Some("damage_type")
+        && dir
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("minecraft")
 }
 
 fn find(open: &[(PathBuf, Weak<Folder>)], dir: &Path) -> Option<Arc<Folder>> {
