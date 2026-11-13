@@ -179,20 +179,58 @@ impl LightTables {
                 }
             };
         }
+        #[cfg(target_os = "cafe")]
+        macro_rules! trace_suspect_state {
+            ($id:expr, $stage:expr, $detail:expr) => {
+                let trace_id = $id;
+                if (2304..=2431).contains(&trace_id) {
+                    let trace_state = &facts.states[trace_id];
+                    let trace_name = registry
+                        .state(BlockStateId(trace_id as u32))
+                        .map_or("<missing>", |state| state.name.as_str());
+                    log::info!(
+                        "Horizon Cafe light state trace id={} name={} can_occlude={} shape_occlusion={} stage={} detail={}",
+                        trace_id,
+                        trace_name,
+                        trace_state.can_occlude,
+                        trace_state.shape_occlusion,
+                        $stage,
+                        $detail
+                    );
+                }
+            };
+        }
         for (id, cell) in tables.cells.iter_mut().enumerate() {
             let state = &facts.states[id];
+            #[cfg(target_os = "cafe")]
+            trace_suspect_state!(id, "begin", "");
             // LightEngine.isEmptyShape: !canOcclude || !useShapeForLightOcclusion.
             if !state.can_occlude || !state.shape_occlusion {
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(id, "skip_flags", "");
                 #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
             }
-            let Some(shape) = occlusion.cached_shape(BlockStateId(id as u32))? else {
+            #[cfg(target_os = "cafe")]
+            trace_suspect_state!(id, "cached_shape.begin", "");
+            let cached_shape = occlusion.cached_shape(BlockStateId(id as u32))?;
+            #[cfg(target_os = "cafe")]
+            trace_suspect_state!(
+                id,
+                "cached_shape.complete",
+                format_args!("present={}", cached_shape.is_some())
+            );
+            let Some(shape) = cached_shape else {
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(id, "skip_missing_shape", "");
                 #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
             };
             if shape.is_empty() {
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(id, "skip_empty_shape", "");
                 #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
@@ -202,9 +240,30 @@ impl LightTables {
             } else {
                 let mut faces = [FULL; 6];
                 // BlockState.initCache: solidRender shapes use the full faces.
-                if shape.join_is_not_empty(&block, ShapeOp::XOR)? {
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(id, "join_xor.begin", "");
+                let differs_from_block = shape.join_is_not_empty(&block, ShapeOp::XOR)?;
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(
+                    id,
+                    "join_xor.complete",
+                    format_args!("differs_from_block={differs_from_block}")
+                );
+                if differs_from_block {
                     for direction in Direction::ALL {
+                        #[cfg(target_os = "cafe")]
+                        trace_suspect_state!(
+                            id,
+                            "face_shape.begin",
+                            format_args!("direction={:?}", direction)
+                        );
                         let face = shape.face_shape(direction)?;
+                        #[cfg(target_os = "cafe")]
+                        trace_suspect_state!(
+                            id,
+                            "face_shape.complete",
+                            format_args!("direction={:?}", direction)
+                        );
                         faces[direction as usize] = if face.is_empty() {
                             EMPTY
                         } else if face.same_identity(&block) {
@@ -233,6 +292,8 @@ impl LightTables {
             };
             cell.faces = faces;
             cell.shaped = faces.iter().any(|f| *f != EMPTY);
+            #[cfg(target_os = "cafe")]
+            trace_suspect_state!(id, "complete", "");
             #[cfg(target_os = "cafe")]
             trace_state_scan_progress!(id);
         }
