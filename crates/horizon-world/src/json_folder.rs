@@ -35,12 +35,16 @@ static OPEN: Mutex<Vec<(PathBuf, Weak<Folder>)>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "cafe")]
 fn trace_damage_type_folder(dir: &Path) -> bool {
-    dir.file_name().and_then(|name| name.to_str()) == Some("damage_type")
-        && dir
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            == Some("minecraft")
+    let path = dir.to_string_lossy();
+    let trace = path.ends_with("/data/minecraft/damage_type")
+        || path.ends_with("\\data\\minecraft\\damage_type");
+    if path.ends_with("damage_type") {
+        log::info!(
+            "Horizon Cafe json folder trace selection path={} enabled={trace}",
+            dir.display()
+        );
+    }
+    trace
 }
 
 fn find(open: &[(PathBuf, Weak<Folder>)], dir: &Path) -> Option<Arc<Folder>> {
