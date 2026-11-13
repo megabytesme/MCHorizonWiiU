@@ -220,9 +220,19 @@ fn text<'a>(v: ScalarValue<'a>) -> Option<Cow<'a, str>> {
 pub(super) struct Entries<'a>(pub Option<Vec<Entry<'a>>>);
 impl<'de> Container<'de> for Entries<'de> {
     fn seq<A: SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        #[cfg(target_os = "cafe")]
+        let started = std::time::Instant::now();
         let mut entries = Vec::new();
         while let Some(entry) = seq.next_element()? {
             entries.push(entry);
+            #[cfg(target_os = "cafe")]
+            if entries.len() % 5_000 == 0 {
+                log::info!(
+                    "Horizon block facts typed_decode states={} elapsed_ms={}",
+                    entries.len(),
+                    started.elapsed().as_millis()
+                );
+            }
         }
         Ok(Self(Some(entries)))
     }
