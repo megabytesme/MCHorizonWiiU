@@ -93,6 +93,10 @@ impl<'r> CachedCollisionRegistry<'r> {
         let mut seen_canonical = [false; 3];
         let mut grids = HashMap::<GridKey, VoxelShape>::new();
         for (_entry_index, entry) in entries.iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            if _entry_index < 3 {
+                log::info!("Horizon Cafe collision entry decode begin index={_entry_index}");
+            }
             let canonical = match entry.get("canonical") {
                 None => {
                     canonical_identities = false;
@@ -144,6 +148,16 @@ impl<'r> CachedCollisionRegistry<'r> {
                 Some(Tag::Byte(1)) => true,
                 _ => return Err(invalid("invalid collision cube flag")),
             };
+            #[cfg(target_os = "cafe")]
+            if _entry_index < 3 {
+                log::info!(
+                    "Horizon Cafe collision entry decode complete index={} canonical={} coordinate_sizes={:?} occupied={}",
+                    _entry_index,
+                    canonical,
+                    [coords[0].len(), coords[1].len(), coords[2].len()],
+                    occupied.len()
+                );
+            }
             let key = GridKey {
                 coords: std::array::from_fn(|i| coords[i].iter().map(|v| v.to_bits()).collect()),
                 occupied: bits.clone(),
@@ -152,10 +166,31 @@ impl<'r> CachedCollisionRegistry<'r> {
                 min,
                 max,
             };
-            let shape = if let Some(existing) = grids.get(&key) {
+            #[cfg(target_os = "cafe")]
+            if _entry_index < 3 {
+                log::info!("Horizon Cafe collision grid dedup begin index={_entry_index}");
+            }
+            let existing = grids.get(&key);
+            #[cfg(target_os = "cafe")]
+            if _entry_index < 3 {
+                log::info!(
+                    "Horizon Cafe collision grid dedup complete index={} hit={}",
+                    _entry_index,
+                    existing.is_some()
+                );
+            }
+            let shape = if let Some(existing) = existing {
                 existing.fresh_identity()
             } else {
-                match entry.get("cube") {
+                #[cfg(target_os = "cafe")]
+                if _entry_index < 3 {
+                    log::info!(
+                        "Horizon Cafe collision geometry construction begin index={} cube={}",
+                        _entry_index,
+                        cube
+                    );
+                }
+                let shape = match entry.get("cube") {
                     Some(Tag::Byte(0)) => {
                         VoxelShape::from_mixed_grid(coords, &occupied, coordinate_cubes)
                     }
@@ -182,11 +217,26 @@ impl<'r> CachedCollisionRegistry<'r> {
                 }
                 .map_err(|e| invalid(e.to_string()))?
                 .with_discrete_bounds(min, max)
-                .map_err(|e| invalid(e.to_string()))?
+                .map_err(|e| invalid(e.to_string()))?;
+                #[cfg(target_os = "cafe")]
+                if _entry_index < 3 {
+                    log::info!(
+                        "Horizon Cafe collision geometry construction complete index={_entry_index}"
+                    );
+                }
+                shape
             };
             let shape = if canonical == 0 {
                 shape
             } else {
+                #[cfg(target_os = "cafe")]
+                if _entry_index < 3 {
+                    log::info!(
+                        "Horizon Cafe collision canonical validation begin index={} identity={}",
+                        _entry_index,
+                        canonical
+                    );
+                }
                 let reference = if canonical == 1 {
                     VoxelShape::empty()
                 } else {
@@ -209,13 +259,18 @@ impl<'r> CachedCollisionRegistry<'r> {
                         "canonical collision identity has different geometry",
                     ));
                 }
+                #[cfg(target_os = "cafe")]
+                if _entry_index < 3 {
+                    log::info!(
+                        "Horizon Cafe collision canonical validation complete index={_entry_index}"
+                    );
+                }
                 reference
             };
             grids.entry(key).or_insert_with(|| shape.clone());
             shapes.push(shape);
             #[cfg(target_os = "cafe")]
-            if (_entry_index + 1) % shape_checkpoint_every == 0
-                || _entry_index + 1 == entries.len()
+            if (_entry_index + 1) % shape_checkpoint_every == 0 || _entry_index + 1 == entries.len()
             {
                 log::info!(
                     "Horizon Cafe collision conversion progress shapes={}/{} unique_grids={}",
