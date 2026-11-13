@@ -202,6 +202,7 @@ impl ScalarValue<'_> {
 fn number(v: ScalarValue<'_>) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
+#[cfg_attr(target_os = "cafe", inline(never))]
 fn flag(v: ScalarValue<'_>) -> bool {
     matches!(v, ScalarValue::Bool(true))
 }
