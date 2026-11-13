@@ -7,6 +7,8 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use serde_json::Value;
+#[cfg(target_os = "cafe")]
+use std::time::Instant;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -14,6 +16,43 @@ use std::{
     path::Path,
     sync::Arc,
 };
+#[cfg(target_os = "cafe")]
+struct CafeLoadPhase {
+    name: &'static str,
+    started: Instant,
+}
+
+#[cfg(target_os = "cafe")]
+impl CafeLoadPhase {
+    fn start(name: &'static str) -> Self {
+        log::info!("Horizon block facts phase={name}.begin");
+        Self {
+            name,
+            started: Instant::now(),
+        }
+    }
+
+    fn progress(&self, completed: usize, total: usize) {
+        log::info!(
+            "Horizon block facts phase={}.progress completed={} total={} elapsed_ms={}",
+            self.name,
+            completed,
+            total,
+            self.started.elapsed().as_millis()
+        );
+    }
+}
+
+#[cfg(target_os = "cafe")]
+impl Drop for CafeLoadPhase {
+    fn drop(&mut self) {
+        log::info!(
+            "Horizon block facts phase={}.end elapsed_ms={}",
+            self.name,
+            self.started.elapsed().as_millis()
+        );
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderShape {
@@ -314,8 +353,20 @@ impl BlockFacts {
         parallel: bool,
         callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
     ) -> Result<(Self, T)> {
-        let bytes = fs::read(root.join("gameplay-facts.json"))?;
-        let validate = || serde_json::from_slice::<decode::Validate>(&bytes).map(drop);
+        #[cfg(target_os = "cafe")]
+        let _load_phase = CafeLoadPhase::start("load");
+        let bytes = {
+            #[cfg(target_os = "cafe")]
+            let _phase = CafeLoadPhase::start("read");
+            fs::read(root.join("gameplay-facts.json"))?
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon block facts input bytes={}", bytes.len());
+        let validate = || {
+            #[cfg(target_os = "cafe")]
+            let _phase = CafeLoadPhase::start("validation");
+            serde_json::from_slice::<decode::Validate>(&bytes).map(drop)
+        };
         if !parallel {
             validate()?;
             return Self::decode_with_callback(&bytes, registry, behaviours, callback);
@@ -338,7 +389,11 @@ impl BlockFacts {
         behaviours: &Value,
         callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
     ) -> Result<(Self, T)> {
-        let raw: decode::Gameplay<'_> = serde_json::from_slice(bytes)?;
+        let raw: decode::Gameplay<'_> = {
+            #[cfg(target_os = "cafe")]
+            let _phase = CafeLoadPhase::start("typed_decode");
+            serde_json::from_slice(bytes)?
+        };
         let entries = raw
             .states
             .0
@@ -352,41 +407,46 @@ impl BlockFacts {
             .as_array()
             .filter(|s| s.len() == registry.len())
             .ok_or("block behaviour facts do not match the block registry")?;
-        let mut class_names: HashMap<String, Arc<str>> = HashMap::new();
-        let classes: HashMap<&str, Arc<[Arc<str>]>> = behaviours["blocks"]
-            .as_array()
-            .ok_or("missing block behaviour classes")?
-            .iter()
-            .filter_map(|b| {
-                let chain = b["class"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|c| {
-                        class_names
-                            .entry(c.to_owned())
-                            .or_insert_with(|| Arc::from(c))
-                            .clone()
-                    });
-                Some((b["name"].as_str()?, chain.collect()))
-            })
-            .collect();
-        let woods = behaviours["blocks"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| {
-                b["class"]
-                    .as_array()
-                    .is_some_and(|chain| chain.iter().any(|c| c == "SignBlock"))
-            })
-            .filter_map(|b| {
-                Some((
-                    Arc::from(b["name"].as_str()?),
-                    Arc::from(b["fields"]["type"]["name"].as_str()?),
-                ))
-            })
-            .collect();
+        let (classes, woods) = {
+            #[cfg(target_os = "cafe")]
+            let _phase = CafeLoadPhase::start("behaviour_maps");
+            let mut class_names: HashMap<String, Arc<str>> = HashMap::new();
+            let classes: HashMap<&str, Arc<[Arc<str>]>> = behaviours["blocks"]
+                .as_array()
+                .ok_or("missing block behaviour classes")?
+                .iter()
+                .filter_map(|b| {
+                    let chain = b["class"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|c| {
+                            class_names
+                                .entry(c.to_owned())
+                                .or_insert_with(|| Arc::from(c))
+                                .clone()
+                        });
+                    Some((b["name"].as_str()?, chain.collect()))
+                })
+                .collect();
+            let woods = behaviours["blocks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|b| {
+                    b["class"]
+                        .as_array()
+                        .is_some_and(|chain| chain.iter().any(|c| c == "SignBlock"))
+                })
+                .filter_map(|b| {
+                    Some((
+                        Arc::from(b["name"].as_str()?),
+                        Arc::from(b["fields"]["type"]["name"].as_str()?),
+                    ))
+                })
+                .collect();
+            (classes, woods)
+        };
         let mut names: HashMap<String, Arc<str>> = HashMap::new();
         let mut intern = |s: &str| -> Arc<str> {
             if let Some(name) = names.get(s) {
@@ -398,7 +458,13 @@ impl BlockFacts {
         };
         let mut shapes = decode::Shapes::default();
         let mut states = Vec::with_capacity(entries.len());
+        #[cfg(target_os = "cafe")]
+        let projection_phase = CafeLoadPhase::start("state_projection");
         for (index, entry) in entries.iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            if index > 0 && index % 10_000 == 0 {
+                projection_phase.progress(index, entries.len());
+            }
             let id = BlockStateId(index as u32);
             if entry.id != Some(index as u64) {
                 return Err("gameplay facts are not in registry order".into());
@@ -500,7 +566,13 @@ impl BlockFacts {
                     .ok_or("missing block behaviour class chain")?,
             });
         }
-        let extra = callback(entries)?;
+        #[cfg(target_os = "cafe")]
+        drop(projection_phase);
+        let extra = {
+            #[cfg(target_os = "cafe")]
+            let _phase = CafeLoadPhase::start("projection_callback");
+            callback(entries)?
+        };
         Ok((
             Self {
                 states,
