@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn original_resolution_texels_and_vanilla_cube_orientation_are_preserved() {
         let f = Fixture::new(1024);
-        let faces = Faces::try_load(&f.0, &f.0).unwrap();
+        let faces = Faces::try_load(&f.0, &f.0, false).unwrap();
         assert_eq!(faces.size, 1024);
         // The texels decoded while loading, then decoded again for the next cube.
         let (loaded, again) = (faces.texels(), faces.texels());
@@ -359,10 +359,10 @@ mod tests {
     #[test]
     fn placeholders_load_and_incomplete_or_mismatched_cubes_fall_back() {
         let f = Fixture::new(1);
-        assert_eq!(Faces::try_load(&f.0, &f.0).unwrap().size, 1);
+        assert_eq!(Faces::try_load(&f.0, &f.0, false).unwrap().size, 1);
         f.write(5, 2, 1);
         assert!(
-            Faces::try_load(&f.0, &f.0)
+            Faces::try_load(&f.0, &f.0, false)
                 .unwrap_err()
                 .to_string()
                 .contains("equally sized squares")
@@ -370,9 +370,9 @@ mod tests {
         let fallback = Faces::load(&f.0, &f.0);
         assert_eq!(fallback.texels(), [96, 110, 111, 255].repeat(6));
         f.write(5, 2, 2);
-        assert!(Faces::try_load(&f.0, &f.0).is_err());
+        assert!(Faces::try_load(&f.0, &f.0, false).is_err());
         fs::remove_file(f.background().join("panorama_5.png")).unwrap();
-        assert!(Faces::try_load(&f.0, &f.0).is_err());
+        assert!(Faces::try_load(&f.0, &f.0, false).is_err());
         assert_eq!(Faces::load(&f.0, &f.0).size, 1);
     }
 
@@ -383,7 +383,7 @@ mod tests {
         // still the game's, as the bottom of the pack stack provides them.
         let pack = Fixture::bare();
         pack.write(2, 4, 4);
-        let faces = Faces::try_load(&pack.0, &vanilla.0).unwrap();
+        let faces = Faces::try_load(&pack.0, &vanilla.0, false).unwrap();
         assert_eq!(faces.size, 4);
         let texels = faces.texels();
         assert_eq!(texels.len(), 6 * 4 * 4 * 4);
@@ -399,7 +399,7 @@ mod tests {
     fn a_missing_cube_names_every_path_it_tried() {
         let vanilla = Fixture::bare();
         let pack = Fixture::bare();
-        let error = Faces::try_load(&pack.0, &vanilla.0)
+        let error = Faces::try_load(&pack.0, &vanilla.0, false)
             .unwrap_err()
             .to_string();
         for root in [&pack, &vanilla] {
