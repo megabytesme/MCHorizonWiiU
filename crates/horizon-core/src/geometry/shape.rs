@@ -612,25 +612,112 @@ impl VoxelShape {
         best
     }
     fn decompose(&self) -> Vec<Aabb> {
+        let trace = shape_load_trace_entry();
+        let detail_trace = trace.filter(|_| {
+            let [nx, ny, nz] = self.sizes;
+            nx.checked_mul(ny)
+                .and_then(|rows| rows.checked_mul(nz.saturating_add(1)))
+                .is_some_and(|steps| steps <= 512)
+        });
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!("Horizon Cafe voxel shape decompose copy begin entry={entry}");
+        }
         let mut remaining = self.occupancy.to_vec();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape decompose copy complete entry={} words={}",
+                entry,
+                remaining.len()
+            );
+            log::info!(
+                "Horizon Cafe voxel shape decompose grid begin entry={} sizes={:?}",
+                entry,
+                self.sizes
+            );
+        }
         let mut boxes = Vec::new();
         let [nx, ny, nz] = self.sizes;
         for y in 0..ny {
             for x in 0..nx {
+                #[cfg(target_os = "cafe")]
+                if let Some(entry) = detail_trace {
+                    log::info!(
+                        "Horizon Cafe voxel shape decompose row begin entry={} x={} y={}",
+                        entry,
+                        x,
+                        y
+                    );
+                }
                 let mut run = None;
                 for z in 0..=nz {
                     if z < nz && full(&remaining, index(self.sizes, x, y, z)) {
+                        #[cfg(target_os = "cafe")]
+                        if let Some(entry) = detail_trace {
+                            log::info!(
+                                "Horizon Cafe voxel shape decompose cell entry={} x={} y={} z={} occupied=true",
+                                entry,
+                                x,
+                                y,
+                                z
+                            );
+                        }
                         if run.is_none() {
                             run = Some(z);
                         }
                         continue;
                     }
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose cell entry={} x={} y={} z={} occupied=false",
+                            entry,
+                            x,
+                            y,
+                            z
+                        );
+                    }
                     let Some(z_start) = run.take() else { continue };
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose clear begin entry={} x={} y={} z={}..{}",
+                            entry,
+                            x,
+                            y,
+                            z_start,
+                            z
+                        );
+                    }
                     clear_strip(&mut remaining, self.sizes, x, y, z_start, z);
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose clear complete entry={} x={} y={} z={}..{}",
+                            entry,
+                            x,
+                            y,
+                            z_start,
+                            z
+                        );
+                    }
                     let mut x_end = x + 1;
                     while x_end < nx && strip_full(&remaining, self.sizes, x_end, y, z_start, z) {
                         clear_strip(&mut remaining, self.sizes, x_end, y, z_start, z);
                         x_end += 1;
+                    }
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose x merge complete entry={} x={}..{} y={} z={}..{}",
+                            entry,
+                            x,
+                            x_end,
+                            y,
+                            z_start,
+                            z
+                        );
                     }
                     let mut y_end = y + 1;
                     while y_end < ny
@@ -641,6 +728,19 @@ impl VoxelShape {
                             clear_strip(&mut remaining, self.sizes, u, y_end, z_start, z);
                         }
                         y_end += 1;
+                    }
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose y merge complete entry={} x={}..{} y={}..{} z={}..{}",
+                            entry,
+                            x,
+                            x_end,
+                            y,
+                            y_end,
+                            z_start,
+                            z
+                        );
                     }
                     boxes.push(Aabb::new(
                         Vec3::new(
@@ -654,6 +754,23 @@ impl VoxelShape {
                             self.coords[2][z],
                         ),
                     ));
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = detail_trace {
+                        log::info!(
+                            "Horizon Cafe voxel shape decompose box complete entry={} boxes={}",
+                            entry,
+                            boxes.len()
+                        );
+                    }
+                }
+                #[cfg(target_os = "cafe")]
+                if let Some(entry) = detail_trace {
+                    log::info!(
+                        "Horizon Cafe voxel shape decompose row complete entry={} x={} y={}",
+                        entry,
+                        x,
+                        y
+                    );
                 }
             }
         }
