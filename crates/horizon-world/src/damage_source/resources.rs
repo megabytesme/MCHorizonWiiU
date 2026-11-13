@@ -97,22 +97,23 @@ pub fn resource_tags<T: Clone + Ord>(
         );
         let value: Value = serde_json::from_slice(&exported_bytes)?;
         cafe_damage_trace!("Horizon Cafe exported damage tags decode complete");
-        let object = value
-            .as_object()
-            .ok_or_else(|| invalid("expected damage tags"))?;
+        let object = match value {
+            Value::Object(object) => object,
+            _ => return Err(invalid("expected damage tags")),
+        };
         cafe_damage_trace!(
             "Horizon Cafe exported damage tags iteration begin entries={}",
             object.len()
         );
-        for (index, (id, json)) in object.iter().enumerate() {
+        for (index, (id, json)) in object.into_iter().enumerate() {
             cafe_damage_trace!(
                 "Horizon Cafe exported damage tags entry begin index={index} id={id}"
             );
-            let entry = files.entry(id.clone()).or_default();
+            let entry = files.entry(id).or_default();
             cafe_damage_trace!(
                 "Horizon Cafe exported damage tags entry destination ready index={index}"
             );
-            let tag = string(json)?;
+            let tag = string(&json)?;
             cafe_damage_trace!(
                 "Horizon Cafe exported damage tags entry string complete index={index}"
             );
