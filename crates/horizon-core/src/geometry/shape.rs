@@ -721,11 +721,80 @@ impl VoxelShape {
                     }
                     let mut y_end = y + 1;
                     while y_end < ny
-                        && (x..x_end)
-                            .all(|u| strip_full(&remaining, self.sizes, u, y_end, z_start, z))
+                        && {
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y merge probe begin entry={} x={}..{} y={} z={}..{}",
+                                    entry,
+                                    x,
+                                    x_end,
+                                    y_end,
+                                    z_start,
+                                    z
+                                );
+                            }
+                            let merge_y = (x..x_end).all(|u| {
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y probe cell begin entry={} x={} y={} z={}..{}",
+                                    entry,
+                                    u,
+                                    y_end,
+                                    z_start,
+                                    z
+                                );
+                            }
+                            let full = strip_full(&remaining, self.sizes, u, y_end, z_start, z);
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y probe cell complete entry={} x={} y={} full={}",
+                                    entry,
+                                    u,
+                                    y_end,
+                                    full
+                                );
+                            }
+                            full
+                        });
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y merge probe complete entry={} y={} full={}",
+                                    entry,
+                                    y_end,
+                                    merge_y
+                                );
+                            }
+                            merge_y
+                        }
                     {
                         for u in x..x_end {
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y clear begin entry={} x={} y={} z={}..{}",
+                                    entry,
+                                    u,
+                                    y_end,
+                                    z_start,
+                                    z
+                                );
+                            }
                             clear_strip(&mut remaining, self.sizes, u, y_end, z_start, z);
+                            #[cfg(target_os = "cafe")]
+                            if let Some(entry) = detail_trace {
+                                log::info!(
+                                    "Horizon Cafe voxel shape decompose y clear complete entry={} x={} y={} z={}..{}",
+                                    entry,
+                                    u,
+                                    y_end,
+                                    z_start,
+                                    z
+                                );
+                            }
                         }
                         y_end += 1;
                     }
