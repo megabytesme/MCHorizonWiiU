@@ -104,11 +104,25 @@ pub fn resource_tags<T: Clone + Ord>(
             "Horizon Cafe exported damage tags iteration begin entries={}",
             object.len()
         );
-        for (id, json) in object {
-            files
-                .entry(id.clone())
-                .or_default()
-                .push(string(json)?.as_bytes().to_vec());
+        for (index, (id, json)) in object.iter().enumerate() {
+            cafe_damage_trace!(
+                "Horizon Cafe exported damage tags entry begin index={index} id={id}"
+            );
+            let entry = files.entry(id.clone()).or_default();
+            cafe_damage_trace!(
+                "Horizon Cafe exported damage tags entry destination ready index={index}"
+            );
+            let tag = string(json)?;
+            cafe_damage_trace!(
+                "Horizon Cafe exported damage tags entry string complete index={index}"
+            );
+            let tag_bytes = tag.as_bytes().to_vec();
+            cafe_damage_trace!(
+                "Horizon Cafe exported damage tags entry byte copy complete index={index} bytes={}",
+                tag_bytes.len()
+            );
+            entry.push(tag_bytes);
+            cafe_damage_trace!("Horizon Cafe exported damage tags entry complete index={index}");
         }
         cafe_damage_trace!("Horizon Cafe exported damage tags iteration complete");
     }
