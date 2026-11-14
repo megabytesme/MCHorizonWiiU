@@ -1196,7 +1196,9 @@ impl HudAtlas {
                 return None;
             }
             #[cfg(target_os = "cafe")]
-            if trace_index.is_some_and(|index| index <= 63 || index % 64 == 0) {
+            if trace_index.is_some_and(|index| {
+                index <= 16 || (65..=127).contains(&index) || index % 64 == 0
+            }) {
                 let index = trace_index.unwrap_or_default();
                 log::info!(
                     target: "horizon.atlas",
@@ -1213,7 +1215,9 @@ impl HudAtlas {
             #[cfg(not(target_os = "cafe"))]
             let decoded_image = decode(path);
             #[cfg(target_os = "cafe")]
-            if trace_index.is_some_and(|index| index <= 63 || index % 64 == 0) {
+            if trace_index.is_some_and(|index| {
+                index <= 16 || (65..=127).contains(&index) || index % 64 == 0
+            }) {
                 let index = trace_index.unwrap_or_default();
                 log::info!(
                     target: "horizon.atlas",
