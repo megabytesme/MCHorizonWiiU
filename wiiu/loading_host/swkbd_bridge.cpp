@@ -34,6 +34,7 @@ size_t s_result_length = 0;
 uint32_t s_trace_calc_calls = 0;
 uint32_t s_trace_tv_draw_calls = 0;
 uint32_t s_trace_drc_draw_calls = 0;
+uint32_t s_trace_calc_until_call = 0;
 
 bool trace_call(uint32_t call) {
    return call <= 96 && (call <= 4 || call % 16 == 0);
@@ -197,14 +198,18 @@ extern "C" int32_t horizon_swkbd_is_open(void) {
 extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
    if (!s_open) return 0;
 
+   auto *status = const_cast<VPADStatus *>(static_cast<const VPADStatus *>(vpad_status));
 #ifdef HORIZON_WIIU_TRACE_SWKBD
    const uint32_t call = ++s_trace_calc_calls;
-   const bool trace = trace_poll(call);
-   const bool trace_detail = trace_call(call);
+   if (status && status->tpNormal.touched != 0 &&
+       (!s_have_last_vpad || s_last_touched == 0)) {
+      s_trace_calc_until_call = call + 16;
+   }
+   const bool trace = trace_poll(call) || call <= s_trace_calc_until_call;
+   const bool trace_detail = trace_call(call) || call <= s_trace_calc_until_call;
    if (trace) report_stage(call, "calc.begin");
 #endif
 
-   auto *status = const_cast<VPADStatus *>(static_cast<const VPADStatus *>(vpad_status));
    if (status) {
       const auto &touch = status->tpNormal;
       const bool first_sample = !s_have_last_vpad;

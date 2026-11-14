@@ -13,8 +13,10 @@ use horizon_client_platform::{
 };
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
 use horizon_wiiu_platform::{
-    keyboard::KeyboardAdapter, mouse::{MouseAdapter, MouseOutput}, touch::TouchMapper,
     VpadState,
+    keyboard::KeyboardAdapter,
+    mouse::{MouseAdapter, MouseOutput},
+    touch::TouchMapper,
 };
 use std::cell::Cell;
 use std::ffi::CString;
@@ -522,15 +524,13 @@ impl<'a> LoadingHost<'a> {
         }
 
         let mut dimensions = [0u32; 4];
-        let (width, height) = if unsafe {
-            horizon_loading_host_dimensions(dimensions.as_mut_ptr())
-        } == 0
-        {
-            (dimensions[2].max(1), dimensions[3].max(1))
-        } else {
-            let [width, height] = self.presenter.layout_viewport();
-            (width.max(1), height.max(1))
-        };
+        let (width, height) =
+            if unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) } == 0 {
+                (dimensions[2].max(1), dimensions[3].max(1))
+            } else {
+                let [width, height] = self.presenter.layout_viewport();
+                (width.max(1), height.max(1))
+            };
         let width = f64::from(width);
         let height = f64::from(height);
         let mut position = self.mouse_position.unwrap_or(PhysicalPosition::new(
@@ -615,7 +615,11 @@ impl<'a> LoadingHost<'a> {
                 let text =
                     String::from_utf8_lossy(&self.native_keyboard_result[..length]).into_owned();
                 log::info!("Horizon Cafe keyboard result phase=commit_dispatch.begin");
-                self.dispatch_event(session, game, ClientWindowEvent::Ime(ImeEvent::Commit(text)));
+                self.dispatch_event(
+                    session,
+                    game,
+                    ClientWindowEvent::Ime(ImeEvent::Commit(text)),
+                );
                 log::info!("Horizon Cafe keyboard result phase=commit_dispatch.end");
                 true
             }
@@ -758,10 +762,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let host_loop_started = Instant::now();
         let mut periodic_trace_at = host_loop_started + Duration::from_secs(45);
         let mut host_loop_iteration = 0u32;
-        let mut periodic_trace_windows = 0u8;
+        let mut periodic_trace_windows = 0u16;
         let mut last_loading_status = session.status();
-        // Trace one iteration every two seconds for at most a minute after
+        // Trace one iteration every two seconds for up to ten minutes after
         // startup, plus short input windows and a bounded post-keyboard window.
+        let mut trace_next_iteration = false;
         let mut post_input_trace_frames = 0u16;
         let mut post_input_trace_bursts = 3u8;
         let mut game_session: Option<CafeGameSession> = None;
@@ -771,26 +776,49 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut first_game_frame_started = false;
         let mut first_game_frame_returned = false;
         loop {
-            if !self.running() || self.control.get() == EventLoopControl::Exit {
-                self.exited = true;
-                break;
-            }
             host_loop_iteration = host_loop_iteration.saturating_add(1);
             let now = Instant::now();
-            let periodic_trace_due = periodic_trace_windows < 30 && now >= periodic_trace_at;
+            let periodic_trace_due = periodic_trace_windows < 300 && now >= periodic_trace_at;
             if periodic_trace_due {
                 periodic_trace_windows += 1;
                 periodic_trace_at = now + Duration::from_secs(2);
             }
-            let mut trace_this_iteration = post_input_trace_frames > 0 || periodic_trace_due;
+            let mut trace_this_iteration =
+                post_input_trace_frames > 0 || periodic_trace_due || trace_next_iteration;
             if trace_this_iteration {
                 if post_input_trace_frames > 0 {
                     post_input_trace_frames -= 1;
                 }
                 log::info!(
-                    "Horizon Cafe host loop trace iteration={} phase=iteration.begin",
+                    "Horizon Cafe host loop trace iteration={} phase=iteration.begin loading_status={:?}",
+                    host_loop_iteration,
+                    session.status()
+                );
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=running.begin",
                     host_loop_iteration
                 );
+            }
+            trace_next_iteration = periodic_trace_due;
+            let host_running = self.running();
+            let loop_control = self.control.get();
+            if trace_this_iteration {
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=loop_guard.end running={} control={:?}",
+                    host_loop_iteration,
+                    host_running,
+                    loop_control
+                );
+            }
+            if !host_running || loop_control == EventLoopControl::Exit {
+                if trace_this_iteration {
+                    log::info!(
+                        "Horizon Cafe host loop trace iteration={} phase=loop_guard.exit",
+                        host_loop_iteration
+                    );
+                }
+                self.exited = true;
+                break;
             }
             if trace_focus {
                 startup_report!("loading first focus update begin");
@@ -804,8 +832,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
             let focused = self.update_focus(session, game_session.as_mut());
             if trace_this_iteration {
                 log::info!(
-                    "Horizon Cafe host loop trace iteration={} phase=focus.end",
-                    host_loop_iteration
+                    "Horizon Cafe host loop trace iteration={} phase=focus.end focused={}",
+                    host_loop_iteration,
+                    focused
                 );
             }
             if trace_focus {
@@ -939,6 +968,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
+            if trace_this_iteration && has_fresh_sample {
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=vpad_sample fresh=true buttons={:#x} touch_active={}",
+                    host_loop_iteration,
+                    pad.buttons,
+                    touch_contact_active
+                );
+            }
             if trace_vpad {
                 startup_report!("Cafe VPAD activity arming complete");
             }
@@ -1034,16 +1071,15 @@ impl CafeLoadingHost for LoadingHost<'_> {
             self.keyboard_events.clear();
             self.keyboard.drain_into(&mut self.keyboard_events);
             if !self.keyboard_event_reported
-                && self
-                    .keyboard_events
-                    .iter()
-                    .any(|event| matches!(
+                && self.keyboard_events.iter().any(|event| {
+                    matches!(
                         event,
                         ClientWindowEvent::KeyboardInput {
                             event,
                             is_synthetic: false,
                         } if event.state == horizon_client_platform::KeyState::Pressed
-                    ))
+                    )
+                })
             {
                 // Never include key values or typed text in the serial trace.
                 self.keyboard_event_reported = true;
@@ -1120,16 +1156,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 // Keep TouchMapper's contact/release state current while the
                 // CafeOS keyboard consumes the GamePad touchscreen.
                 let mut dimensions = [0u32; 4];
-                let viewport = if unsafe {
-                    horizon_loading_host_dimensions(dimensions.as_mut_ptr())
-                } == 0
-                {
-                    [dimensions[2], dimensions[3]]
-                } else {
-                    // A release marker is still valid without a drawable
-                    // target; TouchMapper consumes it before scaling points.
-                    [1, 1]
-                };
+                let viewport =
+                    if unsafe { horizon_loading_host_dimensions(dimensions.as_mut_ptr()) } == 0 {
+                        [dimensions[2], dimensions[3]]
+                    } else {
+                        // A release marker is still valid without a drawable
+                        // target; TouchMapper consumes it before scaling points.
+                        [1, 1]
+                    };
                 let _ = self
                     .touch
                     .events_with_freshness(&self.vpad, viewport, fresh_release);
@@ -1199,7 +1233,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
                                 "Horizon Cafe Game handoff returned local Game elapsed_ms={}",
                                 handoff_started_at.elapsed().as_millis()
                             );
-                            startup_report!("original local Game initialized; world startup begins");
+                            startup_report!(
+                                "original local Game initialized; world startup begins"
+                            );
                             game_session = Some(game);
                         }
                         Ok(None) => {
@@ -1296,7 +1332,21 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     }
                 }
             } else {
-                session.draw(self.presenter).map(|_| ())
+                if trace_this_iteration {
+                    self.presenter.trace_next_loading_frame();
+                    log::info!(
+                        "Horizon Cafe host loop trace iteration={} phase=loading_session.draw.begin",
+                        host_loop_iteration
+                    );
+                }
+                let result = session.draw(self.presenter).map(|_| ());
+                if trace_this_iteration {
+                    log::info!(
+                        "Horizon Cafe host loop trace iteration={} phase=loading_session.draw.end",
+                        host_loop_iteration
+                    );
+                }
+                result
             };
             if trace_this_iteration {
                 log::info!(
