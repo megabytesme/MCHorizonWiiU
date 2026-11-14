@@ -783,16 +783,32 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 periodic_trace_windows += 1;
                 periodic_trace_at = now + Duration::from_secs(2);
             }
-            let mut trace_this_iteration =
-                post_input_trace_frames > 0 || periodic_trace_due || trace_next_iteration;
+            // The interpreter run stopped refreshing just after iteration
+            // 416 while loader workers kept progressing. Trace a bounded
+            // window around that transition so the last begin/complete phase
+            // identifies a blocked host call without logging every frame.
+            let host_stall_trace_window = (400..=450).contains(&host_loop_iteration);
+            let mut trace_this_iteration = post_input_trace_frames > 0
+                || periodic_trace_due
+                || trace_next_iteration
+                || host_stall_trace_window;
             if trace_this_iteration {
                 if post_input_trace_frames > 0 {
                     post_input_trace_frames -= 1;
                 }
                 log::info!(
-                    "Horizon Cafe host loop trace iteration={} phase=iteration.begin loading_status={:?}",
+                    "Horizon Cafe host loop trace iteration={} phase=iteration.begin",
+                    host_loop_iteration
+                );
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=iteration_status.begin",
+                    host_loop_iteration
+                );
+                let iteration_status = session.status();
+                log::info!(
+                    "Horizon Cafe host loop trace iteration={} phase=iteration_status.end loading_status={:?}",
                     host_loop_iteration,
-                    session.status()
+                    iteration_status
                 );
                 log::info!(
                     "Horizon Cafe host loop trace iteration={} phase=running.begin",
