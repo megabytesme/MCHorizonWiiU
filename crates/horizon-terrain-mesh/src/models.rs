@@ -7,7 +7,9 @@ use catalog::descriptor;
 pub use cube::CubeStyle;
 use horizon_core::position::BlockPos;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(not(target_os = "cafe"))]
+use serde_json::json;
 use std::path::Path;
 
 /// The standalone models native mods asked for (`native_standalone_models`).
@@ -108,7 +110,10 @@ pub(crate) fn prepare_with_models(
         catalog.bake_standalone(root, sprites, models, standalone())?;
     }
     let mut placements = Vec::new();
+    #[cfg(not(target_os = "cafe"))]
     let mut states = Vec::new();
+    #[cfg(target_os = "cafe")]
+    let states = Vec::new();
     for (index, (name, properties)) in GALLERY.iter().enumerate() {
         #[cfg(target_os = "cafe")]
         log::info!(
@@ -124,6 +129,8 @@ pub(crate) fn prepare_with_models(
         let actual = registry
             .state(state)
             .ok_or("missing gallery registry state")?;
+        #[cfg(target_os = "cafe")]
+        let _ = actual;
         let position = BlockPos::new((index % 4) as i32 * 4 - 7, 4, (index / 4) as i32 * 4 + 14);
         // A state no definition binds (a pack's partial blockstate file
         // without vanilla's below it) is left out, as the mesher skips it,
@@ -140,68 +147,14 @@ pub(crate) fn prepare_with_models(
                 continue;
             }
         };
+        // This JSON view is probe metadata; Cafe needs the same baked catalog
+        // and placements but does not consume its serialized gallery copy.
         #[cfg(target_os = "cafe")]
-        let state_json = {
-            let _step = crate::spans::startup::step("core.models_bake.gallery.json");
-            let mut object = serde_json::Map::new();
-
-            log::info!("Horizon Cafe gallery JSON block name begin");
-            object.insert("block".into(), Value::String(actual.name.clone()));
-            log::info!("Horizon Cafe gallery JSON block name complete");
-
-            let property_count = actual.properties.len();
-            log::info!("Horizon Cafe gallery JSON properties begin count={property_count}");
-            let properties =
-                serde_json::to_value(&actual.properties).expect("block state properties serialize");
-            object.insert("properties".into(), properties);
-            log::info!("Horizon Cafe gallery JSON properties complete");
-
-            object.insert("state_id".into(), json!(state.0));
-            object.insert(
-                "position".into(),
-                json!([position.x, position.y, position.z]),
-            );
-
-            let model_count = selected.len();
-            log::info!("Horizon Cafe gallery JSON models begin count={model_count}");
-            let mut models = Vec::with_capacity(model_count);
-            for (index, (variant, _)) in selected.iter().enumerate() {
-                if model_count <= 128
-                    || index == 0
-                    || index + 1 == model_count
-                    || (index + 1) % 1024 == 0
-                {
-                    log::info!(
-                        "Horizon Cafe gallery JSON model begin index={} total={model_count}",
-                        index + 1
-                    );
-                }
-                models.push(json!({
-                    "model": variant.model,
-                    "rotations": variant.rotations,
-                    "uv_lock": variant.uv_lock
-                }));
-                if model_count <= 128
-                    || index == 0
-                    || index + 1 == model_count
-                    || (index + 1) % 1024 == 0
-                {
-                    log::info!(
-                        "Horizon Cafe gallery JSON model complete index={} total={model_count}",
-                        index + 1
-                    );
-                }
-            }
-            object.insert("models".into(), Value::Array(models));
-            log::info!("Horizon Cafe gallery JSON models complete count={model_count}");
-
-            Value::Object(object)
-        };
+        drop(selected);
         #[cfg(not(target_os = "cafe"))]
-        let state_json = json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
+        states.push(json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
             "position":[position.x,position.y,position.z],
-            "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>()});
-        states.push(state_json);
+            "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>() }));
         placements.push((position, state));
         #[cfg(target_os = "cafe")]
         log::info!(
