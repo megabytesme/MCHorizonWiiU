@@ -224,8 +224,13 @@ impl Sprites {
     /// Sprites that reuse textures decoded by an earlier launch, kept in a
     /// cache file in `root`.
     pub fn with_disk_cache(root: &Path) -> Self {
+        #[cfg(target_os = "cafe")]
+        let disk = crate::sprite_cache::SpriteCache::open_prepared(root)
+            .or_else(|| crate::sprite_cache::SpriteCache::open(root));
+        #[cfg(not(target_os = "cafe"))]
+        let disk = crate::sprite_cache::SpriteCache::open(root);
         Self {
-            disk: crate::sprite_cache::SpriteCache::open(root),
+            disk,
             ..Self::default()
         }
     }
