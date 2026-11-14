@@ -443,13 +443,23 @@ impl RenderAssets {
             terrain_only,
             TerrainAssetPhase::BaseSprites,
             || {
+                #[cfg(target_os = "cafe")]
+                log::info!("Horizon Cafe base sprites cache open begin");
                 let mut sprites = if terrain_only {
                     crate::sprites::Sprites::with_disk_cache_without_pbr(root)
                 } else {
                     crate::sprites::Sprites::with_disk_cache(root)
                 };
-                for name in MATERIALS {
+                #[cfg(target_os = "cafe")]
+                log::info!("Horizon Cafe base sprites cache open complete");
+                for (index, name) in MATERIALS.into_iter().enumerate() {
+                    #[cfg(target_os = "cafe")]
+                    log::info!("Horizon Cafe base material insert begin index={index} name={name}");
                     sprites.insert(root, &format!("minecraft:block/{name}"))?;
+                    #[cfg(target_os = "cafe")]
+                    log::info!(
+                        "Horizon Cafe base material insert complete index={index} name={name}"
+                    );
                 }
                 Ok(sprites)
             },

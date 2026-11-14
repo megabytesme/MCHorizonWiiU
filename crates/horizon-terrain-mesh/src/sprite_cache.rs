@@ -47,13 +47,28 @@ pub(crate) struct SpriteCache {
 /// Paths, sizes and modification times of every file under `assets/*/textures`,
 /// summed so the directory order does not matter.
 fn fingerprint(root: &Path) -> Option<u64> {
-    fn walk(dir: &Path, base: &Path, sum: &mut u64) -> Option<()> {
+    fn walk(
+        dir: &Path,
+        base: &Path,
+        sum: &mut u64,
+        #[cfg(target_os = "cafe")] files: &mut usize,
+    ) -> Option<()> {
         for entry in fs::read_dir(dir).ok()? {
             let entry = entry.ok()?;
             let meta = entry.metadata().ok()?;
             if meta.is_dir() {
+                #[cfg(target_os = "cafe")]
+                walk(&entry.path(), base, sum, files)?;
+                #[cfg(not(target_os = "cafe"))]
                 walk(&entry.path(), base, sum)?;
                 continue;
+            }
+            #[cfg(target_os = "cafe")]
+            {
+                *files = (*files).saturating_add(1);
+                if *files % 256 == 0 {
+                    log::info!("Horizon Cafe sprite fingerprint files={files}");
+                }
             }
             let mut hasher = DefaultHasher::new();
             entry.path().strip_prefix(base).ok()?.hash(&mut hasher);
@@ -64,12 +79,21 @@ fn fingerprint(root: &Path) -> Option<u64> {
         Some(())
     }
     let mut sum = 0;
+    #[cfg(target_os = "cafe")]
+    let mut files = 0usize;
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe sprite fingerprint begin");
     for namespace in fs::read_dir(root.join("assets")).ok()? {
         let textures = namespace.ok()?.path().join("textures");
         if textures.is_dir() {
+            #[cfg(target_os = "cafe")]
+            walk(&textures, root, &mut sum, &mut files)?;
+            #[cfg(not(target_os = "cafe"))]
             walk(&textures, root, &mut sum)?;
         }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe sprite fingerprint complete files={files}");
     Some(sum)
 }
 
