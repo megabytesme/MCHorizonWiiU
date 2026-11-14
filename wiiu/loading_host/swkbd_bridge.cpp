@@ -1,6 +1,8 @@
 #include "swkbd_bridge.h"
 
+#include <coreinit/debug.h>
 #include <nn/swkbd/swkbd_cpp.h>
+#include <vpad/input.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +19,10 @@ constexpr size_t kMaxUtf8Bytes = kMaxTextUnits * 4;
 bool s_created = false;
 bool s_open = false;
 bool s_fs_client_registered = false;
+bool s_have_last_vpad = false;
+uint32_t s_last_hold = 0;
+uint16_t s_last_touched = 0;
+uint16_t s_last_touch_validity = 0;
 ResultState s_result_state = ResultState::None;
 char16_t *s_work_memory = nullptr;
 size_t s_work_memory_size = 0;
@@ -162,6 +168,7 @@ extern "C" int32_t horizon_swkbd_request(const uint16_t *initial_text,
 
    s_result_state = ResultState::None;
    s_result_length = 0;
+   s_have_last_vpad = false;
    s_open = true;
    return 0;
 }
@@ -173,20 +180,48 @@ extern "C" int32_t horizon_swkbd_is_open(void) {
 extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
    if (!s_open) return 0;
 
+   auto *status = const_cast<VPADStatus *>(static_cast<const VPADStatus *>(vpad_status));
+   if (status) {
+      const auto &touch = status->tpNormal;
+      const bool first_sample = !s_have_last_vpad;
+      const bool hold_changed = first_sample || status->hold != s_last_hold;
+      const bool touch_changed = first_sample || touch.touched != s_last_touched ||
+                                 (touch.touched != 0 &&
+                                  touch.validity != s_last_touch_validity);
+      if (hold_changed) {
+         OSReport("Horizon Cafe swkbd VPAD hold=%08x trigger=%08x release=%08x\n",
+                  status->hold, status->trigger, status->release);
+      }
+      if (touch_changed) {
+         OSReport("Horizon Cafe swkbd touch=%u validity=%u x=%u y=%u\n",
+                  touch.touched, touch.validity, touch.x, touch.y);
+      }
+      s_last_hold = status->hold;
+      s_last_touched = touch.touched;
+      s_last_touch_validity = touch.validity;
+      s_have_last_vpad = true;
+   }
+
    nn::swkbd::ControllerInfo info;
-   info.vpad = const_cast<VPADStatus *>(static_cast<const VPADStatus *>(vpad_status));
+   info.vpad = status;
    nn::swkbd::Calc(info);
    if (nn::swkbd::IsNeedCalcSubThreadFont()) nn::swkbd::CalcSubThreadFont();
    if (nn::swkbd::IsNeedCalcSubThreadPredict()) nn::swkbd::CalcSubThreadPredict();
 
-   if (nn::swkbd::IsDecideOkButton(nullptr)) {
+   const bool accepted = nn::swkbd::IsDecideOkButton(nullptr);
+   if (accepted) {
+      OSReport("Horizon Cafe swkbd decision=accept open=%d\n", s_open ? 1 : 0);
       remember_result(ResultState::Accepted);
       close_form();
+      OSReport("Horizon Cafe swkbd closed accepted open=%d\n", s_open ? 1 : 0);
       return 1;
    }
-   if (nn::swkbd::IsDecideCancelButton(nullptr)) {
+   const bool cancelled = nn::swkbd::IsDecideCancelButton(nullptr);
+   if (cancelled) {
+      OSReport("Horizon Cafe swkbd decision=cancel open=%d\n", s_open ? 1 : 0);
       remember_result(ResultState::Cancelled);
       close_form();
+      OSReport("Horizon Cafe swkbd closed cancelled open=%d\n", s_open ? 1 : 0);
       return 2;
    }
    return 0;
@@ -236,6 +271,7 @@ extern "C" void horizon_swkbd_close(void) {
    s_work_memory_size = 0;
    s_result_state = ResultState::None;
    s_result_length = 0;
+   s_have_last_vpad = false;
    s_result[0] = '\0';
    s_initial_text[0] = 0;
 }
