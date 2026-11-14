@@ -191,10 +191,27 @@ impl LightTables {
             };
         }
         #[cfg(target_os = "cafe")]
+        macro_rules! trace_state_window {
+            ($id:expr, $stage:expr) => {
+                let trace_id = $id;
+                if (2351..=2431).contains(&trace_id) {
+                    let trace_name = registry
+                        .state(BlockStateId(trace_id as u32))
+                        .map_or("<missing>", |state| state.name.as_str());
+                    log::info!(
+                        "Horizon Cafe light state window id={} name={} stage={}",
+                        trace_id,
+                        trace_name,
+                        $stage
+                    );
+                }
+            };
+        }
+        #[cfg(target_os = "cafe")]
         macro_rules! trace_suspect_state {
             ($id:expr, $stage:expr, $detail:expr) => {
                 let trace_id = $id;
-                if trace_id == 2350 {
+                if trace_id == 2350 || trace_id == 2351 {
                     let trace_state = &facts.states[trace_id];
                     let trace_name = registry
                         .state(BlockStateId(trace_id as u32))
@@ -214,11 +231,15 @@ impl LightTables {
         for (id, cell) in tables.cells.iter_mut().enumerate() {
             let state = &facts.states[id];
             #[cfg(target_os = "cafe")]
+            trace_state_window!(id, "begin");
+            #[cfg(target_os = "cafe")]
             trace_suspect_state!(id, "begin", "");
             // LightEngine.isEmptyShape: !canOcclude || !useShapeForLightOcclusion.
             if !state.can_occlude || !state.shape_occlusion {
                 #[cfg(target_os = "cafe")]
                 trace_suspect_state!(id, "skip_flags", "");
+                #[cfg(target_os = "cafe")]
+                trace_state_window!(id, "skip_flags");
                 #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
@@ -236,12 +257,16 @@ impl LightTables {
                 #[cfg(target_os = "cafe")]
                 trace_suspect_state!(id, "skip_missing_shape", "");
                 #[cfg(target_os = "cafe")]
+                trace_state_window!(id, "skip_missing_shape");
+                #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
             };
             if shape.is_empty() {
                 #[cfg(target_os = "cafe")]
                 trace_suspect_state!(id, "skip_empty_shape", "");
+                #[cfg(target_os = "cafe")]
+                trace_state_window!(id, "skip_empty_shape");
                 #[cfg(target_os = "cafe")]
                 trace_state_scan_progress!(id);
                 continue;
@@ -256,7 +281,7 @@ impl LightTables {
                 #[cfg(target_os = "cafe")]
                 let run_xor = !same_boxes && shape.bounds() == block.bounds();
                 #[cfg(target_os = "cafe")]
-                if id == 2350 {
+                if id == 2350 || id == 2351 {
                     let bounds = shape.bounds().map(|bounds| {
                         (
                             bounds.min_position().components(),
@@ -334,6 +359,8 @@ impl LightTables {
             cell.shaped = faces.iter().any(|f| *f != EMPTY);
             #[cfg(target_os = "cafe")]
             trace_suspect_state!(id, "complete", "");
+            #[cfg(target_os = "cafe")]
+            trace_state_window!(id, "complete");
             #[cfg(target_os = "cafe")]
             trace_state_scan_progress!(id);
         }
