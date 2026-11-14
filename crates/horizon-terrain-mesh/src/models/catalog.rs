@@ -196,13 +196,27 @@ impl StateModels {
         let mut variants = BTreeSet::new();
         let mut by_name: std::collections::HashMap<&str, Vec<BlockStateId>> =
             std::collections::HashMap::new();
+        #[cfg(target_os = "cafe")]
+        let index_stage = crate::spans::startup::step("core.bake_states.registry_index");
         for i in 0..registry.len() {
             let id = BlockStateId(i as u32);
             if let Some(state) = registry.state(id) {
                 by_name.entry(state.name.as_str()).or_default().push(id);
             }
         }
-        for block in blocks.iter().copied().collect::<BTreeSet<_>>() {
+        #[cfg(target_os = "cafe")]
+        drop(index_stage);
+
+        let blocks = blocks.iter().copied().collect::<BTreeSet<_>>();
+        #[cfg(target_os = "cafe")]
+        let bind_stage = crate::spans::startup::step("core.bake_states.blockstate_bind");
+        for (block_index, block) in blocks.iter().copied().enumerate() {
+            #[cfg(target_os = "cafe")]
+            log::info!(
+                "Horizon Cafe bake states blockstate begin index={} total={} block={block}",
+                block_index + 1,
+                blocks.len()
+            );
             // Vanilla blocks come bare; content mods' blocks with their namespace.
             let (namespace, path) = block.split_once(':').unwrap_or(("minecraft", block));
             let name = format!("{namespace}:{path}");
@@ -330,7 +344,12 @@ impl StateModels {
                 choices.push(CompiledChoices::new(&definition)?);
             }
         }
+        #[cfg(target_os = "cafe")]
+        drop(bind_stage);
+
         let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
+        #[cfg(target_os = "cafe")]
+        let library_stage = crate::spans::startup::step("core.bake_states.model_library");
         let library = match models.block_library(root, names.clone()) {
             Ok(library) => library,
             Err(e) => {
@@ -338,13 +357,24 @@ impl StateModels {
                 models.block_library_or_missing(root, names)?
             }
         };
+        #[cfg(target_os = "cafe")]
+        drop(library_stage);
+
+        #[cfg(target_os = "cafe")]
+        let resolve_stage = crate::spans::startup::step("core.bake_states.model_resolve");
         let resolved =
             resolve_unique_models(variants.iter().map(|(name, ..)| name.clone()), |name| {
+                #[cfg(target_os = "cafe")]
+                log::info!("Horizon Cafe bake states model resolve begin name={name}");
                 Ok(library.resolve(name)?)
             })?;
+        #[cfg(target_os = "cafe")]
+        drop(resolve_stage);
         // Every texture the models name, decoded side by side before the bake adds them one
         // by one in its own order. A model can have many rotated variants, but resolving its
         // parent chain and inherited texture slots does not depend on the variant's transform.
+        #[cfg(target_os = "cafe")]
+        let prefetch_stage = crate::spans::startup::step("core.bake_states.sprite_prefetch");
         sprites.prefetch(
             root,
             resolved
@@ -352,9 +382,23 @@ impl StateModels {
                 .flat_map(|model| model.textures.values())
                 .map(|material| material.sprite.as_str()),
         );
+        #[cfg(target_os = "cafe")]
+        drop(prefetch_stage);
+
+        #[cfg(target_os = "cafe")]
+        let bake_stage = crate::spans::startup::step("core.bake_states.variant_bake");
         let mut baked = Vec::with_capacity(variants.len());
         let mut index = BTreeMap::new();
-        for (name, turns, lock) in variants {
+        let variant_count = variants.len();
+        for (variant_index, (name, turns, lock)) in variants.into_iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            log::info!(
+                "Horizon Cafe bake states variant begin index={} total={} model={} turns={:?} uv_lock={lock}",
+                variant_index + 1,
+                variant_count,
+                name,
+                turns
+            );
             let model = resolved.get(&name).expect("variant model was resolved");
             let model = bake_resolved(root, sprites, model, turns, lock)?;
             index.insert((name.clone(), turns, lock), baked.len() as u32);
@@ -365,6 +409,8 @@ impl StateModels {
             };
             baked.push((variant, model));
         }
+        #[cfg(target_os = "cafe")]
+        drop(bake_stage);
         // Every variant of every definition was baked above.
         let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
         Ok(Self {
