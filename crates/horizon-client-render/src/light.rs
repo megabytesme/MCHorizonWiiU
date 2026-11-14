@@ -330,7 +330,13 @@ impl LightTables {
                             "face_shape.begin",
                             format_args!("direction={:?}", direction)
                         );
-                        let face = shape.face_shape(direction)?;
+                        let face = if id == 2385 && direction == Direction::Down {
+                            horizon_core::geometry::with_shape_load_trace(id, || {
+                                shape.face_shape(direction)
+                            })?
+                        } else {
+                            shape.face_shape(direction)?
+                        };
                         #[cfg(target_os = "cafe")]
                         trace_suspect_state!(
                             id,

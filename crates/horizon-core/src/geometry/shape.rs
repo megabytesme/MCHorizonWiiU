@@ -467,19 +467,66 @@ impl VoxelShape {
         result
     }
     pub fn is_full(&self, x: i32, y: i32, z: i32) -> bool {
-        if x < 0
+        #[cfg(target_os = "cafe")]
+        let trace = shape_load_trace_entry();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape is_full begin entry={} coords=({x},{y},{z}) sizes={:?} occupancy_words={}",
+                entry,
+                self.sizes,
+                self.occupancy.len()
+            );
+        }
+        let in_bounds = !(x < 0
             || y < 0
             || z < 0
             || x as usize >= self.sizes[0]
             || y as usize >= self.sizes[1]
-            || z as usize >= self.sizes[2]
-        {
+            || z as usize >= self.sizes[2]);
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape is_full bounds entry={} coords=({x},{y},{z}) in_bounds={in_bounds}",
+                entry
+            );
+        }
+        if !in_bounds {
+            #[cfg(target_os = "cafe")]
+            if let Some(entry) = trace {
+                log::info!(
+                    "Horizon Cafe voxel shape is_full return entry={} result=false reason=out_of_bounds",
+                    entry
+                );
+            }
             return false;
         }
-        full(
-            &self.occupancy,
-            index(self.sizes, x as usize, y as usize, z as usize),
-        )
+        let flat_index = index(self.sizes, x as usize, y as usize, z as usize);
+        let word_index = flat_index / 64;
+        let bit_index = flat_index % 64;
+        #[cfg(not(target_os = "cafe"))]
+        let _ = (word_index, bit_index);
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape is_full index entry={} flat={} word={} bit={}",
+                entry,
+                flat_index,
+                word_index,
+                bit_index
+            );
+        }
+        let result = full(&self.occupancy, flat_index);
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel shape is_full bit read complete entry={} word_index={} bit={} result={result}",
+                entry,
+                word_index,
+                bit_index
+            );
+        }
+        result
     }
     pub fn find_index(&self, axis: Axis, value: f64) -> i32 {
         let i = axis as usize;
