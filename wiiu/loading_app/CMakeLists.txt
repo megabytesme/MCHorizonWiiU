@@ -3,6 +3,8 @@ project(horizon_wiiu_loading_app C CXX)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+option(HORIZON_WIIU_TRACE_VPAD_INPUT "Log Cafe VPAD input transitions to the serial log" OFF)
+
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(CARGO_WIIU_EXECUTABLE cargo-wiiu REQUIRED)
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
@@ -160,6 +162,9 @@ add_executable(horizon_wiiu_loading_app
    ../platform/src/vpad_bridge.c
    "${HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}")
 target_include_directories(horizon_wiiu_loading_app PRIVATE ../audio ../platform/src)
+if(HORIZON_WIIU_TRACE_VPAD_INPUT)
+   target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
+endif()
 add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_wut)
 if(NOT HORIZON_WIIU_PREBUILT_STATICLIB)
    add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_rust)

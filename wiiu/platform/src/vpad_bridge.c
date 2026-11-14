@@ -5,6 +5,12 @@
 
 static int32_t swkbd_input_occupied;
 static int32_t trace_first_poll = 1;
+#ifdef HORIZON_WIIU_TRACE_VPAD_INPUT
+static int32_t trace_have_last_input;
+static uint32_t trace_last_hold;
+static int32_t trace_last_touched;
+static uint16_t trace_last_touch_validity;
+#endif
 
 static void
 update_swkbd(const VPADStatus *status, int32_t trace)
@@ -58,6 +64,26 @@ horizon_wiiu_vpad_read(HorizonVpadSample *sample)
       update_swkbd(NULL, trace);
       return VPAD_READ_NO_SAMPLES;
    }
+#ifdef HORIZON_WIIU_TRACE_VPAD_INPUT
+   const int32_t touched = status.tpNormal.touched != 0;
+   const int32_t input_changed = !trace_have_last_input ||
+      status.hold != trace_last_hold || status.trigger != 0 || status.release != 0 ||
+      touched != trace_last_touched ||
+      (touched && status.tpNormal.validity != trace_last_touch_validity);
+   if (input_changed) {
+      OSReport("Horizon Cafe VPAD input: hold=%08x trigger=%08x release=%08x "
+               "raw_touch=%u validity=%u x=%u y=%u\n",
+               (unsigned)status.hold, (unsigned)status.trigger,
+               (unsigned)status.release,
+               (unsigned)status.tpNormal.touched,
+               (unsigned)status.tpNormal.validity,
+               (unsigned)status.tpNormal.x, (unsigned)status.tpNormal.y);
+   }
+   trace_last_hold = status.hold;
+   trace_last_touched = touched;
+   trace_last_touch_validity = status.tpNormal.validity;
+   trace_have_last_input = 1;
+#endif
    update_swkbd(&status, trace);
    sample->buttons = status.hold;
    sample->left_x = status.leftStick.x;
