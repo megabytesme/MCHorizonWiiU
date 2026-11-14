@@ -5,16 +5,35 @@ impl VoxelShape {
     /// Native face selection samples just inside the unit-block boundary. The
     /// result preserves identity on empty/cube-like axes and caches other faces.
     pub fn face_shape(&self, direction: Direction) -> Result<Self, ShapeError> {
+        #[cfg(target_os = "cafe")]
+        let trace = super::shape_load_trace_entry();
         let (axis, _) = face_axis(direction);
         if self.is_empty() || self.cube_like_along(axis) {
             return Ok(self.clone());
         }
-        self.identity
+        let faces = self
+            .identity
             .faces
-            .get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())))
-            [direction as usize]
-            .get_or_init(|| self.calculate_face(direction))
-            .clone()
+            .get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
+        let face = &faces[direction as usize];
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face cache ready entry={entry} direction={direction:?} cached={}",
+                face.get().is_some()
+            );
+            log::info!(
+                "Horizon Cafe voxel face cache lookup begin entry={entry} direction={direction:?}"
+            );
+        }
+        let result = face.get_or_init(|| self.calculate_face(direction)).clone();
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face cache lookup complete entry={entry} direction={direction:?}"
+            );
+        }
+        result
     }
     /// [`Self::face_shape`] that keeps no face it had to calculate on this
     /// shape: for a one-off pass over a whole table at load, whose faces
@@ -41,6 +60,7 @@ impl VoxelShape {
             && (coords[1] - 1.0).abs() <= COLLISION_EPSILON
     }
     fn calculate_face(&self, direction: Direction) -> Result<Self, ShapeError> {
+        let trace = super::shape_load_trace_entry();
         let (axis, positive) = face_axis(direction);
         let a = axis as usize;
         let index = self.find_index(
@@ -62,7 +82,20 @@ impl VoxelShape {
             std::array::from_fn(|i| self.discrete_min[i].clamp(starts[i], ends[i]) - starts[i]);
         let max =
             std::array::from_fn(|i| self.discrete_max[i].clamp(starts[i], ends[i]) - starts[i]);
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face calculate begin entry={entry} direction={direction:?} axis={axis:?} index={index} source_sizes={:?} starts={starts:?} ends={ends:?} min={min:?} max={max:?}",
+                self.sizes
+            );
+        }
         if (0..3).any(|i| min[i] >= max[i]) {
+            #[cfg(target_os = "cafe")]
+            if let Some(entry) = trace {
+                log::info!(
+                    "Horizon Cafe voxel face calculate empty entry={entry} direction={direction:?}"
+                );
+            }
             return Ok(Self::empty());
         }
         let mut coords = self.coords.to_vecs();
@@ -72,22 +105,70 @@ impl VoxelShape {
                 && coords[i][0].abs() <= COLLISION_EPSILON
                 && (coords[i][1] - 1.0).abs() <= COLLISION_EPSILON
         }) {
+            #[cfg(target_os = "cafe")]
+            if let Some(entry) = trace {
+                log::info!(
+                    "Horizon Cafe voxel face calculate full block entry={entry} direction={direction:?}"
+                );
+            }
             return Ok(Self::block());
         }
         let sizes = std::array::from_fn(|i| coords[i].len() - 1);
-        let mut occupied = Vec::with_capacity(volume(sizes)?);
+        let cell_count = volume(sizes)?;
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face occupancy begin entry={entry} direction={direction:?} sizes={sizes:?} cells={}",
+                cell_count
+            );
+        }
+        let mut occupied = Vec::with_capacity(cell_count);
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face occupancy buffer ready entry={entry} direction={direction:?} capacity={cell_count}"
+            );
+        }
         for x in 0..sizes[0] {
             for y in 0..sizes[1] {
                 for z in 0..sizes[2] {
                     let mut p = [x as i32, y as i32, z as i32];
                     p[a] = index;
-                    occupied.push(self.is_full(p[0], p[1], p[2]));
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = trace {
+                        log::info!(
+                            "Horizon Cafe voxel face occupancy cell begin entry={entry} direction={direction:?} x={x} y={y} z={z} source={p:?}"
+                        );
+                    }
+                    let full = self.is_full(p[0], p[1], p[2]);
+                    #[cfg(target_os = "cafe")]
+                    if let Some(entry) = trace {
+                        log::info!(
+                            "Horizon Cafe voxel face occupancy cell complete entry={entry} direction={direction:?} x={x} y={y} z={z} full={full}"
+                        );
+                    }
+                    occupied.push(full);
                 }
             }
         }
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face occupancy complete entry={entry} direction={direction:?} cells={}",
+                occupied.len()
+            );
+            log::info!("Horizon Cafe voxel face build begin entry={entry} direction={direction:?}");
+        }
         let mut cubes = self.coordinate_cubes;
         cubes[a] = true;
-        let mut result = Self::build(coords, &occupied, false, cubes, None)?;
+        let mut result = Self::build(coords, &occupied, false, cubes, trace)?;
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face build complete entry={entry} direction={direction:?} boxes={}",
+                result.boxes.len()
+            );
+        }
         result.discrete_min = min;
         result.discrete_max = max;
         result.bounds = Some(Aabb::new(
@@ -102,6 +183,12 @@ impl VoxelShape {
                 result.max(Axis::Z),
             ),
         ));
+        #[cfg(target_os = "cafe")]
+        if let Some(entry) = trace {
+            log::info!(
+                "Horizon Cafe voxel face calculate complete entry={entry} direction={direction:?}"
+            );
+        }
         Ok(result)
     }
 }
