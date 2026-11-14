@@ -25,6 +25,20 @@ use std::{
     path::Path,
 };
 
+#[cfg(target_os = "cafe")]
+macro_rules! cafe_blockstate_marker {
+    ($message:literal) => {
+        horizon_client_platform::logging::report_startup_stage(
+            concat!("Horizon Cafe blockstate trace: ", $message, "\n\0").as_bytes(),
+        );
+    };
+}
+
+#[cfg(not(target_os = "cafe"))]
+macro_rules! cafe_blockstate_marker {
+    ($message:literal) => {};
+}
+
 pub struct BakedFace {
     pub quad: ModelQuad,
     pub layer: u32,
@@ -208,15 +222,33 @@ impl StateModels {
         drop(index_stage);
 
         let blocks = blocks.iter().copied().collect::<BTreeSet<_>>();
+        cafe_blockstate_marker!("block set collected");
         #[cfg(target_os = "cafe")]
         let bind_stage = crate::spans::startup::step("core.bake_states.blockstate_bind");
-        for (block_index, block) in blocks.iter().copied().enumerate() {
+        cafe_blockstate_marker!("bind stage started");
+        #[cfg(target_os = "cafe")]
+        let mut block_iter = blocks.iter().copied().enumerate();
+        #[cfg(target_os = "cafe")]
+        cafe_blockstate_marker!("before first iterator next");
+        #[cfg(target_os = "cafe")]
+        let first_block = block_iter.next();
+        #[cfg(target_os = "cafe")]
+        cafe_blockstate_marker!("after first iterator next");
+        #[cfg(target_os = "cafe")]
+        let block_iter = first_block.into_iter().chain(block_iter);
+        #[cfg(not(target_os = "cafe"))]
+        let block_iter = blocks.iter().copied().enumerate();
+        for (block_index, block) in block_iter {
             #[cfg(target_os = "cafe")]
             log::info!(
                 "Horizon Cafe bake states blockstate begin index={} total={} block={block}",
                 block_index + 1,
                 blocks.len()
             );
+            #[cfg(target_os = "cafe")]
+            if block_index == 0 {
+                cafe_blockstate_marker!("first block log returned");
+            }
             // Vanilla blocks come bare; content mods' blocks with their namespace.
             let (namespace, path) = block.split_once(':').unwrap_or(("minecraft", block));
             let name = format!("{namespace}:{path}");
@@ -366,7 +398,12 @@ impl StateModels {
             resolve_unique_models(variants.iter().map(|(name, ..)| name.clone()), |name| {
                 #[cfg(target_os = "cafe")]
                 log::info!("Horizon Cafe bake states model resolve begin name={name}");
-                Ok(library.resolve(name)?)
+                let resolved = library.resolve(name)?;
+                #[cfg(target_os = "cafe")]
+                if name == "minecraft:block/acacia_button" {
+                    cafe_blockstate_marker!("first model resolve returned");
+                }
+                Ok(resolved)
             })?;
         #[cfg(target_os = "cafe")]
         drop(resolve_stage);

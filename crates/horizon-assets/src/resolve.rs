@@ -9,6 +9,21 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(target_os = "cafe")]
+macro_rules! cafe_model_resolve_marker {
+    ($message:literal) => {
+        log::info!(
+            "Horizon Cafe model resolve trace: acacia_button: {}",
+            $message
+        );
+    };
+}
+
+#[cfg(not(target_os = "cafe"))]
+macro_rules! cafe_model_resolve_marker {
+    ($message:literal) => {};
+}
+
 pub const MISSING_MODEL: &str = "minecraft:builtin/missing";
 /// `ItemModelGenerator.GENERATED_ITEM_MODEL_ID`.
 pub const GENERATED_MODEL: &str = "minecraft:builtin/generated";
@@ -216,7 +231,17 @@ impl ModelLibrary {
         name: &str,
         child: Option<&BTreeMap<String, TextureSlot>>,
     ) -> Result<ResolvedCuboidModel> {
+        #[cfg(target_os = "cafe")]
+        let trace_acacia_button = name == "minecraft:block/acacia_button";
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("resolve_name entered");
+        }
         let next = Some(identifier(name)?);
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("identifier complete");
+        }
         self.resolve_chain(Vec::new(), Vec::new(), next, &BTreeMap::new(), child, 0)
     }
     /// `chain` and `names` start with models that are not in the library (a
@@ -231,18 +256,46 @@ impl ModelLibrary {
         child: Option<&BTreeMap<String, TextureSlot>>,
         depth: u8,
     ) -> Result<ResolvedCuboidModel> {
+        #[cfg(target_os = "cafe")]
+        let trace_acacia_button =
+            depth == 0 && next.as_deref() == Some("minecraft:block/acacia_button");
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("resolve_chain entered");
+        }
         if depth > MAX_LOADER_DEPTH {
             return Err(error("composite models nest too deeply"));
         }
         let mut visited = BTreeSet::new();
         while let Some(name) = next.take() {
-            if !visited.insert(name.clone()) {
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("parent visited-set begin");
+            }
+            let inserted = visited.insert(name.clone());
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("parent visited-set returned");
+            }
+            if !inserted {
                 return Err(error("cyclic model parent"));
             }
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("parent map lookup begin");
+            }
             let model = self.models.get(&name).unwrap_or(&self.missing);
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("parent map lookup returned");
+            }
             chain.push(Arc::clone(model));
             names.push(name);
             next = model.parent.clone();
+        }
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("parent chain complete");
         }
         let ambient_occlusion = chain
             .iter()
@@ -270,6 +323,10 @@ impl ModelLibrary {
                     .unwrap_or(DisplayTransform::Inherit)
             }),
         };
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("inherited model metadata complete");
+        }
         // Resolve aliases only after applying every child override. A reference
         // inherited from a parent binds to the child's final slot definition.
         let mut slots: BTreeMap<String, &TextureSlot> =
@@ -279,6 +336,10 @@ impl ModelLibrary {
         }
         if let Some(child) = child {
             slots.extend(child.iter().map(|(k, v)| (k.clone(), v)));
+        }
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("texture slots assembled");
         }
         let loader = match chain.iter().find_map(|m| m.loader.as_ref()) {
             Some(Loader::Composite {
@@ -334,9 +395,17 @@ impl ModelLibrary {
             }
             Some(Loader::Unknown(_)) | None => None,
         };
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("custom loader handling complete");
+        }
         let mut textures = BTreeMap::<String, Material>::new();
         let mut unresolved_textures = BTreeSet::<String>::new();
         for start in slots.keys() {
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("texture alias walk begin");
+            }
             let mut current = start.as_str();
             let mut seen = BTreeSet::new();
             let mut path = Vec::new();
@@ -368,6 +437,14 @@ impl ModelLibrary {
                     unresolved_textures.extend(path.into_iter().map(str::to_owned));
                 }
             }
+            #[cfg(target_os = "cafe")]
+            if trace_acacia_button {
+                cafe_model_resolve_marker!("texture alias walk complete");
+            }
+        }
+        #[cfg(target_os = "cafe")]
+        if trace_acacia_button {
+            cafe_model_resolve_marker!("resolve_chain complete");
         }
         Ok(ResolvedCuboidModel {
             ambient_occlusion,

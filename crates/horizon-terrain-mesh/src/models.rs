@@ -110,7 +110,17 @@ pub(crate) fn prepare_with_models(
     let mut placements = Vec::new();
     let mut states = Vec::new();
     for (index, (name, properties)) in GALLERY.iter().enumerate() {
-        let state = registry.resolve(&descriptor(name, properties))?;
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe model gallery entry begin index={} total={} block={name}",
+            index + 1,
+            GALLERY.len()
+        );
+        let state = {
+            #[cfg(target_os = "cafe")]
+            let _step = crate::spans::startup::step("core.models_bake.gallery.registry");
+            registry.resolve(&descriptor(name, properties))?
+        };
         let actual = registry
             .state(state)
             .ok_or("missing gallery registry state")?;
@@ -118,17 +128,86 @@ pub(crate) fn prepare_with_models(
         // A state no definition binds (a pack's partial blockstate file
         // without vanilla's below it) is left out, as the mesher skips it,
         // instead of failing the whole pack.
-        let selected = match catalog.collect(state, position) {
+        let selected = {
+            #[cfg(target_os = "cafe")]
+            let _step = crate::spans::startup::step("core.models_bake.gallery.collect");
+            catalog.collect(state, position)
+        };
+        let selected = match selected {
             Ok(selected) => selected,
             Err(e) => {
                 log::warn!("Horizon: gallery block {name} has no model: {e}");
                 continue;
             }
         };
-        states.push(json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
+        #[cfg(target_os = "cafe")]
+        let state_json = {
+            let _step = crate::spans::startup::step("core.models_bake.gallery.json");
+            let mut object = serde_json::Map::new();
+
+            log::info!("Horizon Cafe gallery JSON block name begin");
+            object.insert("block".into(), Value::String(actual.name.clone()));
+            log::info!("Horizon Cafe gallery JSON block name complete");
+
+            let property_count = actual.properties.len();
+            log::info!("Horizon Cafe gallery JSON properties begin count={property_count}");
+            let properties =
+                serde_json::to_value(&actual.properties).expect("block state properties serialize");
+            object.insert("properties".into(), properties);
+            log::info!("Horizon Cafe gallery JSON properties complete");
+
+            object.insert("state_id".into(), json!(state.0));
+            object.insert(
+                "position".into(),
+                json!([position.x, position.y, position.z]),
+            );
+
+            let model_count = selected.len();
+            log::info!("Horizon Cafe gallery JSON models begin count={model_count}");
+            let mut models = Vec::with_capacity(model_count);
+            for (index, (variant, _)) in selected.iter().enumerate() {
+                if model_count <= 128
+                    || index == 0
+                    || index + 1 == model_count
+                    || (index + 1) % 1024 == 0
+                {
+                    log::info!(
+                        "Horizon Cafe gallery JSON model begin index={} total={model_count}",
+                        index + 1
+                    );
+                }
+                models.push(json!({
+                    "model": variant.model,
+                    "rotations": variant.rotations,
+                    "uv_lock": variant.uv_lock
+                }));
+                if model_count <= 128
+                    || index == 0
+                    || index + 1 == model_count
+                    || (index + 1) % 1024 == 0
+                {
+                    log::info!(
+                        "Horizon Cafe gallery JSON model complete index={} total={model_count}",
+                        index + 1
+                    );
+                }
+            }
+            object.insert("models".into(), Value::Array(models));
+            log::info!("Horizon Cafe gallery JSON models complete count={model_count}");
+
+            Value::Object(object)
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let state_json = json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
             "position":[position.x,position.y,position.z],
-            "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>()}));
+            "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>()});
+        states.push(state_json);
         placements.push((position, state));
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe model gallery entry complete index={} block={name}",
+            index + 1
+        );
     }
     Ok(PreparedModels {
         catalog,

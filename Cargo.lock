@@ -1960,6 +1960,7 @@ dependencies = [
  "glam",
  "horizon-assets",
  "horizon-client-core",
+ "horizon-client-platform",
  "horizon-core",
  "horizon-items",
  "horizon-optifine",
