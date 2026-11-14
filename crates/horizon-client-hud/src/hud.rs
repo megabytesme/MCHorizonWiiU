@@ -1147,6 +1147,8 @@ impl HudAtlas {
         let decode_total = files.len();
         #[cfg(target_os = "cafe")]
         let decode_file_index = trace.then(std::sync::atomic::AtomicUsize::default);
+        #[cfg(target_os = "cafe")]
+        let focused_decode_lock = std::sync::Mutex::new(());
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
             #[cfg(target_os = "cafe")]
@@ -1205,7 +1207,30 @@ impl HudAtlas {
                 );
             }
             #[cfg(target_os = "cafe")]
-            let decoded_image = if trace_index.is_some_and(|index| index <= 16) {
+            let focused_trace = trace && {
+                let path = path.as_os_str().as_encoded_bytes();
+                path.ends_with(b"assets/minecraft/textures/gui/container/anvil.png")
+                    || path.ends_with(b"assets/minecraft/textures/block/warped_nylium_side.png")
+            };
+            #[cfg(target_os = "cafe")]
+            let decoded_image = if focused_trace {
+                let _guard = focused_decode_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let index = trace_index.unwrap_or_default();
+                log::info!(
+                    target: "horizon.atlas",
+                    "Horizon atlas: focused PNG trace begin file={index} path={}",
+                    path.display()
+                );
+                let decoded = decode_path_with_trace(path);
+                log::info!(
+                    target: "horizon.atlas",
+                    "Horizon atlas: focused PNG trace complete file={index} success={}",
+                    decoded.is_ok()
+                );
+                decoded
+            } else if trace_index.is_some_and(|index| index <= 16) {
                 decode_path_with_trace(path)
             } else {
                 decode(path)
