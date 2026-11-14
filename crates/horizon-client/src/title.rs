@@ -1746,12 +1746,61 @@ impl Title {
         } else {
             base.trim().to_owned()
         };
+        #[cfg(target_os = "cafe")]
+        let trace_call = {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static TARGET_FOLDER_TRACE_CALLS: AtomicUsize = AtomicUsize::new(0);
+            let call = TARGET_FOLDER_TRACE_CALLS.fetch_add(1, Ordering::Relaxed);
+            (call < 12).then_some(call)
+        };
+        #[cfg(target_os = "cafe")]
+        let trace_started = std::time::Instant::now();
+        #[cfg(target_os = "cafe")]
+        if let Some(call) = trace_call {
+            log::info!(
+                "Horizon Cafe target_folder begin call={call} saves={:?} name_chars={}",
+                self.saves,
+                base.chars().count()
+            );
+        }
         // FileUtil.findAvailableName: append (n) until unused.
         let mut folder = base.clone();
         let mut n = 1;
-        while self.saves.join(&folder).exists() {
+        #[cfg(target_os = "cafe")]
+        let mut probes = 0usize;
+        #[cfg(target_os = "cafe")]
+        let mut probe_samples = 0usize;
+        loop {
+            #[cfg(target_os = "cafe")]
+            let trace_probe =
+                trace_call.is_some() && probe_samples < 16 && (probes < 8 || probes % 64 == 0);
+            #[cfg(target_os = "cafe")]
+            if let Some(call) = trace_call.filter(|_| trace_probe) {
+                log::info!("Horizon Cafe target_folder probe begin call={call} index={probes}");
+            }
+            let exists = self.saves.join(&folder).exists();
+            #[cfg(target_os = "cafe")]
+            {
+                if let Some(call) = trace_call.filter(|_| trace_probe) {
+                    log::info!(
+                        "Horizon Cafe target_folder probe complete call={call} index={probes} exists={exists}"
+                    );
+                    probe_samples += 1;
+                }
+                probes += 1;
+            }
+            if !exists {
+                break;
+            }
             folder = format!("{base} ({n})");
             n += 1;
+        }
+        #[cfg(target_os = "cafe")]
+        if let Some(call) = trace_call {
+            log::info!(
+                "Horizon Cafe target_folder complete call={call} probes={probes} elapsed_ms={}",
+                trace_started.elapsed().as_millis()
+            );
         }
         folder
     }
@@ -2514,11 +2563,36 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         hide_splash: bool,
         hide_server_address: bool,
     ) {
+        #[cfg(target_os = "cafe")]
+        let trace_main_draw = {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static MAIN_DRAW_TRACE_CALLS: AtomicUsize = AtomicUsize::new(0);
+            matches!(&self.mode, Mode::Main)
+                .then(|| MAIN_DRAW_TRACE_CALLS.fetch_add(1, Ordering::Relaxed))
+                .is_some_and(|call| (64..80).contains(&call) || (116..128).contains(&call))
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_main_draw = false;
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw entry");
+        }
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw rules check begin");
+        }
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw rules overlay selected");
+            }
             return rules.draw(batch, atlas, cursor);
         }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw rules check complete");
+        }
         if self.preparing {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw preparing overlay begin");
+            }
             // `CreateWorldScreen.openCreateWorldScreen`'s queued
             // `GenericMessageScreen`: the menu background and the message
             // alone, centred, no progress.
@@ -2536,21 +2610,62 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             batch.text(atlas, &text, tx, ty, u32::MAX, false);
             return;
         }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw preparing check complete");
+        }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw experiment overlay check begin");
+        }
         if let Some(screen) = self.confirm_experiments.borrow().as_ref() {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw experiment confirmation selected");
+            }
             return screen.draw(batch, atlas, cursor);
         }
         if let Some(screen) = self.experiments.borrow().as_ref() {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw experiment screen selected");
+            }
             return screen.draw(batch, atlas, cursor);
+        }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw experiment overlay check complete");
+            log::info!("Horizon Cafe title main draw narration check begin");
         }
         let mut fade_from = None;
         if crate::widgets::narrating()
             && let Some(info) = self.narration()
         {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw narration begin");
+            }
             crate::widgets::begin_screen(|| info);
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main draw narration complete");
+            }
         }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main draw narration check complete");
+        }
+        #[cfg(target_os = "cafe")]
+        let trace_create_draw = {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CREATE_DRAW_TRACE_CALLS: AtomicUsize = AtomicUsize::new(0);
+            matches!(&self.mode, Mode::Create { .. })
+                && CREATE_DRAW_TRACE_CALLS.fetch_add(1, Ordering::Relaxed) < 8
+        };
+        #[cfg(not(target_os = "cafe"))]
+        let trace_create_draw = false;
         match &self.mode {
             Mode::Main => {
+                if trace_main_draw {
+                    log::info!("Horizon Cafe title main draw logo begin");
+                }
                 draw_logo(atlas, batch, w);
+                if trace_main_draw {
+                    log::info!("Horizon Cafe title main draw logo complete");
+                    log::info!("Horizon Cafe title main draw splash begin");
+                }
                 if !hide_splash && let Some(splash) = self.splash.as_deref() {
                     let tw = HudBatch::text_width(atlas, splash);
                     let start = batch.vertices.len();
@@ -2577,6 +2692,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                             69.0 + scale * (x * sin + y * cos),
                         ];
                     }
+                }
+                if trace_main_draw {
+                    log::info!("Horizon Cafe title main draw splash complete");
+                    log::info!("Horizon Cafe title main draw footer begin");
                 }
                 let version = format!("Horizon {} (Rust)", horizon_core::VANILLA_VERSION);
                 batch.text(atlas, &version, 2.0, h - 10.0, u32::MAX, true);
@@ -2606,6 +2725,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     text = text.underlined();
                 }
                 batch.text_styled(atlas, &text, rect[0], rect[1], u32::MAX, true);
+                if trace_main_draw {
+                    log::info!("Horizon Cafe title main draw footer complete");
+                }
             }
             Mode::Select { worlds, selected } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
@@ -2780,7 +2902,24 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 focus,
                 options,
                 ..
-            } => self.draw_create(atlas, batch, cursor, name, seed, *focus, options),
+            } => {
+                if trace_create_draw {
+                    log::info!("Horizon Cafe title create draw begin");
+                }
+                self.draw_create(
+                    atlas,
+                    batch,
+                    cursor,
+                    name,
+                    seed,
+                    *focus,
+                    options,
+                    trace_create_draw,
+                );
+                if trace_create_draw {
+                    log::info!("Horizon Cafe title create draw complete");
+                }
+            }
             Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, items, batch, cursor, flat),
             Mode::CreateBuffet { buffet, .. } => buffet::draw(self, atlas, batch, cursor, buffet),
             Mode::Edit { name, focused, .. } => {
@@ -3244,7 +3383,27 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 h,
             ),
         }
-        for b in self.buttons(w, h) {
+        if trace_create_draw {
+            log::info!("Horizon Cafe title create buttons begin");
+        }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main buttons build begin");
+        }
+        let buttons = self.buttons(w, h);
+        if trace_main_draw {
+            log::info!(
+                "Horizon Cafe title main buttons build complete count={}",
+                buttons.len()
+            );
+            log::info!("Horizon Cafe title main button draw loop begin");
+        }
+        if trace_create_draw {
+            log::info!(
+                "Horizon Cafe title create buttons complete count={}",
+                buttons.len()
+            );
+        }
+        for b in buttons {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             // Realms' icon buttons have no label to record.
             if b.enabled && b.label.trim().is_empty() {
@@ -3309,8 +3468,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 );
             }
         }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main button draw loop complete");
+        }
         if let Some(from) = fade_from {
             self.draw_onboarding_logo(atlas, batch, w, from);
+        }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main post-button overlays begin");
         }
         if let Mode::Create {
             name,
@@ -3319,7 +3484,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             ..
         } = &self.mode
         {
-            self.create_tooltip(atlas, batch, cursor, name, *creative, options);
+            self.create_tooltip(
+                atlas,
+                batch,
+                cursor,
+                name,
+                *creative,
+                options,
+                trace_create_draw,
+            );
         }
         if let Mode::Select { worlds, selected } = &self.mode {
             self.select_tooltip(atlas, batch, cursor, (w, h), worlds, *selected);
@@ -3327,8 +3500,19 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         if let Mode::Multiplayer(screen) = &self.mode {
             screen.draw_tooltip(atlas, batch, cursor);
         }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main post-button overlays complete");
+            log::info!("Horizon Cafe title main toast stage begin");
+        }
         if let Some((slide, toast)) = &self.toast {
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast text begin");
+            }
             let (title, message) = toast.text();
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast text complete");
+                log::info!("Horizon Cafe title main toast layout begin");
+            }
             let width = HudBatch::text_width(atlas, &title)
                 .max(HudBatch::text_width(atlas, &message))
                 .ceil()
@@ -3336,9 +3520,28 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 + 30.0;
             // Toast.xPos: in from the right edge by the visible portion.
             let x = w - width * slide.portion;
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast layout complete");
+                log::info!("Horizon Cafe title main toast background begin");
+            }
             toasts::background(atlas, batch, x, 0.0, width);
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast background complete");
+                log::info!("Horizon Cafe title main toast title begin");
+            }
             batch.text(atlas, &title, x + 18.0, 7.0, rgba(255, 255, 0, 255), false);
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast title complete");
+                log::info!("Horizon Cafe title main toast message begin");
+            }
             batch.text(atlas, &message, x + 18.0, 19.0, u32::MAX, false);
+            if trace_main_draw {
+                log::info!("Horizon Cafe title main toast message complete");
+            }
+        }
+        if trace_main_draw {
+            log::info!("Horizon Cafe title main toast stage complete");
+            log::info!("Horizon Cafe title main draw complete");
         }
     }
     /// The tooltip of a world's icon (drawn with the row, as vanilla does) or, for a

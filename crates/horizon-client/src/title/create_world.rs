@@ -563,7 +563,11 @@ impl Title {
         seed: &str,
         focus: u8,
         o: &WorldOptions,
+        trace: bool,
     ) {
+        if trace {
+            log::info!("Horizon Cafe create draw body begin");
+        }
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         // extractMenuBackground: the tab header strip, the menu background under it.
         ui::tiled(
@@ -658,6 +662,9 @@ impl Title {
             0 => {
                 // CommonLayouts.labeledElement, centred in the 210 column.
                 label(batch, "selectWorld.enterName", gx + 1.0, gy);
+                if trace {
+                    log::info!("Horizon Cafe create name field begin");
+                }
                 self.create_field(
                     atlas,
                     batch,
@@ -665,13 +672,24 @@ impl Title {
                     [gx + 1.0, gy + 13.0, 208.0],
                     focus == 0,
                     None,
+                    trace,
                 );
+                if trace {
+                    log::info!("Horizon Cafe create name field complete");
+                }
                 // Its tooltip: the folder the world will be saved in.
                 crate::widgets::last_narratable(|n| {
+                    if trace {
+                        log::info!("Horizon Cafe create target folder hint begin");
+                    }
+                    let target_folder = self.target_folder(name);
+                    if trace {
+                        log::info!("Horizon Cafe create target folder hint complete");
+                    }
                     n.hint = Some(
                         Text::translate(
                             "selectWorld.targetFolder",
-                            &[Text::literal(self.target_folder(name))],
+                            &[Text::literal(target_folder)],
                         )
                         .plain(),
                     );
@@ -686,6 +704,7 @@ impl Title {
                     [gx, gy + 41.0, 308.0],
                     focus == 1,
                     Some("selectWorld.seedInfo"),
+                    trace,
                 );
                 // SwitchGrid labels, centred on their switch rows.
                 label(batch, "selectWorld.mapFeatures", gx, gy + 78.0);
@@ -705,6 +724,9 @@ impl Title {
             [32.0, 2.0],
             u32::MAX,
         );
+        if trace {
+            log::info!("Horizon Cafe create draw body complete");
+        }
     }
     /// An EditBox; `hint` shows while it is empty and unfocused.
     fn create_field(
@@ -715,11 +737,18 @@ impl Title {
         [x, y, width]: [f32; 3],
         focused: bool,
         hint: Option<&str>,
+        trace: bool,
     ) {
         let rect = [x, y, width, 20.0];
+        if trace {
+            log::info!("Horizon Cafe create caret draw begin");
+        }
         self.caret
             .borrow_mut()
             .draw(batch, atlas, (id, value, max), rect, focused, self.started);
+        if trace {
+            log::info!("Horizon Cafe create caret draw complete");
+        }
         crate::widgets::name_last_edit_box(|| {
             tr(if id == super::WORLD_NAME {
                 "selectWorld.enterName"
@@ -751,15 +780,25 @@ impl Title {
         name: &str,
         creative: bool,
         o: &WorldOptions,
+        trace: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         let (gx, gy) = grid(w, h, o.tab);
         let over = |x: f32, y: f32, width: f32| ui::hovered(cursor, x, y, width, 20.0);
         let text = match o.tab {
-            0 if over(gx + 1.0, gy + 13.0, 208.0) => Some(Text::translate(
-                "selectWorld.targetFolder",
-                &[Text::literal(self.target_folder(name)).italic()],
-            )),
+            0 if over(gx + 1.0, gy + 13.0, 208.0) => {
+                if trace {
+                    log::info!("Horizon Cafe create tooltip folder begin");
+                }
+                let target_folder = self.target_folder(name);
+                if trace {
+                    log::info!("Horizon Cafe create tooltip folder complete");
+                }
+                Some(Text::translate(
+                    "selectWorld.targetFolder",
+                    &[Text::literal(target_folder).italic()],
+                ))
+            }
             0 if over(gx, gy + 41.0, 210.0) => Some(Text::translate(
                 &format!("{}.info", game_mode(creative, o.hardcore)),
                 &[],
