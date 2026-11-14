@@ -211,7 +211,7 @@ impl LightTables {
         macro_rules! trace_suspect_state {
             ($id:expr, $stage:expr, $detail:expr) => {
                 let trace_id = $id;
-                if trace_id == 2350 || trace_id == 2351 || trace_id == 2385 {
+                if trace_id == 2048 || trace_id == 2350 || trace_id == 2351 || trace_id == 2385 {
                     let trace_state = &facts.states[trace_id];
                     let trace_name = registry
                         .state(BlockStateId(trace_id as u32))
@@ -281,7 +281,7 @@ impl LightTables {
                 #[cfg(target_os = "cafe")]
                 let run_xor = !same_boxes && shape.bounds() == block.bounds();
                 #[cfg(target_os = "cafe")]
-                if id == 2350 || id == 2351 || id == 2385 {
+                if id == 2048 || id == 2350 || id == 2351 || id == 2385 {
                     let bounds = shape.bounds().map(|bounds| {
                         (
                             bounds.min_position().components(),
@@ -330,7 +330,7 @@ impl LightTables {
                             "face_shape.begin",
                             format_args!("direction={:?}", direction)
                         );
-                        let face = if id == 2385 && direction == Direction::Down {
+                        let face = if id == 2048 || (id == 2385 && direction == Direction::Down) {
                             horizon_core::geometry::with_shape_load_trace(id, || {
                                 shape.face_shape(direction)
                             })?
