@@ -11,6 +11,9 @@ static uint32_t trace_last_hold;
 static int32_t trace_last_touched;
 static uint16_t trace_last_touch_validity;
 #endif
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+static uint32_t trace_swkbd_vpad_calls;
+#endif
 
 static void
 update_swkbd(const VPADStatus *status, int32_t trace)
@@ -48,6 +51,18 @@ horizon_wiiu_vpad_read(HorizonVpadSample *sample)
    int32_t trace = trace_first_poll;
    trace_first_poll = 0;
 
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   uint32_t swkbd_vpad_call = 0;
+   int32_t trace_swkbd_vpad = 0;
+   if (horizon_swkbd_is_open() != 0) {
+      swkbd_vpad_call = ++trace_swkbd_vpad_calls;
+      trace_swkbd_vpad = swkbd_vpad_call <= 96;
+      if (trace_swkbd_vpad) {
+         OSReport("Horizon Cafe SWKBD vpad=%u stage=VPADRead.begin\n",
+                  (unsigned)swkbd_vpad_call);
+      }
+   }
+#endif
    VPADStatus status;
    VPADReadError error = VPAD_READ_SUCCESS;
    if (trace) OSReport("Horizon Cafe input trace: VPADRead begin\n");
@@ -56,6 +71,12 @@ horizon_wiiu_vpad_read(HorizonVpadSample *sample)
       OSReport("Horizon Cafe input trace: VPADRead complete count=%d error=%d\n",
                count, (int32_t)error);
    }
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_swkbd_vpad) {
+      OSReport("Horizon Cafe SWKBD vpad=%u stage=VPADRead.returned count=%d error=%d\n",
+               (unsigned)swkbd_vpad_call, count, (int32_t)error);
+   }
+#endif
    if (error != VPAD_READ_SUCCESS) {
       update_swkbd(NULL, trace);
       return (int32_t)error;

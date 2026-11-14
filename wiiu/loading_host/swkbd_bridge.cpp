@@ -30,6 +30,23 @@ alignas(0x40) FSClient s_fs_client{};
 char16_t s_initial_text[kMaxTextUnits + 1]{};
 char s_result[kMaxUtf8Bytes + 1]{};
 size_t s_result_length = 0;
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+uint32_t s_trace_calc_calls = 0;
+uint32_t s_trace_tv_draw_calls = 0;
+uint32_t s_trace_drc_draw_calls = 0;
+
+bool trace_call(uint32_t call) {
+   return call <= 96 && (call <= 4 || call % 16 == 0);
+}
+
+bool trace_poll(uint32_t call) {
+   return call <= 96;
+}
+
+void report_stage(uint32_t call, const char *stage) {
+   OSReport("Horizon Cafe SWKBD call=%u stage=%s\n", (unsigned)call, stage);
+}
+#endif
 
 void remember_result(ResultState state) {
    s_result_state = state;
@@ -180,6 +197,13 @@ extern "C" int32_t horizon_swkbd_is_open(void) {
 extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
    if (!s_open) return 0;
 
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   const uint32_t call = ++s_trace_calc_calls;
+   const bool trace = trace_poll(call);
+   const bool trace_detail = trace_call(call);
+   if (trace) report_stage(call, "calc.begin");
+#endif
+
    auto *status = const_cast<VPADStatus *>(static_cast<const VPADStatus *>(vpad_status));
    if (status) {
       const auto &touch = status->tpNormal;
@@ -205,22 +229,97 @@ extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
    nn::swkbd::ControllerInfo info;
    info.vpad = status;
    nn::swkbd::Calc(info);
-   if (nn::swkbd::IsNeedCalcSubThreadFont()) nn::swkbd::CalcSubThreadFont();
-   if (nn::swkbd::IsNeedCalcSubThreadPredict()) nn::swkbd::CalcSubThreadPredict();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace) report_stage(call, "calc.returned");
+   if (trace_detail) report_stage(call, "font_check.begin");
+#endif
+   const bool need_font = nn::swkbd::IsNeedCalcSubThreadFont();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) {
+      OSReport("Horizon Cafe SWKBD call=%u stage=font_check.returned needed=%u\n",
+               (unsigned)call, need_font ? 1u : 0u);
+   }
+#endif
+   if (need_font) {
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "font_calc.begin");
+#endif
+      nn::swkbd::CalcSubThreadFont();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "font_calc.returned");
+#endif
+   }
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) report_stage(call, "predict_check.begin");
+#endif
+   const bool need_predict = nn::swkbd::IsNeedCalcSubThreadPredict();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) {
+      OSReport("Horizon Cafe SWKBD call=%u stage=predict_check.returned needed=%u\n",
+               (unsigned)call, need_predict ? 1u : 0u);
+   }
+#endif
+   if (need_predict) {
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "predict_calc.begin");
+#endif
+      nn::swkbd::CalcSubThreadPredict();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "predict_calc.returned");
+#endif
+   }
 
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) report_stage(call, "decide_ok.begin");
+#endif
    const bool accepted = nn::swkbd::IsDecideOkButton(nullptr);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) {
+      OSReport("Horizon Cafe SWKBD call=%u stage=decide_ok.returned accepted=%u\n",
+               (unsigned)call, accepted ? 1u : 0u);
+   }
+#endif
    if (accepted) {
       OSReport("Horizon Cafe swkbd decision=accept open=%d\n", s_open ? 1 : 0);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "accepted_result.begin");
+#endif
       remember_result(ResultState::Accepted);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "accepted_result.returned");
+      if (trace_detail) report_stage(call, "disappear.begin");
+#endif
       close_form();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "disappear.returned");
+#endif
       OSReport("Horizon Cafe swkbd closed accepted open=%d\n", s_open ? 1 : 0);
       return 1;
    }
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) report_stage(call, "decide_cancel.begin");
+#endif
    const bool cancelled = nn::swkbd::IsDecideCancelButton(nullptr);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_detail) {
+      OSReport("Horizon Cafe SWKBD call=%u stage=decide_cancel.returned cancelled=%u\n",
+               (unsigned)call, cancelled ? 1u : 0u);
+   }
+#endif
    if (cancelled) {
       OSReport("Horizon Cafe swkbd decision=cancel open=%d\n", s_open ? 1 : 0);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "cancelled_result.begin");
+#endif
       remember_result(ResultState::Cancelled);
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "cancelled_result.returned");
+      if (trace_detail) report_stage(call, "disappear.begin");
+#endif
       close_form();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "disappear.returned");
+#endif
       OSReport("Horizon Cafe swkbd closed cancelled open=%d\n", s_open ? 1 : 0);
       return 2;
    }
@@ -230,9 +329,27 @@ extern "C" int32_t horizon_swkbd_calc(const void *vpad_status) {
 extern "C" int32_t horizon_swkbd_draw(uint32_t target) {
    if (!s_open) return 0;
    if (target == 0) {
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      const uint32_t call = ++s_trace_tv_draw_calls;
+      const bool trace = trace_poll(call);
+      const bool trace_detail = trace_call(call);
+      if (trace) report_stage(call, "draw_tv.begin");
+#endif
       nn::swkbd::DrawTV();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "draw_tv.returned");
+#endif
    } else if (target == 1) {
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      const uint32_t call = ++s_trace_drc_draw_calls;
+      const bool trace = trace_poll(call);
+      const bool trace_detail = trace_call(call);
+      if (trace) report_stage(call, "draw_drc.begin");
+#endif
       nn::swkbd::DrawDRC();
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+      if (trace_detail) report_stage(call, "draw_drc.returned");
+#endif
    } else {
       return -1;
    }

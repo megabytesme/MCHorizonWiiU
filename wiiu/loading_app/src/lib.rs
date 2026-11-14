@@ -766,6 +766,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut post_input_trace_bursts = 3u8;
         let mut game_session: Option<CafeGameSession> = None;
         let mut world_loading_complete = false;
+        let mut game_handoff_started = false;
+        let mut no_local_game_reported = false;
+        let mut first_game_frame_started = false;
+        let mut first_game_frame_returned = false;
         loop {
             if !self.running() || self.control.get() == EventLoopControl::Exit {
                 self.exited = true;
@@ -1184,15 +1188,32 @@ impl CafeLoadingHost for LoadingHost<'_> {
             match loading_status {
                 CafeLoadingStatus::Loading => {}
                 CafeLoadingStatus::ReadyForHandoff if game_session.is_none() => {
+                    if !game_handoff_started {
+                        game_handoff_started = true;
+                        startup_report!("Cafe Game handoff begin");
+                    }
+                    let handoff_started_at = Instant::now();
                     match session.start_local_game() {
                         Ok(Some(game)) => {
+                            log::info!(
+                                "Horizon Cafe Game handoff returned local Game elapsed_ms={}",
+                                handoff_started_at.elapsed().as_millis()
+                            );
                             startup_report!("original local Game initialized; world startup begins");
                             game_session = Some(game);
                         }
                         Ok(None) => {
                             // Remote-server handoff remains on its existing path.
+                            if !no_local_game_reported {
+                                no_local_game_reported = true;
+                                startup_report!("Cafe Game handoff yielded no local Game");
+                            }
                         }
                         Err(error) => {
+                            log::error!(
+                                "Horizon Cafe local Game handoff failed elapsed_ms={}",
+                                handoff_started_at.elapsed().as_millis()
+                            );
                             self.local_world_start_failed = true;
                             self.failure = Some(error.to_string());
                             log::error!("Horizon Cafe local world start failed: {error}");
@@ -1231,12 +1252,45 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 let event_loop = LoadingFrameEventLoop {
                     control: &self.control,
                 };
+                if !first_game_frame_started {
+                    first_game_frame_started = true;
+                    startup_report!("first original Game frame begin");
+                    log::info!(
+                        "Horizon Cafe first original Game frame begin elapsed_ms={}",
+                        host_loop_started.elapsed().as_millis()
+                    );
+                }
                 match game.frame(&event_loop, self.presenter) {
                     Ok(_frame_drawn) => {
-                        world_loading_complete |= game.world_loading_complete();
+                        let world_ready = game.world_loading_complete();
+                        if !first_game_frame_returned {
+                            first_game_frame_returned = true;
+                            startup_report!("first original Game frame returned");
+                            log::info!(
+                                "Horizon Cafe first original Game frame returned elapsed_ms={} world_ready={}",
+                                host_loop_started.elapsed().as_millis(),
+                                world_ready
+                            );
+                        }
+                        if world_ready && !world_loading_complete {
+                            startup_report!("local world-entry pending state cleared");
+                            log::info!(
+                                "Horizon Cafe local world-entry pending state cleared elapsed_ms={}",
+                                host_loop_started.elapsed().as_millis()
+                            );
+                        }
+                        world_loading_complete |= world_ready;
                         Ok(())
                     }
                     Err(error) => {
+                        if !first_game_frame_returned {
+                            first_game_frame_returned = true;
+                            startup_report!("first original Game frame failed");
+                            log::error!(
+                                "Horizon Cafe first original Game frame failed elapsed_ms={}",
+                                host_loop_started.elapsed().as_millis()
+                            );
+                        }
                         world_start_failed = !world_loading_complete;
                         Err(error)
                     }
