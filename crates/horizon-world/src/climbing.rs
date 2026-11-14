@@ -41,6 +41,8 @@ impl<'r> ClimbingRegistry<'r> {
             }
         }
         let mut states = Vec::with_capacity(registry.len());
+        #[cfg(target_os = "cafe")]
+        let scan_started = std::time::Instant::now();
         for i in 0..registry.len() {
             let s = registry.state(BlockStateId(i as u32)).unwrap();
             let facing = horizontal_facing(s.properties.get("facing").map(String::as_str));
@@ -64,6 +66,16 @@ impl<'r> ClimbingRegistry<'r> {
                     None
                 },
             });
+            #[cfg(target_os = "cafe")]
+            if (i + 1) % 8192 == 0 {
+                log::info!(
+                    "Horizon Cafe climbing registry progress states={}/{} elapsed_ms={} last_state={}",
+                    i + 1,
+                    registry.len(),
+                    scan_started.elapsed().as_millis(),
+                    s.name
+                );
+            }
         }
         Ok(Self { registry, states })
     }
