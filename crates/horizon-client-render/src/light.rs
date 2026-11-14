@@ -19,7 +19,7 @@ use crate::{
     blocks::BlockFacts,
     chunk::{Chunk, ColumnLayout, Light, Section, index},
 };
-use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
+use horizon_core::geometry::{Direction, ShapeError, ShapeOp, VoxelShape};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use std::{
     cell::RefCell,
@@ -32,6 +32,17 @@ const W: usize = 48;
 /// Face ID 0: empty occlusion face; 1: the full square.
 const EMPTY: u16 = 0;
 const FULL: u16 = 1;
+
+fn shape_differs_from_block(shape: &VoxelShape, block: &VoxelShape) -> Result<bool, ShapeError> {
+    if shape.bounds() != block.bounds() {
+        return Ok(true);
+    }
+    if shape.boxes() == block.boxes() {
+        Ok(false)
+    } else {
+        shape.join_is_not_empty(block, ShapeOp::XOR)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Cell {
@@ -183,7 +194,7 @@ impl LightTables {
         macro_rules! trace_suspect_state {
             ($id:expr, $stage:expr, $detail:expr) => {
                 let trace_id = $id;
-                if (2304..=2431).contains(&trace_id) {
+                if trace_id == 2350 {
                     let trace_state = &facts.states[trace_id];
                     let trace_name = registry
                         .state(BlockStateId(trace_id as u32))
@@ -241,14 +252,43 @@ impl LightTables {
                 let mut faces = [FULL; 6];
                 // BlockState.initCache: solidRender shapes use the full faces.
                 #[cfg(target_os = "cafe")]
-                trace_suspect_state!(id, "join_xor.begin", "");
-                let differs_from_block = shape.join_is_not_empty(&block, ShapeOp::XOR)?;
+                let same_boxes = shape.boxes() == block.boxes();
                 #[cfg(target_os = "cafe")]
-                trace_suspect_state!(
-                    id,
-                    "join_xor.complete",
-                    format_args!("differs_from_block={differs_from_block}")
-                );
+                let run_xor = !same_boxes && shape.bounds() == block.bounds();
+                #[cfg(target_os = "cafe")]
+                if id == 2350 {
+                    let bounds = shape.bounds().map(|bounds| {
+                        (
+                            bounds.min_position().components(),
+                            bounds.max_position().components(),
+                        )
+                    });
+                    trace_suspect_state!(
+                        id,
+                        "shape_detail",
+                        format_args!(
+                            "sizes={:?} coordinate_lengths=[{},{},{}] boxes={} bounds={bounds:?} same_boxes={same_boxes} run_xor={run_xor}",
+                            shape.sizes(),
+                            shape.coordinates(horizon_core::geometry::Axis::X).len(),
+                            shape.coordinates(horizon_core::geometry::Axis::Y).len(),
+                            shape.coordinates(horizon_core::geometry::Axis::Z).len(),
+                            shape.boxes().len(),
+                        )
+                    );
+                }
+                #[cfg(target_os = "cafe")]
+                if run_xor {
+                    trace_suspect_state!(id, "join_xor.begin", "");
+                }
+                let differs_from_block = shape_differs_from_block(shape, &block)?;
+                #[cfg(target_os = "cafe")]
+                if run_xor {
+                    trace_suspect_state!(
+                        id,
+                        "join_xor.complete",
+                        format_args!("differs_from_block={differs_from_block}")
+                    );
+                }
                 if differs_from_block {
                     for direction in Direction::ALL {
                         #[cfg(target_os = "cafe")]
@@ -1306,6 +1346,56 @@ fn relight_layer(
 mod tests {
     use super::*;
     use crate::chunk::{HEIGHT, MIN_Y, SECTIONS};
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    #[test]
+    fn full_unit_box_uses_box_match_and_other_shapes_use_xor() {
+        let block = VoxelShape::block();
+        let separate_full_box =
+            VoxelShape::from_grid([vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]], &[true])
+                .unwrap();
+        assert!(!separate_full_box.same_identity(&block));
+        assert_eq!(
+            shape_differs_from_block(&separate_full_box, &block),
+            Ok(false)
+        );
+
+        let partial_box =
+            VoxelShape::from_box(Aabb::new(Vec3::ZERO, Vec3::new(0.5, 1.0, 1.0))).unwrap();
+        assert_eq!(shape_differs_from_block(&partial_box, &block), Ok(true));
+
+        let sticky_piston = VoxelShape::from_grid(
+            [
+                vec![0.0, 1.0],
+                vec![0.0, 1.0],
+                vec![0.0, 0.25, 0.5, 0.75, 1.0],
+            ],
+            &[false, true, true, true],
+        )
+        .unwrap();
+        assert_eq!(sticky_piston.boxes().len(), 1);
+        assert_ne!(sticky_piston.bounds(), block.bounds());
+        assert!(
+            sticky_piston
+                .join_is_not_empty(&block, ShapeOp::XOR)
+                .unwrap()
+        );
+        assert_eq!(shape_differs_from_block(&sticky_piston, &block), Ok(true));
+
+        let mut hollow_occupancy = vec![true; 27];
+        hollow_occupancy[13] = false;
+        let hollow = VoxelShape::from_grid(
+            [
+                vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0],
+                vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0],
+                vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0],
+            ],
+            &hollow_occupancy,
+        )
+        .unwrap();
+        assert_eq!(hollow.bounds(), block.bounds());
+        assert!(shape_differs_from_block(&hollow, &block).unwrap());
+    }
 
     #[test]
     fn changed_cells_dirty_only_the_sections_within_a_block() {
