@@ -211,7 +211,7 @@ impl LightTables {
         macro_rules! trace_suspect_state {
             ($id:expr, $stage:expr, $detail:expr) => {
                 let trace_id = $id;
-                if trace_id == 2350 || trace_id == 2351 {
+                if trace_id == 2350 || trace_id == 2351 || trace_id == 2385 {
                     let trace_state = &facts.states[trace_id];
                     let trace_name = registry
                         .state(BlockStateId(trace_id as u32))
@@ -281,7 +281,7 @@ impl LightTables {
                 #[cfg(target_os = "cafe")]
                 let run_xor = !same_boxes && shape.bounds() == block.bounds();
                 #[cfg(target_os = "cafe")]
-                if id == 2350 || id == 2351 {
+                if id == 2350 || id == 2351 || id == 2385 {
                     let bounds = shape.bounds().map(|bounds| {
                         (
                             bounds.min_position().components(),
@@ -305,7 +305,15 @@ impl LightTables {
                 if run_xor {
                     trace_suspect_state!(id, "join_xor.begin", "");
                 }
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(id, "shape_differs.begin", "");
                 let differs_from_block = shape_differs_from_block(shape, &block)?;
+                #[cfg(target_os = "cafe")]
+                trace_suspect_state!(
+                    id,
+                    "shape_differs.complete",
+                    format_args!("differs_from_block={differs_from_block}")
+                );
                 #[cfg(target_os = "cafe")]
                 if run_xor {
                     trace_suspect_state!(
@@ -334,6 +342,12 @@ impl LightTables {
                         } else if face.same_identity(&block) {
                             FULL
                         } else {
+                            #[cfg(target_os = "cafe")]
+                            trace_suspect_state!(
+                                id,
+                                "face_geometry_key.begin",
+                                format_args!("direction={:?}", direction)
+                            );
                             let key: Vec<u64> = face
                                 .boxes()
                                 .iter()
@@ -345,10 +359,23 @@ impl LightTables {
                                 })
                                 .map(f64::to_bits)
                                 .collect();
-                            *by_geometry.entry(key).or_insert_with(|| {
+                            #[cfg(target_os = "cafe")]
+                            trace_suspect_state!(
+                                id,
+                                "face_geometry_key.complete",
+                                format_args!("direction={:?} values={}", direction, key.len())
+                            );
+                            let type_id = *by_geometry.entry(key).or_insert_with(|| {
                                 shapes.push(face.clone());
                                 (shapes.len() - 1) as u16
-                            })
+                            });
+                            #[cfg(target_os = "cafe")]
+                            trace_suspect_state!(
+                                id,
+                                "face_geometry_cache.complete",
+                                format_args!("direction={:?} type={type_id}", direction)
+                            );
+                            type_id
                         };
                     }
                 }
