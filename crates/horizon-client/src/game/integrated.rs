@@ -508,8 +508,14 @@ impl Game<'_> {
             folder: folder.to_owned(),
             new_world,
         });
-        // Harnesses, control scripts and runs without a window go on with the world open.
-        if self.window.is_none() || super::synchronous_startup(&self.options) {
+        // The desktop's offscreen/headless runs have no event loop to poll
+        // readiness from. Cafe's interactive host also has no Winit window,
+        // but polls this server over later frames while it keeps drawing.
+        #[cfg(not(target_os = "cafe"))]
+        let wait_for_startup = self.window.is_none() || super::synchronous_startup(&self.options);
+        #[cfg(target_os = "cafe")]
+        let wait_for_startup = super::synchronous_startup(&self.options);
+        if wait_for_startup {
             while self.integrated_starting.is_some() {
                 self.poll_integrated_start()?;
                 if self.integrated_starting.is_some() {
