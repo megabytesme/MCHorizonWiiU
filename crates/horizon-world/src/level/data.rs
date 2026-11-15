@@ -834,11 +834,21 @@ fn build_with_gameplay<G: GameplayStateSource>(
     // Fluid tags.
     let mut fluid_definitions = TagDefinitions::default();
     let fluid_dir = root.join("data/minecraft/tags/fluid");
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour fluid tag read begin path={}",
+        fluid_dir.display()
+    );
     for entry in fs::read_dir(&fluid_dir)? {
         let path = entry?.path();
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag file begin path={}",
+            path.display()
+        );
         fluid_definitions
             .apply_json(
                 &format!("minecraft:{stem}"),
@@ -846,10 +856,24 @@ fn build_with_gameplay<G: GameplayStateSource>(
                 &fs::read_to_string(&path)?,
             )
             .map_err(|e| invalid(e.to_string()))?;
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag file complete path={}",
+            path.display()
+        );
     }
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour fluid tag read complete");
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour fluid tag resolve begin");
     let fluid_built = fluid_definitions
         .build(|name, _| FluidKind::from_name(name).map(|kind| kind as u8))
         .map_err(|e| invalid(e.to_string()))?;
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour fluid tag resolve complete tags={}",
+        fluid_built.tags.len()
+    );
     let fluid_mask = |name: &str| -> u8 {
         fluid_built
             .tags
@@ -866,6 +890,8 @@ fn build_with_gameplay<G: GameplayStateSource>(
         supports_sugar_cane_adjacently: fluid_mask("minecraft:supports_sugar_cane_adjacently"),
         bubble_column_can_occupy: fluid_mask("minecraft:bubble_column_can_occupy"),
     };
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour fluid tag masks complete");
 
     // Per-state facts.
     let mut facts = Vec::with_capacity(table.state_count());
