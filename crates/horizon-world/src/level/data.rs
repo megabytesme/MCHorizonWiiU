@@ -862,7 +862,8 @@ fn build_with_gameplay<G: GameplayStateSource>(
         log::info!(
             "Horizon Cafe behaviour fluid tag iterator next complete index={fluid_entry_index}"
         );
-        let path = entry?.path();
+        let entry = entry?;
+        let path = entry.path();
         #[cfg(target_os = "cafe")]
         let entry_index = fluid_entry_index;
         #[cfg(target_os = "cafe")]
@@ -877,49 +878,39 @@ fn build_with_gameplay<G: GameplayStateSource>(
         #[cfg(target_os = "cafe")]
         log::info!("Horizon Cafe behaviour fluid tag file name begin index={entry_index}");
         #[cfg(target_os = "cafe")]
-        let path_file_name = path.file_name();
+        let file_name = entry.file_name();
         #[cfg(target_os = "cafe")]
-        log::info!(
-            "Horizon Cafe behaviour fluid tag file name complete index={entry_index} has_name={}",
-            path_file_name.is_some()
-        );
+        log::info!("Horizon Cafe behaviour fluid tag file name complete index={entry_index}");
         #[cfg(target_os = "cafe")]
         log::info!("Horizon Cafe behaviour fluid tag file name UTF-8 begin index={entry_index}");
         #[cfg(target_os = "cafe")]
-        let file_name = path_file_name.and_then(|name| name.to_str());
+        let file_name = file_name.to_str();
         #[cfg(target_os = "cafe")]
         log::info!(
             "Horizon Cafe behaviour fluid tag file name UTF-8 complete index={entry_index} valid={}",
             file_name.is_some()
         );
         #[cfg(target_os = "cafe")]
-        log::info!("Horizon Cafe behaviour fluid tag file stem begin index={entry_index}");
-        let path_stem = path.file_stem();
-        #[cfg(target_os = "cafe")]
-        log::info!(
-            "Horizon Cafe behaviour fluid tag file stem complete index={entry_index} has_stem={}",
-            path_stem.is_some()
-        );
-        let Some(path_stem) = path_stem else {
-            #[cfg(target_os = "cafe")]
+        let Some(file_name) = file_name else {
             log::info!(
-                "Horizon Cafe behaviour fluid tag file skipped index={entry_index} reason=no_stem"
+                "Horizon Cafe behaviour fluid tag file skipped index={entry_index} reason=invalid_utf8"
             );
             continue;
         };
         #[cfg(target_os = "cafe")]
-        log::info!("Horizon Cafe behaviour fluid tag UTF-8 stem begin index={entry_index}");
-        let stem = path_stem.to_str();
+        log::info!("Horizon Cafe behaviour fluid tag stem extraction begin index={entry_index}");
         #[cfg(target_os = "cafe")]
-        log::info!(
-            "Horizon Cafe behaviour fluid tag UTF-8 stem complete index={entry_index} valid={}",
-            stem.is_some()
-        );
-        let Some(stem) = stem else {
-            #[cfg(target_os = "cafe")]
-            log::info!(
-                "Horizon Cafe behaviour fluid tag file skipped index={entry_index} reason=invalid_utf8"
-            );
+        let stem = if file_name == ".." {
+            file_name
+        } else if let Some((stem, _)) = file_name.rsplit_once('.') {
+            if stem.is_empty() { file_name } else { stem }
+        } else {
+            file_name
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag stem extraction complete index={entry_index}");
+        #[cfg(not(target_os = "cafe"))]
+        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
             continue;
         };
         #[cfg(target_os = "cafe")]
