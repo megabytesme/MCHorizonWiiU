@@ -72,7 +72,26 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
     let mut first_overflow_reported = false;
     #[cfg(target_os = "cafe")]
     log::info!("Horizon emissive sharing: traversal begin names={layer_name_count}");
-    for (index, layer) in sprites.layers.values().enumerate() {
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive sharing: iterator construction begin");
+    #[cfg(target_os = "cafe")]
+    let mut layer_iter = sprites.layers.values().enumerate();
+    #[cfg(not(target_os = "cafe"))]
+    let layer_iter = sprites.layers.values().enumerate();
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive sharing: iterator construction complete");
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive sharing: first next begin");
+    #[cfg(target_os = "cafe")]
+    let first_layer = layer_iter.next();
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon emissive sharing: first next complete has_item={}",
+        first_layer.is_some()
+    );
+    #[cfg(not(target_os = "cafe"))]
+    let first_layer = None;
+    for (index, layer) in first_layer.into_iter().chain(layer_iter) {
         #[cfg(not(target_os = "cafe"))]
         let _ = index;
         #[cfg(target_os = "cafe")]
