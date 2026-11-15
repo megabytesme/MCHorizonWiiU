@@ -497,6 +497,19 @@ pub struct StationRecipes {
 fn ingredient(v: &Value, items: &Items) -> Ingredient {
     Ingredient::parse(v, items).unwrap_or_else(|| Ingredient::of(Vec::new()))
 }
+#[cfg(target_os = "cafe")]
+fn cafe_entry_file_stem(entry: &fs::DirEntry) -> Option<String> {
+    let file_name = entry.file_name().into_string().ok()?;
+    let file_name = file_name.as_str();
+    let stem = if file_name == ".." {
+        file_name
+    } else if let Some((stem, _)) = file_name.rsplit_once('.') {
+        if stem.is_empty() { file_name } else { stem }
+    } else {
+        file_name
+    };
+    Some(stem.to_owned())
+}
 impl StationRecipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
         // Vanilla's recipes, then the content mods' (docs/modpacks.md).
@@ -590,17 +603,18 @@ impl StationRecipes {
             .into_iter()
             .flatten()
             .flatten()
-            .map(|e| e.path())
             .collect();
-        tm.sort();
-        for p in tm {
-            if let Ok(bytes) = fs::read(&p)
+        tm.sort_by_key(|entry| entry.path());
+        for entry in tm {
+            let path = entry.path();
+            if let Ok(bytes) = fs::read(&path)
                 && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
             {
-                let id = format!(
-                    "minecraft:{}",
-                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-                );
+                #[cfg(target_os = "cafe")]
+                let stem = cafe_entry_file_stem(&entry);
+                #[cfg(not(target_os = "cafe"))]
+                let stem = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
+                let id = format!("minecraft:{}", stem.as_deref().unwrap_or(""));
                 trim_materials.push((
                     id,
                     v["description"]["translate"]
