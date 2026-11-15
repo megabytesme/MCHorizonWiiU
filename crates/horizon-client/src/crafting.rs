@@ -290,8 +290,28 @@ pub(crate) fn template_count(v: &Value) -> Option<u32> {
 }
 impl Template {
     fn parse(v: &Value) -> Option<Self> {
-        let components = v.get("components").map(json_tag);
+        let component_value = v.get("components");
+        #[cfg(target_os = "cafe")]
+        let trace_stew = component_value.is_some_and(|components| {
+            components
+                .get("minecraft:suspicious_stew_effects")
+                .is_some()
+        });
+        #[cfg(target_os = "cafe")]
+        if trace_stew {
+            log::info!("Horizon Cafe suspicious stew json_tag begin");
+        }
+        let components = component_value.map(json_tag);
+        #[cfg(target_os = "cafe")]
+        if trace_stew {
+            log::info!("Horizon Cafe suspicious stew json_tag complete");
+            log::info!("Horizon Cafe suspicious stew decode_components begin");
+        }
         let (damage, extra) = crate::item_data::decode_components(components.as_ref());
+        #[cfg(target_os = "cafe")]
+        if trace_stew {
+            log::info!("Horizon Cafe suspicious stew decode_components complete");
+        }
         Some(Self {
             item: horizon_world::loot::recipe_result_id(v).map(Arc::from),
             count: template_count(v)?,
@@ -1540,12 +1560,44 @@ impl Recipes {
     ) -> Result<Self> {
         // Every table in registration order, whatever order the sources come
         // in (the world's packs' files after the game's own).
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe recipe tables begin sources={}", sources.len());
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe recipe tables sort begin");
         sources.sort_by_cached_key(|(name, _)| registration_key(name));
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe recipe tables sort complete sources={}",
+            sources.len()
+        );
         let mut crafting = Vec::new();
         let mut cooking = Vec::new();
         let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
         let mut meta = HashMap::new();
-        for (name, v) in sources {
+        #[cfg(target_os = "cafe")]
+        let source_count = sources.len();
+        for (index, (name, v)) in sources.into_iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            let trace_entry = (1664..1792).contains(&index);
+            #[cfg(target_os = "cafe")]
+            let trace_stew_recipe = trace_entry && name == "suspicious_stew_from_allium";
+            #[cfg(target_os = "cafe")]
+            if index == 0 || index % 128 == 0 {
+                log::info!(
+                    "Horizon Cafe recipe table progress index={}/{} id={}",
+                    index + 1,
+                    source_count,
+                    name
+                );
+            }
+            #[cfg(target_os = "cafe")]
+            if trace_entry {
+                log::info!(
+                    "Horizon Cafe recipe entry begin ordinal={} id={}",
+                    index + 1,
+                    name
+                );
+            }
             if let Some(kind) = custom_type(&v) {
                 let id = if name.contains(':') {
                     name
@@ -1558,6 +1610,10 @@ impl Recipes {
                     .entry(kind)
                     .or_default()
                     .push(CustomRecipe { id, json });
+                #[cfg(target_os = "cafe")]
+                if trace_entry {
+                    log::info!("Horizon Cafe recipe entry complete ordinal={}", index + 1);
+                }
                 continue;
             }
             let text = |k: &str| v[k].as_str().unwrap_or("").to_owned();
@@ -1601,13 +1657,27 @@ impl Recipes {
                     }
                 }
                 "minecraft:crafting_shapeless" => {
+                    #[cfg(target_os = "cafe")]
+                    if trace_stew_recipe {
+                        log::info!("Horizon Cafe suspicious stew ingredients begin");
+                    }
                     let ingredients: Option<Vec<_>> = v["ingredients"]
                         .as_array()
                         .into_iter()
                         .flatten()
                         .map(|i| Ingredient::parse(i, items))
                         .collect();
-                    match (ingredients, result()) {
+                    #[cfg(target_os = "cafe")]
+                    if trace_stew_recipe {
+                        log::info!("Horizon Cafe suspicious stew ingredients complete");
+                        log::info!("Horizon Cafe suspicious stew result begin");
+                    }
+                    let parsed_result = result();
+                    #[cfg(target_os = "cafe")]
+                    if trace_stew_recipe {
+                        log::info!("Horizon Cafe suspicious stew result complete");
+                    }
+                    match (ingredients, parsed_result) {
                         (Some(ingredients), Some(result)) => Some(Recipe::Shapeless {
                             ingredients,
                             result,
@@ -1740,8 +1810,25 @@ impl Recipes {
             if let Some(recipe) = parsed {
                 crafting.push((name, recipe));
             }
+            #[cfg(target_os = "cafe")]
+            if trace_entry {
+                log::info!("Horizon Cafe recipe entry complete ordinal={}", index + 1);
+            }
         }
-        let facts = items
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe recipe table build complete crafting={} cooking={} custom_types={} metadata={}",
+            crafting.len(),
+            cooking.len(),
+            custom.len(),
+            meta.len()
+        );
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe recipe item facts begin items={}",
+            items.items.len()
+        );
+        let facts: HashMap<Arc<str>, Facts> = items
             .items
             .iter()
             .map(|(id, info)| {
@@ -1760,9 +1847,21 @@ impl Recipes {
                 )
             })
             .collect();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe recipe item facts complete facts={}",
+            facts.len()
+        );
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe recipe curse tags begin");
         let curses = crate::items::load_tags(root, "enchantment", overlay)?
             .remove("minecraft:curse")
             .unwrap_or_default();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe recipe curse tags complete curses={}",
+            curses.len()
+        );
         Ok(Self {
             crafting,
             cooking,

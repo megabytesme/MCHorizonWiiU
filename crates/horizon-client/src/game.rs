@@ -21602,6 +21602,15 @@ fn load_world_rest(
         // The recipe tables, the stations and the recipe book read one folder:
         // hold its files so it is read once.
         let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
+        #[cfg(target_os = "cafe")]
+        let recipes = {
+            let sources =
+                startup::time("rest.recipes.sources", || Recipes::sources(root, overlay))?;
+            startup::time("rest.recipes.tables", || {
+                Recipes::from_sources(root, &items, overlay, sources)
+            })?
+        };
+        #[cfg(not(target_os = "cafe"))]
         let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
         let stations = startup::time("rest.stations", || {
             horizon_client::stations::StationData::load(root, &items, overlay)
