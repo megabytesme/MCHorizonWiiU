@@ -233,7 +233,31 @@ pub struct WrittenBook {
 }
 impl StackData {
     pub fn is_empty(&self) -> bool {
-        self.wire.0.is_none() && *self == Self::default()
+        self.wire.0.is_none()
+            && self.enchantments.is_empty()
+            && self.stored_enchantments.is_empty()
+            && self.repair_cost == 0
+            && self.custom_name.is_none()
+            && self.potion.is_none()
+            && self.potion_extra.is_empty()
+            && self.trim.is_none()
+            && self.container.is_empty()
+            && self.charged.is_empty()
+            && self.fireworks.is_none()
+            && self.map_id.is_none()
+            && self.writable_pages.is_empty()
+            && self.written.is_none()
+            && self.banner_patterns.is_empty()
+            && self.base_color.is_none()
+            && !self.ominous_banner
+            && self.ominous_amplifier.is_none()
+            && self.dyed_color.is_none()
+            && self.firework_explosion.is_none()
+            && self.pot_decorations.is_none()
+            && self.bundle_contents.is_empty()
+            && self.stew_effects.is_empty()
+            && self.map_post_processing.is_none()
+            && self.other.is_empty()
     }
 }
 
@@ -1140,6 +1164,27 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_data_emptiness_matches_component_semantics() {
+        let mut data = StackData::default();
+        assert!(data.is_empty());
+
+        data.stew_effects
+            .push((Arc::from("minecraft:fire_resistance"), 60));
+        assert!(!data.is_empty());
+
+        let mut selected_bundle = StackData::default();
+        selected_bundle.bundle_selected = BundleSelected(2);
+        assert!(selected_bundle.is_empty());
+
+        let mut wire = StackData::default();
+        wire.wire = Wire::new(
+            ItemStack::new("minecraft:air", 1),
+            Arc::<[u8]>::from(Vec::<u8>::new()),
+        );
+        assert!(!wire.is_empty());
+    }
 
     #[test]
     fn map_decoration_types_round_trip_with_default_namespaces() {
