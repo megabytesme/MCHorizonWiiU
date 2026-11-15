@@ -839,8 +839,39 @@ fn build_with_gameplay<G: GameplayStateSource>(
         "Horizon Cafe behaviour fluid tag read begin path={}",
         fluid_dir.display()
     );
-    for entry in fs::read_dir(&fluid_dir)? {
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour fluid tag read_dir open begin");
+    let mut fluid_entries = fs::read_dir(&fluid_dir)?;
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour fluid tag read_dir open complete");
+    #[cfg(target_os = "cafe")]
+    let mut fluid_entry_index = 0usize;
+    loop {
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag iterator next begin index={fluid_entry_index}"
+        );
+        let Some(entry) = fluid_entries.next() else {
+            #[cfg(target_os = "cafe")]
+            log::info!(
+                "Horizon Cafe behaviour fluid tag iterator exhausted entries={fluid_entry_index}"
+            );
+            break;
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag iterator next complete index={fluid_entry_index}"
+        );
         let path = entry?.path();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag entry path complete index={fluid_entry_index} path={}",
+            path.display()
+        );
+        #[cfg(target_os = "cafe")]
+        {
+            fluid_entry_index += 1;
+        }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
