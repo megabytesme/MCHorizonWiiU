@@ -391,6 +391,23 @@ impl MeshTables {
         }
         let mut covers = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
+        macro_rules! trace_mesh_field {
+            ($enabled:expr, $field:literal, $value:expr) => {{
+                #[cfg(target_os = "cafe")]
+                if $enabled {
+                    log::info!("Horizon Cafe mesh tables: state 0 field {} begin", $field);
+                }
+                let value = $value;
+                #[cfg(target_os = "cafe")]
+                if $enabled {
+                    log::info!(
+                        "Horizon Cafe mesh tables: state 0 field {} complete",
+                        $field
+                    );
+                }
+                value
+            }};
+        }
         for (id, s) in facts.states.iter().enumerate() {
             #[cfg(target_os = "cafe")]
             let trace_detail = id == 0;
@@ -568,24 +585,44 @@ impl MeshTables {
                     }
                     fluid
                 },
-                model: s.render_shape == RenderShape::Model,
+                model: trace_mesh_field!(
+                    trace_detail,
+                    "model",
+                    s.render_shape == RenderShape::Model
+                ),
                 block_entity: s.block_entity,
                 tints,
                 tint_count,
                 offset,
                 legacy_solid: s.legacy_solid,
-                overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
-                leaves: s.has_class("LeavesBlock"),
-                pane: s.has_class("IronBarsBlock") && name.ends_with("glass_pane"),
-                opaque_cube: leaf_culling::opaque_cube(
-                    s.render_shape,
-                    s.can_occlude,
-                    s.solid_render,
-                    s.full_collision,
+                overlay: trace_mesh_field!(
+                    trace_detail,
+                    "overlay",
+                    s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock")
                 ),
-                blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
-                ice: s.has_class("IceBlock"),
-                sturdy: s.sturdy_full,
+                leaves: trace_mesh_field!(trace_detail, "leaves", s.has_class("LeavesBlock")),
+                pane: trace_mesh_field!(
+                    trace_detail,
+                    "pane",
+                    s.has_class("IronBarsBlock") && name.ends_with("glass_pane")
+                ),
+                opaque_cube: trace_mesh_field!(
+                    trace_detail,
+                    "opaque cube",
+                    leaf_culling::opaque_cube(
+                        s.render_shape,
+                        s.can_occlude,
+                        s.solid_render,
+                        s.full_collision
+                    )
+                ),
+                blocks_flow: trace_mesh_field!(
+                    trace_detail,
+                    "blocks flow",
+                    assets.blocks_fluid_flow.contains(&*s.name)
+                ),
+                ice: trace_mesh_field!(trace_detail, "ice", s.has_class("IceBlock")),
+                sturdy: trace_mesh_field!(trace_detail, "sturdy", s.sturdy_full),
                 face,
                 cover,
             });
