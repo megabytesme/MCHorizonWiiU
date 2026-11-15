@@ -772,9 +772,23 @@ fn build_with_gameplay<G: GameplayStateSource>(
     let cached = CachedCollisionRegistry::from_table(collision_file.table("collision")?)?;
     let mut shapes: Vec<VoxelShape> = Vec::new();
     let mut shape_ids = Vec::with_capacity(table.state_count());
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour state-shape mapping begin states={}",
+        table.state_count()
+    );
     for id in 0..table.state_count() {
         let Some(shape) = cached.cached_shape(BlockStateId(id as u32))? else {
             shape_ids.push(-1);
+            #[cfg(target_os = "cafe")]
+            if (id + 1) % 1024 == 0 || id + 1 == table.state_count() {
+                log::info!(
+                    "Horizon Cafe behaviour state-shape mapping progress states={}/{} unique_shapes={}",
+                    id + 1,
+                    table.state_count(),
+                    shapes.len()
+                );
+            }
             continue;
         };
         let index = match shapes.iter().position(|s| s.same_identity(shape)) {
@@ -785,12 +799,37 @@ fn build_with_gameplay<G: GameplayStateSource>(
             }
         };
         shape_ids.push(index as i32);
+        #[cfg(target_os = "cafe")]
+        if (id + 1) % 1024 == 0 || id + 1 == table.state_count() {
+            log::info!(
+                "Horizon Cafe behaviour state-shape mapping progress states={}/{} unique_shapes={}",
+                id + 1,
+                table.state_count(),
+                shapes.len()
+            );
+        }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour state-shape mapping complete states={} unique_shapes={}",
+        table.state_count(),
+        shapes.len()
+    );
 
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour shape analysis begin shapes={}",
+        shapes.len()
+    );
     let shape_info = shapes
         .iter()
         .map(analyse_shape)
         .collect::<io::Result<Vec<_>>>()?;
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour shape analysis complete shapes={}",
+        shape_info.len()
+    );
 
     // Fluid tags.
     let mut fluid_definitions = TagDefinitions::default();
