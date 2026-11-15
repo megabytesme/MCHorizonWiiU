@@ -875,6 +875,24 @@ fn build_with_gameplay<G: GameplayStateSource>(
             path.display()
         );
         #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag file name begin index={entry_index}");
+        #[cfg(target_os = "cafe")]
+        let path_file_name = path.file_name();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag file name complete index={entry_index} has_name={}",
+            path_file_name.is_some()
+        );
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag file name UTF-8 begin index={entry_index}");
+        #[cfg(target_os = "cafe")]
+        let file_name = path_file_name.and_then(|name| name.to_str());
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag file name UTF-8 complete index={entry_index} valid={}",
+            file_name.is_some()
+        );
+        #[cfg(target_os = "cafe")]
         log::info!("Horizon Cafe behaviour fluid tag file stem begin index={entry_index}");
         let path_stem = path.file_stem();
         #[cfg(target_os = "cafe")]
