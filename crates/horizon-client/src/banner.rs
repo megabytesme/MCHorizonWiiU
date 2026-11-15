@@ -11,6 +11,30 @@ pub use horizon_items::banner_layer::{BannerLayer, layers_from_nbt, layers_to_nb
 /// Layers a loom may stack on a banner (`LoomMenu`'s `hasMaxPatterns`).
 pub const MAX_LAYERS: usize = 6;
 
+#[cfg(target_os = "cafe")]
+fn cafe_entry_has_json_extension(entry: &fs::DirEntry) -> bool {
+    let Ok(file_name) = entry.file_name().into_string() else {
+        return false;
+    };
+    let Some(dot) = file_name.rfind('.') else {
+        return false;
+    };
+    dot > 0 && &file_name[dot + 1..] == "json"
+}
+
+#[cfg(target_os = "cafe")]
+fn cafe_entry_file_stem(entry: &fs::DirEntry) -> Option<String> {
+    let file_name = entry.file_name().into_string().ok()?;
+    let stem = if file_name == ".." {
+        file_name.as_str()
+    } else if let Some((stem, _)) = file_name.rsplit_once('.') {
+        if stem.is_empty() { &file_name } else { stem }
+    } else {
+        &file_name
+    };
+    Some(stem.to_owned())
+}
+
 /// One `banner_pattern` registry entry.
 #[derive(Clone, Debug)]
 pub struct Pattern {
@@ -66,12 +90,22 @@ impl Banners {
             .into_iter()
             .flatten()
             .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .filter_map(|entry| {
+                let path = entry.path();
+                #[cfg(target_os = "cafe")]
+                let is_json = cafe_entry_has_json_extension(&entry);
+                #[cfg(not(target_os = "cafe"))]
+                let is_json = path.extension().is_some_and(|e| e == "json");
+                is_json.then_some((path, entry))
+            })
             .collect();
-        files.sort();
-        for path in files {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        files.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (path, entry) in files {
+            #[cfg(target_os = "cafe")]
+            let stem = cafe_entry_file_stem(&entry);
+            #[cfg(not(target_os = "cafe"))]
+            let stem = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
+            let Some(stem) = stem else {
                 continue;
             };
             let Some(v) = fs::read(&path)
@@ -82,7 +116,7 @@ impl Banners {
             };
             let asset = v["asset_id"]
                 .as_str()
-                .unwrap_or(stem)
+                .unwrap_or(&stem)
                 .trim_start_matches("minecraft:")
                 .to_owned();
             banners.patterns.push(Pattern {
