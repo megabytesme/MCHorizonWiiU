@@ -461,8 +461,11 @@ fn load_instruments(root: &Path) -> HashMap<String, Instrument> {
     };
     for entry in dir.flatten() {
         let path = entry.path();
-        let (Some(stem), Ok(bytes)) = (path.file_stem().and_then(|s| s.to_str()), fs::read(&path))
-        else {
+        #[cfg(target_os = "cafe")]
+        let stem = cafe_entry_file_stem(&entry);
+        #[cfg(not(target_os = "cafe"))]
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let (Some(stem), Ok(bytes)) = (stem, fs::read(&path)) else {
             continue;
         };
         let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
@@ -479,8 +482,11 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
     };
     for entry in dir.flatten() {
         let path = entry.path();
-        let (Some(stem), Ok(bytes)) = (path.file_stem().and_then(|s| s.to_str()), fs::read(&path))
-        else {
+        #[cfg(target_os = "cafe")]
+        let stem = cafe_entry_file_stem(&entry);
+        #[cfg(not(target_os = "cafe"))]
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let (Some(stem), Ok(bytes)) = (stem, fs::read(&path)) else {
             continue;
         };
         let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
@@ -503,6 +509,21 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
     }
     songs
 }
+
+#[cfg(target_os = "cafe")]
+fn cafe_entry_file_stem(entry: &fs::DirEntry) -> Option<String> {
+    let file_name = entry.file_name().into_string().ok()?;
+    let file_name = file_name.as_str();
+    let stem = if file_name == ".." {
+        file_name
+    } else if let Some((stem, _)) = file_name.rsplit_once('.') {
+        if stem.is_empty() { file_name } else { stem }
+    } else {
+        file_name
+    };
+    Some(stem.to_owned())
+}
+
 pub fn load_tags(
     root: &Path,
     kind: &str,

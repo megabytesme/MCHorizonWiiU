@@ -186,7 +186,11 @@ impl Transformers {
         if dir.exists() {
             for entry in fs::read_dir(&dir)?.flatten() {
                 let path = entry.path();
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                #[cfg(target_os = "cafe")]
+                let stem = cafe_entry_file_stem(&entry);
+                #[cfg(not(target_os = "cafe"))]
+                let stem = path.file_stem().and_then(|s| s.to_str());
+                let Some(stem) = stem else {
                     continue;
                 };
                 let list: Value = serde_json::from_slice(&fs::read(&path)?)?;
@@ -266,4 +270,18 @@ impl Transformers {
         }
         None
     }
+}
+
+#[cfg(target_os = "cafe")]
+fn cafe_entry_file_stem(entry: &fs::DirEntry) -> Option<String> {
+    let file_name = entry.file_name().into_string().ok()?;
+    let file_name = file_name.as_str();
+    let stem = if file_name == ".." {
+        file_name
+    } else if let Some((stem, _)) = file_name.rsplit_once('.') {
+        if stem.is_empty() { file_name } else { stem }
+    } else {
+        file_name
+    };
+    Some(stem.to_owned())
 }
