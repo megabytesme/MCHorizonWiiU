@@ -869,6 +869,11 @@ fn build_with_gameplay<G: GameplayStateSource>(
 
     // Per-state facts.
     let mut facts = Vec::with_capacity(table.state_count());
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour state facts begin states={}",
+        table.state_count()
+    );
     for (id, (exported, game)) in states_json.iter().zip(gameplay_states).enumerate() {
         let row = exported
             .as_array()
@@ -921,7 +926,20 @@ fn build_with_gameplay<G: GameplayStateSource>(
             instrument: instrument_index(row.get(8).and_then(Value::as_str).unwrap_or("HARP")),
             shape: shape_ids[id],
         });
+        #[cfg(target_os = "cafe")]
+        if (id + 1) % 4096 == 0 || id + 1 == table.state_count() {
+            log::info!(
+                "Horizon Cafe behaviour state facts progress states={}/{}",
+                id + 1,
+                table.state_count()
+            );
+        }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour state facts complete states={}",
+        facts.len()
+    );
 
     // Per-block data.
     let fire = &behaviour["fire"];
@@ -933,6 +951,11 @@ fn build_with_gameplay<G: GameplayStateSource>(
     };
     let mut strings = HashMap::new();
     let mut blocks = Vec::with_capacity(table.block_count());
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour block data begin blocks={}",
+        blocks_json.len()
+    );
     for (index, json) in blocks_json.iter().enumerate() {
         let block = BlockId(index as u16);
         let name = json["name"]
@@ -1077,10 +1100,25 @@ fn build_with_gameplay<G: GameplayStateSource>(
             ),
             dynamic_shape: json["dynamic_shape"].as_bool().unwrap_or(false),
         });
+        #[cfg(target_os = "cafe")]
+        if (index + 1) % 256 == 0 || index + 1 == blocks_json.len() {
+            log::info!(
+                "Horizon Cafe behaviour block data progress blocks={}/{}",
+                index + 1,
+                blocks_json.len()
+            );
+        }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour block data complete blocks={}",
+        blocks.len()
+    );
 
     // Item bindings.
     let mut items = HashMap::new();
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour item bindings begin");
     for (item, binding) in behaviour["items"]
         .as_object()
         .ok_or_else(|| fail("missing item bindings"))?
@@ -1135,10 +1173,24 @@ fn build_with_gameplay<G: GameplayStateSource>(
             },
         );
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour item bindings complete items={}",
+        items.len()
+    );
 
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour potted/fluid bindings begin");
     let potted_by_content = potted_by_content(&blocks, &table);
     let liquid_blocks = FluidBlockBindings::new(registry)?;
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon Cafe behaviour potted/fluid bindings complete");
     let mut dynamic = HashMap::new();
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour dynamic support begin states={}",
+        facts.len()
+    );
     for (id, fact) in facts.iter().enumerate() {
         if fact.shape < 0 {
             let state = BlockStateId(id as u32);
@@ -1148,7 +1200,24 @@ fn build_with_gameplay<G: GameplayStateSource>(
                 dynamic.insert(state, support);
             }
         }
+        #[cfg(target_os = "cafe")]
+        if (id + 1) % 4096 == 0 || id + 1 == facts.len() {
+            log::info!(
+                "Horizon Cafe behaviour dynamic support progress states={}/{} entries={}",
+                id + 1,
+                facts.len(),
+                dynamic.len()
+            );
+        }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon Cafe behaviour build complete states={} blocks={} items={} dynamic={}",
+        facts.len(),
+        blocks.len(),
+        items.len(),
+        dynamic.len()
+    );
     Ok(Behaviours {
         table,
         props,
