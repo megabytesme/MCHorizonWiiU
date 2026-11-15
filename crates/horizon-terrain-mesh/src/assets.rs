@@ -547,13 +547,20 @@ impl RenderAssets {
                 terrain_only,
                 TerrainAssetPhase::ConnectedTextures,
                 || {
+                    #[cfg(target_os = "cafe")]
+                    let _native_emissive = crate::spans::startup::step("core.native_emissive");
                     if !terrain_only {
                         crate::native_emissive::load(root, &mut sprites);
                     }
+                    #[cfg(target_os = "cafe")]
+                    drop(_native_emissive);
                     // A side's sprite, for rules that connect by tile: the first quad facing it.
                     let catalog = &models.catalog;
                     let mut found = Vec::new();
-                    Ok(crate::connected::ConnectedTextures::load(
+                    #[cfg(target_os = "cafe")]
+                    let _connected_textures =
+                        crate::spans::startup::step("core.connected_textures");
+                    let connected = crate::connected::ConnectedTextures::load(
                         root,
                         registry,
                         &mut sprites,
@@ -572,7 +579,10 @@ impl RenderAssets {
                                 .find(|f| f.quad.facing == side)
                                 .map(|f| f.layer)
                         },
-                    ))
+                    );
+                    #[cfg(target_os = "cafe")]
+                    drop(_connected_textures);
+                    Ok(connected)
                 },
             )?
         } else {
@@ -581,17 +591,25 @@ impl RenderAssets {
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
         if draws && !terrain_only {
+            #[cfg(target_os = "cafe")]
+            let _optifine_emissive = crate::spans::startup::step("core.optifine_emissive");
             emissive = crate::native_emissive::load_optifine(root, &mut sprites);
+            #[cfg(target_os = "cafe")]
+            drop(_optifine_emissive);
         }
         load_phase(
             &mut progress,
             terrain_only,
             TerrainAssetPhase::SpriteCache,
             || {
+                #[cfg(target_os = "cafe")]
+                let _sprite_cache_save = crate::spans::startup::step("core.sprite_cache_save");
                 let valid = sprites.save_disk_cache();
                 if let Some(output) = terrain_cache_valid.as_deref_mut() {
                     *output = valid;
                 }
+                #[cfg(target_os = "cafe")]
+                drop(_sprite_cache_save);
                 Ok(())
             },
         )?;
@@ -600,6 +618,8 @@ impl RenderAssets {
             terrain_only,
             TerrainAssetPhase::AtlasFinish,
             || {
+                #[cfg(target_os = "cafe")]
+                let _atlas_finish = crate::spans::startup::step("core.atlas_finish");
                 if draws {
                     sprites.finish();
                 } else {
@@ -607,6 +627,8 @@ impl RenderAssets {
                 }
                 // `finish` grows the buffer by doubling: keep only the bytes in use.
                 sprites.pixels.shrink_to_fit();
+                #[cfg(target_os = "cafe")]
+                drop(_atlas_finish);
                 Ok(())
             },
         )?;

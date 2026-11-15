@@ -42,18 +42,57 @@ fn tile_file(name: &str) -> Option<&str> {
 /// first, then tiles, each by name, at most [`MAX`] - [`NATIVE`] (native mods keep their share of
 /// the table). A pack without such files adds nothing.
 pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)> {
+    #[cfg(target_os = "cafe")]
+    let _suffix_stage = crate::spans::startup::step("core.optifine_emissive.suffix");
     let suffix = horizon_optifine::emissive::suffix(root);
+    #[cfg(target_os = "cafe")]
+    drop(_suffix_stage);
+
     // Blocks with identical pixels share a layer (and the shader pairs by layer): a shared
     // base would glow on every block that shares it, so it gets no overlay.
+    #[cfg(target_os = "cafe")]
+    let _sharing_stage = crate::spans::startup::step("core.optifine_emissive.sharing");
+    #[cfg(target_os = "cafe")]
+    let mut sharing = vec![0usize; sprites.count()];
+    #[cfg(target_os = "cafe")]
+    let mut overflow_sharing: BTreeMap<u32, usize> = BTreeMap::new();
+    #[cfg(not(target_os = "cafe"))]
     let mut sharing: BTreeMap<u32, usize> = BTreeMap::new();
     for layer in sprites.layers.values() {
-        *sharing.entry(*layer).or_default() += 1;
+        #[cfg(target_os = "cafe")]
+        if let Some(count) = usize::try_from(*layer)
+            .ok()
+            .and_then(|index| sharing.get_mut(index))
+        {
+            *count += 1;
+        } else {
+            *overflow_sharing.entry(*layer).or_default() += 1;
+        }
+        #[cfg(not(target_os = "cafe"))]
+        {
+            *sharing.entry(*layer).or_default() += 1;
+        }
     }
+    #[cfg(target_os = "cafe")]
+    let sharing_count = |layer: &u32| {
+        usize::try_from(*layer)
+            .ok()
+            .and_then(|index| sharing.get(index).copied())
+            .or_else(|| overflow_sharing.get(layer).copied())
+            .unwrap_or_default()
+    };
+    #[cfg(not(target_os = "cafe"))]
+    let sharing_count = |layer: &u32| sharing.get(layer).copied().unwrap_or_default();
+    #[cfg(target_os = "cafe")]
+    drop(_sharing_stage);
+
+    #[cfg(target_os = "cafe")]
+    let _bases_stage = crate::spans::startup::step("core.optifine_emissive.bases");
     let mut bases: Vec<String> = sprites
         .layers
         .iter()
         .filter(|(name, layer)| {
-            sharing[layer] == 1
+            sharing_count(*layer) == 1
                 && (name
                     .split_once(':')
                     .is_some_and(|(_, p)| p.starts_with("block/") && !p.ends_with(&suffix))
@@ -61,10 +100,36 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
         })
         .map(|(name, _)| name.clone())
         .collect();
+    #[cfg(target_os = "cafe")]
+    drop(_bases_stage);
+
     // Blocks before tiles: a pack's many tiles must not crowd vanilla blocks' overlays out.
+    #[cfg(target_os = "cafe")]
+    let _sort_stage = crate::spans::startup::step("core.optifine_emissive.sort");
     bases.sort_by_key(|name| (tile_file(name).is_some(), name.clone()));
+    #[cfg(target_os = "cafe")]
+    drop(_sort_stage);
+
+    #[cfg(target_os = "cafe")]
+    let layer_count = sprites.layers.len();
+    #[cfg(target_os = "cafe")]
+    let base_count = bases.len();
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive scan: layers={layer_count} candidates={base_count}");
+
     let mut pairs = Vec::new();
-    for base in bases {
+    #[cfg(target_os = "cafe")]
+    let _scan_stage = crate::spans::startup::step("core.optifine_emissive.scan");
+    for (_index, base) in bases.into_iter().enumerate() {
+        #[cfg(target_os = "cafe")]
+        if _index % 256 == 0 {
+            log::info!(
+                "Horizon emissive scan: candidate {}/{} loaded={}",
+                _index + 1,
+                base_count,
+                pairs.len()
+            );
+        }
         // A tile is named by its file, a block sprite by its id.
         let (overlay, file) = match tile_file(&base) {
             Some(stem) => {
@@ -92,16 +157,31 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
             continue;
         }
         // A file that doesn't load would glow as the missing texture: no pair instead.
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon emissive overlay load begin candidate={} overlay={overlay}",
+            _index + 1
+        );
         let loaded = if overlay.starts_with("assets/") {
             sprites.insert_file(root, &overlay)
         } else {
             sprites.try_insert(root, &overlay)
         };
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon emissive overlay load end candidate={} loaded={}",
+            _index + 1,
+            loaded.is_ok()
+        );
         match loaded {
             Ok(_) => pairs.push((base, overlay)),
             Err(e) => log::warn!("Horizon: emissive overlay {overlay} skipped: {e}"),
         }
     }
+    #[cfg(target_os = "cafe")]
+    drop(_scan_stage);
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive scan complete: loaded={}", pairs.len());
     pairs
 }
 
