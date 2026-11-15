@@ -57,9 +57,7 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
     #[cfg(target_os = "cafe")]
     let layer_name_count = sprites.layers.len();
     #[cfg(target_os = "cafe")]
-    log::info!(
-        "Horizon emissive sharing: allocate counts={layer_count} names={layer_name_count}"
-    );
+    log::info!("Horizon emissive sharing: allocate counts={layer_count} names={layer_name_count}");
     #[cfg(target_os = "cafe")]
     let mut sharing = vec![0usize; layer_count];
     #[cfg(target_os = "cafe")]
@@ -68,16 +66,20 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
     let mut overflow_sharing: BTreeMap<u32, usize> = BTreeMap::new();
     #[cfg(not(target_os = "cafe"))]
     let mut sharing: BTreeMap<u32, usize> = BTreeMap::new();
+    #[cfg(target_os = "cafe")]
+    let (mut dense_hits, mut overflow_hits) = (0usize, 0usize);
+    #[cfg(target_os = "cafe")]
+    let mut first_overflow_reported = false;
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive sharing: traversal begin names={layer_name_count}");
     for (index, layer) in sprites.layers.values().enumerate() {
         #[cfg(not(target_os = "cafe"))]
         let _ = index;
         #[cfg(target_os = "cafe")]
-        if (index + 1) % 4096 == 0 {
-            log::info!(
-                "Horizon emissive sharing: processed={}/{}",
-                index + 1,
-                layer_name_count
-            );
+        let trace_checkpoint = index < 16 || (index + 1) % 64 == 0 || index + 1 == layer_name_count;
+        #[cfg(target_os = "cafe")]
+        if trace_checkpoint {
+            log::info!("Horizon emissive sharing: visit begin index={index} layer={layer}");
         }
         #[cfg(target_os = "cafe")]
         if let Some(count) = usize::try_from(*layer)
@@ -85,18 +87,40 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
             .and_then(|index| sharing.get_mut(index))
         {
             *count += 1;
+            #[cfg(target_os = "cafe")]
+            {
+                dense_hits += 1;
+            }
         } else {
+            #[cfg(target_os = "cafe")]
+            if !first_overflow_reported {
+                log::info!("Horizon emissive sharing: first overflow index={index} layer={layer}");
+                first_overflow_reported = true;
+            }
             *overflow_sharing.entry(*layer).or_default() += 1;
+            #[cfg(target_os = "cafe")]
+            {
+                overflow_hits += 1;
+            }
         }
         #[cfg(not(target_os = "cafe"))]
         {
             *sharing.entry(*layer).or_default() += 1;
         }
+        #[cfg(target_os = "cafe")]
+        if trace_checkpoint {
+            log::info!(
+                "Horizon emissive sharing: visit complete processed={} dense_hits={} overflow_hits={}",
+                index + 1,
+                dense_hits,
+                overflow_hits
+            );
+        }
     }
     #[cfg(target_os = "cafe")]
     log::info!(
-        "Horizon emissive sharing complete: processed={layer_name_count} overflow_ids={}",
-        overflow_sharing.len()
+        "Horizon emissive sharing complete: processed={layer_name_count} dense_hits={dense_hits} overflow_hits={overflow_hits} overflow_ids={}",
+        overflow_sharing.len(),
     );
     #[cfg(target_os = "cafe")]
     let sharing_count = |layer: &u32| {
