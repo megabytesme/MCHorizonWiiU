@@ -53,12 +53,32 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
     #[cfg(target_os = "cafe")]
     let _sharing_stage = crate::spans::startup::step("core.optifine_emissive.sharing");
     #[cfg(target_os = "cafe")]
-    let mut sharing = vec![0usize; sprites.count()];
+    let layer_count = sprites.count();
+    #[cfg(target_os = "cafe")]
+    let layer_name_count = sprites.layers.len();
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon emissive sharing: allocate counts={layer_count} names={layer_name_count}"
+    );
+    #[cfg(target_os = "cafe")]
+    let mut sharing = vec![0usize; layer_count];
+    #[cfg(target_os = "cafe")]
+    log::info!("Horizon emissive sharing: counts allocation complete");
     #[cfg(target_os = "cafe")]
     let mut overflow_sharing: BTreeMap<u32, usize> = BTreeMap::new();
     #[cfg(not(target_os = "cafe"))]
     let mut sharing: BTreeMap<u32, usize> = BTreeMap::new();
-    for layer in sprites.layers.values() {
+    for (index, layer) in sprites.layers.values().enumerate() {
+        #[cfg(not(target_os = "cafe"))]
+        let _ = index;
+        #[cfg(target_os = "cafe")]
+        if (index + 1) % 4096 == 0 {
+            log::info!(
+                "Horizon emissive sharing: processed={}/{}",
+                index + 1,
+                layer_name_count
+            );
+        }
         #[cfg(target_os = "cafe")]
         if let Some(count) = usize::try_from(*layer)
             .ok()
@@ -73,6 +93,11 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
             *sharing.entry(*layer).or_default() += 1;
         }
     }
+    #[cfg(target_os = "cafe")]
+    log::info!(
+        "Horizon emissive sharing complete: processed={layer_name_count} overflow_ids={}",
+        overflow_sharing.len()
+    );
     #[cfg(target_os = "cafe")]
     let sharing_count = |layer: &u32| {
         usize::try_from(*layer)
