@@ -606,16 +606,73 @@ impl MeshTables {
                     "pane",
                     s.has_class("IronBarsBlock") && name.ends_with("glass_pane")
                 ),
-                opaque_cube: trace_mesh_field!(
-                    trace_detail,
-                    "opaque cube",
-                    leaf_culling::opaque_cube(
-                        s.render_shape,
-                        s.can_occlude,
-                        s.solid_render,
-                        s.full_collision
-                    )
-                ),
+                opaque_cube: {
+                    #[cfg(target_os = "cafe")]
+                    {
+                        if trace_detail {
+                            log::info!(
+                                "Horizon Cafe mesh tables: state 0 field opaque cube begin"
+                            );
+                        }
+                        let opaque_cube = if trace_detail {
+                            let shape = s.render_shape;
+                            let can_occlude = s.can_occlude;
+                            let solid_render = s.solid_render;
+                            let full_collision = s.full_collision;
+                            log::info!(
+                                "Horizon Cafe mesh tables: state 0 opaque inputs shape={shape:?} can_occlude={can_occlude} solid_render={solid_render} full_collision={full_collision}"
+                            );
+                            let is_model = shape == RenderShape::Model;
+                            log::info!(
+                                "Horizon Cafe mesh tables: state 0 opaque model check complete value={is_model}"
+                            );
+                            if is_model {
+                                log::info!(
+                                    "Horizon Cafe mesh tables: state 0 opaque can_occlude check value={can_occlude}"
+                                );
+                                if can_occlude {
+                                    log::info!(
+                                        "Horizon Cafe mesh tables: state 0 opaque solid_render check value={solid_render}"
+                                    );
+                                    if solid_render {
+                                        log::info!(
+                                            "Horizon Cafe mesh tables: state 0 opaque full_collision check value={full_collision}"
+                                        );
+                                        full_collision
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            leaf_culling::opaque_cube(
+                                s.render_shape,
+                                s.can_occlude,
+                                s.solid_render,
+                                s.full_collision,
+                            )
+                        };
+                        if trace_detail {
+                            log::info!(
+                                "Horizon Cafe mesh tables: state 0 field opaque cube complete value={opaque_cube}"
+                            );
+                        }
+                        opaque_cube
+                    }
+                    #[cfg(not(target_os = "cafe"))]
+                    {
+                        leaf_culling::opaque_cube(
+                            s.render_shape,
+                            s.can_occlude,
+                            s.solid_render,
+                            s.full_collision,
+                        )
+                    }
+                },
                 blocks_flow: trace_mesh_field!(
                     trace_detail,
                     "blocks flow",
