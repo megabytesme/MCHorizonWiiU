@@ -473,6 +473,99 @@ fn culls_back_faces(key: &str) -> bool {
 pub struct MobTypes {
     pub types: HashMap<String, MobType>,
 }
+
+fn model_layers_by_prefix<'a>(
+    models: &'a Value,
+) -> Option<crate::fast_hash::FxHashMap<&'a str, Vec<(&'a str, &'a Value)>>> {
+    #[cfg(target_os = "cafe")]
+    if crate::spans::startup::on() {
+        log::info!("Horizon Cafe mob model index entered");
+    }
+    let all = models.as_object()?;
+    #[cfg(target_os = "cafe")]
+    if crate::spans::startup::on() {
+        log::info!("Horizon Cafe mob model index object entries={}", all.len());
+    }
+    let mut layers = crate::fast_hash::FxHashMap::default();
+    for (index, (key, value)) in all.iter().enumerate() {
+        if let Some((prefix, _)) = key.split_once('#') {
+            layers
+                .entry(prefix)
+                .or_insert_with(Vec::new)
+                .push((key.as_str(), value));
+        }
+        #[cfg(target_os = "cafe")]
+        if (index + 1) % 32 == 0 && crate::spans::startup::on() {
+            log::info!(
+                "Horizon Cafe mob model index progress entries={}/{} groups={}",
+                index + 1,
+                all.len(),
+                layers.len()
+            );
+        }
+    }
+    #[cfg(target_os = "cafe")]
+    if crate::spans::startup::on() {
+        log::info!(
+            "Horizon Cafe mob model index complete entries={} groups={}",
+            all.len(),
+            layers.len()
+        );
+    }
+    Some(layers)
+}
+
+#[cfg(test)]
+mod model_layer_index_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prefix_index_preserves_variant_order_and_rejects_near_matches() {
+        let models = json!({
+            "minecraft:pig#adult": {"kind": "adult"},
+            "minecraft:pig#baby": {"kind": "baby"},
+            "minecraft:pig_baby#main": {"kind": "baby_variant"},
+            "minecraft:cold_pig#main": {"kind": "cold_variant"},
+            "minecraft:piglet#main": {"kind": "near_match"}
+        });
+        let index = model_layers_by_prefix(&models).unwrap();
+        let all = models.as_object().unwrap();
+        let old_pig_layers: Vec<_> = all
+            .iter()
+            .filter(|(key, _)| key.starts_with("minecraft:pig#"))
+            .map(|(key, _)| key.as_str())
+            .collect();
+        let indexed_pig_layers: Vec<_> = index
+            .get("minecraft:pig")
+            .unwrap()
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(indexed_pig_layers, old_pig_layers);
+
+        let pig = species::ALL.iter().find(|def| def.name == "pig").unwrap();
+        let mut selected = Vec::new();
+        for prefix in pig.layer_prefixes() {
+            let key = format!("minecraft:{prefix}");
+            if let Some(layers) = index.get(key.as_str()) {
+                selected.extend(layers.iter().map(|(key, _)| *key));
+            }
+        }
+
+        assert_eq!(
+            selected,
+            [
+                "minecraft:pig#adult",
+                "minecraft:pig#baby",
+                "minecraft:pig_baby#main",
+                "minecraft:cold_pig#main",
+            ]
+        );
+        assert!(!selected.contains(&"minecraft:piglet#main"));
+    }
+}
+
 impl MobTypes {
     pub fn load(root: &Path) -> crate::Result<Self> {
         Self::load_with_models(root, true)
@@ -486,17 +579,55 @@ impl MobTypes {
     }
 
     fn load_with_models(root: &Path, models_needed: bool) -> crate::Result<Self> {
+        #[cfg(target_os = "cafe")]
+        let bytes = crate::spans::startup::time("rest.mobs.entity_types.read", || {
+            fs::read(root.join("entity-types.json"))
+        })?;
+        #[cfg(not(target_os = "cafe"))]
         let bytes = fs::read(root.join("entity-types.json"))?;
+        #[cfg(target_os = "cafe")]
+        let types: Value = crate::spans::startup::time("rest.mobs.entity_types.parse", || {
+            serde_json::from_slice(&bytes)
+        })?;
+        #[cfg(not(target_os = "cafe"))]
         let types: Value = serde_json::from_slice(&bytes)?;
+        #[cfg(target_os = "cafe")]
+        let exact =
+            crate::spans::startup::time("rest.mobs.exact_attributes", || exact_attributes(&bytes));
+        #[cfg(not(target_os = "cafe"))]
         let exact = exact_attributes(&bytes);
         let models = models_needed
             .then(|| -> crate::Result<Value> {
+                #[cfg(target_os = "cafe")]
+                return crate::spans::startup::time("rest.mobs.entity_models", || {
+                    Ok(serde_json::from_slice(&fs::read(
+                        root.join("entity-models.json"),
+                    )?)?)
+                });
+                #[cfg(not(target_os = "cafe"))]
                 Ok(serde_json::from_slice(&fs::read(
                     root.join("entity-models.json"),
                 )?)?)
             })
             .transpose()?;
+        #[cfg(target_os = "cafe")]
+        let model_layers = crate::spans::startup::time("rest.mobs.model_layer_index", || {
+            models.as_ref().and_then(model_layers_by_prefix)
+        });
+        #[cfg(not(target_os = "cafe"))]
+        let model_layers = models.as_ref().and_then(model_layers_by_prefix);
+        #[cfg(target_os = "cafe")]
+        let empty_model = crate::spans::startup::time("rest.mobs.empty_model", || {
+            Arc::new(Part::parse("root", &Value::Null))
+        });
+        #[cfg(not(target_os = "cafe"))]
         let empty_model = Arc::new(Part::parse("root", &Value::Null));
+        #[cfg(target_os = "cafe")]
+        let item_tags = crate::spans::startup::time("rest.mobs.item_tags", || {
+            crate::items::load_tags(root, "item", &horizon_world::loot::PackOverlay::NONE)
+                .unwrap_or_default()
+        });
+        #[cfg(not(target_os = "cafe"))]
         let item_tags =
             crate::items::load_tags(root, "item", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
@@ -513,6 +644,16 @@ impl MobTypes {
         };
         // The Allay's InventoryCarrier loading needs item limits before a
         // Game exists. Other mob-only resource sets need no item data.
+        #[cfg(target_os = "cafe")]
+        let items: HashMap<String, Value> =
+            crate::spans::startup::time("rest.mobs.allay_items", || -> crate::Result<_> {
+                if types.get("minecraft:allay").is_some() {
+                    Ok(serde_json::from_slice(&fs::read(root.join("items.json"))?)?)
+                } else {
+                    Ok(HashMap::new())
+                }
+            })?;
+        #[cfg(not(target_os = "cafe"))]
         let items: HashMap<String, Value> = if types.get("minecraft:allay").is_some() {
             serde_json::from_slice(&fs::read(root.join("items.json"))?)?
         } else {
@@ -547,7 +688,19 @@ impl MobTypes {
         let vanilla = species::ALL
             .iter()
             .map(|def| (format!("minecraft:{}", def.name), def));
-        for (id, def) in vanilla.chain(mod_types) {
+        #[cfg(target_os = "cafe")]
+        let _type_model_projection = crate::spans::startup::step("rest.mobs.type_model_projection");
+        for (_index, (id, def)) in vanilla.chain(mod_types).enumerate() {
+            #[cfg(target_os = "cafe")]
+            if ((_index + 1) % 16 == 0 || _index + 1 == species::ALL.len())
+                && crate::spans::startup::on()
+            {
+                log::info!(
+                    "Horizon Cafe mob type projection progress entries={} types={}",
+                    _index + 1,
+                    out.len()
+                );
+            }
             let t = &types[&id];
             if t.is_null() {
                 continue;
@@ -560,10 +713,15 @@ impl MobTypes {
             let defaults = exact.get(&id).cloned().unwrap_or_default();
             let attr = |k: &str| defaults.get(&format!("minecraft:{k}")).copied();
             let mut layers = crate::fast_hash::FxHashMap::default();
-            if let Some(all) = models.as_ref().and_then(Value::as_object) {
+            if let Some(model_layers) = &model_layers {
                 for prefix in def.layer_prefixes() {
-                    let start = format!("minecraft:{prefix}#");
-                    for (k, v) in all.iter().filter(|(k, _)| k.starts_with(&start)) {
+                    let prefix = format!("minecraft:{prefix}");
+                    for (k, v) in model_layers
+                        .get(prefix.as_str())
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                    {
                         let mut part = Part::parse("root", v);
                         if culls_back_faces(k) {
                             part.set_cull_back();
@@ -642,6 +800,8 @@ impl MobTypes {
                 },
             );
         }
+        #[cfg(target_os = "cafe")]
+        drop(_type_model_projection);
         Ok(Self { types: out })
     }
 }

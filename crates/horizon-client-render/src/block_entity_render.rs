@@ -1344,22 +1344,68 @@ impl BlockEntityRenderer {
         registry: &BlockRegistry,
         visibility: FaceVisibility,
     ) -> Result<Self> {
+        #[cfg(target_os = "cafe")]
+        let all: Value = crate::spans::startup::time(
+            "rest.block_entity_render.entity_models",
+            || -> Result<Value> {
+                Ok(serde_json::from_slice(&std::fs::read(
+                    root.join("entity-models.json"),
+                )?)?)
+            },
+        )?;
+        #[cfg(not(target_os = "cafe"))]
         let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
-        let models = MODELS
-            .iter()
-            .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))
-            .collect();
-        let mut renderer = Self::new(models, registry);
+        #[cfg(target_os = "cafe")]
+        let mut renderer =
+            crate::spans::startup::time("rest.block_entity_render.model_projection", || {
+                let models = MODELS
+                    .iter()
+                    .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))
+                    .collect();
+                Self::new(models, registry)
+            });
+        #[cfg(not(target_os = "cafe"))]
+        let mut renderer = {
+            let models = MODELS
+                .iter()
+                .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))
+                .collect();
+            Self::new(models, registry)
+        };
         renderer.visibility = Some(Mutex::new(visibility));
         // The packs' custom entity models (`.jem` files), before anything draws.
-        renderer.set_shapes(renderer.shapes_for(root));
+        #[cfg(target_os = "cafe")]
+        let shapes = crate::spans::startup::time("rest.block_entity_render.cem", || {
+            renderer.shapes_for(root)
+        });
+        #[cfg(not(target_os = "cafe"))]
+        let shapes = renderer.shapes_for(root);
+        renderer.set_shapes(shapes);
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
-        let items = match horizon_world::item_defaults::read(root) {
+        #[cfg(target_os = "cafe")]
+        let items = crate::spans::startup::time("rest.block_entity_render.item_defaults", || {
+            horizon_world::item_defaults::read(root)
+        });
+        #[cfg(not(target_os = "cafe"))]
+        let items = horizon_world::item_defaults::read(root);
+        let items = match items {
             Ok(items) => items,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
             Err(e) => return Err(e.into()),
         };
-        for (item, components) in &items {
+        #[cfg(target_os = "cafe")]
+        let _pottery_patterns =
+            crate::spans::startup::step("rest.block_entity_render.pottery_patterns");
+        for (_index, (item, components)) in items.iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            if ((_index + 1) % 256 == 0 || _index + 1 == items.len()) && crate::spans::startup::on()
+            {
+                log::info!(
+                    "Horizon Cafe pottery pattern progress items={}/{}",
+                    _index + 1,
+                    items.len()
+                );
+            }
             let Some(pattern) = components["minecraft:provides_pottery_pattern"].as_str() else {
                 continue;
             };
@@ -1376,6 +1422,8 @@ impl BlockEntityRenderer {
                     .insert(item.clone(), format!("entity/decorated_pot/{asset}"));
             }
         }
+        #[cfg(target_os = "cafe")]
+        drop(_pottery_patterns);
         Ok(renderer)
     }
     fn new(models: HashMap<&'static str, ModelPart>, registry: &BlockRegistry) -> Self {

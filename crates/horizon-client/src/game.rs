@@ -21627,7 +21627,17 @@ fn load_world_rest(
         if !draws {
             return Ok(Default::default());
         }
+        #[cfg(target_os = "cafe")]
+        let mut renderer = startup::time("rest.block_entity_render.models", || {
+            BlockEntityRenderer::load_with_visibility(root, registry, visibility)
+        })?;
+        #[cfg(not(target_os = "cafe"))]
         let mut renderer = BlockEntityRenderer::load_with_visibility(root, registry, visibility)?;
+        #[cfg(target_os = "cafe")]
+        startup::time("rest.block_entity_render.mod_signs", || {
+            renderer.add_mod_signs(facts, registry);
+        });
+        #[cfg(not(target_os = "cafe"))]
         renderer.add_mod_signs(facts, registry);
         Ok(renderer)
     };
@@ -21642,21 +21652,49 @@ fn load_world_rest(
     };
     let load_mobs = || -> Result<_> {
         let _step = startup::step("rest.mobs");
-        let mob_types: HashMap<_, _> = if draws {
-            MobTypes::load(root)?
+        let types = if draws {
+            #[cfg(target_os = "cafe")]
+            {
+                startup::time("rest.mobs.types", || MobTypes::load(root))?
+            }
+            #[cfg(not(target_os = "cafe"))]
+            {
+                MobTypes::load(root)?
+            }
         } else {
             MobTypes::load_for_server(root)?
-        }
-        .types
-        .into_iter()
-        .map(|(k, v)| (k, Arc::new(v)))
-        .collect();
+        };
+        let mob_types: HashMap<_, _> = types
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        #[cfg(target_os = "cafe")]
+        let mut mob_data = startup::time("rest.mobs.data", || {
+            horizon_client::mobs::MobData::load(root, facts)
+        });
+        #[cfg(not(target_os = "cafe"))]
         let mut mob_data = horizon_client::mobs::MobData::load(root, facts);
-        mob_data.cem = std::sync::RwLock::new(Arc::new(if draws {
+        #[cfg(target_os = "cafe")]
+        let cem = startup::time("rest.mobs.cem", || {
+            if draws {
+                horizon_client::mobs::cem::CemModels::load(root, &mob_types)
+            } else {
+                horizon_client::mobs::cem::CemModels::default()
+            }
+        });
+        #[cfg(not(target_os = "cafe"))]
+        let cem = if draws {
             horizon_client::mobs::cem::CemModels::load(root, &mob_types)
         } else {
             horizon_client::mobs::cem::CemModels::default()
-        }));
+        };
+        mob_data.cem = std::sync::RwLock::new(Arc::new(cem));
+        #[cfg(target_os = "cafe")]
+        startup::time("rest.mobs.trial_spawner", || {
+            horizon_client::mobs::trial_spawner::load_registry(root)
+        });
+        #[cfg(not(target_os = "cafe"))]
         horizon_client::mobs::trial_spawner::load_registry(root);
         Ok((mob_types, mob_data))
     };
@@ -22364,11 +22402,30 @@ impl CafeLoadingSession {
     /// Draw one original menu batch at the DRC layout size and lend it, with
     /// current artwork, to a host that presents both Cafe displays.
     pub fn draw(&mut self, presenter: &mut dyn CafeLoadingPresenter) -> Result<bool> {
+        self.draw_traced(presenter, None)
+    }
+
+    /// Draw one frame with bounded phase markers when the Cafe host is tracing
+    /// a specific event-loop iteration.
+    pub fn draw_traced(
+        &mut self,
+        presenter: &mut dyn CafeLoadingPresenter,
+        trace_iteration: Option<u32>,
+    ) -> Result<bool> {
         static FIRST_DRAW_TRACE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         let trace_first_draw = !FIRST_DRAW_TRACE.swap(true, std::sync::atomic::Ordering::Relaxed);
         horizon_client::hud::GUI_SCALE.store(self.loading.settings.gui_scale, Ordering::Relaxed);
+        if let Some(iteration) = trace_iteration {
+            log::info!("Horizon Cafe loading draw host_iteration={iteration} phase=artwork.begin");
+        }
         let (atlas, panorama) = self.loading.artwork();
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading draw host_iteration={iteration} phase=artwork.complete"
+            );
+            log::info!("Horizon Cafe loading draw host_iteration={iteration} phase=prepare.begin");
+        }
         if trace_first_draw {
             cafe_game_stage!("first Cafe session draw prepare begin");
         }
@@ -22377,6 +22434,11 @@ impl CafeLoadingSession {
             panorama: panorama.map(Arc::as_ref),
             generation: atlas.revision,
         })?;
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading draw host_iteration={iteration} phase=prepare.complete"
+            );
+        }
         if trace_first_draw {
             cafe_game_stage!("first Cafe session draw prepare complete");
         }
@@ -22389,9 +22451,19 @@ impl CafeLoadingSession {
         if trace_first_draw {
             cafe_game_stage!("first Cafe session draw_with begin");
         }
-        let result = self.loading.draw_with(
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading draw host_iteration={iteration} phase=draw_with.begin"
+            );
+        }
+        let result = self.loading.draw_with_trace(
             layout,
             |artwork, frame| {
+                if let Some(iteration) = trace_iteration {
+                    log::info!(
+                        "Horizon Cafe loading draw host_iteration={iteration} phase=present_callback.begin"
+                    );
+                }
                 if trace_first_draw {
                     cafe_game_stage!("first Cafe present callback begin");
                 }
@@ -22403,6 +22475,11 @@ impl CafeLoadingSession {
                     frame.ticks,
                     animated_textures,
                 );
+                if let Some(iteration) = trace_iteration {
+                    log::info!(
+                        "Horizon Cafe loading draw host_iteration={iteration} phase=present_callback.complete"
+                    );
+                }
                 if trace_first_draw {
                     cafe_game_stage!("first Cafe present callback complete");
                 }
@@ -22410,7 +22487,13 @@ impl CafeLoadingSession {
             },
             false,
             |_| {},
+            trace_iteration,
         );
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading draw host_iteration={iteration} phase=draw_with.complete"
+            );
+        }
         if trace_first_draw {
             cafe_game_stage!("first Cafe session draw_with complete");
         }
@@ -23191,9 +23274,33 @@ impl Loading {
         mark_shown_on_error: bool,
         on_error: impl FnOnce(&dyn std::error::Error),
     ) -> Result<bool> {
+        self.draw_with_trace(size, present, mark_shown_on_error, on_error, None)
+    }
+
+    fn draw_with_trace(
+        &mut self,
+        size: [u32; 2],
+        present: impl FnOnce(CafeLoadingArtwork<'_>, &Frame<'_>) -> Result<bool>,
+        mark_shown_on_error: bool,
+        on_error: impl FnOnce(&dyn std::error::Error),
+        trace_iteration: Option<u32>,
+    ) -> Result<bool> {
         self.viewport = size;
         let mut batch = HudBatch::new(size);
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading frame host_iteration={iteration} phase=draw_menu.begin"
+            );
+        }
         self.draw_menu(&mut batch);
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading frame host_iteration={iteration} phase=draw_menu.complete"
+            );
+            log::info!(
+                "Horizon Cafe loading frame host_iteration={iteration} phase=frame_build.begin"
+            );
+        }
         self.menu.frame_drawn((batch.width, batch.height));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
@@ -23206,6 +23313,11 @@ impl Loading {
             panorama: panorama.map(Arc::as_ref),
             generation: atlas.revision,
         };
+        if let Some(iteration) = trace_iteration {
+            log::info!(
+                "Horizon Cafe loading frame host_iteration={iteration} phase=frame_build.complete"
+            );
+        }
         let result = present(artwork, &frame);
         if let Err(error) = &result {
             on_error(error.as_ref());

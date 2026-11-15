@@ -1355,7 +1355,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
                         host_loop_iteration
                     );
                 }
-                let result = session.draw(self.presenter).map(|_| ());
+                let result = session
+                    .draw_traced(
+                        self.presenter,
+                        trace_this_iteration.then_some(host_loop_iteration),
+                    )
+                    .map(|_| ());
                 if trace_this_iteration {
                     log::info!(
                         "Horizon Cafe host loop trace iteration={} phase=loading_session.draw.end",

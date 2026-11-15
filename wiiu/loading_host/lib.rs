@@ -540,6 +540,16 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
         let trace = !self.trace_first_present;
         let trace_iteration = self.trace_loading_iteration;
         let iteration = self.loading_trace_iteration;
+        if trace_iteration {
+            unsafe {
+                OSReport(
+                    "Horizon GX2 loading iteration=%u present_loading entry\n\0"
+                        .as_ptr()
+                        .cast(),
+                    iteration,
+                );
+            }
+        }
         if trace {
             self.trace_first_present = true;
             gx2_loading_stage!("first presenter present begin");
@@ -561,6 +571,16 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
         }
         if layout_viewport != self.layout || target_viewports != self.target_viewports() {
             return Err("Cafe loading viewports changed without presenter recreation".into());
+        }
+        if trace_iteration {
+            unsafe {
+                OSReport(
+                    "Horizon GX2 loading iteration=%u present_loading validation complete\n\0"
+                        .as_ptr()
+                        .cast(),
+                    iteration,
+                );
+            }
         }
         struct Draw<'a, 'frame, 'shader> {
             presenter: &'a mut Gx2LoadingPresenter<'shader>,
