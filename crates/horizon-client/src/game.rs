@@ -20921,7 +20921,7 @@ const NUMERIC_KEYS: [KeyCode; 11] = [
 const STAGE_LINES: [&str; 10] = [
     "Loading menu",
     "Loading assets",
-    "Loading block facts",
+    "Loading game resources",
     "Loading biomes",
     "Loading pack tables",
     "Loading collision",
