@@ -470,36 +470,120 @@ fn culls_back_faces(key: &str) -> bool {
     matches!(key, "minecraft:bat#main" | "minecraft:turtle_baby#main")
 }
 
+// Cafe's resource load keeps entity-model keys in a flat, sorted table. This
+// avoids walking serde_json's top-level BTreeMap on the PowerPC target while
+// retaining the lexical order used by the desktop loader.
+#[cfg(any(target_os = "cafe", test))]
+struct ModelEntries(Vec<(String, Value)>);
+
+#[cfg(any(target_os = "cafe", test))]
+impl<'de> serde::Deserialize<'de> for ModelEntries {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ModelEntriesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ModelEntriesVisitor {
+            type Value = ModelEntries;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an entity model JSON value")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut entries = Vec::with_capacity(map.size_hint().unwrap_or_default());
+                while let Some(entry) = map.next_entry::<String, Value>()? {
+                    entries.push(entry);
+                }
+                // A serde_json::Value object keeps the last value for a
+                // duplicate key. Stable sorting lets the same rule be
+                // applied after grouping keys lexically.
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut unique = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    if let Some((last_key, last_value)) = unique.last_mut() {
+                        if last_key == &key {
+                            *last_value = value;
+                            continue;
+                        }
+                    }
+                    unique.push((key, value));
+                }
+                Ok(ModelEntries(unique))
+            }
+
+            fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+            where
+                S: serde::de::SeqAccess<'de>,
+            {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _value: &str) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, _value: String) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(ModelEntries(Vec::new()))
+            }
+        }
+
+        deserializer.deserialize_any(ModelEntriesVisitor)
+    }
+}
+
 pub struct MobTypes {
     pub types: HashMap<String, MobType>,
 }
 
-fn model_layers_by_prefix<'a>(
-    models: &'a Value,
-) -> Option<crate::fast_hash::FxHashMap<&'a str, Vec<(&'a str, &'a Value)>>> {
+fn model_layers<'a>(
+    entries: impl Iterator<Item = (&'a str, &'a Value)>,
+    _entry_count: usize,
+) -> crate::fast_hash::FxHashMap<&'a str, Vec<(&'a str, &'a Value)>> {
     #[cfg(target_os = "cafe")]
     if crate::spans::startup::on() {
         log::info!("Horizon Cafe mob model index entered");
-    }
-    let all = models.as_object()?;
-    #[cfg(target_os = "cafe")]
-    if crate::spans::startup::on() {
-        log::info!("Horizon Cafe mob model index object entries={}", all.len());
+        log::info!("Horizon Cafe mob model index entries={_entry_count}");
     }
     let mut layers = crate::fast_hash::FxHashMap::default();
-    for (index, (key, value)) in all.iter().enumerate() {
+    for (_index, (key, value)) in entries.enumerate() {
         if let Some((prefix, _)) = key.split_once('#') {
             layers
                 .entry(prefix)
                 .or_insert_with(Vec::new)
-                .push((key.as_str(), value));
+                .push((key, value));
         }
         #[cfg(target_os = "cafe")]
-        if (index + 1) % 32 == 0 && crate::spans::startup::on() {
+        if (_index + 1) % 32 == 0 && crate::spans::startup::on() {
             log::info!(
                 "Horizon Cafe mob model index progress entries={}/{} groups={}",
-                index + 1,
-                all.len(),
+                _index + 1,
+                _entry_count,
                 layers.len()
             );
         }
@@ -508,11 +592,31 @@ fn model_layers_by_prefix<'a>(
     if crate::spans::startup::on() {
         log::info!(
             "Horizon Cafe mob model index complete entries={} groups={}",
-            all.len(),
+            _entry_count,
             layers.len()
         );
     }
-    Some(layers)
+    layers
+}
+
+fn model_layers_by_prefix<'a>(
+    models: &'a Value,
+) -> Option<crate::fast_hash::FxHashMap<&'a str, Vec<(&'a str, &'a Value)>>> {
+    let all = models.as_object()?;
+    Some(model_layers(
+        all.iter().map(|(key, value)| (key.as_str(), value)),
+        all.len(),
+    ))
+}
+
+#[cfg(any(target_os = "cafe", test))]
+fn model_layers_by_entries(
+    entries: &[(String, Value)],
+) -> crate::fast_hash::FxHashMap<&str, Vec<(&str, &Value)>> {
+    model_layers(
+        entries.iter().map(|(key, value)| (key.as_str(), value)),
+        entries.len(),
+    )
 }
 
 #[cfg(test)]
@@ -564,6 +668,73 @@ mod model_layer_index_tests {
         );
         assert!(!selected.contains(&"minecraft:piglet#main"));
     }
+
+    #[test]
+    fn flat_model_entries_match_lexical_object_order() {
+        let source = r#"{
+            "minecraft:pig#baby": {"kind":"baby"},
+            "minecraft:pig#adult": {"kind":"adult"},
+            "minecraft:pig_baby#main": {"kind":"baby_variant"}
+        }"#;
+        let object: Value = serde_json::from_str(source).unwrap();
+        let entries: ModelEntries = serde_json::from_str(source).unwrap();
+        let indexed = model_layers_by_entries(&entries.0);
+
+        let object_keys: Vec<_> = object
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let entry_keys: Vec<_> = entries.0.iter().map(|(key, _)| key.as_str()).collect();
+        let indexed_pig: Vec<_> = indexed
+            .get("minecraft:pig")
+            .unwrap()
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+
+        assert_eq!(entry_keys, object_keys);
+        assert_eq!(indexed_pig, ["minecraft:pig#adult", "minecraft:pig#baby"]);
+    }
+
+    #[test]
+    fn flat_model_entries_keep_last_duplicate_and_non_object_roots_empty() {
+        let source = r#"{
+            "minecraft:pig#adult": {"kind":"first"},
+            "minecraft:pig#baby": {"kind":"baby"},
+            "minecraft:pig#adult": {"kind":"last"}
+        }"#;
+        let object: Value = serde_json::from_str(source).unwrap();
+        let entries: ModelEntries = serde_json::from_str(source).unwrap();
+        let indexed = model_layers_by_entries(&entries.0);
+        let adult = entries
+            .0
+            .binary_search_by(|(key, _)| key.as_str().cmp("minecraft:pig#adult"))
+            .unwrap();
+
+        assert_eq!(entries.0.len(), object.as_object().unwrap().len());
+        assert_eq!(
+            entries.0[adult].1["kind"],
+            object["minecraft:pig#adult"]["kind"]
+        );
+        assert_eq!(indexed.get("minecraft:pig").unwrap().len(), 2);
+        assert_eq!(
+            indexed
+                .get("minecraft:pig")
+                .unwrap()
+                .iter()
+                .find(|(key, _)| *key == "minecraft:pig#adult")
+                .unwrap()
+                .1["kind"]
+                .as_str(),
+            Some("last")
+        );
+
+        let non_object: ModelEntries = serde_json::from_str("[]").unwrap();
+        assert!(non_object.0.is_empty());
+        assert!(model_layers_by_entries(&non_object.0).is_empty());
+    }
 }
 
 impl MobTypes {
@@ -596,15 +767,19 @@ impl MobTypes {
             crate::spans::startup::time("rest.mobs.exact_attributes", || exact_attributes(&bytes));
         #[cfg(not(target_os = "cafe"))]
         let exact = exact_attributes(&bytes);
+        #[cfg(target_os = "cafe")]
         let models = models_needed
-            .then(|| -> crate::Result<Value> {
-                #[cfg(target_os = "cafe")]
-                return crate::spans::startup::time("rest.mobs.entity_models", || {
+            .then(|| -> crate::Result<ModelEntries> {
+                crate::spans::startup::time("rest.mobs.entity_models", || {
                     Ok(serde_json::from_slice(&fs::read(
                         root.join("entity-models.json"),
                     )?)?)
-                });
-                #[cfg(not(target_os = "cafe"))]
+                })
+            })
+            .transpose()?;
+        #[cfg(not(target_os = "cafe"))]
+        let models = models_needed
+            .then(|| -> crate::Result<Value> {
                 Ok(serde_json::from_slice(&fs::read(
                     root.join("entity-models.json"),
                 )?)?)
@@ -612,7 +787,9 @@ impl MobTypes {
             .transpose()?;
         #[cfg(target_os = "cafe")]
         let model_layers = crate::spans::startup::time("rest.mobs.model_layer_index", || {
-            models.as_ref().and_then(model_layers_by_prefix)
+            models
+                .as_ref()
+                .map(|models| model_layers_by_entries(&models.0))
         });
         #[cfg(not(target_os = "cafe"))]
         let model_layers = models.as_ref().and_then(model_layers_by_prefix);
@@ -706,6 +883,15 @@ impl MobTypes {
                 continue;
             }
             let model_key = format!("minecraft:{}", def.model);
+            #[cfg(target_os = "cafe")]
+            let model = models.as_ref().and_then(|models| {
+                models
+                    .0
+                    .binary_search_by(|(key, _)| key.as_str().cmp(model_key.as_str()))
+                    .ok()
+                    .map(|index| &models.0[index].1)
+            });
+            #[cfg(not(target_os = "cafe"))]
             let model = models.as_ref().and_then(|models| models.get(&model_key));
             if models_needed && model.is_none() {
                 continue;
