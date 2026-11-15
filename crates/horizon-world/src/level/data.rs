@@ -864,15 +864,44 @@ fn build_with_gameplay<G: GameplayStateSource>(
         );
         let path = entry?.path();
         #[cfg(target_os = "cafe")]
-        log::info!(
-            "Horizon Cafe behaviour fluid tag entry path complete index={fluid_entry_index} path={}",
-            path.display()
-        );
+        let entry_index = fluid_entry_index;
         #[cfg(target_os = "cafe")]
         {
             fluid_entry_index += 1;
         }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag entry path complete index={entry_index} path={}",
+            path.display()
+        );
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag file stem begin index={entry_index}");
+        let path_stem = path.file_stem();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag file stem complete index={entry_index} has_stem={}",
+            path_stem.is_some()
+        );
+        let Some(path_stem) = path_stem else {
+            #[cfg(target_os = "cafe")]
+            log::info!(
+                "Horizon Cafe behaviour fluid tag file skipped index={entry_index} reason=no_stem"
+            );
+            continue;
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag UTF-8 stem begin index={entry_index}");
+        let stem = path_stem.to_str();
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe behaviour fluid tag UTF-8 stem complete index={entry_index} valid={}",
+            stem.is_some()
+        );
+        let Some(stem) = stem else {
+            #[cfg(target_os = "cafe")]
+            log::info!(
+                "Horizon Cafe behaviour fluid tag file skipped index={entry_index} reason=invalid_utf8"
+            );
             continue;
         };
         #[cfg(target_os = "cafe")]
@@ -880,18 +909,21 @@ fn build_with_gameplay<G: GameplayStateSource>(
             "Horizon Cafe behaviour fluid tag file begin path={}",
             path.display()
         );
-        fluid_definitions
-            .apply_json(
-                &format!("minecraft:{stem}"),
-                "vanilla",
-                &fs::read_to_string(&path)?,
-            )
-            .map_err(|e| invalid(e.to_string()))?;
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag file read begin index={entry_index}");
+        let file = fs::read_to_string(&path)?;
         #[cfg(target_os = "cafe")]
         log::info!(
-            "Horizon Cafe behaviour fluid tag file complete path={}",
-            path.display()
+            "Horizon Cafe behaviour fluid tag file read complete index={entry_index} bytes={}",
+            file.len()
         );
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag apply begin index={entry_index}");
+        fluid_definitions
+            .apply_json(&format!("minecraft:{stem}"), "vanilla", &file)
+            .map_err(|e| invalid(e.to_string()))?;
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe behaviour fluid tag apply complete index={entry_index}");
     }
     #[cfg(target_os = "cafe")]
     log::info!("Horizon Cafe behaviour fluid tag read complete");
