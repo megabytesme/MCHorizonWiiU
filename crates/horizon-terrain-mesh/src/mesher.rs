@@ -393,6 +393,8 @@ impl MeshTables {
         let mut info = Vec::with_capacity(facts.states.len());
         for (id, s) in facts.states.iter().enumerate() {
             #[cfg(target_os = "cafe")]
+            let trace_detail = id == 0;
+            #[cfg(target_os = "cafe")]
             let trace_checkpoint = {
                 let processed = id + 1;
                 id < 8 || processed % 1024 == 0 || processed == facts.states.len()
@@ -401,10 +403,21 @@ impl MeshTables {
             if trace_checkpoint {
                 log::info!("Horizon Cafe mesh tables: state begin id={id}");
             }
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 registry lookup begin");
+            }
             let state = assets
                 .registry
                 .state(BlockStateId(id as u32))
                 .ok_or("missing registry state")?;
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!(
+                    "Horizon Cafe mesh tables: state 0 registry lookup complete name={}",
+                    s.name
+                );
+            }
             let props = &state.properties;
             let prop = |k: &str| -> u8 { props.get(k).and_then(|v| v.parse().ok()).unwrap_or(0) };
             let name = s.name.strip_prefix("minecraft:").unwrap_or(&s.name);
@@ -437,6 +450,10 @@ impl MeshTables {
                 "lily_pad" => ([Tint::LilyPad; 2], 1),
                 _ => ([Tint::None; 2], 0),
             };
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 tint classification complete");
+            }
             // getShadeBrightness overrides; the default is 0.2 for full collision shapes.
             let overrides = [
                 "TransparentBlock",
@@ -472,6 +489,10 @@ impl MeshTables {
                 };
                 (horizontal, vertical)
             });
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 block classification complete");
+            }
             let mut face = [0u8; 6];
             let mut cover = [0f32; 6];
             // A server's visibility knows no state (`FaceVisibility::empty`):
@@ -480,13 +501,50 @@ impl MeshTables {
                 .into_iter()
                 .filter(|_| !visibility.is_empty())
             {
+                #[cfg(target_os = "cafe")]
+                if trace_detail {
+                    log::info!(
+                        "Horizon Cafe mesh tables: state 0 face lookup begin direction={}",
+                        d as usize
+                    );
+                }
                 let (face_id, shape) = visibility
                     .occlusion_face(BlockStateId(id as u32), d)
                     .ok_or("missing occlusion face")?;
+                #[cfg(target_os = "cafe")]
+                if trace_detail {
+                    log::info!(
+                        "Horizon Cafe mesh tables: state 0 face lookup complete direction={} face_id={face_id}",
+                        d as usize
+                    );
+                }
                 face[d as usize] = face_id.min(2) as u8;
-                cover[d as usize] = *covers
-                    .entry((face_id, d as u8))
-                    .or_insert_with(|| fluid::coverage(shape, d));
+                cover[d as usize] = *covers.entry((face_id, d as u8)).or_insert_with(|| {
+                    #[cfg(target_os = "cafe")]
+                    if trace_detail {
+                        log::info!(
+                            "Horizon Cafe mesh tables: state 0 fluid coverage begin direction={}",
+                            d as usize
+                        );
+                    }
+                    let coverage = fluid::coverage(shape, d);
+                    #[cfg(target_os = "cafe")]
+                    if trace_detail {
+                        log::info!(
+                            "Horizon Cafe mesh tables: state 0 fluid coverage complete direction={}",
+                            d as usize
+                        );
+                    }
+                    coverage
+                });
+            }
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 face loop complete");
+            }
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 info construction begin");
             }
             info.push(Info {
                 solid: s.solid_render,
@@ -496,7 +554,20 @@ impl MeshTables {
                 emission: s.emission,
                 tier: hdr_tier(name, s.emission),
                 emissive,
-                fluid: FluidState::from_block(state)?,
+                fluid: {
+                    #[cfg(target_os = "cafe")]
+                    if trace_detail {
+                        log::info!("Horizon Cafe mesh tables: state 0 fluid classification begin");
+                    }
+                    let fluid = FluidState::from_block(state)?;
+                    #[cfg(target_os = "cafe")]
+                    if trace_detail {
+                        log::info!(
+                            "Horizon Cafe mesh tables: state 0 fluid classification complete"
+                        );
+                    }
+                    fluid
+                },
                 model: s.render_shape == RenderShape::Model,
                 block_entity: s.block_entity,
                 tints,
@@ -518,6 +589,10 @@ impl MeshTables {
                 face,
                 cover,
             });
+            #[cfg(target_os = "cafe")]
+            if trace_detail {
+                log::info!("Horizon Cafe mesh tables: state 0 info construction complete");
+            }
             #[cfg(target_os = "cafe")]
             if trace_checkpoint {
                 log::info!(
