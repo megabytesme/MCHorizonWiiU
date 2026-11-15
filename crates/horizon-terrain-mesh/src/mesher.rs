@@ -362,6 +362,14 @@ impl MeshTables {
         facts: &BlockFacts,
         visibility: FaceVisibility,
     ) -> crate::Result<Self> {
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe mesh tables: begin states={} visibility_empty={} layers={} animations={}",
+            facts.states.len(),
+            visibility.is_empty(),
+            render.sprite_layers.len(),
+            render.animations.len()
+        );
         // Terrain vertices keep the sprite layer below `OPAQUE_LAYER`.
         let layers = render.sprite_layers.values().max().map_or(0, |l| l + 1);
         if layers > u32::from(OPAQUE_LAYER) {
@@ -384,6 +392,15 @@ impl MeshTables {
         let mut covers = std::collections::HashMap::new();
         let mut info = Vec::with_capacity(facts.states.len());
         for (id, s) in facts.states.iter().enumerate() {
+            #[cfg(target_os = "cafe")]
+            let trace_checkpoint = {
+                let processed = id + 1;
+                id < 8 || processed % 1024 == 0 || processed == facts.states.len()
+            };
+            #[cfg(target_os = "cafe")]
+            if trace_checkpoint {
+                log::info!("Horizon Cafe mesh tables: state begin id={id}");
+            }
             let state = assets
                 .registry
                 .state(BlockStateId(id as u32))
@@ -501,22 +518,60 @@ impl MeshTables {
                 face,
                 cover,
             });
+            #[cfg(target_os = "cafe")]
+            if trace_checkpoint {
+                log::info!(
+                    "Horizon Cafe mesh tables: state complete processed={} covers={}",
+                    id + 1,
+                    covers.len()
+                );
+            }
         }
-        Ok(Self {
-            solid: info.iter().map(|i| i.solid).collect(),
-            full_faces: info
-                .iter()
-                .map(|i| (0..6).fold(0, |bits, d| bits | u8::from(i.face[d] == 1) << d))
-                .collect(),
+        #[cfg(target_os = "cafe")]
+        log::info!(
+            "Horizon Cafe mesh tables: state loop complete states={} covers={}",
+            info.len(),
+            covers.len()
+        );
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: solid vector begin");
+        let solid = info.iter().map(|i| i.solid).collect();
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: solid vector complete");
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: full-face vector begin");
+        let full_faces = info
+            .iter()
+            .map(|i| (0..6).fold(0, |bits, d| bits | u8::from(i.face[d] == 1) << d))
+            .collect();
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: full-face vector complete");
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: fluid sprite lookup begin");
+        let water_still = layer("minecraft:block/water_still")?;
+        let water_flow = layer("minecraft:block/water_flow")?;
+        let water_overlay = layer("minecraft:block/water_overlay")?;
+        let lava_still = layer("minecraft:block/lava_still")?;
+        let lava_flow = layer("minecraft:block/lava_flow")?;
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: fluid sprite lookup complete");
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: result construction begin");
+        let tables = Self {
+            solid,
+            full_faces,
             info,
             visibility,
-            water_still: layer("minecraft:block/water_still")?,
-            water_flow: layer("minecraft:block/water_flow")?,
-            water_overlay: layer("minecraft:block/water_overlay")?,
-            lava_still: layer("minecraft:block/lava_still")?,
-            lava_flow: layer("minecraft:block/lava_flow")?,
+            water_still,
+            water_flow,
+            water_overlay,
+            lava_still,
+            lava_flow,
             animated_layers,
-        })
+        };
+        #[cfg(target_os = "cafe")]
+        log::info!("Horizon Cafe mesh tables: result construction complete");
+        Ok(tables)
     }
     /// Whether a terrain sprite layer has an animated clip.
     pub fn is_animated(&self, layer: u16) -> bool {
