@@ -6,6 +6,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 option(HORIZON_WIIU_TRACE_VPAD_INPUT "Log Cafe VPAD input transitions to the serial log" OFF)
 option(HORIZON_WIIU_TRACE_SWKBD "Log CafeOS keyboard stage transitions to the serial log" OFF)
 option(HORIZON_WIIU_DISABLE_AX_AUDIO "Disable only the Cafe AX audio bridge for diagnostics" OFF)
+option(HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK
+   "Use the scratch-only Cemu global socket lock instead of Cafe File::try_lock" OFF)
 
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(CARGO_WIIU_EXECUTABLE cargo-wiiu REQUIRED)
@@ -53,6 +55,12 @@ set(HORIZON_WIIU_CARGO_HOME "$ENV{CARGO_HOME}" CACHE PATH "Optional reusable Car
 set(HORIZON_WIIU_CARGO_JOBS "1" CACHE STRING "Cargo build jobs (conservative Cafe default)")
 set(HORIZON_WIIU_CARGO_RUSTFLAGS "$ENV{RUSTFLAGS}" CACHE STRING
    "Additional Rust flags; Cafe's custom getrandom backend is added automatically")
+set(_cargo_rustflags "${HORIZON_WIIU_CARGO_RUSTFLAGS}")
+if(HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK)
+   # The C bridge alone is inert unless the Cafe Rust save adapter is enabled.
+   string(APPEND _cargo_rustflags
+      " --cfg horizon_wiiu_cemu_global_lock --check-cfg=cfg(horizon_wiiu_cemu_global_lock)")
+endif()
 
 set(HORIZON_WIIU_WINIT_TV_SIZE_SOURCE "$ENV{HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}" CACHE FILEPATH
    "tv_size.c from the configured patched Winit scratch tree")
@@ -102,6 +110,20 @@ if(HORIZON_WIIU_PREBUILT_STATICLIB)
    if(NOT EXISTS "${HORIZON_WIIU_PREBUILT_STATICLIB}")
       message(FATAL_ERROR "HORIZON_WIIU_PREBUILT_STATICLIB does not exist: ${HORIZON_WIIU_PREBUILT_STATICLIB}")
    endif()
+   if(HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK)
+      execute_process(
+         COMMAND "${POWERPC_NM_EXECUTABLE}" -u "${HORIZON_WIIU_PREBUILT_STATICLIB}"
+         RESULT_VARIABLE prebuilt_nm_result
+         OUTPUT_VARIABLE prebuilt_undefined_symbols
+         ERROR_VARIABLE prebuilt_nm_error)
+      string(FIND "${prebuilt_undefined_symbols}" "horizon_wiiu_cemu_global_lock_open" cemu_lock_symbol_index)
+      if(NOT prebuilt_nm_result STREQUAL "0" OR cemu_lock_symbol_index EQUAL -1)
+         message(FATAL_ERROR
+            "HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK requires a prebuilt static library compiled with "
+            "--cfg horizon_wiiu_cemu_global_lock (undefined bridge reference missing). "
+            "nm result: ${prebuilt_nm_result}; ${prebuilt_nm_error}")
+      endif()
+   endif()
    set(RUST_STATICLIB "${HORIZON_WIIU_PREBUILT_STATICLIB}")
 else()
    if(NOT EXISTS "${HORIZON_WIIU_CARGO_MANIFEST}")
@@ -114,7 +136,7 @@ else()
       "CARGO_TARGET_DIR=${HORIZON_WIIU_CARGO_TARGET_DIR}"
       "RUSTC=${HORIZON_WIIU_STD_RUSTC}"
       "CC_powerpc-nintendo-cafe=${CMAKE_C_COMPILER}"
-      "RUSTFLAGS=${HORIZON_WIIU_CARGO_RUSTFLAGS} --cfg getrandom_backend=\"custom\"")
+      "RUSTFLAGS=${_cargo_rustflags} --cfg getrandom_backend=\"custom\"")
    if(HORIZON_WIIU_CARGO_HOME)
       list(APPEND _cargo_environment "CARGO_HOME=${HORIZON_WIIU_CARGO_HOME}")
    endif()
@@ -174,6 +196,11 @@ endif()
 if(HORIZON_WIIU_DISABLE_AX_AUDIO)
    target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_DISABLE_AX_AUDIO=1)
 endif()
+if(HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK)
+   # Scratch Cemu diagnostic only: every world shares one loopback port. This
+   # does not establish a hardware session-lock implementation.
+   target_sources(horizon_wiiu_loading_app PRIVATE ../platform/src/cemu_global_session_lock.c)
+endif()
 add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_wut)
 if(NOT HORIZON_WIIU_PREBUILT_STATICLIB)
    add_dependencies(horizon_wiiu_loading_app horizon_wiiu_loading_rust)
@@ -189,11 +216,16 @@ target_compile_options(horizon_wiiu_loading_app PRIVATE -Wall -Wextra -Werror)
 set(PACKAGE_ELF "${CMAKE_CURRENT_BINARY_DIR}/loading_app.package.elf")
 set(RELOCATION_NORMALIZER "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/wiiu_normalize_rpl_relocations.py")
 set(RPX "${CMAKE_CURRENT_BINARY_DIR}/horizon_wiiu_loading_app.rpx")
+set(_rpx_objcopy_redefines --redefine-sym __rplwrap_exit=exit)
+if(HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK)
+   # WUT's nsysnet socket close import must retain the socket-specific wrapper.
+   list(APPEND _rpx_objcopy_redefines --redefine-sym __rplwrap_socketclose=socketclose)
+endif()
 add_custom_command(
    OUTPUT "${RPX}"
    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:horizon_wiiu_loading_app>" "${PACKAGE_ELF}"
    COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" --strip-debug --remove-section=.note.GNU-stack
-      --redefine-sym __rplwrap_exit=exit "${PACKAGE_ELF}"
+      ${_rpx_objcopy_redefines} "${PACKAGE_ELF}"
    COMMAND "${PYTHON3_EXECUTABLE}" "${RELOCATION_NORMALIZER}" "${PACKAGE_ELF}"
    COMMAND "${CMAKE_COMMAND}" "-DCARGO=${CARGO_EXECUTABLE}" "-DPACKAGE_ELF=${PACKAGE_ELF}"
       "-DREADRPL=${READRPL_EXECUTABLE}" "-DRPX=${RPX}"

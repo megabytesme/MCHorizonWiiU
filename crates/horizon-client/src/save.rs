@@ -130,51 +130,83 @@ pub fn dimension_dir(world: &Path, dimension: &str) -> PathBuf {
         .unwrap_or(("minecraft", dimension));
     world.join("dimensions").join(namespace).join(path)
 }
-/// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) under an exclusive
-/// file lock for as long as the world is open, so two instances cannot share it.
-pub struct SessionLock(fs::File);
+/// `DirectoryLock`: `session.lock` holds "\u{2603}" (UTF-16BE) while the world
+/// is open. Normal builds use an exclusive file lock; the opt-in Cemu build
+/// keeps the same marker and uses a global host lock instead.
+#[allow(unexpected_cfgs)]
+pub struct SessionLock(
+    fs::File,
+    #[cfg(all(target_os = "cafe", horizon_wiiu_cemu_global_lock))]
+    #[allow(dead_code)]
+    horizon_client_platform::cemu_session_lock::CemuGlobalSessionLock,
+);
+#[allow(unexpected_cfgs)]
 impl Drop for SessionLock {
-    /// `DirectoryLock.close`: release the lock, then close the file. Closing
-    /// alone keeps the lock while any copy of the descriptor lives on, such as
-    /// the one a process spawned on another thread holds until its `exec`.
+    /// `DirectoryLock.close`: release the file lock in normal builds, then
+    /// close the file. Cemu's opt-in build has no file lock to release; its
+    /// global guard field is dropped after this method returns.
     fn drop(&mut self) {
+        #[cfg(not(all(target_os = "cafe", horizon_wiiu_cemu_global_lock)))]
         let _ = self.0.unlock();
     }
 }
+#[allow(unexpected_cfgs)]
 impl SessionLock {
     pub fn acquire(world: &Path) -> Result<Self> {
         use std::io::Write;
+        // Cafe std does not provide the file-lock primitive. The opt-in Cemu
+        // host guard takes over exclusivity, while the
+        // session.lock file keeps vanilla's on-disk marker unchanged.
+        #[cfg(all(target_os = "cafe", horizon_wiiu_cemu_global_lock))]
+        let cemu_global_lock =
+            horizon_client_platform::cemu_session_lock::CemuGlobalSessionLock::try_acquire()?;
+
         fs::create_dir_all(world)?;
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
+        #[cfg(not(all(target_os = "cafe", horizon_wiiu_cemu_global_lock)))]
         file.try_lock()
             .map_err(|_| format!("{} is already open in another instance", world.display()))?;
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
+        #[cfg(all(target_os = "cafe", horizon_wiiu_cemu_global_lock))]
+        return Ok(Self(file, cemu_global_lock));
+        #[cfg(not(all(target_os = "cafe", horizon_wiiu_cemu_global_lock)))]
         Ok(Self(file))
     }
     /// `DirectoryLock.isLocked`: another copy holds the world's `session.lock`.
     /// A world without the file is not locked; one whose file may not be opened
     /// is.
     pub fn is_locked(world: &Path) -> bool {
-        let file = match fs::OpenOptions::new()
-            .write(true)
-            .open(world.join("session.lock"))
+        #[cfg(all(target_os = "cafe", horizon_wiiu_cemu_global_lock))]
         {
-            Ok(file) => file,
-            Err(e) => return e.kind() == std::io::ErrorKind::PermissionDenied,
-        };
-        match file.try_lock() {
-            Err(fs::TryLockError::WouldBlock) => true,
-            Err(_) => false,
-            // Take the probe's own lock back at once, as `SessionLock` does on drop.
-            Ok(()) => {
-                let _ = file.unlock();
-                false
+            // Cemu's global host lock has no per-world key. Conservatively
+            // treat any held host lock (or lock failure) as this world locked.
+            let _ = world;
+            return horizon_client_platform::cemu_session_lock::CemuGlobalSessionLock::try_acquire()
+                .is_err();
+        }
+        #[cfg(not(all(target_os = "cafe", horizon_wiiu_cemu_global_lock)))]
+        {
+            let file = match fs::OpenOptions::new()
+                .write(true)
+                .open(world.join("session.lock"))
+            {
+                Ok(file) => file,
+                Err(e) => return e.kind() == std::io::ErrorKind::PermissionDenied,
+            };
+            match file.try_lock() {
+                Err(fs::TryLockError::WouldBlock) => true,
+                Err(_) => false,
+                // Take the probe's own lock back at once, as `SessionLock` does on drop.
+                Ok(()) => {
+                    let _ = file.unlock();
+                    false
+                }
             }
         }
     }

@@ -1,5 +1,9 @@
 //! Platform-neutral contracts used by Horizon's client frontends.
 
+#[cfg(target_os = "cafe")]
+#[allow(unexpected_cfgs)] // Opt-in only for the temporary Cafe/Cemu diagnostic build.
+#[cfg(horizon_wiiu_cemu_global_lock)]
+pub mod cemu_session_lock;
 pub mod events;
 pub mod input;
 pub mod logging;
