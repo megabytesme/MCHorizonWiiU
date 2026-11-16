@@ -854,37 +854,58 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
     }
 }
 
-fn project_terrain_vertex(
-    vertex: &mut TerrainGpuVertex,
-    key: SectionKey,
+struct TerrainProjection {
+    camera: [f64; 3],
     min_y: i32,
-    frame: &Frame<'_>,
+    yaw_sin: f32,
+    yaw_cos: f32,
+    pitch_sin: f32,
+    pitch_cos: f32,
+    focal: f32,
     aspect: f32,
-) {
-    let [cx, cy, cz] = frame.camera.to_array();
-    let x = (f64::from(key.0) * 16.0 + f64::from(vertex.position[0]) - cx) as f32;
-    let y = (f64::from(min_y + key.1 * 16) + f64::from(vertex.position[1]) - cy) as f32;
-    let z = (f64::from(key.2) * 16.0 + f64::from(vertex.position[2]) - cz) as f32;
-    let yaw = (frame.yaw - 180.0).to_radians();
-    let (sy, cyaw) = yaw.sin_cos();
-    let view_x = cyaw * x + sy * z;
-    let yaw_z = -sy * x + cyaw * z;
-    let pitch = frame.pitch.to_radians();
-    let (sp, cp) = pitch.sin_cos();
-    let view_y = cp * y - sp * yaw_z;
-    let view_z = sp * y + cp * yaw_z;
-    let depth = -view_z;
-    let near = 0.05f32;
-    let far = frame.depth_far.max(near + 1.0);
-    let focal = 1.0 / (frame.fov_degrees.to_radians() * 0.5).tan();
-    let depth_scale = far / (near - far);
-    let depth_offset = far * near / (near - far);
-    vertex.position = [
-        view_x * focal / aspect,
-        view_y * focal,
-        view_z * depth_scale + depth_offset,
-        depth,
-    ];
+    depth_scale: f32,
+    depth_offset: f32,
+}
+
+impl TerrainProjection {
+    fn new(frame: &Frame<'_>, min_y: i32, aspect: f32) -> Self {
+        let yaw = (frame.yaw - 180.0).to_radians();
+        let (yaw_sin, yaw_cos) = yaw.sin_cos();
+        let pitch = frame.pitch.to_radians();
+        let (pitch_sin, pitch_cos) = pitch.sin_cos();
+        let near = 0.05f32;
+        let far = frame.depth_far.max(near + 1.0);
+        Self {
+            camera: frame.camera.to_array(),
+            min_y,
+            yaw_sin,
+            yaw_cos,
+            pitch_sin,
+            pitch_cos,
+            focal: 1.0 / (frame.fov_degrees.to_radians() * 0.5).tan(),
+            aspect,
+            depth_scale: far / (near - far),
+            depth_offset: far * near / (near - far),
+        }
+    }
+
+    fn project(&self, vertex: &mut TerrainGpuVertex, key: SectionKey) {
+        let [cx, cy, cz] = self.camera;
+        let x = (f64::from(key.0) * 16.0 + f64::from(vertex.position[0]) - cx) as f32;
+        let y = (f64::from(self.min_y + key.1 * 16) + f64::from(vertex.position[1]) - cy) as f32;
+        let z = (f64::from(key.2) * 16.0 + f64::from(vertex.position[2]) - cz) as f32;
+        let view_x = self.yaw_cos * x + self.yaw_sin * z;
+        let yaw_z = -self.yaw_sin * x + self.yaw_cos * z;
+        let view_y = self.pitch_cos * y - self.pitch_sin * yaw_z;
+        let view_z = self.pitch_sin * y + self.pitch_cos * yaw_z;
+        let depth = -view_z;
+        vertex.position = [
+            view_x * self.focal / self.aspect,
+            view_y * self.focal,
+            view_z * self.depth_scale + self.depth_offset,
+            depth,
+        ];
+    }
 }
 
 fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'static str)> {
@@ -1199,15 +1220,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                 // Wait once before updating all retained section buffers;
                 // waiting inside each per-section update stalls streaming.
                 unsafe { horizon_gx2_terrain_wait_idle() };
+                let projection = draw
+                    .terrain_min_y
+                    .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
                 let mut projected = Vec::new();
                 for (&key, section) in &mut draw.presenter.sections {
-                    let Some(min_y) = draw.terrain_min_y else {
+                    let Some(projection) = projection.as_ref() else {
                         draw.result = Err("GX2 terrain section layout is not prepared");
                         return -1;
                     };
                     projected.clear();
                     projected.extend(section.vertices.iter().copied().map(|mut v| {
-                        project_terrain_vertex(&mut v, key, min_y, draw.frame, aspect);
+                        projection.project(&mut v, key);
                         v
                     }));
                     if unsafe {
