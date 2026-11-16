@@ -1750,6 +1750,8 @@ impl Loading {
                     cafe_game_stage!("first Cafe touch press left-button branch begin");
                 }
                 let batch = HudBatch::new(self.menu_size());
+                #[cfg(target_os = "cafe")]
+                let menu_screen_before = self.menu.key_screen();
                 if let (Some(title), Some(gui)) = (&mut self.menu.title, &self.gui) {
                     if trace_cafe_touch_press {
                         cafe_game_stage!("first Cafe touch press title resources available");
@@ -1761,6 +1763,8 @@ impl Loading {
                         if trace_cafe_touch_press {
                             cafe_game_stage!("first Cafe touch press Title::click begin");
                         }
+                        #[cfg(target_os = "cafe")]
+                        let title_screen_before = title.screen_key();
                         let (action, activated) = title.click(
                             self.menu.cursor.0,
                             self.menu.cursor.1,
@@ -1796,7 +1800,19 @@ impl Loading {
                         self.menu_action(event_loop, action);
                         #[cfg(target_os = "cafe")]
                         if state == ElementState::Pressed {
-                            self.menu_open_osk(event_loop);
+                            let title_screen_after =
+                                self.menu.title.as_ref().map(Title::screen_key);
+                            if should_open_title_osk(
+                                title_screen_before,
+                                title_screen_after,
+                                menu_screen_before,
+                                self.menu.key_screen(),
+                                self.menu.options_open,
+                                self.menu.pending.is_some(),
+                                self.menu.win.is_some(),
+                            ) {
+                                self.menu_open_osk(event_loop);
+                            }
                         }
                         if trace_cafe_touch_press {
                             cafe_game_stage!("first Cafe touch press menu action complete");
@@ -2116,6 +2132,23 @@ fn pad_scroll_lines(remainder: &mut f32, axis: f32, speed: f32, seconds: f32) ->
     let lines = remainder.trunc();
     *remainder -= lines;
     lines
+}
+
+#[cfg(any(target_os = "cafe", test))]
+fn should_open_title_osk(
+    title_screen_before: u64,
+    title_screen_after: Option<u64>,
+    menu_screen_before: u64,
+    menu_screen_after: u64,
+    options_open: bool,
+    pending: bool,
+    win_open: bool,
+) -> bool {
+    title_screen_after == Some(title_screen_before)
+        && menu_screen_after == menu_screen_before
+        && !options_open
+        && !pending
+        && !win_open
 }
 
 #[cfg(test)]
@@ -2577,6 +2610,116 @@ mod tests {
         assert_eq!(fallback.opens.get(), 0, "win screen skips native OSK");
         assert!(!credits.menu.native_osk);
         assert!(credits.menu.osk.is_none(), "win screen skips fallback OSK");
+    }
+
+    #[test]
+    fn cafe_title_navigation_does_not_open_osk_but_same_screen_search_click_does() {
+        use horizon_client::title::{Mode, Title};
+
+        struct LoopControl(std::cell::Cell<usize>);
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, _: EventLoopControl) {}
+
+            fn open_text_input(&self, _: &str, _: usize) -> bool {
+                self.0.set(self.0.get() + 1);
+                true
+            }
+        }
+        let event_loop = LoopControl(std::cell::Cell::new(0));
+
+        let root = std::env::temp_dir().join(format!(
+            "horizon-title-osk-transition-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let saves = root.join("saves");
+        let world_dir = saves.join("ExistingWorld");
+        std::fs::create_dir_all(&world_dir).unwrap();
+        std::fs::File::create(world_dir.join("level.dat")).unwrap();
+
+        let mut loading = loading_with_focused_world_name();
+        let title = Title::new(saves.clone(), &root);
+        let title_screen_before = title.screen_key();
+        loading.menu.title = Some(title);
+        let menu_screen_before = loading.menu.key_screen();
+        let (action, activated) =
+            loading
+                .menu
+                .title
+                .as_mut()
+                .unwrap()
+                .click(204.0, 118.0, (427.0, 240.0));
+        assert!(matches!(action, Action::None));
+        assert!(activated);
+        let title_screen_after = loading.menu.title.as_ref().map(Title::screen_key);
+        assert_ne!(title_screen_after, Some(title_screen_before));
+        assert!(matches!(
+            &loading.menu.title.as_ref().unwrap().mode,
+            Mode::Select { .. }
+        ));
+        let should_open = should_open_title_osk(
+            title_screen_before,
+            title_screen_after,
+            menu_screen_before,
+            loading.menu.key_screen(),
+            loading.menu.options_open,
+            loading.menu.pending.is_some(),
+            loading.menu.win.is_some(),
+        );
+        assert!(!should_open, "navigating to a new Title screen skips OSK");
+        if should_open {
+            loading.menu_open_osk(&event_loop);
+        }
+        assert_eq!(event_loop.0.get(), 0);
+
+        let mut title = Title::new(saves, &root);
+        title.mode = Mode::Select {
+            worlds: Vec::new(),
+            selected: None,
+        };
+        let title_screen_before = title.screen_key();
+        loading.menu.title = Some(title);
+        let menu_screen_before = loading.menu.key_screen();
+        let _ = loading
+            .menu
+            .title
+            .as_mut()
+            .unwrap()
+            .click(213.0, 30.0, (427.0, 240.0));
+        assert!(
+            loading
+                .menu
+                .title
+                .as_mut()
+                .unwrap()
+                .focused_field()
+                .is_some()
+        );
+        let title_screen_after = loading.menu.title.as_ref().map(Title::screen_key);
+        assert_eq!(title_screen_after, Some(title_screen_before));
+        let should_open = should_open_title_osk(
+            title_screen_before,
+            title_screen_after,
+            menu_screen_before,
+            loading.menu.key_screen(),
+            loading.menu.options_open,
+            loading.menu.pending.is_some(),
+            loading.menu.win.is_some(),
+        );
+        assert!(
+            should_open,
+            "same-screen search-field click still opens OSK"
+        );
+        if should_open {
+            loading.menu_open_osk(&event_loop);
+        }
+        assert_eq!(event_loop.0.get(), 1);
+        assert!(loading.menu.native_osk);
+        drop(loading);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn draw_menu_once(loading: &mut Loading) {
