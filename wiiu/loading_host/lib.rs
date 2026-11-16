@@ -329,6 +329,7 @@ pub struct Gx2LoadingPresenter<'shader> {
     terrain: Option<Terrain<'shader>>,
     terrain_atlas: Option<TerrainAtlas>,
     terrain_generation: Option<u64>,
+    terrain_min_y: Option<i32>,
     sections: HashMap<SectionKey, TerrainSection>,
     translucent_terrain_omitted: HashSet<SectionKey>,
     generation: Option<u64>,
@@ -371,6 +372,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
             terrain: None,
             terrain_atlas: None,
             terrain_generation: None,
+            terrain_min_y: None,
             sections: HashMap::new(),
             translucent_terrain_omitted: HashSet::new(),
             generation: None,
@@ -855,12 +857,13 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
 fn project_terrain_vertex(
     vertex: &mut TerrainGpuVertex,
     key: SectionKey,
+    min_y: i32,
     frame: &Frame<'_>,
     aspect: f32,
 ) {
     let [cx, cy, cz] = frame.camera.to_array();
     let x = (f64::from(key.0) * 16.0 + f64::from(vertex.position[0]) - cx) as f32;
-    let y = (f64::from(key.1) * 16.0 + f64::from(vertex.position[1]) - cy) as f32;
+    let y = (f64::from(min_y + key.1 * 16) + f64::from(vertex.position[1]) - cy) as f32;
     let z = (f64::from(key.2) * 16.0 + f64::from(vertex.position[2]) - cz) as f32;
     let yaw = (frame.yaw - 180.0).to_radians();
     let (sy, cyaw) = yaw.sin_cos();
@@ -1067,6 +1070,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
             .terrain_atlas
             .as_ref()
             .ok_or("GX2 terrain atlas is not prepared")?;
+        if self.terrain_min_y.is_none() {
+            return Err("GX2 terrain section layout is not prepared".into());
+        }
         let mut source = mesh.solid.clone();
         for vertex in &mut source {
             atlas.remap_vertex(vertex)?;
@@ -1100,7 +1106,8 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
         Ok(())
     }
 
-    fn clear_sections(&mut self, _layout: ColumnLayout) {
+    fn clear_sections(&mut self, layout: ColumnLayout) {
+        self.terrain_min_y = Some(layout.min_y());
         self.sections.clear();
         self.translucent_terrain_omitted.clear();
     }
@@ -1161,6 +1168,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
         struct Draw<'a, 'frame, 'shader> {
             presenter: &'a mut Gx2LoadingPresenter<'shader>,
             frame: &'a Frame<'frame>,
+            terrain_min_y: Option<i32>,
             targets: [[u32; 4]; 2],
             result: Result<(), &'static str>,
         }
@@ -1193,9 +1201,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                 unsafe { horizon_gx2_terrain_wait_idle() };
                 let mut projected = Vec::new();
                 for (&key, section) in &mut draw.presenter.sections {
+                    let Some(min_y) = draw.terrain_min_y else {
+                        draw.result = Err("GX2 terrain section layout is not prepared");
+                        return -1;
+                    };
                     projected.clear();
                     projected.extend(section.vertices.iter().copied().map(|mut v| {
-                        project_terrain_vertex(&mut v, key, draw.frame, aspect);
+                        project_terrain_vertex(&mut v, key, min_y, draw.frame, aspect);
                         v
                     }));
                     if unsafe {
@@ -1254,9 +1266,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
             1.0,
         ];
         let targets = self.target_viewports();
+        let terrain_min_y = self.terrain_min_y;
         let mut draw = Draw {
             presenter: self,
             frame,
+            terrain_min_y,
             targets,
             result: Ok(()),
         };
