@@ -187,14 +187,6 @@ pub fn load_registry(root: &Path) {
                         stack.push(path);
                         continue;
                     }
-                    #[cfg(target_os = "cafe")]
-                    let (Some(id), Some(ns)) = (
-                        horizon_client_platform::path::resource_relative_stem(&path, &base),
-                        ns.file_name().to_str().map(str::to_owned),
-                    ) else {
-                        continue;
-                    };
-                    #[cfg(not(target_os = "cafe"))]
                     let (Ok(rel), Some(ns)) = (
                         path.with_extension("")
                             .strip_prefix(&base)
@@ -209,7 +201,6 @@ pub fn load_registry(root: &Path) {
                         .and_then(|v| TrialConfig::decode(&crate::scoreboard::json_to_tag(&v)));
                     match config {
                         Some(c) => {
-                            #[cfg(not(target_os = "cafe"))]
                             let id = rel.to_string_lossy().replace('\\', "/");
                             out.insert(format!("{ns}:{id}"), c);
                         }

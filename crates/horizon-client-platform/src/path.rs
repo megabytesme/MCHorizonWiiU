@@ -39,20 +39,6 @@ pub fn resource_png_mcmeta_path(path: &Path) -> Option<PathBuf> {
     append_png_mcmeta(path)
 }
 
-/// Returns a walked resource path relative to its root, with the final extension removed.
-///
-/// Cafe's standard path parsing can stall on paths assembled from filesystem
-/// entries. The caller must pass a path constructed by walking/joining beneath
-/// a nonempty `root`; compare encoded Unix path bytes directly and decode only
-/// the result.
-#[cfg(target_os = "cafe")]
-pub fn resource_relative_stem(path: &Path, root: &Path) -> Option<String> {
-    resource_relative_stem_bytes(
-        path.as_os_str().as_encoded_bytes(),
-        root.as_os_str().as_encoded_bytes(),
-    )
-}
-
 #[cfg(any(target_os = "cafe", all(test, unix)))]
 fn append_png_mcmeta(path: &Path) -> Option<PathBuf> {
     if !path.as_os_str().as_encoded_bytes().ends_with(b".png") {
@@ -87,50 +73,6 @@ fn resource_png_name_bytes(path: &[u8], root: &[u8]) -> Option<String> {
 }
 
 #[cfg(any(target_os = "cafe", all(test, unix)))]
-fn resource_relative_stem_bytes(path: &[u8], root: &[u8]) -> Option<String> {
-    if root.is_empty() {
-        return None;
-    }
-    let mut name_end = path.len();
-    while name_end > 0 && path[name_end - 1] == b'/' {
-        name_end -= 1;
-    }
-    let name_start = path[..name_end]
-        .iter()
-        .rposition(|byte| *byte == b'/')
-        .map_or(0, |separator| separator + 1);
-    let name = &path[name_start..name_end];
-    let mut path_without_extension = path.to_vec();
-    if !name.is_empty() && name != b"." && name != b".." {
-        path_without_extension.truncate(name_end);
-    }
-    if name != b"."
-        && name != b".."
-        && let Some(dot) = name.iter().rposition(|byte| *byte == b'.')
-        && dot != 0
-    {
-        path_without_extension.drain(name_start + dot..name_end);
-    }
-
-    let mut root_len = root.len();
-    let absolute_root = root.starts_with(b"/");
-    let minimum_root_len = usize::from(absolute_root);
-    while root_len > minimum_root_len && root[root_len - 1] == b'/' {
-        root_len -= 1;
-    }
-    let root = &root[..root_len];
-    let mut relative = path_without_extension.as_slice().strip_prefix(root)?;
-    if !root.is_empty() && root != b"/" && !relative.is_empty() && !relative.starts_with(b"/") {
-        return None;
-    }
-    while relative.starts_with(b"/") {
-        relative = &relative[1..];
-    }
-
-    Some(String::from_utf8_lossy(relative).replace('\\', "/"))
-}
-
-#[cfg(any(target_os = "cafe", all(test, unix)))]
 fn parent_end(path: &[u8]) -> Option<usize> {
     let root_len = usize::from(path.starts_with(b"/"));
     let mut end = path.len();
@@ -153,9 +95,7 @@ fn parent_end(path: &[u8]) -> Option<usize> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{
-        append_png_mcmeta, parent_end, resource_png_name_bytes, resource_relative_stem_bytes,
-    };
+    use super::{append_png_mcmeta, parent_end, resource_png_name_bytes};
     use std::{os::unix::ffi::OsStrExt, path::Path};
 
     #[test]
@@ -221,42 +161,6 @@ mod tests {
             resource_png_name_bytes(dotted.as_os_str().as_bytes(), b"root/"),
             Some(expected)
         );
-    }
-
-    #[test]
-    fn resource_relative_stem_matches_standard_path_operations() {
-        let cases: &[(&[u8], &[u8])] = &[
-            (b"root/ns/textures/gui/foo.bar.json", b"root"),
-            (b"root/ns/trial_spawner/nested/config.json", b"root/"),
-            (b"root/ns/trial_spawner/.hidden", b"root"),
-            (b"root/ns/trial_spawner/name.", b"root"),
-            (b"root/ns/trial_spawner/..", b"root"),
-            (b"root.with.dot", b"root.with.dot"),
-            (b"root", b"root"),
-            (b"root/ns/file.json/", b"root/"),
-            (b"root/ns/file/", b"root"),
-            (b"rooted/ns/file.json", b"root"),
-            (b"root/ns/invalid-\xff.json", b"root"),
-            (b"/root/ns/file.json", b"/root/"),
-            (b"/root/ns/file.json", b"/"),
-            (b"root\\ns\\file.json", b"root"),
-        ];
-
-        for (path_bytes, root_bytes) in cases {
-            let path = Path::new(std::ffi::OsStr::from_bytes(path_bytes));
-            let root = Path::new(std::ffi::OsStr::from_bytes(root_bytes));
-            let expected = path
-                .with_extension("")
-                .strip_prefix(root)
-                .ok()
-                .map(|relative| relative.to_string_lossy().replace('\\', "/"));
-            assert_eq!(
-                resource_relative_stem_bytes(path_bytes, root_bytes),
-                expected,
-                "path={path:?}, root={root:?}"
-            );
-        }
-        assert_eq!(resource_relative_stem_bytes(b"file.json", b""), None);
     }
 
     #[test]
