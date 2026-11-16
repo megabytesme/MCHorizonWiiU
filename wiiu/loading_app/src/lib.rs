@@ -103,6 +103,17 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     startup_report!("Horizon entry call begin");
     let outcome = horizon_client::entry::main_with_cafe_host(Default::default(), &mut host);
     startup_report!("Horizon entry call returned");
+    if let CafeRunOutcome::Loading(session) = &outcome {
+        if session.status() == CafeLoadingStatus::Failed {
+            log::error!(
+                "Horizon Cafe original Loading failed: {}",
+                session
+                    .failure_message()
+                    .as_deref()
+                    .unwrap_or("no failure message")
+            );
+        }
+    }
     if host.local_world_start_failed {
         return LOCAL_WORLD_START_FAILED;
     }
