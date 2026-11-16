@@ -1138,7 +1138,7 @@ impl Loading {
         self.menu.osk.is_some() || self.menu.native_osk
     }
 
-    #[cfg(target_os = "cafe")]
+    #[cfg(any(target_os = "cafe", test))]
     fn menu_text_field_focused(&mut self) -> bool {
         if self.menu.options_open {
             self.menu.options.typing()
@@ -1150,9 +1150,13 @@ impl Loading {
         }
     }
 
-    #[cfg(target_os = "cafe")]
+    #[cfg(any(target_os = "cafe", test))]
     fn menu_open_osk(&mut self, event_loop: &dyn EventLoopCtl) {
-        if !self.menu_text_field_focused() || self.menu_osk_open() {
+        if self.menu.pending.is_some()
+            || self.menu.win.is_some()
+            || !self.menu_text_field_focused()
+            || self.menu_osk_open()
+        {
             return;
         }
 
@@ -2390,9 +2394,92 @@ mod tests {
             shown: false,
             ui_at: None,
             title_drawn: false,
+            local_world_failure: None,
             menu: StartupMenu::default(),
             error: None,
         }
+    }
+
+    fn loading_with_focused_world_name() -> Loading {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        let mut title = Title::new(
+            PathBuf::new(),
+            std::path::Path::new("/nonexistent/horizon-test-resources"),
+        );
+        title.mode = horizon_client::title::Mode::Create {
+            name: "New World".into(),
+            seed: "".into(),
+            creative: false,
+            focus: 0,
+            options: Default::default(),
+        };
+        loading.menu.title = Some(title);
+        loading
+    }
+
+    #[test]
+    fn cafe_osk_opens_for_world_name_but_not_during_world_or_win_transition() {
+        struct LoopControl {
+            opens: std::cell::Cell<usize>,
+            accepts_text_input: bool,
+        }
+        impl EventLoopCtl for LoopControl {
+            fn set_control_flow(&self, _: EventLoopControl) {}
+
+            fn open_text_input(&self, _: &str, _: usize) -> bool {
+                self.opens.set(self.opens.get() + 1);
+                self.accepts_text_input
+            }
+        }
+        let control = |accepts_text_input| LoopControl {
+            opens: std::cell::Cell::new(0),
+            accepts_text_input,
+        };
+
+        let native = control(true);
+        let mut ordinary = loading_with_focused_world_name();
+        ordinary.menu_open_osk(&native);
+        assert_eq!(native.opens.get(), 1, "focused name requests native OSK");
+        assert!(ordinary.menu.native_osk);
+        assert!(ordinary.menu.osk.is_none());
+
+        let fallback = control(false);
+        let mut creating = loading_with_focused_world_name();
+        creating.menu.queue_entry(
+            Action::Create {
+                folder: "New World".into(),
+                name: "New World".into(),
+                seed: None,
+                creative: false,
+                options: Default::default(),
+            },
+            "Player".into(),
+        );
+        creating.menu_open_osk(&fallback);
+        assert_eq!(fallback.opens.get(), 0, "pending world skips native OSK");
+        assert!(!creating.menu.native_osk);
+        assert!(
+            creating.menu.osk.is_none(),
+            "pending world skips fallback OSK"
+        );
+
+        let fallback = control(false);
+        let mut credits = loading_with_focused_world_name();
+        let boot = horizon_client::hud::HudAtlas::boot();
+        credits.menu.win = Some((
+            horizon_client::win_screen::WinScreen::new(
+                false,
+                std::path::Path::new("/nonexistent/horizon-test-resources"),
+                "Player",
+                &boot.font,
+            ),
+            Instant::now(),
+        ));
+        credits.menu_open_osk(&fallback);
+        assert_eq!(fallback.opens.get(), 0, "win screen skips native OSK");
+        assert!(!credits.menu.native_osk);
+        assert!(credits.menu.osk.is_none(), "win screen skips fallback OSK");
     }
 
     fn draw_menu_once(loading: &mut Loading) {
