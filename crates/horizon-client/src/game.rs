@@ -22238,6 +22238,8 @@ struct Loading {
     title_drawn: bool,
     /// A Cafe local-world transition failed after the title menu submitted it.
     local_world_failure: Option<String>,
+    /// A Cafe remote-server transition failed before Game could own it.
+    remote_server_failure: Option<String>,
     menu: startup_menu::StartupMenu,
     error: Option<Box<dyn std::error::Error>>,
 }
@@ -22318,7 +22320,15 @@ pub enum CafeLoadingStatus {
     Loading,
     ReadyForHandoff,
     LocalWorldStartFailed,
+    RemoteServerStartFailed,
     Failed,
+}
+
+/// The kind of pending title entry carried by a Cafe Game session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CafeGameEntryKind {
+    LocalWorld,
+    RemoteServer,
 }
 
 impl CafeLoadingSession {
@@ -22444,22 +22454,49 @@ impl CafeLoadingSession {
     }
 
     /// Transfer a selected local world into Horizon's original Game path.
-    /// Remote-server selections intentionally stay on the loading shell.
     pub fn start_local_game(&mut self) -> Result<Option<CafeGameSession>> {
-        if !matches!(self.loading.menu.pending, Some(PendingWorldEntry::Local { .. })) {
+        if !matches!(
+            self.loading.menu.pending,
+            Some(PendingWorldEntry::Local { .. })
+        ) {
             return Ok(None);
         }
+        self.start_pending_game()
+    }
+
+    /// Transfer a queued local world or server selection into the original
+    /// Game path, after Loading has completed its resource generation.
+    pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession>> {
+        let entry_kind = match self.loading.menu.pending.as_ref() {
+            Some(PendingWorldEntry::Local { .. }) => CafeGameEntryKind::LocalWorld,
+            Some(PendingWorldEntry::Server { .. }) => CafeGameEntryKind::RemoteServer,
+            None => return Ok(None),
+        };
         if self.status() != CafeLoadingStatus::ReadyForHandoff {
-            return Err("local Cafe world requested before Loading was ready".into());
+            return Err(if entry_kind == CafeGameEntryKind::RemoteServer {
+                "Cafe remote server requested before Loading was ready".into()
+            } else {
+                "local Cafe world requested before Loading was ready".into()
+            });
         }
-        let result = self.start_local_game_inner();
+        let result = self.start_pending_game_inner(entry_kind);
         if let Err(error) = &result {
-            self.loading.local_world_failure = Some(error.to_string());
+            match entry_kind {
+                CafeGameEntryKind::LocalWorld => {
+                    self.loading.local_world_failure = Some(error.to_string());
+                }
+                CafeGameEntryKind::RemoteServer => {
+                    self.loading.remote_server_failure = Some(error.to_string());
+                }
+            }
         }
         result
     }
 
-    fn start_local_game_inner(&mut self) -> Result<Option<CafeGameSession>> {
+    fn start_pending_game_inner(
+        &mut self,
+        entry_kind: CafeGameEntryKind,
+    ) -> Result<Option<CafeGameSession>> {
         let loaded = self
             .loading
             .loaded
@@ -22507,8 +22544,9 @@ impl CafeLoadingSession {
             rest_loader,
             Some(self.loading.settings.clone()),
             game_cpu,
-        )? else {
-            return Err("Cafe local world handoff did not create Game".into());
+        )?
+        else {
+            return Err("Cafe game handoff did not create Game".into());
         };
         let shell_pending = match self.loading.menu.pending.as_ref() {
             Some(PendingWorldEntry::Local {
@@ -22524,11 +22562,22 @@ impl CafeLoadingSession {
                 creative: *creative,
                 create: create.clone(),
             }),
+            Some(PendingWorldEntry::Server {
+                address,
+                name,
+                lan,
+                cookies,
+            }) => Some(PendingWorldEntry::Server {
+                address: address.clone(),
+                name: name.clone(),
+                lan: *lan,
+                cookies: cookies.clone(),
+            }),
             _ => None,
         };
         self.loading.menu.handoff(&mut game);
-        // Keep the original loading presenter showing its world-loading shell
-        // while Game opens the integrated server in the background.
+        // Keep the Loading session's pending entry for the presenter while
+        // Game processes the same entry through its original world/net path.
         self.loading.menu.pending = shell_pending;
         game.apply_settings();
         game.panorama_rotation = self.loading.panorama_rotation;
@@ -22538,13 +22587,15 @@ impl CafeLoadingSession {
             horizon_client::options_file::V::Bool(true),
         );
         game.settings.save(&Game::options_path());
-        Ok(Some(CafeGameSession { game }))
+        Ok(Some(CafeGameSession { game, entry_kind }))
     }
 
     /// Report whether Loading is still running, ready for a handoff, or failed.
     pub fn status(&self) -> CafeLoadingStatus {
         if self.loading.local_world_failure.is_some() {
             CafeLoadingStatus::LocalWorldStartFailed
+        } else if self.loading.remote_server_failure.is_some() {
+            CafeLoadingStatus::RemoteServerStartFailed
         } else if self.failure_message().is_some() {
             CafeLoadingStatus::Failed
         } else if self.loading.loaded.is_some() && self.loading.ready_for_handoff() {
@@ -22557,6 +22608,8 @@ impl CafeLoadingSession {
     /// The loader's concrete failure message, if it has failed.
     pub fn failure_message(&self) -> Option<String> {
         if let Some(error) = &self.loading.local_world_failure {
+            Some(error.clone())
+        } else if let Some(error) = &self.loading.remote_server_failure {
             Some(error.clone())
         } else if let Some(error) = &self.loading.error {
             Some(error.to_string())
@@ -22573,9 +22626,16 @@ impl CafeLoadingSession {
 /// selection. It deliberately has no Winit window or WGPU renderer.
 pub struct CafeGameSession {
     game: Game<'static>,
+    entry_kind: CafeGameEntryKind,
 }
 
 impl CafeGameSession {
+    /// Return the title entry this session was handed, even after Game has
+    /// consumed its pending entry while starting the connection or world.
+    pub fn entry_kind(&self) -> CafeGameEntryKind {
+        self.entry_kind
+    }
+
     /// Feed the host's canonical Cafe controller sample into the normal game
     /// pad poll. `step` consumes it through `Game::poll_pads`, preserving the
     /// game's bindings, edge detection, and controller settings.
@@ -22841,6 +22901,7 @@ impl Loading {
             ui_at: None,
             title_drawn: false,
             local_world_failure: None,
+            remote_server_failure: None,
             menu,
             error: None,
         })
@@ -24092,6 +24153,69 @@ mod tests {
 
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
+
+    #[test]
+    fn cafe_server_handoff_waits_for_completed_resources() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut menu = startup_menu::StartupMenu::default();
+        menu.pending = Some(PendingWorldEntry::Server {
+            address: "example.invalid:25565".into(),
+            name: "Player".into(),
+            lan: false,
+            cookies: None,
+        });
+        let mut session = CafeLoadingSession {
+            loading: Loading {
+                window: None,
+                renderer: None,
+                pad_edges: Default::default(),
+                viewport: [1280, 720],
+                boot: horizon_client::hud::HudAtlas::boot(),
+                gui: None,
+                audio: None,
+                settings: Settings::default(),
+                fullscreen: horizon_client::window::FullscreenState::new(false),
+                video_modes: Default::default(),
+                options: Some(
+                    Options::parse(std::iter::empty::<String>())
+                        .unwrap()
+                        .expect("empty options parse should produce interactive defaults"),
+                ),
+                vanilla_root: PathBuf::new(),
+                pack_error: None,
+                started: Instant::now(),
+                panorama_rotation: Default::default(),
+                progress: Progress::new(),
+                receiver,
+                loaded: None,
+                delivered: false,
+                handle: None,
+                shown: false,
+                ui_at: None,
+                title_drawn: false,
+                local_world_failure: None,
+                remote_server_failure: None,
+                menu,
+                error: None,
+            },
+        };
+
+        assert_eq!(session.status(), CafeLoadingStatus::Loading);
+        let error = match session.start_pending_game() {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("remote handoff must wait for completed resources"),
+        };
+        assert!(error.contains("before Loading was ready"));
+        assert!(session.loading.loaded.is_none());
+        assert!(session.loading.options.is_some());
+        assert!(matches!(
+            session.loading.menu.pending.as_ref(),
+            Some(PendingWorldEntry::Server { address, .. })
+                if address == "example.invalid:25565"
+        ));
+        assert_eq!(session.status(), CafeLoadingStatus::Loading);
+        assert!(session.failure_message().is_none());
+    }
 
     /// `ClipContext.Block.OUTLINE` for the SOURCE_ONLY ray (#8180): a ray
     /// through the empty part of a torch's cell is not stopped by it.

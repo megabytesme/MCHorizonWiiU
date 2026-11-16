@@ -4,8 +4,8 @@
 //! library only runs on that initialized GX2 thread.
 
 use horizon_client::game::{
-    CafeGameSession, CafeLoadingHost, CafeLoadingPresenter, CafeLoadingSession, CafeLoadingStatus,
-    CafeRunOutcome,
+    CafeGameEntryKind, CafeGameSession, CafeLoadingHost, CafeLoadingPresenter,
+    CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
 };
 use horizon_client_platform::{
     ClientDeviceEvent, ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent,
@@ -47,8 +47,16 @@ const LOADING_FAILED: i32 = 2;
 const PRESENTER_FAILED: i32 = 3;
 const APP_ROOT_FAILED: i32 = 4;
 const LOCAL_WORLD_START_FAILED: i32 = 5;
+const REMOTE_SERVER_START_FAILED: i32 = 6;
 
 const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
+
+fn game_start_failure_status(entry_kind: CafeGameEntryKind) -> CafeLoadingStatus {
+    match entry_kind {
+        CafeGameEntryKind::LocalWorld => CafeLoadingStatus::LocalWorldStartFailed,
+        CafeGameEntryKind::RemoteServer => CafeLoadingStatus::RemoteServerStartFailed,
+    }
+}
 
 macro_rules! startup_report {
     ($stage:literal) => {{
@@ -117,6 +125,9 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
     if host.local_world_start_failed {
         return LOCAL_WORLD_START_FAILED;
     }
+    if host.remote_server_start_failed {
+        return REMOTE_SERVER_START_FAILED;
+    }
     if host.failure.is_some() {
         return LOADING_FAILED;
     }
@@ -134,6 +145,7 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
             CafeLoadingStatus::Loading => LOADING_FAILED,
             CafeLoadingStatus::ReadyForHandoff => READY_WITHOUT_GAME_HANDOFF,
             CafeLoadingStatus::LocalWorldStartFailed => LOCAL_WORLD_START_FAILED,
+            CafeLoadingStatus::RemoteServerStartFailed => REMOTE_SERVER_START_FAILED,
             CafeLoadingStatus::Failed => LOADING_FAILED,
         },
     }
@@ -336,6 +348,7 @@ struct LoadingHost<'a> {
     exited: bool,
     failure: Option<String>,
     local_world_start_failed: bool,
+    remote_server_start_failed: bool,
 }
 
 impl<'a> LoadingHost<'a> {
@@ -365,6 +378,7 @@ impl<'a> LoadingHost<'a> {
             exited: false,
             failure: None,
             local_world_start_failed: false,
+            remote_server_start_failed: false,
         }
     }
 
@@ -783,7 +797,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
         let mut game_session: Option<CafeGameSession> = None;
         let mut world_loading_complete = false;
         let mut game_handoff_started = false;
-        let mut no_local_game_reported = false;
+        let mut no_pending_game_reported = false;
         let mut first_game_frame_started = false;
         let mut first_game_frame_returned = false;
         loop {
@@ -1254,33 +1268,35 @@ impl CafeLoadingHost for LoadingHost<'_> {
                         startup_report!("Cafe Game handoff begin");
                     }
                     let handoff_started_at = Instant::now();
-                    match session.start_local_game() {
+                    match session.start_pending_game() {
                         Ok(Some(game)) => {
                             log::info!(
-                                "Horizon Cafe Game handoff returned local Game elapsed_ms={}",
+                                "Horizon Cafe Game handoff returned elapsed_ms={}",
                                 handoff_started_at.elapsed().as_millis()
                             );
-                            startup_report!(
-                                "original local Game initialized; world startup begins"
-                            );
+                            startup_report!("original Game initialized; pending entry starts");
                             game_session = Some(game);
                         }
                         Ok(None) => {
-                            // Remote-server handoff remains on its existing path.
-                            if !no_local_game_reported {
-                                no_local_game_reported = true;
-                                startup_report!("Cafe Game handoff yielded no local Game");
+                            if !no_pending_game_reported {
+                                no_pending_game_reported = true;
+                                startup_report!("Cafe Game handoff yielded no pending entry");
                             }
                         }
                         Err(error) => {
                             log::error!(
-                                "Horizon Cafe local Game handoff failed elapsed_ms={}",
+                                "Horizon Cafe Game handoff failed elapsed_ms={}",
                                 handoff_started_at.elapsed().as_millis()
                             );
-                            self.local_world_start_failed = true;
+                            match session.status() {
+                                CafeLoadingStatus::RemoteServerStartFailed => {
+                                    self.remote_server_start_failed = true;
+                                }
+                                _ => self.local_world_start_failed = true,
+                            }
                             self.failure = Some(error.to_string());
-                            log::error!("Horizon Cafe local world start failed: {error}");
-                            startup_report!("original local Game handoff failed");
+                            log::error!("Horizon Cafe Game start failed: {error}");
+                            startup_report!("original Game handoff failed");
                             break;
                         }
                     }
@@ -1288,6 +1304,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 CafeLoadingStatus::ReadyForHandoff => {}
                 CafeLoadingStatus::LocalWorldStartFailed => {
                     self.local_world_start_failed = true;
+                    self.failure = session.failure_message();
+                    break;
+                }
+                CafeLoadingStatus::RemoteServerStartFailed => {
+                    self.remote_server_start_failed = true;
                     self.failure = session.failure_message();
                     break;
                 }
@@ -1336,9 +1357,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
                             );
                         }
                         if world_ready && !world_loading_complete {
-                            startup_report!("local world-entry pending state cleared");
+                            startup_report!("Game world-entry pending state cleared");
                             log::info!(
-                                "Horizon Cafe local world-entry pending state cleared elapsed_ms={}",
+                                "Horizon Cafe Game world-entry pending state cleared elapsed_ms={}",
                                 host_loop_started.elapsed().as_millis()
                             );
                         }
@@ -1399,9 +1420,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
             }
             if let Err(error) = draw_result {
                 if world_start_failed {
-                    self.local_world_start_failed = true;
-                    log::error!("Horizon Cafe local world start failed: {error}");
-                    startup_report!("original local world startup failed");
+                    let entry_kind = game_session
+                        .as_ref()
+                        .map(CafeGameSession::entry_kind)
+                        .unwrap_or(CafeGameEntryKind::LocalWorld);
+                    match game_start_failure_status(entry_kind) {
+                        CafeLoadingStatus::LocalWorldStartFailed => {
+                            self.local_world_start_failed = true;
+                            log::error!("Horizon Cafe local world start failed: {error}");
+                            startup_report!("original local world startup failed");
+                        }
+                        CafeLoadingStatus::RemoteServerStartFailed => {
+                            self.remote_server_start_failed = true;
+                            log::error!("Horizon Cafe remote server start failed: {error}");
+                            startup_report!("original remote server startup failed");
+                        }
+                        _ => unreachable!("entry startup maps to a start-failure status"),
+                    }
                 } else if game_session.is_some() {
                     log::error!("Horizon Cafe world loading presentation failed: {error}");
                     startup_report!("Cafe world loading frame failed");
@@ -1462,5 +1497,22 @@ impl CafeLoadingHost for LoadingHost<'_> {
         }
         self.release_on_exit(session, game_session.as_mut());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_game_frame_failure_preserves_pending_entry_kind() {
+        assert_eq!(
+            game_start_failure_status(CafeGameEntryKind::LocalWorld),
+            CafeLoadingStatus::LocalWorldStartFailed
+        );
+        assert_eq!(
+            game_start_failure_status(CafeGameEntryKind::RemoteServer),
+            CafeLoadingStatus::RemoteServerStartFailed
+        );
     }
 }

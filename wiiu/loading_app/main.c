@@ -75,6 +75,9 @@ int main(void)
    case 5:
       OSReport("Horizon Wii U: original local world startup failed; inspect the Cafe log\n");
       break;
+   case 6:
+      OSReport("Horizon Wii U: original remote server startup failed; inspect the Cafe log\n");
+      break;
    default:
       OSReport("Horizon Wii U: native loading presenter setup failed\n");
       break;

@@ -2491,6 +2491,7 @@ mod tests {
             ui_at: None,
             title_drawn: false,
             local_world_failure: None,
+            remote_server_failure: None,
             menu: StartupMenu::default(),
             error: None,
         }
