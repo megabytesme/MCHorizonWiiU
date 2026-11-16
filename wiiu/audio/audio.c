@@ -1,5 +1,31 @@
 #include "audio.h"
 
+#if defined(HORIZON_WIIU_DISABLE_AX_AUDIO)
+
+#include <stddef.h>
+
+/* Diagnostic build: report audio unavailable without touching Cafe AX/DSP. */
+void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+{
+   (void)frames;
+   (void)rate;
+   return NULL;
+}
+
+void horizon_wiiu_audio_submit(void *handle, const float *stereo, uint32_t frames)
+{
+   (void)handle;
+   (void)stereo;
+   (void)frames;
+}
+
+void horizon_wiiu_audio_close(void *handle)
+{
+   (void)handle;
+}
+
+#else
+
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
@@ -251,3 +277,5 @@ void horizon_wiiu_audio_close(void *handle)
    close_partial(audio);
    free(audio);
 }
+
+#endif
