@@ -64,6 +64,9 @@ pub(super) struct StartupMenu {
     osk_at_top: bool,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// Worldgen data being prepared for the title's Create screen. It stays
+    /// with the title and moves to Game if Loading hands off before it ends.
+    creation_job: Option<JoinHandle<std::result::Result<(), String>>>,
     /// Browse mods' worker (`mod_browser`).
     mod_jobs: super::mod_browser::Jobs,
     pub perf: horizon_client::telemetry::Session,
@@ -299,6 +302,7 @@ impl StartupMenu {
             .take()
             .map(|title| title.with_user(|| game.options.player_name()));
         game.pending_entry = self.pending.take();
+        game.creation_job = self.creation_job.take();
         game.cursor = self.cursor;
         game.modifiers = self.modifiers;
         game.physical_keys = std::mem::take(&mut self.physical_keys);
@@ -614,6 +618,25 @@ impl Loading {
         }
         self.drive_menu_mod_browser();
         self.restart_menu_resources()
+    }
+
+    /// Prepare worldgen data only from the successfully loaded resource
+    /// generation that Loading will hand to Game. A pack reload leaves the
+    /// title in Loading until the replacement generation arrives.
+    pub(super) fn poll_world_creation(&mut self) {
+        if self.menu.reload_packs {
+            return;
+        }
+        let Some(Ok(loaded)) = self.loaded.as_ref() else {
+            return;
+        };
+        poll_creation_job(
+            self.menu.title.as_mut(),
+            &mut self.menu.creation_job,
+            &loaded.root,
+            loaded.pack.assets.registry,
+            loaded.resources.biomes(),
+        );
     }
     /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
     fn drive_menu_mod_browser(&mut self) {
@@ -2011,6 +2034,79 @@ impl Loading {
     }
 }
 
+/// Shared by the Loading-owned menu and Game so the same vanilla worldgen
+/// preload runs with the same selected data-pack overrides in either owner.
+pub(super) fn poll_creation_job(
+    title: Option<&mut Title>,
+    creation_job: &mut Option<JoinHandle<std::result::Result<(), String>>>,
+    resources: &std::path::Path,
+    registry: &'static horizon_world::registry::BlockRegistry,
+    biomes: &Biomes,
+) {
+    let Some(title) = title else {
+        return;
+    };
+    if !title.preparing() {
+        return;
+    }
+    if creation_job.is_none() {
+        let dir = resources.join("worldgen");
+        // The chosen packs' worldgen over the game's own:
+        // `applyNewPackConfig` reloads with the new pack config.
+        let overrides = title
+            .creation_packs()
+            .map(|(dir, packs)| {
+                super::world_loading::creation_worldgen_overrides(
+                    dir.as_deref(),
+                    resources,
+                    &packs,
+                    biomes,
+                )
+            })
+            .unwrap_or_default();
+        match std::thread::Builder::new()
+            .name("world-creation".into())
+            .spawn(move || {
+                horizon_client::vanillagen::shared_data_with(&dir, &overrides, registry)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }) {
+            Ok(job) => *creation_job = Some(job),
+            Err(error) => fail_creation_preparation(title, error.to_string()),
+        }
+        return;
+    }
+    finish_creation_job(title, creation_job);
+}
+
+fn finish_creation_job(
+    title: &mut Title,
+    creation_job: &mut Option<JoinHandle<std::result::Result<(), String>>>,
+) {
+    if !creation_job
+        .as_ref()
+        .is_some_and(std::thread::JoinHandle::is_finished)
+    {
+        return;
+    }
+    match creation_job.take().map(std::thread::JoinHandle::join) {
+        Some(Ok(Ok(()))) => title.finish_preparing(),
+        Some(Ok(Err(error))) => fail_creation_preparation(title, error),
+        Some(Err(_)) | None => fail_creation_preparation(title, "the read never ran".to_owned()),
+    }
+}
+
+fn fail_creation_preparation(title: &mut Title, error: String) {
+    log::warn!("Horizon: preparing world creation failed: {error}");
+    // Clear the flag first: `failed` sets the error screen with Create as its
+    // back target, which `finish_preparing` would replace with a fresh world.
+    title.finish_preparing();
+    title.failed(format!(
+        "{}: {error}",
+        horizon_client::lang::get_or("createWorld.preparing", "Preparing for world creation...")
+    ));
+}
+
 fn pad_scroll_lines(remainder: &mut f32, axis: f32, speed: f32, seconds: f32) -> f32 {
     if axis == 0.0 {
         *remainder = 0.0;
@@ -3260,6 +3356,78 @@ mod tests {
         assert!(loading.take_ready().is_none());
         loading.title_drawn = true;
         assert!(matches!(loading.take_ready(), Some(Err(ref e)) if e == "loader failure"));
+    }
+
+    #[test]
+    fn loading_waits_for_successful_resources_before_preparing_creation() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut loading = loading(receiver);
+        let resources = std::path::Path::new("/nonexistent/horizon-test-resources");
+        let mut title = Title::new(PathBuf::new(), resources);
+        title.offer_data_packs(resources, Vec::new());
+        assert!(title.preparing());
+        loading.menu.title = Some(title);
+
+        loading.poll_world_creation();
+        assert!(loading.menu.title.as_ref().unwrap().preparing());
+        assert!(loading.menu.creation_job.is_none());
+
+        loading.loaded = Some(Err("resource load failed".into()));
+        loading.poll_world_creation();
+        assert!(loading.menu.title.as_ref().unwrap().preparing());
+        assert!(loading.menu.creation_job.is_none());
+
+        loading.loaded = None;
+        loading.menu.reload_packs = true;
+        loading.poll_world_creation();
+        assert!(loading.menu.title.as_ref().unwrap().preparing());
+        assert!(loading.menu.creation_job.is_none());
+    }
+
+    fn preparing_title() -> Title {
+        let resources = std::path::Path::new("/nonexistent/horizon-test-resources");
+        let mut title = Title::new(PathBuf::new(), resources);
+        title.offer_data_packs(resources, Vec::new());
+        assert!(title.preparing());
+        title
+    }
+
+    #[test]
+    fn completed_creation_job_opens_create_before_game_handoff() {
+        let mut title = preparing_title();
+        let mut job = Some(std::thread::spawn(|| Ok(())));
+        while !job.as_ref().unwrap().is_finished() {
+            std::thread::yield_now();
+        }
+
+        finish_creation_job(&mut title, &mut job);
+
+        assert!(job.is_none());
+        assert!(!title.preparing());
+        assert!(matches!(
+            title.mode,
+            horizon_client::title::Mode::Create { .. }
+        ));
+    }
+
+    #[test]
+    fn failed_creation_job_restores_title_error_flow() {
+        let mut title = preparing_title();
+        let mut job = Some(std::thread::spawn(|| Err("test worldgen failure".into())));
+        while !job.as_ref().unwrap().is_finished() {
+            std::thread::yield_now();
+        }
+
+        finish_creation_job(&mut title, &mut job);
+
+        assert!(job.is_none());
+        assert!(!title.preparing());
+        assert!(matches!(
+            &title.mode,
+            horizon_client::title::Mode::Error { message, return_to, .. }
+                if message.contains("test worldgen failure")
+                    && matches!(return_to.as_ref(), horizon_client::title::Mode::Create { .. })
+        ));
     }
 
     #[test]
