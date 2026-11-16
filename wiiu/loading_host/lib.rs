@@ -330,6 +330,7 @@ pub struct Gx2LoadingPresenter<'shader> {
     terrain_atlas: Option<TerrainAtlas>,
     terrain_generation: Option<u64>,
     sections: HashMap<SectionKey, TerrainSection>,
+    translucent_terrain_omitted: HashSet<SectionKey>,
     generation: Option<u64>,
     atlas_revision: Option<u64>,
     panorama_identity: Option<(u64, u64, usize, u32)>,
@@ -371,6 +372,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
             terrain_atlas: None,
             terrain_generation: None,
             sections: HashMap::new(),
+            translucent_terrain_omitted: HashSet::new(),
             generation: None,
             atlas_revision: None,
             panorama_identity: None,
@@ -953,6 +955,25 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
     .filter_map(|(active, bit, name)| active.then_some((bit, name)))
 }
 
+fn set_translucent_terrain_omitted(
+    omitted: &mut HashSet<SectionKey>,
+    key: SectionKey,
+    is_omitted: bool,
+) {
+    if is_omitted {
+        omitted.insert(key);
+    } else {
+        omitted.remove(&key);
+    }
+}
+
+fn retain_translucent_terrain_omissions(
+    omitted: &mut HashSet<SectionKey>,
+    removed_columns: &HashSet<(i32, i32)>,
+) {
+    omitted.retain(|(x, _, z)| !removed_columns.contains(&(*x, *z)));
+}
+
 fn log_unsupported_world_pass(name: &str) {
     let message = match name {
         "celestial" => "Horizon GX2: skipped unsupported celestial pass\n\0",
@@ -967,6 +988,9 @@ fn log_unsupported_world_pass(name: &str) {
         "screen effects" => "Horizon GX2: skipped unsupported screen-effects pass\n\0",
         "world border" => "Horizon GX2: skipped unsupported world-border pass\n\0",
         "translucent geometry" => "Horizon GX2: skipped unsupported translucent-geometry pass\n\0",
+        "translucent terrain" => {
+            "Horizon GX2: skipped translucent terrain; solid terrain remains visible\n\0"
+        }
         "world primitives" => "Horizon GX2: skipped unsupported world-primitives pass\n\0",
         "shadow pass" => "Horizon GX2: skipped unsupported shadow pass\n\0",
         "skinned entities" => "Horizon GX2: skipped unsupported skinned-entities pass\n\0",
@@ -1024,6 +1048,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
             self.terrain_atlas = Some(atlas);
             self.terrain_generation = Some(artwork.terrain_generation);
             self.sections.clear();
+            self.translucent_terrain_omitted.clear();
         }
         Ok(())
     }
@@ -1035,11 +1060,6 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
         key: SectionKey,
         mesh: &SectionMesh,
     ) -> horizon_client::Result<()> {
-        if !mesh.translucent.is_empty() {
-            return Err(
-                "GX2 terrain first slice does not support translucent section vertices".into(),
-            );
-        }
         if !mesh.solid.len().is_multiple_of(4) {
             return Err("Horizon solid section mesh is not quad aligned".into());
         }
@@ -1072,17 +1092,24 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
         let native = NonNull::new(native).ok_or("GX2 section returned a null resource")?;
         self.sections
             .insert(key, TerrainSection { native, vertices });
+        set_translucent_terrain_omitted(
+            &mut self.translucent_terrain_omitted,
+            key,
+            !mesh.translucent.is_empty(),
+        );
         Ok(())
     }
 
     fn clear_sections(&mut self, _layout: ColumnLayout) {
         self.sections.clear();
+        self.translucent_terrain_omitted.clear();
     }
 
     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
         let removed: HashSet<_> = columns.collect();
         self.sections
             .retain(|(x, _, z), _| !removed.contains(&(*x, *z)));
+        retain_translucent_terrain_omissions(&mut self.translucent_terrain_omitted, &removed);
     }
 }
 
@@ -1098,6 +1125,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
     }
     fn release_surface(&mut self) {
         self.sections.clear();
+        self.translucent_terrain_omitted.clear();
         self.terrain = None;
         self.hud = None;
         self.panorama = None;
@@ -1115,11 +1143,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
 
     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
         self.last_frame_partial = false;
-        let unsupported: Vec<_> = if frame.title {
+        let mut unsupported: Vec<_> = if frame.title {
             Vec::new()
         } else {
             unsupported_world_passes(frame).collect()
         };
+        if !frame.title && !self.translucent_terrain_omitted.is_empty() {
+            unsupported.push((1 << 20, "translucent terrain"));
+        }
         if self
             .target_viewports()
             .iter()
