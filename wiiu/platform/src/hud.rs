@@ -428,7 +428,6 @@ mod tests {
         assert_eq!(prepared.patches[0].rgba, patches[0].rgba.as_ptr());
         assert_eq!(prepared.patches[0].length, 4);
         for blend in [
-            Blend::Invert,
             Blend::Depth([0; 4]),
             Blend::Vignette,
             Blend::EndPortal,
@@ -441,6 +440,12 @@ mod tests {
             };
             assert!(matches!(Prepared::new(&f), Err(Error::Unsupported)));
         }
+        let invert = [(0..3, Blend::Invert)];
+        let f = Frame {
+            runs: &invert,
+            ..frame
+        };
+        assert_eq!(Prepared::new(&f).unwrap().runs[0].blend, 1);
         let additive = [(0..3, Blend::Additive)];
         let f = Frame {
             runs: &additive,
