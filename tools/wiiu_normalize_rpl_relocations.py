@@ -178,6 +178,25 @@ def signed_branch_displacement(instruction: int) -> int:
     return displacement
 
 
+def validate_local24pc_target(
+    symbol: Symbol,
+    text_index: int,
+    target: int,
+    exported_addresses: set[int],
+) -> None:
+    if symbol.kind == STT_SECTION and symbol.section_index == text_index:
+        return
+    if (
+        symbol.kind == STT_FUNC
+        and symbol.section_index == text_index
+        and symbol.binding in (STB_GLOBAL, STB_WEAK)
+        and symbol.visibility == STV_HIDDEN
+        and target not in exported_addresses
+    ):
+        return
+    raise InvalidElf("R_PPC_LOCAL24PC does not target a local .text section or hidden function")
+
+
 def normalize(path: Path) -> tuple[int, int]:
     original = path.read_bytes()
     data = bytearray(original)
@@ -284,8 +303,12 @@ def normalize(path: Path) -> tuple[int, int]:
                 raise InvalidElf(f"{rela.name} branch site is outside .text")
 
             if relocation_type == R_PPC_LOCAL24PC:
-                if symbol.kind != STT_SECTION or symbol.section_index != text_index:
-                    raise InvalidElf("R_PPC_LOCAL24PC does not target the local .text section")
+                validate_local24pc_target(
+                    symbol,
+                    text_index,
+                    symbol.value + addend,
+                    exported_addresses,
+                )
             else:
                 if symbol.kind != STT_FUNC or symbol.section_index != text_index:
                     raise InvalidElf("R_PPC_PLTREL24 is not bound to a function in .text")
