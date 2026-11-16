@@ -649,10 +649,11 @@ update_camera(void)
    const float previousCameraZ = sCameraZ;
    const float previousCameraYaw = sCameraYaw;
    const float previousCameraPitch = sCameraPitch;
-   HorizonVpadSample status;
-   if (horizon_wiiu_vpad_read(&status) != 1) {
+   HorizonVpadBatch batch;
+   if (horizon_wiiu_vpad_read(&batch) != 1) {
       return;
    }
+   HorizonVpadSample status = batch.latest;
 
    const float deadzone = 0.12f;
    float forward = 0.0f;

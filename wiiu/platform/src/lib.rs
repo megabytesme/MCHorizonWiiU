@@ -4,13 +4,14 @@
 //! deadzones, menu navigation and Nintendo letter swapping remain in Horizon.
 
 use horizon_client_input::gamepad::{Button, PadState};
+use std::collections::VecDeque;
 
+#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+pub mod audio;
 pub mod hud;
 pub mod keyboard;
 pub mod mouse;
 pub mod touch;
-#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
-pub mod audio;
 
 /// The scalar subset read from WUT's `VPADStatus` by `vpad_bridge.c`.
 #[repr(C)]
@@ -30,8 +31,86 @@ pub struct VpadSample {
     pub touch_valid: u32,
 }
 
+pub const VPAD_SAMPLE_CAPACITY: usize = 16;
+pub const VPAD_HISTORY_CAPACITY: usize = VPAD_SAMPLE_CAPACITY * 3;
+pub const BUTTON_HISTORY_QUEUE_CAPACITY: usize = 128;
+
+/// Bounded replay queue for physical controller button-state transitions.
+/// History carries no sample freshness or touch evidence.
+pub struct ButtonHistory {
+    masks: VecDeque<u32>,
+}
+
+impl Default for ButtonHistory {
+    fn default() -> Self {
+        Self {
+            masks: VecDeque::with_capacity(BUTTON_HISTORY_QUEUE_CAPACITY),
+        }
+    }
+}
+
+impl ButtonHistory {
+    /// Queue one poll's ordered masks, or clear history while input is gated.
+    /// Returns false on overflow; that path clears pending masks fail-closed.
+    pub fn push_poll(&mut self, masks: &[u32], keyboard_owned: bool, focused: bool) -> bool {
+        if keyboard_owned || !focused {
+            self.clear();
+            return true;
+        }
+        if self.masks.len().saturating_add(masks.len()) > BUTTON_HISTORY_QUEUE_CAPACITY {
+            self.clear();
+            return false;
+        }
+        self.masks.extend(masks.iter().copied());
+        true
+    }
+
+    pub fn pop_front(&mut self) -> Option<u32> {
+        self.masks.pop_front()
+    }
+
+    pub fn clear(&mut self) {
+        self.masks.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.masks.len()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct VpadBatch {
+    latest: VpadSample,
+    transition_count: u32,
+    transitions: [u32; VPAD_HISTORY_CAPACITY],
+}
+
+impl Default for VpadBatch {
+    fn default() -> Self {
+        Self {
+            latest: VpadSample::default(),
+            transition_count: 0,
+            transitions: [0; VPAD_HISTORY_CAPACITY],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct VpadPoll {
+    pub pad: PadState,
+    pub fresh_sample: Option<FreshVpadSample>,
+    pub fresh_touch_release: Option<FreshTouchRelease>,
+    /// Ordered button masks from physical VPAD samples in this poll batch.
+    /// These are historical controller states, not fresh poll evidence.
+    pub button_history: [u32; VPAD_HISTORY_CAPACITY],
+    pub button_history_len: usize,
+}
+
 // This type is passed to the WUT bridge compiled from vpad_bridge.h.
 const _: () = {
+    assert!(std::mem::size_of::<VpadBatch>() == 228);
     assert!(std::mem::size_of::<VpadSample>() == 32);
     assert!(std::mem::offset_of!(VpadSample, touch_x) == 20);
     assert!(std::mem::offset_of!(VpadSample, touch_active) == 24);
@@ -104,6 +183,29 @@ pub fn pad_state(sample: VpadSample) -> PadState {
         state.set(button, sample.buttons & mask != 0);
     }
     state
+}
+
+/// Rebuild a queued button state while retaining the newest real poll's axes.
+pub fn pad_state_with_button_mask(latest: PadState, buttons: u32) -> PadState {
+    pad_state(VpadSample {
+        buttons,
+        left_x: latest.left[0],
+        left_y: latest.left[1],
+        right_x: latest.right[0],
+        right_y: latest.right[1],
+        ..Default::default()
+    })
+}
+
+/// Rearm a blocked controller only on a real neutral sample.
+pub fn rearm_on_fresh_neutral(blocked: &mut bool, fresh_sample: bool, pad: PadState) -> bool {
+    let neutral = pad.buttons == 0 && pad.triggers.iter().all(|value| *value == 0.0);
+    if *blocked && fresh_sample && neutral {
+        *blocked = false;
+        true
+    } else {
+        false
+    }
 }
 
 /// Retains the last state when VPAD has no new sample in a frame.
@@ -204,7 +306,7 @@ impl VpadState {
     #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
     pub fn poll_with_freshness(&mut self) -> Result<(PadState, Option<FreshTouchRelease>), i32> {
         self.poll_with_evidence()
-            .map(|(pad, _fresh_sample, release)| (pad, release))
+            .map(|poll| (poll.pad, poll.fresh_touch_release))
     }
 
     /// Read VPAD and return one-shot evidence for any newly read hardware
@@ -212,17 +314,36 @@ impl VpadState {
     /// `None` sample evidence means VPAD supplied no new sample; busy and
     /// terminal errors return `Err` and also provide no evidence.
     #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
-    pub fn poll_with_evidence(
-        &mut self,
-    ) -> Result<(PadState, Option<FreshVpadSample>, Option<FreshTouchRelease>), i32> {
+    pub fn poll_with_evidence(&mut self) -> Result<VpadPoll, i32> {
         extern "C" {
-            fn horizon_wiiu_vpad_read(sample: *mut VpadSample) -> i32;
+            fn horizon_wiiu_vpad_read(batch: *mut VpadBatch) -> i32;
         }
-        let mut sample = VpadSample::default();
+        let mut batch = VpadBatch::default();
         // The C bridge writes the sample only on success and owns VPADStatus's ABI.
-        match unsafe { horizon_wiiu_vpad_read(&mut sample) } {
-            1 => Ok(self.update_with_evidence(Some(sample))),
-            -1 => Ok(self.update_with_evidence(None)),
+        match unsafe { horizon_wiiu_vpad_read(&mut batch) } {
+            1 => {
+                let (pad, fresh_sample, fresh_touch_release) =
+                    self.update_with_evidence(Some(batch.latest));
+                let button_history_len =
+                    (batch.transition_count as usize).min(VPAD_HISTORY_CAPACITY);
+                Ok(VpadPoll {
+                    pad,
+                    fresh_sample,
+                    fresh_touch_release,
+                    button_history: batch.transitions,
+                    button_history_len,
+                })
+            }
+            -1 => {
+                let (pad, fresh_sample, fresh_touch_release) = self.update_with_evidence(None);
+                Ok(VpadPoll {
+                    pad,
+                    fresh_sample,
+                    fresh_touch_release,
+                    button_history: [0; VPAD_HISTORY_CAPACITY],
+                    button_history_len: 0,
+                })
+            }
             // A busy channel can be retried without releasing held controls or touch.
             -4 => Err(-4),
             error => {
@@ -256,6 +377,82 @@ mod tests {
         assert_eq!(state.triggers, [0.0, 1.0]);
         assert_eq!(state.left, [-0.5, 0.75]);
         assert_eq!(state.right, [0.25, -1.0]);
+    }
+
+    #[test]
+    fn button_history_preserves_order_and_uses_latest_axes() {
+        let mut history = ButtonHistory::default();
+        assert!(history.push_poll(&[0x4000, 0, 0x4000, 0], false, true));
+        assert_eq!(history.pop_front(), Some(0x4000));
+        assert_eq!(history.pop_front(), Some(0));
+        assert_eq!(history.pop_front(), Some(0x4000));
+        assert_eq!(history.pop_front(), Some(0));
+        assert_eq!(history.pop_front(), None);
+
+        let latest = pad_state(VpadSample {
+            left_x: 0.5,
+            left_y: -0.25,
+            ..Default::default()
+        });
+        let replayed = pad_state_with_button_mask(latest, 0x4000);
+        assert!(replayed.held(Button::South));
+        assert_eq!(replayed.left, [0.5, -0.25]);
+    }
+
+    #[test]
+    fn button_history_fails_closed_on_overflow_and_clears_at_keyboard_or_focus_gates() {
+        let mut history = ButtonHistory::default();
+        assert!(history.push_poll(&[0x4000, 0], false, true));
+        let overflow = vec![0; BUTTON_HISTORY_QUEUE_CAPACITY];
+        assert!(!history.push_poll(&overflow, false, true));
+        assert_eq!(history.len(), 0);
+
+        assert!(history.push_poll(&[0x4000], false, true));
+        assert!(history.push_poll(&[0], true, true));
+        assert_eq!(history.len(), 0);
+        assert!(history.push_poll(&[0x4000], false, true));
+        assert!(history.push_poll(&[0], false, false));
+        assert_eq!(history.len(), 0);
+        assert!(history.push_poll(&[0], false, true));
+        assert_eq!(history.pop_front(), Some(0));
+    }
+
+    #[test]
+    fn replaying_button_history_does_not_create_fresh_sample_evidence() {
+        let mut history = ButtonHistory::default();
+        assert!(history.push_poll(&[0x4000, 0], false, true));
+        assert_eq!(history.pop_front(), Some(0x4000));
+        assert_eq!(history.pop_front(), Some(0));
+
+        let mut state = VpadState::default();
+        let (_, fresh_sample, fresh_release) = state.update_with_evidence(None);
+        assert!(fresh_sample.is_none());
+        assert!(fresh_release.is_none());
+    }
+
+    #[test]
+    fn overflow_neutralizes_immediately_and_rearms_only_on_fresh_neutral() {
+        let mut history = ButtonHistory::default();
+        assert!(history.push_poll(&[0x4000], false, true));
+        let overflow = vec![0; BUTTON_HISTORY_QUEUE_CAPACITY];
+        assert!(!history.push_poll(&overflow, false, true));
+        assert_eq!(history.pop_front(), None);
+
+        let mut blocked = true;
+        let held = pad_state(VpadSample {
+            buttons: 0x4000,
+            ..Default::default()
+        });
+        let neutral = PadState::default();
+
+        // The overflow caller dispatches PadState::default immediately; the
+        // gate remains blocked while this latest physical sample is held.
+        assert!(!rearm_on_fresh_neutral(&mut blocked, true, held));
+        assert!(blocked);
+        assert!(!rearm_on_fresh_neutral(&mut blocked, false, neutral));
+        assert!(blocked);
+        assert!(rearm_on_fresh_neutral(&mut blocked, true, neutral));
+        assert!(!blocked);
     }
 
     #[test]
@@ -318,8 +515,7 @@ mod tests {
             touch_valid: 0,
             ..Default::default()
         };
-        let (pad, fresh_sample, fresh_touch_release) =
-            state.update_with_evidence(Some(contact));
+        let (pad, fresh_sample, fresh_touch_release) = state.update_with_evidence(Some(contact));
         assert_eq!(pad, PadState::default());
         assert!(fresh_sample.is_some());
         assert!(fresh_touch_release.is_none());

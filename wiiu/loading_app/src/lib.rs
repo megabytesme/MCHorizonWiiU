@@ -4,8 +4,8 @@
 //! library only runs on that initialized GX2 thread.
 
 use horizon_client::game::{
-    CafeGameEntryKind, CafeGameSession, CafeLoadingHost, CafeLoadingPresenter,
-    CafeLoadingSession, CafeLoadingStatus, CafeRunOutcome,
+    CafeGameEntryKind, CafeGameSession, CafeLoadingHost, CafeLoadingPresenter, CafeLoadingSession,
+    CafeLoadingStatus, CafeRunOutcome,
 };
 use horizon_client_platform::{
     ClientDeviceEvent, ClientWindowEvent, EventLoopControl, EventLoopCtl, ImeEvent,
@@ -13,10 +13,10 @@ use horizon_client_platform::{
 };
 use horizon_wiiu_loading_host::Gx2LoadingPresenter;
 use horizon_wiiu_platform::{
-    VpadState,
     keyboard::KeyboardAdapter,
     mouse::{MouseAdapter, MouseOutput},
     touch::TouchMapper,
+    ButtonHistory, VpadState,
 };
 use std::cell::Cell;
 use std::ffi::CString;
@@ -329,6 +329,7 @@ struct LoadingHost<'a> {
     presenter: &'a mut Gx2LoadingPresenter<'static>,
     control: Cell<EventLoopControl>,
     vpad: VpadState,
+    button_history: ButtonHistory,
     touch: TouchMapper,
     keyboard: KeyboardAdapter,
     keyboard_events: Vec<ClientWindowEvent>,
@@ -357,6 +358,7 @@ impl<'a> LoadingHost<'a> {
             presenter,
             control: Cell::new(EventLoopControl::Poll),
             vpad: VpadState::default(),
+            button_history: ButtonHistory::default(),
             touch: TouchMapper::default(),
             keyboard: KeyboardAdapter::default(),
             keyboard_events: Vec::with_capacity(32),
@@ -681,7 +683,9 @@ impl<'a> LoadingHost<'a> {
             return focused;
         }
         self.focused = focused;
+        self.button_history.clear();
         if focused {
+            self.pad_blocked_until_neutral = true;
             self.touch.focus_gained(&self.vpad);
         } else {
             self.touch_blocked_until_release = true;
@@ -969,17 +973,46 @@ impl CafeLoadingHost for LoadingHost<'_> {
             if trace_vpad {
                 startup_report!("Cafe VPAD Rust adapter returned");
             }
-            let (pad, fresh_sample, fresh_release, terminal_error) = match vpad_result {
-                Ok((pad, fresh_sample, fresh_release)) => (pad, fresh_sample, fresh_release, false),
+            let (
+                pad,
+                fresh_sample,
+                fresh_release,
+                button_history,
+                button_history_len,
+                terminal_error,
+            ) = match vpad_result {
+                Ok(poll) => (
+                    poll.pad,
+                    poll.fresh_sample,
+                    poll.fresh_touch_release,
+                    poll.button_history,
+                    poll.button_history_len,
+                    false,
+                ),
                 // VPAD busy means no new sample. Retain the previous state and
                 // never claim a physical touch release.
-                Err(-4) => (self.vpad.update(None), None, None, false),
+                Err(-4) => (
+                    self.vpad.update(None),
+                    None,
+                    None,
+                    [0; horizon_wiiu_platform::VPAD_HISTORY_CAPACITY],
+                    0,
+                    false,
+                ),
                 // Terminal controller errors reset VpadState in the adapter;
                 // release the mapped click, while requiring a fresh physical
                 // release before a later touch starts another click.
                 Err(_) => {
                     self.pad_blocked_until_neutral = true;
-                    (self.vpad.reset(), None, None, true)
+                    self.button_history.clear();
+                    (
+                        self.vpad.reset(),
+                        None,
+                        None,
+                        [0; horizon_wiiu_platform::VPAD_HISTORY_CAPACITY],
+                        0,
+                        true,
+                    )
                 }
             };
             if trace_vpad {
@@ -1062,6 +1095,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
             let mut native_input_this_frame =
                 self.native_keyboard_active || swkbd_occupied || swkbd_open;
             self.native_keyboard_active = swkbd_occupied || swkbd_open;
+            let history_overflowed = !self.button_history.push_poll(
+                &button_history[..button_history_len],
+                native_input_this_frame,
+                focused,
+            );
+            if history_overflowed {
+                self.pad_blocked_until_neutral = true;
+            }
             if trace_this_iteration {
                 log::info!(
                     "Horizon Cafe host loop trace iteration={} phase=input_dispatch.begin",
@@ -1165,28 +1206,53 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 if let Some(game) = game_session.as_mut() {
                     game.feed_pad_state(horizon_client::gamepad::PadState::default());
                 }
+            } else if history_overflowed {
+                // Release any previously fed held state immediately. Keep
+                // input blocked until a new physical neutral sample arrives.
+                self.dispatch_pad_state(
+                    session,
+                    game_session.as_mut(),
+                    horizon_client::gamepad::PadState::default(),
+                );
+                if self.pad_blocked_until_neutral {
+                    let _ = horizon_wiiu_platform::rearm_on_fresh_neutral(
+                        &mut self.pad_blocked_until_neutral,
+                        fresh_sample.is_some(),
+                        pad,
+                    );
+                }
             } else if terminal_error {
                 // Deliver neutral immediately to release any menu edge, but
                 // do not treat an error-created default as fresh rearm proof.
                 self.dispatch_pad_state(session, game_session.as_mut(), pad);
             } else if self.pad_blocked_until_neutral {
-                let neutral = pad.buttons == 0 && pad.triggers.iter().all(|value| *value == 0.0);
                 // Only a successful sample can rearm. Cached neutral state,
                 // no-sample/busy polls, and touch-release evidence do not.
-                if fresh_sample.is_some() && neutral {
-                    self.pad_blocked_until_neutral = false;
+                if horizon_wiiu_platform::rearm_on_fresh_neutral(
+                    &mut self.pad_blocked_until_neutral,
+                    fresh_sample.is_some(),
+                    pad,
+                ) {
+                    self.button_history.clear();
                     self.dispatch_pad_state(session, game_session.as_mut(), pad);
                 }
             } else {
-                // Pass the actual canonical Cafe controller sample through
-                // Horizon's typed menu path; no keyboard events are synthesized.
-                self.dispatch_pad_state(session, game_session.as_mut(), pad);
+                // Drain one historical button state per frame while retaining
+                // the newest physical poll's analog values.
+                let state = if let Some(buttons) = self.button_history.pop_front() {
+                    horizon_wiiu_platform::pad_state_with_button_mask(pad, buttons)
+                } else {
+                    pad
+                };
+                self.dispatch_pad_state(session, game_session.as_mut(), state);
             }
             if !native_input_this_frame && unsafe { horizon_swkbd_is_open() != 0 } {
                 // The south-button sample that opens CafeOS is still delivered
                 // to Horizon; suppress touch/pad dispatch for the rest of it.
                 native_input_this_frame = true;
                 self.native_keyboard_active = true;
+                self.button_history.clear();
+                self.pad_blocked_until_neutral = true;
                 self.keyboard.release_all_into(&mut self.keyboard_events);
                 self.dispatch_queued_keyboard(session, game_session.as_mut());
                 // This sample opened CafeOS, but the game frame below now
@@ -1279,6 +1345,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     let handoff_started_at = Instant::now();
                     match session.start_pending_game() {
                         Ok(Some(game)) => {
+                            self.button_history.clear();
+                            self.pad_blocked_until_neutral = true;
                             log::info!(
                                 "Horizon Cafe Game handoff returned elapsed_ms={}",
                                 handoff_started_at.elapsed().as_millis()
