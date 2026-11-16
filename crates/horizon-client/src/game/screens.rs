@@ -402,11 +402,7 @@ impl Game<'_> {
     }
     pub(super) fn pause_click(&mut self) -> Result<()> {
         let (w, h) = {
-            let size = self
-                .renderer
-                .as_ref()
-                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-            let b = HudBatch::new(size);
+            let b = HudBatch::new(self.input_framebuffer_size().unwrap_or([1, 1]));
             (b.width, b.height)
         };
         let links = !self.server_links().is_empty();
@@ -451,11 +447,7 @@ impl Game<'_> {
     }
     pub(super) fn pause_key(&mut self, key: KeyCode) -> Result<()> {
         let (w, h) = {
-            let size = self
-                .renderer
-                .as_ref()
-                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-            let b = HudBatch::new(size);
+            let b = HudBatch::new(self.input_framebuffer_size().unwrap_or([1, 1]));
             (b.width, b.height)
         };
         let links = !self.server_links().is_empty();
@@ -722,11 +714,7 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1, 1], |r| [r.config.width, r.config.height]);
-        let b = HudBatch::new(size);
+        let b = HudBatch::new(self.input_framebuffer_size().unwrap_or([1, 1]));
         let hit = death_buttons(b.width, b.height, self.level.hardcore)
             .into_iter()
             .find(|d| ui::hovered(self.cursor, d.0, d.1, 200.0, 20.0))

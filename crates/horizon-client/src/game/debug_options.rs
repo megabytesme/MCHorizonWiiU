@@ -184,9 +184,8 @@ impl Game<'_> {
     /// `ClampingLazyMaxIntRange(-1, window.calculateScale(0, unicode))` as a
     /// CycleButton: the next value, or the previous one with Shift.
     fn cycle_debug_gui_scale(&mut self, back: bool) {
-        let size = self.renderer.as_ref().map_or([1280, 720], |r| {
-            [r.config.width as i32, r.config.height as i32]
-        });
+        let size = self.framebuffer_size();
+        let size = [size[0] as i32, size[1] as i32];
         let max = horizon_client::window::calculate_scale(size, 0, self.settings.force_unicode);
         let current = self.settings.file.int("debugGuiScale").clamp(-1, max);
         let next = match (back, current) {

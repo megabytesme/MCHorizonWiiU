@@ -1122,11 +1122,7 @@ impl Game<'_> {
         if self.station.is_none() && (!self.brewing_open() || self.remote.is_some()) {
             return false;
         }
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return true;
         };
         let batch = HudBatch::new(size);
@@ -1278,11 +1274,7 @@ impl Game<'_> {
     pub(super) fn station_drag(&mut self) {
         self.loom_drag();
         self.merchant_drag();
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return;
         };
         let (_, oy) = self.inventory_origin(&HudBatch::new(size));

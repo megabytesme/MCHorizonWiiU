@@ -387,6 +387,14 @@ impl<'a> LoadingHost<'a> {
         unsafe { horizon_wiiu_app_is_running() != 0 }
     }
 
+    fn sync_game_viewport(&mut self, game: &mut CafeGameSession) {
+        // Refresh TV/DRC dimensions before the Game handles pointer coordinates
+        // or lays out its next frame. The presenter keeps its prior valid
+        // layout when WHB cannot report dimensions.
+        horizon_client::presentation::resize(self.presenter, 0, 0);
+        game.sync_framebuffer_size(self.presenter.layout_viewport());
+    }
+
     fn dispatch_event(
         &mut self,
         loading: &mut CafeLoadingSession,
@@ -394,6 +402,7 @@ impl<'a> LoadingHost<'a> {
         event: ClientWindowEvent,
     ) {
         if let Some(game) = game {
+            self.sync_game_viewport(game);
             game.dispatch_event(self, event);
         } else {
             loading.dispatch_event(self, event);
@@ -1333,6 +1342,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
             }
             let mut world_start_failed = false;
             let draw_result = if let Some(game) = &mut game_session {
+                self.sync_game_viewport(game);
                 let event_loop = LoadingFrameEventLoop {
                     control: &self.control,
                 };

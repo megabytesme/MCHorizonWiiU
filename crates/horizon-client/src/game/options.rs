@@ -21,6 +21,19 @@ pub(super) const CONTROL_HELP: &[&str] = &[
     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
 ];
 
+fn valid_framebuffer_size(size: [u32; 2]) -> bool {
+    size[0] != 0 && size[1] != 0
+}
+
+fn effective_input_framebuffer_size(
+    renderer: Option<[u32; 2]>,
+    cafe: Option<[u32; 2]>,
+) -> Option<[u32; 2]> {
+    renderer
+        .filter(|&size| valid_framebuffer_size(size))
+        .or_else(|| cafe.filter(|&size| valid_framebuffer_size(size)))
+}
+
 impl Game<'_> {
     pub(super) fn save_title_options(&mut self) {
         if let Some(title) = &self.title
@@ -107,11 +120,24 @@ impl Game<'_> {
     pub(super) fn shader_packs_dir() -> std::path::PathBuf {
         Self::game_dir().join(horizon_client::shader_pack_list::DIR)
     }
+    pub(super) fn framebuffer_size(&self) -> [u32; 2] {
+        self.input_framebuffer_size().unwrap_or([1280, 720])
+    }
+    pub(super) fn input_framebuffer_size(&self) -> Option<[u32; 2]> {
+        effective_input_framebuffer_size(
+            self.renderer
+                .as_ref()
+                .map(|r| [r.config.width, r.config.height]),
+            self.cafe_framebuffer_size,
+        )
+    }
+    pub(super) fn set_cafe_framebuffer_size(&mut self, size: [u32; 2]) {
+        if valid_framebuffer_size(size) {
+            self.cafe_framebuffer_size = Some(size);
+        }
+    }
     pub(super) fn gui_size(&self) -> (f32, f32) {
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1280, 720], |r| [r.config.width, r.config.height]);
+        let size = self.framebuffer_size();
         let b = HudBatch::new(size);
         (b.width, b.height)
     }
@@ -251,9 +277,7 @@ impl Game<'_> {
             self.dragging = true;
         }
         let size = self.gui_size();
-        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
-            [r.config.width as i32, r.config.height as i32]
-        });
+        let framebuffer = self.framebuffer_size().map(|dimension| dimension as i32);
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.shift = self.modifiers.shift_key();
         let events = ui.click(
@@ -271,9 +295,7 @@ impl Game<'_> {
     }
     pub(super) fn options_drag(&mut self) -> Result<()> {
         let size = self.gui_size();
-        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
-            [r.config.width as i32, r.config.height as i32]
-        });
+        let framebuffer = self.framebuffer_size().map(|dimension| dimension as i32);
         let mut ui = std::mem::take(&mut self.ui.options);
         let events = ui.click(
             &mut self.settings,
@@ -291,9 +313,7 @@ impl Game<'_> {
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
         let size = self.gui_size();
         let shift = self.has_shift_down();
-        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
-            [r.config.width as i32, r.config.height as i32]
-        });
+        let framebuffer = self.framebuffer_size().map(|dimension| dimension as i32);
         self.ui.options.size = size;
         self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
@@ -318,9 +338,7 @@ impl Game<'_> {
                 .scroll_at(&self.settings, size, self.cursor, amount);
             return Ok(());
         }
-        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
-            [r.config.width as i32, r.config.height as i32]
-        });
+        let framebuffer = self.framebuffer_size().map(|dimension| dimension as i32);
         if self.ui.options.video_open() && self.has_control_down() {
             // VideoSettingsScreen.mouseScrolled: Ctrl with the wheel steps the GUI scale.
             let mut ui = std::mem::take(&mut self.ui.options);
@@ -735,7 +753,7 @@ fn windowed_again(w: &winit::window::Window) {
 
 #[cfg(test)]
 mod controller_context_tests {
-    use super::detected_controller_style;
+    use super::{detected_controller_style, effective_input_framebuffer_size};
     use horizon_client::{controller_ui::Device, gamepad::GlyphStyle};
 
     #[test]
@@ -757,6 +775,26 @@ mod controller_context_tests {
         assert_eq!(
             detected_controller_style(None, GlyphStyle::PlayStation),
             GlyphStyle::PlayStation
+        );
+    }
+
+    #[test]
+    fn framebuffer_size_prefers_renderer_then_last_valid_cafe_size() {
+        assert_eq!(
+            effective_input_framebuffer_size(Some([1920, 1080]), Some([854, 480])),
+            Some([1920, 1080])
+        );
+        assert_eq!(
+            effective_input_framebuffer_size(Some([0, 0]), Some([854, 480])),
+            Some([854, 480])
+        );
+        assert_eq!(
+            effective_input_framebuffer_size(None, Some([0, 480])),
+            None
+        );
+        assert_eq!(
+            effective_input_framebuffer_size(None, Some([854, 480])),
+            Some([854, 480])
         );
     }
 }

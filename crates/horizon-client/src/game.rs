@@ -2647,6 +2647,9 @@ struct Game<'a> {
     observed_screen: Option<native_hooks::ObservedScreen>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// Last valid framebuffer size supplied by the Cafe presenter. A host
+    /// dimensions query may fail transiently while the current surface lives.
+    cafe_framebuffer_size: Option<[u32; 2]>,
     /// Avoid an endless rebuild loop if the new device is lost as well.
     last_device_recovery: Option<Instant>,
     /// CPU geometry storage retained across frames, including empty/title frames.
@@ -10565,11 +10568,7 @@ impl Game<'_> {
         let Some(key) = self.settings.keys.container_hotbar_key(code) else {
             return false;
         };
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return false;
         };
         let batch = HudBatch::new(size);
@@ -10592,11 +10591,7 @@ impl Game<'_> {
     /// slot or the off hand, THROW one or the whole stack.
     fn inventory_hotkey(&mut self, key: KeyCode) -> bool {
         use horizon_client::menu::Input;
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return false;
         };
         let batch = HudBatch::new(size);
@@ -10625,11 +10620,7 @@ impl Game<'_> {
         let menu = (self.screen == Screen::Inventory
             || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
             && !self.dialog_open();
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return;
         };
         let batch = HudBatch::new(size);
@@ -10805,10 +10796,10 @@ impl Game<'_> {
         let Some((ty, slots)) = self.inv_drag.clone() else {
             return;
         };
-        let Some(r) = self.renderer.as_ref() else {
+        let Some(size) = self.input_framebuffer_size() else {
             return;
         };
-        let batch = HudBatch::new([r.config.width, r.config.height]);
+        let batch = HudBatch::new(size);
         if let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1)
             && slot != 200
             && slot < Creative::DISPLAY
@@ -10821,10 +10812,10 @@ impl Game<'_> {
     }
     /// The hovered slot and whether the cursor is outside the window.
     fn inventory_target(&self) -> (Option<usize>, bool) {
-        let Some(r) = self.renderer.as_ref() else {
+        let Some(size) = self.input_framebuffer_size() else {
             return (None, false);
         };
-        let batch = HudBatch::new([r.config.width, r.config.height]);
+        let batch = HudBatch::new(size);
         (
             self.slot_at(&batch, self.cursor.0, self.cursor.1),
             self.clicked_outside(&batch),
@@ -11069,11 +11060,7 @@ impl Game<'_> {
         if self.remote.is_some() {
             return self.remote_click(right);
         }
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return;
         };
         let batch = HudBatch::new(size);
@@ -15791,11 +15778,7 @@ impl Game<'_> {
         );
     }
     fn click_creative(&mut self, right: bool) {
-        let Some(size) = self
-            .renderer
-            .as_ref()
-            .map(|r| [r.config.width, r.config.height])
-        else {
+        let Some(size) = self.input_framebuffer_size() else {
             return;
         };
         let batch = HudBatch::new(size);
@@ -18315,8 +18298,8 @@ impl Game<'_> {
             let upgrade = starting.handle.upgrade();
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = HudBatch::new([r.config.width, r.config.height]);
+                    if let Some(size) = self.input_framebuffer_size() {
+                        let b = HudBatch::new(size);
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
                     }
                 }
@@ -18601,8 +18584,8 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = HudBatch::new([r.config.width, r.config.height]);
+                    if let Some(size) = self.input_framebuffer_size() {
+                        let b = HudBatch::new(size);
                         let previous = self.cursor;
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
                         if self.screen_mouse_dragged(previous) {
@@ -18645,7 +18628,6 @@ impl Game<'_> {
                             title.drag_field(&self.gui.atlas, self.cursor.0);
                         }
                         if self.dragging && self.screen == Screen::Options {
-                            let _ = b;
                             self.options_drag()?;
                         }
                     }
@@ -18847,11 +18829,7 @@ impl Game<'_> {
                     button: MouseButton::Left,
                     ..
                 } if self.title.is_some() && state == ElementState::Pressed => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
+                    let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                     let b = HudBatch::new(size);
                     let atlas = &self.gui.atlas;
                     let shift = self.has_shift_down();
@@ -18877,11 +18855,7 @@ impl Game<'_> {
                     button: MouseButton::Middle,
                     ..
                 } if self.title.is_some() && self.screen != Screen::Options => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
+                    let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                     let b = HudBatch::new(size);
                     if let Some(title) = self.title.as_mut() {
                         title.select_world_at(self.cursor.0, self.cursor.1, (b.width, b.height));
@@ -18890,21 +18864,13 @@ impl Game<'_> {
                 WindowEvent::MouseInput { .. } if self.title.is_some() => {}
                 WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
+                        let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                         self.book_click(size);
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.sign_edit.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
+                        let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                         self.sign_edit_click(size);
                     }
                 }
@@ -19054,17 +19020,11 @@ impl Game<'_> {
                             self.death_click()?
                         }
                         Screen::Advancements if button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
+                            let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                             self.advancements_mouse(pressed, size);
                         }
                         Screen::Stats if pressed && button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
+                            let size = self.input_framebuffer_size().unwrap_or([1, 1]);
                             self.stats_click(size);
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
@@ -19972,6 +19932,7 @@ impl<'a> Game<'a> {
             observed_screen: None,
             window: None,
             renderer: None,
+            cafe_framebuffer_size: None,
             last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
@@ -22630,6 +22591,13 @@ pub struct CafeGameSession {
 }
 
 impl CafeGameSession {
+    /// Keep Game's input and logical framebuffer calculations aligned with
+    /// the active GamePad layout. Invalid dimensions leave the last valid
+    /// Cafe size intact.
+    pub fn sync_framebuffer_size(&mut self, size: [u32; 2]) {
+        self.game.set_cafe_framebuffer_size(size);
+    }
+
     /// Return the title entry this session was handed, even after Game has
     /// consumed its pending entry while starting the connection or world.
     pub fn entry_kind(&self) -> CafeGameEntryKind {

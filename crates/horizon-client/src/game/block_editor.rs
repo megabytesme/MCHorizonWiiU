@@ -355,10 +355,7 @@ impl Game<'_> {
     }
 
     pub(super) fn block_editor_click(&mut self) {
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1, 1], |r| [r.config.width, r.config.height]);
+        let size = self.input_framebuffer_size().unwrap_or([1, 1]);
         let b = HudBatch::new(size);
         let cursor = self.cursor;
         let shift = self.has_shift_down();
@@ -457,10 +454,7 @@ impl Game<'_> {
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
         let types_text = self.types_text();
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1, 1], |r| [r.config.width, r.config.height]);
+        let size = self.input_framebuffer_size().unwrap_or([1, 1]);
         let b = HudBatch::new(size);
         match key {
             KeyCode::Escape => {
