@@ -28,6 +28,7 @@ fn id(name: &str) -> String {
         format!("minecraft:{name}")
     }
 }
+
 fn stack_json(s: &ItemStack) -> Value {
     json!({
         "item": &*s.item,
@@ -69,6 +70,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
+            .or_else(|| self.input_framebuffer_size())
             .ok_or("no renderer yet")?;
         Ok(self.inventory_origin(&horizon_client::hud::HudBatch::new(size)))
     }
@@ -235,5 +237,81 @@ impl Game<'_> {
             }
             _ => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Audio, Options, Progress, Settings, load_resources};
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn cafe_framebuffer_exposes_and_clicks_inventory_slots_without_a_renderer() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to prepared resources"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = super::super::execution_role::ExecutionRole::IntegratedServer;
+        let resources = loaded.resources;
+        let mut game = Game::new(
+            &resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.title = None;
+        game.screen = Screen::Inventory;
+        assert_eq!(
+            game.gui_origin().unwrap_err().to_string(),
+            "no renderer yet"
+        );
+        game.set_cafe_framebuffer_size([854, 480]);
+        game.inventory[0] = Some(ItemStack::new("minecraft:oak_planks", 1));
+
+        assert!(game.ui_nodes().iter().any(|node| node.id == "slot-0"));
+        game.station_command(&["click-slot", "0"]).unwrap();
+        assert!(game.inventory[0].is_none());
+        assert_eq!(game.carried.as_ref().map(|stack| stack.count), Some(1));
+        game.station_command(&["click-slot", "1"]).unwrap();
+        assert!(game.carried.is_none());
+        assert_eq!(game.inventory[1].as_ref().map(|stack| stack.count), Some(1));
+
+        game.screen = Screen::Creative;
+        let node = game
+            .ui_nodes()
+            .into_iter()
+            .find(|node| node.id == "slot-1")
+            .expect("creative hotbar slot");
+        let batch = horizon_client::hud::HudBatch::new([854, 480]);
+        assert_eq!(
+            game.slot_at(&batch, node.rect[0] + 8.0, node.rect[1] + 8.0),
+            Some(1)
+        );
+        game.station_command(&["click-slot", "1"]).unwrap();
+        assert!(game.inventory[1].is_none());
+        assert_eq!(game.carried.as_ref().map(|stack| stack.count), Some(1));
+        game.station_command(&["click-slot", "0"]).unwrap();
+        assert!(game.carried.is_none());
+        assert_eq!(game.inventory[0].as_ref().map(|stack| stack.count), Some(1));
     }
 }
