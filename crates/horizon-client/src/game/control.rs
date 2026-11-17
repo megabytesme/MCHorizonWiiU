@@ -946,18 +946,24 @@ impl Game<'_> {
                 ok()
             }
             "screenshot" => {
-                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                if self.renderer.is_none() && self.cafe_framebuffer_size.is_none() {
+                    return Err("no renderer yet".into());
+                }
                 if self.pending_screenshot.is_some() {
                     return Err("a screenshot is already pending".into());
                 }
                 arg(1)?;
                 // The rest of the line: a path may hold spaces.
                 let path = line.trim_start().strip_prefix("screenshot").unwrap_or("");
-                renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
-                    path: path.trim().into(),
-                    size: None,
-                    scaled: false,
-                });
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+                        path: path.trim().into(),
+                        size: None,
+                        scaled: false,
+                    });
+                } else {
+                    self.cafe_screenshot_requested = true;
+                }
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
             }

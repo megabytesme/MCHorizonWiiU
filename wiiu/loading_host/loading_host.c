@@ -2,7 +2,10 @@
 #include "swkbd_bridge.h"
 
 #include <whb/gfx.h>
+#include <gx2/event.h>
 #include <gx2/surface.h>
+#include <gx2r/surface.h>
+#include <string.h>
 
 extern const uint8_t _binary_hud_gsh_start[];
 extern const uint8_t _binary_hud_gsh_end[];
@@ -46,6 +49,66 @@ int horizon_loading_host_dimensions(uint32_t dimensions[4])
    dimensions[2] = drc->surface.width;
    dimensions[3] = drc->surface.height;
    return 0;
+}
+
+/* Match the verified diagnostic copy shape, but return the complete TV image
+ * to a caller-provided buffer instead of sampling fixed diagnostic pixels. */
+int horizon_loading_host_read_tv_rgba(uint8_t *out, size_t length)
+{
+   if (!out) return -1;
+   GX2ColorBuffer *tv = WHBGfxGetTVColourBuffer();
+   if (!tv) return -2;
+   GX2Surface *src = &tv->surface;
+   if (!src->width || !src->height ||
+       src->format != GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8 ||
+       src->aa != GX2_AA_MODE1X || src->pitch < src->width) return -3;
+   if ((size_t)src->pitch > SIZE_MAX / (size_t)src->height / 4 ||
+       (size_t)src->imageSize < (size_t)src->pitch * src->height * 4) return -4;
+   if ((size_t)src->width > SIZE_MAX / (size_t)src->height / 4) return -5;
+   const size_t row_bytes = (size_t)src->width * 4;
+   const size_t required = row_bytes * (size_t)src->height;
+   if (length < required) return -6;
+
+   GX2Surface dst = {0};
+   dst.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+   dst.width = src->width;
+   dst.height = src->height;
+   dst.depth = 1;
+   dst.mipLevels = 1;
+   dst.format = src->format;
+   dst.aa = GX2_AA_MODE1X;
+   dst.tileMode = GX2_TILE_MODE_LINEAR_SPECIAL;
+   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_TEXTURE |
+      GX2R_RESOURCE_USAGE_CPU_READ | GX2R_RESOURCE_USAGE_GPU_WRITE;
+   if (!GX2RCreateSurface(&dst, flags)) return -7;
+
+   int result = 0;
+   if (dst.pitch < dst.width ||
+       (size_t)dst.pitch > SIZE_MAX / (size_t)dst.height / 4 ||
+       (size_t)dst.imageSize < (size_t)dst.pitch * dst.height * 4) {
+      result = -8;
+      goto cleanup;
+   }
+
+   /* Ensure the TV draw has completed before copying, then ensure the copy
+    * has completed before locking its CPU-readable destination. */
+   GX2DrawDone();
+   GX2CopySurface(src, 0, 0, &dst, 0, 0);
+   GX2DrawDone();
+   const uint8_t *pixels = GX2RLockSurfaceEx(&dst, 0, flags);
+   if (!pixels) {
+      result = -9;
+      goto cleanup;
+   }
+   const size_t source_pitch = (size_t)dst.pitch * 4;
+   for (uint32_t y = 0; y < dst.height; ++y) {
+      memcpy(out + (size_t)y * row_bytes, pixels + (size_t)y * source_pitch, row_bytes);
+   }
+   GX2RUnlockSurfaceEx(&dst, 0, flags);
+
+cleanup:
+   GX2RDestroySurfaceEx(&dst, flags);
+   return result;
 }
 
 int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context)

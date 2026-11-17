@@ -14,7 +14,9 @@ use horizon_client::hud::{Rect, cit_glint::GlintTextures};
 use horizon_client::mesher::SectionMesh;
 use horizon_client::sprites::SpriteAnimation;
 use horizon_client::{
-    game::{CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter},
+    game::{
+        CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter, CafeScreenshot,
+    },
     gfx::{Frame, panorama},
     presentation::{HudBackend, PresentationBackend, TerrainBackend},
 };
@@ -44,6 +46,7 @@ const _: () = {
 extern "C" {
     fn OSReport(format: *const std::ffi::c_char, ...);
     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
+    fn horizon_loading_host_read_tv_rgba(out: *mut u8, length: usize) -> i32;
     fn horizon_loading_host_hud_gfd(length: *mut usize) -> *const u8;
     fn horizon_loading_host_panorama_gfd(length: *mut usize) -> *const u8;
     fn horizon_loading_host_terrain_gfd(length: *mut usize) -> *const u8;
@@ -344,6 +347,8 @@ pub struct Gx2LoadingPresenter<'shader> {
     trace_next_loading_frame: bool,
     trace_loading_iteration: bool,
     last_frame_partial: bool,
+    screenshot_requested: bool,
+    screenshot_result: Option<Result<CafeScreenshot, String>>,
     unsupported_logged: u32,
     _thread: PhantomData<*mut ()>,
 }
@@ -387,6 +392,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
             trace_next_loading_frame: false,
             trace_loading_iteration: false,
             last_frame_partial: false,
+            screenshot_requested: false,
+            screenshot_result: None,
             unsupported_logged: 0,
             _thread: PhantomData,
         })
@@ -1034,6 +1041,16 @@ fn log_unsupported_world_pass(name: &str) {
 }
 
 impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+    fn request_screenshot(&mut self) {
+        self.screenshot_requested = true;
+        self.screenshot_result = None;
+    }
+
+    fn take_screenshot(&mut self) -> Option<Result<CafeScreenshot, String>> {
+        self.screenshot_requested = false;
+        self.screenshot_result.take()
+    }
+
     fn last_game_frame_was_partial(&self) -> bool {
         self.last_frame_partial
     }
@@ -1268,6 +1285,30 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                 draw.result = Err("Horizon HUD draw failed");
                 return -1;
             }
+            if target == 0 && draw.presenter.screenshot_requested {
+                draw.presenter.screenshot_requested = false;
+                let size = (width as usize)
+                    .checked_mul(height as usize)
+                    .and_then(|n| n.checked_mul(4));
+                draw.presenter.screenshot_result = Some(match size {
+                    Some(size) if width > 0 && height > 0 && size <= 1920 * 1080 * 4 => {
+                        let mut rgba = vec![0; size];
+                        if unsafe {
+                            horizon_loading_host_read_tv_rgba(rgba.as_mut_ptr(), rgba.len())
+                        } == 0
+                        {
+                            Ok(CafeScreenshot {
+                                width,
+                                height,
+                                rgba,
+                            })
+                        } else {
+                            Err("GX2 TV readback failed".into())
+                        }
+                    }
+                    _ => Err("unsupported Cafe screenshot dimensions".into()),
+                });
+            }
             0
         }
         let clear = [
@@ -1292,8 +1333,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                 clear.as_ptr(),
             )
         };
-        draw.result?;
+        if let Err(error) = draw.result {
+            draw.presenter.screenshot_result = None;
+            return Err(error.into());
+        }
         if host != 0 {
+            draw.presenter.screenshot_result = None;
             return Err("WHB did not accept both GX2 game frames".into());
         }
         if !unsupported.is_empty() {

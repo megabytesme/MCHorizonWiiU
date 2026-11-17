@@ -272,7 +272,11 @@ impl Session {
                     }
                 }
                 absolute_paths(&mut words);
-                self.game(&words.join(" "))
+                let mut reply = self.game(&words.join(" "))?;
+                if name == "screenshot" {
+                    save_remote_screenshot(&mut reply, &words[1..].join(" "))?;
+                }
+                Ok(reply)
             }
         }
     }
@@ -298,6 +302,56 @@ impl Session {
             thread::sleep(Duration::from_millis(250));
         }
     }
+}
+
+// Cafe can return the original screenshot in the response because its filesystem
+// is separate from the machine running horizon-ctl. The public reply stays the
+// same after the image has been written to the path requested by the caller.
+fn save_remote_screenshot(reply: &mut Value, path: &str) -> Result<(), Failure> {
+    let Some(encoded) = reply.get("png_base64") else {
+        return Ok(());
+    };
+    let failure = |message: String| Failure {
+        reply: json!({ "error": message }),
+        status: GAME_ERROR,
+    };
+    let encoded = encoded
+        .as_str()
+        .filter(|s| s.len() <= 16 * 1024 * 1024 - 1024)
+        .ok_or_else(|| failure("invalid Cafe screenshot response".into()))?;
+    let png = horizon_client::skins::base64_decode(encoded)
+        .filter(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+        .ok_or_else(|| failure("invalid Cafe screenshot image".into()))?;
+    let decoder = png::Decoder::new(std::io::Cursor::new(&png));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| failure("invalid Cafe screenshot image".into()))?;
+    let info = reader.info();
+    let dimensions_match = info.width > 0
+        && info.height > 0
+        && info.width <= 1920
+        && info.height <= 1080
+        && info.color_type == png::ColorType::Rgba
+        && info.bit_depth == png::BitDepth::Eight
+        && reply.get("width").and_then(Value::as_u64) == Some(u64::from(info.width))
+        && reply.get("height").and_then(Value::as_u64) == Some(u64::from(info.height));
+    let size = reader
+        .output_buffer_size()
+        .filter(|&size| size <= 1920 * 1080 * 4)
+        .ok_or_else(|| failure("invalid Cafe screenshot dimensions".into()))?;
+    if !dimensions_match || size == 0 {
+        return Err(failure("invalid Cafe screenshot dimensions".into()));
+    }
+    let mut decoded = vec![0; size];
+    reader
+        .next_frame(&mut decoded)
+        .map_err(|_| failure("invalid Cafe screenshot image".into()))?;
+    drop(reader);
+    std::fs::write(path, png).map_err(|e| failure(format!("cannot write screenshot: {e}")))?;
+    if let Some(object) = reply.as_object_mut() {
+        object.remove("png_base64");
+    }
+    Ok(())
 }
 
 /// `logs [--lines N] [--crash]` for the game in `home`: the reply's `text` is the log's last
@@ -824,6 +878,51 @@ mod tests {
             assert_eq!(f.reply["error"], horizon_core::no_ai::REFUSAL);
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn remote_screenshot_is_validated_and_written_with_original_reply() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-ctl-cafe-image-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("capture.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[20, 40, 60, 255])
+                .unwrap();
+        }
+        let mut reply = json!({"ok": true, "width": 1, "height": 1, "png_base64": horizon_client::lan::base64(&png)});
+        save_remote_screenshot(&mut reply, path.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        assert_eq!(reply, json!({"ok": true, "width": 1, "height": 1}));
+        let mut invalid = json!({"ok": true, "width": 2, "height": 1, "png_base64": horizon_client::lan::base64(&png)});
+        assert!(save_remote_screenshot(&mut invalid, path.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), png);
+        for data in [
+            "not-base64!".to_owned(),
+            horizon_client::lan::base64(&png[..12]),
+        ] {
+            let mut malformed = json!({"ok": true, "width": 1, "height": 1, "png_base64": data});
+            assert!(save_remote_screenshot(&mut malformed, path.to_str().unwrap()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), png);
+        }
+        let mut desktop = json!({"ok": true, "width": 1, "height": 1});
+        save_remote_screenshot(&mut desktop, path.to_str().unwrap()).unwrap();
+        assert_eq!(desktop, reply);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

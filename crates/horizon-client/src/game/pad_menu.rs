@@ -314,9 +314,7 @@ impl Game<'_> {
     }
 
     pub(super) fn gui_scale(&self) -> Option<HudBatch> {
-        self.renderer
-            .as_ref()
-            .map(|r| HudBatch::new([r.config.width, r.config.height]))
+        self.input_framebuffer_size().map(HudBatch::new)
     }
 
     /// Focus drives the open screen: every menu but inventories and

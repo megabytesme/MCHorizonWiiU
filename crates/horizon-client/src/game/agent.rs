@@ -932,14 +932,21 @@ impl Game<'_> {
         points: &[(f32, f32)],
         button: MouseButton,
     ) -> Result<()> {
-        if self.window.is_none() {
+        if self.window.is_none() && self.cafe_framebuffer_size.is_none() {
             return Err("no window yet".into());
         }
         let scale = self
-            .renderer
-            .as_ref()
-            .map(|r| horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale)
+            .input_framebuffer_size()
+            .map(|size| horizon_client::hud::HudBatch::new(size).scale)
             .ok_or("no renderer yet")?;
+        if self.window.is_none()
+            && (points.len() > 256
+                || points
+                    .iter()
+                    .any(|&(x, y)| !(x * scale).is_finite() || !(y * scale).is_finite()))
+        {
+            return Err("pointer coordinates must be finite and limited to 256 points".into());
+        }
         for (i, &(x, y)) in points.iter().enumerate() {
             let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
             self.dispatch_platform_window_event(
@@ -1520,16 +1527,23 @@ impl Game<'_> {
             "scroll-at" => {
                 let (x, y) = (a.f64(0, "X")? as f32, a.f64(1, "Y")? as f32);
                 let steps = a.f64(2, "STEPS")? as f32;
-                if self.window.is_none() {
+                if self.window.is_none() && self.cafe_framebuffer_size.is_none() {
                     return Err("no window yet".into());
                 }
                 let scale = self
-                    .renderer
-                    .as_ref()
-                    .map(|r| {
-                        horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale
-                    })
+                    .input_framebuffer_size()
+                    .map(|size| horizon_client::hud::HudBatch::new(size).scale)
                     .ok_or("no renderer yet")?;
+                if self.window.is_none()
+                    && (!(x * scale).is_finite()
+                        || !(y * scale).is_finite()
+                        || !steps.is_finite()
+                        || steps.abs() > 256.0)
+                {
+                    return Err(
+                        "pointer coordinates must be finite and scroll steps within 256".into(),
+                    );
+                }
                 let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
                 self.dispatch_platform_window_event(
                     event_loop,

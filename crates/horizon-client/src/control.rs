@@ -139,6 +139,8 @@ pub struct Request {
 
 pub struct Server {
     path: PathBuf,
+    /// The ordinary server owns its endpoint file; an external launcher may own it instead.
+    remove_path_on_drop: bool,
     requests: mpsc::Receiver<Request>,
     sender: mpsc::Sender<Request>,
     /// Clients connected now (an MCP server keeps one open; horizon-ctl one per command).
@@ -154,6 +156,10 @@ pub struct Server {
 pub fn default_path() -> PathBuf {
     if let Some(path) = std::env::var_os("HORIZON_CONTROL") {
         return path.into();
+    }
+    #[cfg(target_os = "cafe")]
+    if option_env!("HORIZON_WIIU_CEMU_CONTROL") == Some("1") {
+        return PathBuf::from("/vol/external01/wiiu/apps/HorizonWiiU/control-cemu.json");
     }
     if !cfg!(unix) {
         return std::env::temp_dir().join("horizon-control.json");
@@ -184,6 +190,12 @@ pub fn check_path(path: &Path) -> io::Result<()> {
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
         check_path(path)?;
+        // An isolated Cemu test may supply the usual endpoint file on its
+        // host-protected SD mapping. Never enable this for hardware builds.
+        #[cfg(target_os = "cafe")]
+        if option_env!("HORIZON_WIIU_CEMU_CONTROL") == Some("1") {
+            return Self::start_cemu(path);
+        }
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -229,6 +241,7 @@ impl Server {
         }
         Ok(Self {
             path: path.to_owned(),
+            remove_path_on_drop: true,
             requests,
             sender: local,
             clients,
@@ -241,6 +254,7 @@ impl Server {
         let (sender, requests) = mpsc::channel();
         Self {
             path: PathBuf::new(),
+            remove_path_on_drop: false,
             requests,
             sender,
             clients: Arc::default(),
@@ -262,6 +276,83 @@ impl Server {
     pub fn try_recv(&self) -> Option<Request> {
         self.requests.try_recv().ok()
     }
+
+    /// Cemu-only development bootstrap. The Windows test launcher owns the
+    /// endpoint and protects it with the isolated profile's NTFS permissions;
+    /// Cafe's unsupported private-file writer is never bypassed on hardware.
+    #[cfg(target_os = "cafe")]
+    fn start_cemu(path: &Path) -> io::Result<Self> {
+        const ENDPOINT: &str = "/vol/external01/wiiu/apps/HorizonWiiU/control-cemu.json";
+        if path != Path::new(ENDPOINT) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid Cemu control endpoint",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(257)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid Cemu control endpoint",
+            ));
+        }
+        let (port, token) = parse_cemu_endpoint(&bytes)?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
+        // Cemu rejects blocking accept; spawn_listener backs off on WouldBlock.
+        listener.set_nonblocking(true)?;
+        let (sender, requests) = mpsc::channel();
+        let local = sender.clone();
+        let clients = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        spawn_listener(
+            move || listener.accept().map(|(s, _)| s),
+            sender,
+            clients.clone(),
+            closed.clone(),
+            move |stream: TcpStream| {
+                let _ = stream.set_nodelay(true);
+                let mut stream = Stream::Tcp(stream);
+                authenticate(&mut stream, &token).then_some(stream)
+            },
+        )?;
+        Ok(Self {
+            path: path.to_owned(),
+            remove_path_on_drop: false,
+            requests,
+            sender: local,
+            clients,
+            closed,
+            port: Some(port),
+        })
+    }
+}
+
+/// Strictly validate a host-created endpoint without including its secret in errors.
+#[cfg(any(target_os = "cafe", test))]
+fn parse_cemu_endpoint(bytes: &[u8]) -> io::Result<(u16, String)> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Endpoint {
+        transport: String,
+        port: u16,
+        token: String,
+    }
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid Cemu control endpoint");
+    let endpoint: Endpoint = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+    if endpoint.transport != "tcp"
+        || endpoint.port == 0
+        || endpoint.token.len() != 32
+        || !endpoint
+            .token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid());
+    }
+    Ok((endpoint.port, endpoint.token))
 }
 
 /// Accept connections on a thread, one more thread per client.
@@ -342,7 +433,9 @@ impl Drop for Server {
             #[cfg(not(unix))]
             None => {}
         }
-        let _ = std::fs::remove_file(&self.path);
+        if self.remove_path_on_drop {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -393,6 +486,25 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cemu_endpoint_requires_one_valid_loopback_token_and_port() {
+        let valid =
+            br#"{"transport":"tcp","port":12345,"token":"0123456789abcdef0123456789abcdef"}"#;
+        let (port, token) = parse_cemu_endpoint(valid).unwrap();
+        assert_eq!(port, 12345);
+        assert_eq!(token.len(), 32);
+        for invalid in [
+            br#"{"transport":"udp","port":12345,"token":"0123456789abcdef0123456789abcdef"}"#.as_slice(),
+            br#"{"transport":"tcp","port":0,"token":"0123456789abcdef0123456789abcdef"}"#,
+            br#"{"transport":"tcp","port":12345,"token":"short"}"#,
+            br#"{"transport":"tcp","port":12345,"token":"0123456789ABCDEF0123456789abcdef"}"#,
+            br#"{"transport":"tcp","port":1,"port":2,"token":"0123456789abcdef0123456789abcdef"}"#,
+            br#"{"transport":"tcp","port":1,"token":"0123456789abcdef0123456789abcdef","host":"0.0.0.0"}"#,
+        ] {
+            assert_eq!(parse_cemu_endpoint(invalid).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+    }
 
     /// The check agrees with the system at every length around its limit.
     #[cfg(unix)]
@@ -445,6 +557,51 @@ mod tests {
         let mut reply = String::new();
         BufReader::new(client).read_line(&mut reply).unwrap();
         assert_eq!(reply.trim(), r#"{"ok":true}"#);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn disconnected_pending_request_does_not_block_other_clients_or_reconnection() {
+        let path =
+            std::env::temp_dir().join(format!("horizon-ctl-reconnect-{}.json", std::process::id()));
+        let server = Server::start(&path).unwrap();
+        let mut first = connect(&path).unwrap();
+        writeln!(first, "wait 100").unwrap();
+        let receive = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(request) = server.try_recv() {
+                    break request;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "request did not arrive"
+                );
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        let pending = receive();
+        assert_eq!(pending.line, "wait 100");
+        drop(first);
+        let mut second = connect(&path).unwrap();
+        second
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        writeln!(second, "state").unwrap();
+        let current = receive();
+        assert_eq!(current.line, "state");
+        current.reply.send(r#"{"ok":true}"#.into()).unwrap();
+        let mut response = String::new();
+        BufReader::new(second).read_line(&mut response).unwrap();
+        assert_eq!(response.trim(), r#"{"ok":true}"#);
+        let _ = pending.reply.send(r#"{"ok":true}"#.into());
+        let mut third = connect(&path).unwrap();
+        writeln!(third, "hello").unwrap();
+        let reconnected = receive();
+        assert_eq!(reconnected.line, "hello");
+        reconnected.reply.send(r#"{"ok":true}"#.into()).unwrap();
+        drop(third);
         drop(server);
         assert!(!path.exists());
     }

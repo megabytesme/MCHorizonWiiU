@@ -3096,6 +3096,8 @@ struct Game<'a> {
     perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
+    cafe_screenshot_requested: bool,
+    cafe_screenshot_result: Option<std::sync::mpsc::Receiver<String>>,
     /// `render-capture DIR`: replied once the renderer wrote the scene.
     pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
@@ -16179,7 +16181,11 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|renderer| [renderer.config.width, renderer.config.height])
-            .or_else(|| cafe_backend.as_deref().map(|backend| backend.viewport_size()));
+            .or_else(|| {
+                cafe_backend
+                    .as_deref()
+                    .map(|backend| backend.viewport_size())
+            });
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
         if let Some(starting) = &self.integrated_starting {
@@ -16868,8 +16874,13 @@ impl Game<'_> {
                 None => Err("renderer".into()),
             }
         };
-        // A frame the surface refused (occluded, lost, timed out) is `Ok(false)`.
-        self.frame_drawn = matches!(result, Ok(true));
+        // A Cafe backend can accept a frame while reporting omitted passes.
+        // Count it for frame/widget timing, but keep the completeness flag false.
+        let partial = matches!(&result, Ok(false))
+            && cafe_backend
+                .as_ref()
+                .is_some_and(|backend| backend.last_game_frame_was_partial());
+        let result = account_game_presentation(result, partial, &mut self.frame_drawn);
         // Restore storage even when rendering fails (for example, a lost surface).
         self.entity_vertices = entities;
         *self.entity_spans.get_mut() = entity_spans;
@@ -19415,9 +19426,9 @@ impl Game<'_> {
                         }
                     }
                     if self.title.is_none() {
-                        let terrain_backend = cafe_backend
-                            .as_deref_mut()
-                            .map(|backend| backend as &mut dyn horizon_client::presentation::TerrainBackend);
+                        let terrain_backend = cafe_backend.as_deref_mut().map(|backend| {
+                            backend as &mut dyn horizon_client::presentation::TerrainBackend
+                        });
                         horizon_client::spans::time("update_world", || {
                             self.update_world_with_terrain(terrain_backend)
                         });
@@ -20193,6 +20204,8 @@ impl<'a> Game<'a> {
             frame_stats: Default::default(),
             perf: Default::default(),
             pending_screenshot: None,
+            cafe_screenshot_requested: false,
+            cafe_screenshot_result: None,
             pending_render_capture: None,
             pending_bench: None,
             flight: None,
@@ -21855,15 +21868,29 @@ fn present_game_frame(
     cafe_backend: Option<&mut dyn CafeGameBackend>,
     frame: &Frame<'_>,
 ) -> Result<bool> {
-    let result = if let Some(backend) = cafe_backend {
-        horizon_client::presentation::present(backend, frame)
+    let (result, partial) = if let Some(backend) = cafe_backend {
+        let result = horizon_client::presentation::present(backend, frame);
+        let partial = matches!(&result, Ok(false)) && backend.last_game_frame_was_partial();
+        (result, partial)
     } else if let Some(renderer) = renderer.as_mut() {
-        horizon_client::presentation::present(renderer, frame)
+        (
+            horizon_client::presentation::present(renderer, frame),
+            false,
+        )
     } else {
-        Ok(false)
+        (Ok(false), false)
     };
+    account_game_presentation(result, partial, frame_drawn)
+}
+
+/// A partial Cafe presentation reached the display but is not a complete frame.
+fn account_game_presentation(
+    result: Result<bool>,
+    partial: bool,
+    frame_drawn: &mut bool,
+) -> Result<bool> {
     *frame_drawn = matches!(&result, Ok(true));
-    result
+    result.map(|complete| complete || partial)
 }
 
 fn loading_frame(hud: &HudBatch) -> Frame<'_> {
@@ -22253,14 +22280,27 @@ pub trait CafeLoadingPresenter {
     ) -> Result<bool>;
 }
 
+/// A tightly packed RGBA image read from the Cafe TV target.
+pub struct CafeScreenshot {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// Native presentation and terrain upload boundary for original Game frames.
 /// `prepare_game_artwork` runs before Horizon builds the frame; it borrows the
 /// resource data only for this call, so implementations must copy any native
 /// texture data synchronously and may reuse it while both generations match.
-pub trait CafeGameBackend: horizon_client::presentation::PresentationBackend
-    + horizon_client::presentation::TerrainBackend
+pub trait CafeGameBackend:
+    horizon_client::presentation::PresentationBackend + horizon_client::presentation::TerrainBackend
 {
     fn prepare_game_artwork(&mut self, artwork: CafeGameArtwork<'_>) -> Result<()>;
+
+    fn request_screenshot(&mut self) {}
+
+    fn take_screenshot(&mut self) -> Option<std::result::Result<CafeScreenshot, String>> {
+        None
+    }
 
     /// Whether the last submitted frame reached the targets with only named,
     /// unsupported passes omitted. This distinguishes an intentional partial
@@ -22268,6 +22308,35 @@ pub trait CafeGameBackend: horizon_client::presentation::PresentationBackend
     fn last_game_frame_was_partial(&self) -> bool {
         false
     }
+}
+
+fn encode_cafe_screenshot(
+    image: CafeScreenshot,
+) -> std::result::Result<(u32, u32, Vec<u8>), String> {
+    let size = (image.width as usize)
+        .checked_mul(image.height as usize)
+        .and_then(|n| n.checked_mul(4));
+    if image.width == 0
+        || image.height == 0
+        || size != Some(image.rgba.len())
+        || image.rgba.len() > 1920 * 1080 * 4
+    {
+        return Err("unsupported Cafe screenshot dimensions".into());
+    }
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, image.width, image.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer
+            .write_image_data(&image.rgba)
+            .map_err(|e| e.to_string())?;
+    }
+    if png.len() > 12 * 1024 * 1024 - 1024 {
+        return Err("Cafe screenshot exceeds control response limit".into());
+    }
+    Ok((image.width, image.height, png))
 }
 
 /// Loading-owned session for an external Cafe event/render loop. It deliberately
@@ -22613,11 +22682,8 @@ impl CafeGameSession {
 
     /// Route a host window event through the same path used by native windows.
     pub fn dispatch_event(&mut self, event_loop: &dyn EventLoopCtl, event: WindowEvent) {
-        self.game.dispatch_platform_window_event(
-            event_loop,
-            event,
-            input_trace::InputOrigin::User,
-        );
+        self.game
+            .dispatch_platform_window_event(event_loop, event, input_trace::InputOrigin::User);
     }
 
     /// Route a relative pointing-device event through the normal captured
@@ -22649,6 +22715,25 @@ impl CafeGameSession {
         event_loop: &dyn EventLoopCtl,
         backend: &mut dyn CafeGameBackend,
     ) -> Result<bool> {
+        if let Some(result) = self.game.cafe_screenshot_result.as_ref() {
+            match result.try_recv() {
+                Ok(value) => {
+                    self.game.cafe_screenshot_result = None;
+                    if let Some(reply) = self.game.pending_screenshot.take() {
+                        let _ = reply.send(value);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.game.cafe_screenshot_result = None;
+                    if let Some(reply) = self.game.pending_screenshot.take() {
+                        let _ = reply.send(
+                            serde_json::json!({"error": "screenshot encoder stopped"}).to_string(),
+                        );
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         self.game.idle(event_loop);
         if let Some(error) = &self.game.error {
             return Err(error.to_string().into());
@@ -22666,6 +22751,10 @@ impl CafeGameSession {
             hud_generation: self.game.gui.atlas.revision,
             terrain_generation: self.game.pack.render.generation,
         })?;
+        let capture = std::mem::take(&mut self.game.cafe_screenshot_requested);
+        if capture {
+            backend.request_screenshot();
+        }
         self.game.frame_drawn = false;
         self.game.dispatch_platform_window_event_inner(
             event_loop,
@@ -22674,6 +22763,26 @@ impl CafeGameSession {
             Some(backend),
         );
         let frame_drawn = self.game.frame_drawn;
+        if capture {
+            let image = backend
+                .take_screenshot()
+                .unwrap_or_else(|| Err("Cafe frame was not captured".into()));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            match std::thread::Builder::new().name("Cafe screenshot encoder".into()).spawn(move || {
+                let response = match image.and_then(encode_cafe_screenshot) {
+                    Ok((width, height, png)) => serde_json::json!({"ok": true, "width": width, "height": height, "png_base64": horizon_client::lan::base64(&png)}),
+                    Err(error) => serde_json::json!({"error": error}),
+                };
+                let _ = sender.send(response.to_string());
+            }) {
+                Ok(_) => self.game.cafe_screenshot_result = Some(receiver),
+                Err(error) => {
+                    if let Some(reply) = self.game.pending_screenshot.take() {
+                        let _ = reply.send(serde_json::json!({"error": format!("cannot start screenshot encoder: {error}")}).to_string());
+                    }
+                }
+            }
+        }
         if !frame_drawn && !backend.last_game_frame_was_partial() {
             // The batch for a rejected Cafe frame may contain glyphs that the
             // native atlas did not receive. Rebuild them from Horizon state
@@ -23152,15 +23261,17 @@ impl Loading {
         if let Some(audio) = &mut self.audio {
             audio.reload(&root);
         } else {
-            self.audio = Some(if self
-                .options
-                .as_ref()
-                .is_some_and(|options| options.execution_role.is_client())
-            {
-                Audio::with_device(&root, &self.settings.sound_device)
-            } else {
-                Audio::silent(&root)
-            });
+            self.audio = Some(
+                if self
+                    .options
+                    .as_ref()
+                    .is_some_and(|options| options.execution_role.is_client())
+                {
+                    Audio::with_device(&root, &self.settings.sound_device)
+                } else {
+                    Audio::silent(&root)
+                },
+            );
         }
         self.menu.set_root(root, &self.settings);
         self.gui = Some(gui);
@@ -24110,6 +24221,42 @@ fn is_game_master_block(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cafe_partial_presentation_counts_without_claiming_completeness() {
+        let mut drawn = false;
+        assert!(super::account_game_presentation(Ok(true), false, &mut drawn).unwrap());
+        assert!(drawn);
+        assert!(super::account_game_presentation(Ok(false), true, &mut drawn).unwrap());
+        assert!(!drawn);
+        assert!(!super::account_game_presentation(Ok(false), false, &mut drawn).unwrap());
+        assert!(!drawn);
+        assert!(super::account_game_presentation(Err("failed".into()), true, &mut drawn).is_err());
+        assert!(!drawn);
+    }
+
+    #[test]
+    fn cafe_screenshot_encodes_pixels_and_rejects_invalid_buffers() {
+        let image = super::CafeScreenshot {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 128, 255, 255],
+        };
+        let (width, height, png) = super::encode_cafe_screenshot(image).unwrap();
+        assert_eq!([width, height], [2, 1]);
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(pixels, [255, 0, 0, 255, 0, 128, 255, 255]);
+        let invalid = super::CafeScreenshot {
+            width: 2,
+            height: 1,
+            rgba: vec![0; 7],
+        };
+        assert!(super::encode_cafe_screenshot(invalid).is_err());
+    }
+
     #[test]
     fn weather_follows_the_dimension_type_not_the_id() {
         use super::level_can_have_weather as w;

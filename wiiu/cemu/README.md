@@ -110,3 +110,64 @@ status file rather than relying only on the low bits of a process exit code.
 Logs, RPXs, status files and the actual executable are preserved at
 `E:\dev\HorizonWiiU-cemu-nss-20261107\run-std` and `run-abi`. They are
 local test artifacts, not a menu or a playable client.
+
+## Cemu-only native agent control
+
+The original Agent Control server can be exercised against a Cafe `Game` in an
+isolated Windows Cemu profile. This is a development bootstrap, **not** a
+physical Wii U remote-access mechanism. Ordinary Cafe builds do not enable it.
+Agent Control is off by default, the player must enable it in Horizon settings,
+No AI still takes precedence, and the existing authenticated protocol is used.
+The server currently starts with `Game`; it is not yet available during the
+separate loading/title lifecycle.
+
+Build the Cafe Rust static library with `HORIZON_WIIU_CEMU_CONTROL=1` in its
+build environment, then link that library into the RPX as usual. This compile
+flag must never be set for a hardware or distribution build. Use an isolated,
+trusted Cemu portable profile on NTFS. Its `sdcard/wiiu/apps/HorizonWiiU`
+directory and its profile parent must already exist and be private to the
+current account, SYSTEM and Administrators. With Cemu stopped, prepare a new
+endpoint (the script refuses existing files and insecure paths):
+
+```powershell
+$portable = 'C:\path\to\isolated\cemu\portable'
+.\wiiu\cemu\prepare-control.ps1 -PortableDirectory $portable
+$endpoint = Join-Path $portable 'sdcard\wiiu\apps\HorizonWiiU\control-cemu.json'
+```
+
+Start the opted-in RPX in that same isolated profile. Wait until the game starts
+and the original Agent Control setting opens its listener. The script chooses a
+free loopback port but cannot reserve it for Cemu. Before connecting, verify that
+the endpoint's port belongs to the exact Cemu process just started; abort if it
+does not. Capture the process object and its start time immediately when starting
+Cemu (`$cemuProcess` and `$cemuStart` below), and keep the expected absolute
+executable path in `$cemuExe`. For example:
+
+```powershell
+$cemuPid = $cemuProcess.Id
+$current = Get-Process -Id $cemuPid
+if ($current.StartTime -ne $cemuStart -or $current.Path -ne $cemuExe) {
+    throw 'The Cemu process identity changed.'
+}
+$port = (Get-Content -LiteralPath $endpoint -Raw | ConvertFrom-Json).port
+$listener = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $port |
+    Where-Object { $_.RemotePort -eq 0 -and $_.OwningProcess -eq $cemuPid })
+if ($listener.Count -ne 1 -or ($listener[0].State -and $listener[0].State -ne 'Listen')) {
+    throw 'The expected Cemu process does not own the control listener.'
+}
+.\target\debug\horizon-ctl.exe --socket $endpoint mcp
+```
+
+Recheck ownership before reconnecting. The short interval between checking the
+port and connecting remains a local race; trust the Windows account and all code
+in the isolated profile. NTFS ACLs do not isolate other software running as the
+same user, administrators, or code inside Cemu. Never expose this endpoint to a
+LAN or use it as a hardware pairing solution.
+
+The usual `horizon-ctl` commands and MCP tools apply. Cafe's GX2 screenshot is
+returned through the existing screenshot command and written by `horizon-ctl`
+on the desktop, so the MCP client receives an image normally. The current
+capture is the TV frame, up to 1920 by 1080, and only works after Game starts.
+The native software keyboard is composed later and is not captured yet.
+After the exact Cemu process exits, remove this profile's endpoint file; never
+reuse a stale endpoint after a crash. Keep logs and other profile data as needed.
