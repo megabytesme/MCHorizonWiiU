@@ -81,6 +81,13 @@ impl SpriteAnimation {
     pub fn resized_pixels(&self, frame: usize, width: u32, height: u32) -> Vec<u8> {
         let source = self.pixels(frame);
         let side = (source.len() / 4).isqrt() as u32;
+        let exact_bytes = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .map(|bytes| bytes as usize);
+        if width == side && height == side && exact_bytes == Some(source.len()) {
+            return source.to_vec();
+        }
         let mut out = Vec::with_capacity((width * height * 4) as usize);
         for y in 0..height {
             for x in 0..width {
@@ -1384,6 +1391,34 @@ mod tests {
             assert_eq!(&resized[15 * 4..16 * 4], &[last, 0, 99, 255]);
             assert_eq!(&resized[255 * 4..256 * 4], &[last, last, 99, 255]);
         }
+    }
+
+    #[test]
+    fn hud_animation_preserves_pixels_at_matching_and_scaled_sizes() {
+        let pixels = vec![
+            1, 2, 3, 4, 10, 20, 30, 40, 50, 60, 70, 80, 100, 110, 120, 130,
+        ];
+        let animation = test_frames(
+            0,
+            vec![pixels.clone(), pixels.clone()],
+            r#"{"frametime":1,"frames":[0,1]}"#,
+        );
+        assert_eq!(animation.resized_pixels(0, 2, 2), pixels);
+        assert_eq!(
+            animation.resized_pixels(0, 4, 2),
+            [
+                1, 2, 3, 4, 1, 2, 3, 4, 10, 20, 30, 40, 10, 20, 30, 40, 50, 60, 70, 80, 50, 60, 70,
+                80, 100, 110, 120, 130, 100, 110, 120, 130,
+            ]
+        );
+        let mut with_trailing_byte = pixels.clone();
+        with_trailing_byte.push(255);
+        let malformed = test_frames(
+            0,
+            vec![with_trailing_byte.clone(), with_trailing_byte],
+            r#"{"frametime":1,"frames":[0,1]}"#,
+        );
+        assert_eq!(malformed.resized_pixels(0, 2, 2), pixels);
     }
 
     #[test]
