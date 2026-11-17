@@ -10,15 +10,17 @@
 use horizon_client::chunk::ColumnLayout;
 use horizon_client::gfx::SectionKey;
 use horizon_client::graphics::PresentMode;
-use horizon_client::hud::{cit_glint::GlintTextures, Rect};
+use horizon_client::hud::{Rect, cit_glint::GlintTextures};
 use horizon_client::mesher::SectionMesh;
 use horizon_client::sprites::SpriteAnimation;
 use horizon_client::{
     game::{CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter},
-    gfx::{panorama, Frame},
+    gfx::{Frame, panorama},
     presentation::{HudBackend, PresentationBackend, TerrainBackend},
 };
-use horizon_wiiu_gx2_terrain::{expand_quads_into, TerrainAtlas, TerrainGpuVertex};
+use horizon_wiiu_gx2_terrain::{
+    TerrainAtlas, TerrainClipRows, TerrainGpuVertex, expand_quads_into, terrain_clip_rows,
+};
 use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
 use std::{
     collections::{HashMap, HashSet},
@@ -86,11 +88,7 @@ extern "C" {
         vertices: *const TerrainGpuVertex,
         count: u32,
     ) -> i32;
-    fn horizon_gx2_terrain_section_update(
-        section: *mut c_void,
-        vertices: *const TerrainGpuVertex,
-        count: u32,
-    ) -> i32;
+
     fn horizon_gx2_terrain_wait_idle();
     fn horizon_gx2_terrain_section_destroy(section: *mut c_void);
     fn horizon_gx2_terrain_draw(
@@ -102,6 +100,7 @@ extern "C" {
         y: u32,
         width: u32,
         height: u32,
+        clip_rows: *const f32,
     ) -> i32;
 }
 
@@ -889,22 +888,25 @@ impl TerrainProjection {
         }
     }
 
-    fn project(&self, vertex: &mut TerrainGpuVertex, key: SectionKey) {
-        let [cx, cy, cz] = self.camera;
-        let x = (f64::from(key.0) * 16.0 + f64::from(vertex.position[0]) - cx) as f32;
-        let y = (f64::from(self.min_y + key.1 * 16) + f64::from(vertex.position[1]) - cy) as f32;
-        let z = (f64::from(key.2) * 16.0 + f64::from(vertex.position[2]) - cz) as f32;
-        let view_x = self.yaw_cos * x + self.yaw_sin * z;
-        let yaw_z = -self.yaw_sin * x + self.yaw_cos * z;
-        let view_y = self.pitch_cos * y - self.pitch_sin * yaw_z;
-        let view_z = self.pitch_sin * y + self.pitch_cos * yaw_z;
-        let depth = -view_z;
-        vertex.position = [
-            view_x * self.focal / self.aspect,
-            view_y * self.focal,
-            view_z * self.depth_scale + self.depth_offset,
-            depth,
+    fn clip_rows(&self, key: SectionKey) -> TerrainClipRows {
+        // Subtract the camera in f64 before converting the section origin to
+        // f32; local vertex coordinates stay small and are added on the GPU.
+        let origin = [
+            f64::from(key.0) * 16.0 - self.camera[0],
+            f64::from(self.min_y + key.1 * 16) - self.camera[1],
+            f64::from(key.2) * 16.0 - self.camera[2],
         ];
+        terrain_clip_rows(
+            origin,
+            self.yaw_sin,
+            self.yaw_cos,
+            self.pitch_sin,
+            self.pitch_cos,
+            self.focal,
+            self.aspect,
+            self.depth_scale,
+            self.depth_offset,
+        )
     }
 }
 
@@ -1217,34 +1219,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                 }
             } else if let Some(terrain) = draw.presenter.terrain.as_ref() {
                 let aspect = rect[2] as f32 / rect[3].max(1) as f32;
-                // Wait once before updating all retained section buffers;
-                // waiting inside each per-section update stalls streaming.
+                // Wait once before drawing all retained section buffers;
+                // projection uniforms vary per draw, but geometry buffers do not.
                 unsafe { horizon_gx2_terrain_wait_idle() };
                 let projection = draw
                     .terrain_min_y
                     .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
-                let mut projected = Vec::new();
-                for (&key, section) in &mut draw.presenter.sections {
+                for (&key, section) in &draw.presenter.sections {
                     let Some(projection) = projection.as_ref() else {
                         draw.result = Err("GX2 terrain section layout is not prepared");
                         return -1;
                     };
-                    projected.clear();
-                    projected.extend(section.vertices.iter().copied().map(|mut v| {
-                        projection.project(&mut v, key);
-                        v
-                    }));
-                    if unsafe {
-                        horizon_gx2_terrain_section_update(
-                            section.native.as_ptr(),
-                            projected.as_ptr(),
-                            projected.len() as u32,
-                        )
-                    } != 0
-                    {
-                        draw.result = Err("GX2 terrain section update failed");
-                        return -1;
-                    }
+                    let clip_rows = projection.clip_rows(key);
                     if unsafe {
                         horizon_gx2_terrain_draw(
                             terrain.native.as_ptr(),
@@ -1255,6 +1241,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
                             rect[1],
                             rect[2],
                             rect[3],
+                            clip_rows.rows.as_ptr().cast(),
                         )
                     } != 0
                     {

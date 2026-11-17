@@ -19,6 +19,117 @@ pub struct TerrainGpuVertex {
     pub cutout: f32,
 }
 
+/// Four affine clip-space rows uploaded to the GX2 vertex shader. The xyz
+/// terms multiply section-local positions; w is the camera-relative origin.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TerrainClipRows {
+    pub rows: [[f32; 4]; 4],
+}
+
+impl TerrainClipRows {
+    pub fn transform(&self, position: [f32; 3]) -> [f32; 4] {
+        self.rows
+            .map(|row| row[0] * position[0] + row[1] * position[1] + row[2] * position[2] + row[3])
+    }
+}
+
+pub fn terrain_clip_rows(
+    camera_relative_origin: [f64; 3],
+    yaw_sin: f32,
+    yaw_cos: f32,
+    pitch_sin: f32,
+    pitch_cos: f32,
+    focal: f32,
+    aspect: f32,
+    depth_scale: f32,
+    depth_offset: f32,
+) -> TerrainClipRows {
+    let view_y = [pitch_sin * yaw_sin, pitch_cos, -pitch_sin * yaw_cos];
+    let view_z = [-pitch_cos * yaw_sin, pitch_sin, pitch_cos * yaw_cos];
+    let row = |basis: [f32; 3], scale: f32, offset: f32| {
+        [
+            basis[0] * scale,
+            basis[1] * scale,
+            basis[2] * scale,
+            ((f64::from(basis[0]) * camera_relative_origin[0]
+                + f64::from(basis[1]) * camera_relative_origin[1]
+                + f64::from(basis[2]) * camera_relative_origin[2])
+                * f64::from(scale)
+                + f64::from(offset)) as f32,
+        ]
+    };
+    TerrainClipRows {
+        rows: [
+            row([yaw_cos, 0.0, yaw_sin], focal / aspect, 0.0),
+            row(view_y, focal, 0.0),
+            row(view_z, depth_scale, depth_offset),
+            row(view_z.map(|value| -value), 1.0, 0.0),
+        ],
+    }
+}
+
+#[cfg(test)]
+mod clip_rows_tests {
+    use super::{TerrainClipRows, terrain_clip_rows};
+
+    #[test]
+    fn affine_clip_rows_preserve_projection_offsets_and_w_sign() {
+        let rows = TerrainClipRows {
+            rows: [
+                [2.0, 0.0, 0.5, 3.0],
+                [0.0, 4.0, 0.0, -2.0],
+                [0.0, 0.0, -1.1, -0.1],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+        };
+        assert_eq!(rows.transform([1.0, 2.0, -5.0]), [2.5, 6.0, 5.4, -5.0]);
+    }
+
+    #[test]
+    fn shader_rows_match_the_previous_camera_relative_cpu_projection() {
+        let origin = [-37.25, 12.5, 81.75];
+        let (yaw_sin, yaw_cos) = (-0.37f32, 0.929f32);
+        let (pitch_sin, pitch_cos) = (0.21f32, 0.978f32);
+        let (focal, aspect) = (1.43f32, 1.78f32);
+        let (depth_scale, depth_offset) = (-1.0001f32, -0.050005f32);
+        let rows = terrain_clip_rows(
+            origin,
+            yaw_sin,
+            yaw_cos,
+            pitch_sin,
+            pitch_cos,
+            focal,
+            aspect,
+            depth_scale,
+            depth_offset,
+        );
+        for local in [[0.0, 0.0, 0.0], [15.5, 7.0, -0.25], [1.0, 15.0, 16.0]] {
+            let actual = rows.transform(local);
+            let x = (origin[0] + f64::from(local[0])) as f32;
+            let y = (origin[1] + f64::from(local[1])) as f32;
+            let z = (origin[2] + f64::from(local[2])) as f32;
+            let view_x = yaw_cos * x + yaw_sin * z;
+            let yaw_z = -yaw_sin * x + yaw_cos * z;
+            let view_y = pitch_cos * y - pitch_sin * yaw_z;
+            let view_z = pitch_sin * y + pitch_cos * yaw_z;
+            let expected = [
+                view_x * focal / aspect,
+                view_y * focal,
+                view_z * depth_scale + depth_offset,
+                -view_z,
+            ];
+            for axis in 0..4 {
+                assert!(
+                    (actual[axis] - expected[axis]).abs() < 0.0001,
+                    "axis {axis}: shader rows {:?}, CPU reference {:?}",
+                    actual,
+                    expected
+                );
+            }
+        }
+    }
+}
+
 const QUAD_TRIANGLES: [usize; 6] = [0, 1, 2, 0, 2, 3];
 
 pub fn light_uv(light: u16) -> [f32; 2] {
