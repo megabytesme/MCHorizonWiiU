@@ -17363,14 +17363,15 @@ impl Game<'_> {
             _ => return false,
         };
         match source {
-            Source::Keyboard | Source::Agent => {
-                self.pad.holds_action(&self.settings.controller, mapping)
-            }
-            Source::Pad => {
+            Source::Keyboard => self.pad.holds_action(&self.settings.controller, mapping),
+            Source::Agent | Source::Pad => {
                 let keys = &self.settings.keys;
-                self.physical_buttons
-                    .iter()
-                    .any(|held| keys.translate_mouse_all(*held).contains(&Err(button)))
+                (source == Source::Agent
+                    && self.pad.holds_action(&self.settings.controller, mapping))
+                    || self
+                        .physical_buttons
+                        .iter()
+                        .any(|held| keys.translate_mouse_all(*held).contains(&Err(button)))
                     || self
                         .physical_keys
                         .iter()

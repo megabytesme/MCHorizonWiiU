@@ -7621,6 +7621,7 @@ impl Game<'_> {
         let air = self.world.air;
         if self.world.set(pos[0], pos[1], pos[2], air).is_ok() {
             self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
+            self.release_agent_break_on_prediction(pos);
         }
         self.mining = None;
     }

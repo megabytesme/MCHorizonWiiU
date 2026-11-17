@@ -902,6 +902,20 @@ impl Game<'_> {
     fn agent_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
         self.mouse_mapping(button, pressed, Source::Agent)
     }
+
+    /// Stop an agent's hold as soon as its target is predicted broken, before
+    /// another tick can attack the block behind it. Toggle attack keeps its
+    /// existing behavior until synthetic mouse ownership is tracked separately.
+    pub(super) fn release_agent_break_on_prediction(&mut self, pos: [i32; 3]) {
+        if !self.settings.toggle_attack
+            && self.agent.task.as_ref().is_some_and(|task| {
+                matches!(&task.kind, TaskKind::Break(b) if b.pos == pos && b.collect_until.is_none())
+            })
+        {
+            let _ = self.agent_mouse(MouseButton::Left, false);
+        }
+    }
+
     fn release_agent_keys(&mut self) {
         for k in MOVE_KEYS {
             self.keys.release(&k, Source::Agent);
@@ -2197,6 +2211,104 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn predicted_agent_break_releases_only_its_own_held_attack() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let pos = [1, 64, 2];
+        let (reply, _receiver) = std::sync::mpsc::channel();
+        game.agent.task = Some(Task {
+            kind: TaskKind::Break(Box::new(Break {
+                pos,
+                before: BlockStateId(1),
+                items_before: HashSet::new(),
+                inventory: BTreeMap::new(),
+                started_tick: 0,
+                collect_until: None,
+                broke_tick: 0,
+                drops: BTreeMap::new(),
+            })),
+            reply,
+            deadline: Instant::now() + Duration::from_secs(30),
+            name: "break",
+        });
+
+        game.agent_mouse(MouseButton::Left, true).unwrap();
+        assert!(game.left);
+        let task = game.agent.task.take();
+        game.release_agent_break_on_prediction(pos);
+        assert!(
+            game.left,
+            "a prediction without an agent task must not release attack"
+        );
+        game.agent.task = task;
+        game.release_agent_break_on_prediction([1, 64, 3]);
+        assert!(game.left, "an unrelated prediction must not release attack");
+        if let Some(Task {
+            kind: TaskKind::Break(b),
+            ..
+        }) = game.agent.task.as_mut()
+        {
+            b.collect_until = Some(20);
+        }
+        game.release_agent_break_on_prediction(pos);
+        assert!(game.left, "drop collection must not release a later hold");
+        if let Some(Task {
+            kind: TaskKind::Break(b),
+            ..
+        }) = game.agent.task.as_mut()
+        {
+            b.collect_until = None;
+        }
+        game.release_agent_break_on_prediction(pos);
+        assert!(
+            !game.left,
+            "the predicted target must release the agent hold"
+        );
+
+        game.agent_mouse(MouseButton::Left, true).unwrap();
+        game.physical_buttons.insert(MouseButton::Left);
+        game.release_agent_break_on_prediction(pos);
+        assert!(game.left, "an agent must not release a physical hold");
+        game.physical_buttons.remove(&MouseButton::Left);
+        game.release_agent_break_on_prediction(pos);
+        assert!(!game.left);
+
+        game.settings.toggle_attack = true;
+        game.agent_mouse(MouseButton::Left, true).unwrap();
+        assert!(game.left);
+        game.release_agent_break_on_prediction(pos);
+        assert!(game.left, "toggle attack retains its existing behavior");
+    }
 
     #[test]
     fn only_wait_keeps_held_input() {
