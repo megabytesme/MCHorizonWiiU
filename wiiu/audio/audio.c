@@ -100,11 +100,14 @@ static void configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
    /* AX expects one four-bus mix entry for each output channel. */
    AXVoiceDeviceMixData mix[HORIZON_AUDIO_MAX_OUTPUT_CHANNELS] = { 0 };
    mix[output_channel].bus[0].volume = 0x8000u;
+   /* The voice envelope is a separate gain stage from the device mix. */
+   AXVoiceVeData envelope = { .volume = 0x8000u, .delta = 0 };
 
    AXSetVoiceOffsets(voice, &offsets);
    AXSetVoiceSrcType(voice, AX_VOICE_SRC_TYPE_LINEAR);
    AXSetVoiceSrcRatio(voice, 1.0f);
    AXSetVoiceDeviceMix(voice, device, 0, mix);
+   AXSetVoiceVe(voice, &envelope);
    AXSetVoiceState(voice, AX_VOICE_STATE_PLAYING);
 }
 
