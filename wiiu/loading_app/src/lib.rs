@@ -55,6 +55,7 @@ fn game_start_failure_status(entry_kind: CafeGameEntryKind) -> CafeLoadingStatus
     match entry_kind {
         CafeGameEntryKind::LocalWorld => CafeLoadingStatus::LocalWorldStartFailed,
         CafeGameEntryKind::RemoteServer => CafeLoadingStatus::RemoteServerStartFailed,
+        CafeGameEntryKind::TitleScreen => CafeLoadingStatus::Failed,
     }
 }
 
@@ -1369,7 +1370,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                                 CafeLoadingStatus::RemoteServerStartFailed => {
                                     self.remote_server_start_failed = true;
                                 }
-                                _ => self.local_world_start_failed = true,
+                                CafeLoadingStatus::LocalWorldStartFailed => {
+                                    self.local_world_start_failed = true;
+                                }
+                                _ => {}
                             }
                             self.failure = Some(error.to_string());
                             log::error!("Horizon Cafe Game start failed: {error}");
@@ -1408,9 +1412,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
                     host_loop_iteration
                 );
             }
-            let mut world_start_failed = false;
+            let mut world_start_failure = None;
             let draw_result = if let Some(game) = &mut game_session {
                 self.sync_game_viewport(game);
+                // Game can consume the pending entry while reporting an error.
+                let starting_entry = game.starting_entry_kind();
                 let event_loop = LoadingFrameEventLoop {
                     control: &self.control,
                 };
@@ -1453,7 +1459,11 @@ impl CafeLoadingHost for LoadingHost<'_> {
                                 host_loop_started.elapsed().as_millis()
                             );
                         }
-                        world_start_failed = !world_loading_complete;
+                        world_start_failure = starting_entry.or_else(|| {
+                            (!world_loading_complete
+                                && game.entry_kind() != CafeGameEntryKind::TitleScreen)
+                                .then_some(game.entry_kind())
+                        });
                         Err(error)
                     }
                 }
@@ -1497,11 +1507,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
                 );
             }
             if let Err(error) = draw_result {
-                if world_start_failed {
-                    let entry_kind = game_session
-                        .as_ref()
-                        .map(CafeGameSession::entry_kind)
-                        .unwrap_or(CafeGameEntryKind::LocalWorld);
+                if let Some(entry_kind) = world_start_failure {
                     match game_start_failure_status(entry_kind) {
                         CafeLoadingStatus::LocalWorldStartFailed => {
                             self.local_world_start_failed = true;
@@ -1512,6 +1518,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
                             self.remote_server_start_failed = true;
                             log::error!("Horizon Cafe remote server start failed: {error}");
                             startup_report!("original remote server startup failed");
+                        }
+                        CafeLoadingStatus::Failed => {
+                            log::error!("Horizon Cafe title session failed: {error}");
                         }
                         _ => unreachable!("entry startup maps to a start-failure status"),
                     }
@@ -1591,6 +1600,10 @@ mod tests {
         assert_eq!(
             game_start_failure_status(CafeGameEntryKind::RemoteServer),
             CafeLoadingStatus::RemoteServerStartFailed
+        );
+        assert_eq!(
+            game_start_failure_status(CafeGameEntryKind::TitleScreen),
+            CafeLoadingStatus::Failed
         );
     }
 }

@@ -118,8 +118,8 @@ isolated Windows Cemu profile. This is a development bootstrap, **not** a
 physical Wii U remote-access mechanism. Ordinary Cafe builds do not enable it.
 Agent Control is off by default, the player must enable it in Horizon settings,
 No AI still takes precedence, and the existing authenticated protocol is used.
-The server currently starts with `Game`; it is not yet available during the
-separate loading/title lifecycle.
+The server starts when loading hands the title to the original `Game`; commands
+are not available during the earlier resource-loading phase.
 
 Build the Cafe Rust static library with `HORIZON_WIIU_CEMU_CONTROL=1` in its
 build environment, then link that library into the RPX as usual. This compile

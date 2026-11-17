@@ -22359,6 +22359,23 @@ pub enum CafeLoadingStatus {
 pub enum CafeGameEntryKind {
     LocalWorld,
     RemoteServer,
+    TitleScreen,
+}
+
+fn cafe_control_title_requested(settings: &Settings, cemu_control: bool) -> bool {
+    cemu_control && settings.extras.agent_control && !settings.extras.no_ai
+}
+
+fn cafe_starting_entry_kind(
+    pending: Option<&PendingWorldEntry>,
+    integrated_starting: bool,
+) -> Option<CafeGameEntryKind> {
+    match pending {
+        Some(PendingWorldEntry::Local { .. }) => Some(CafeGameEntryKind::LocalWorld),
+        Some(PendingWorldEntry::Server { .. }) => Some(CafeGameEntryKind::RemoteServer),
+        None if integrated_starting => Some(CafeGameEntryKind::LocalWorld),
+        None => None,
+    }
 }
 
 impl CafeLoadingSession {
@@ -22494,20 +22511,35 @@ impl CafeLoadingSession {
         self.start_pending_game()
     }
 
-    /// Transfer a queued local world or server selection into the original
-    /// Game path, after Loading has completed its resource generation.
+    /// Transfer a queued world or server into Game once resources are ready.
+    /// In an opted-in Cemu control session, transfer the title as well so
+    /// Horizon's existing Game control and UI paths own it.
     pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession>> {
         let entry_kind = match self.loading.menu.pending.as_ref() {
             Some(PendingWorldEntry::Local { .. }) => CafeGameEntryKind::LocalWorld,
             Some(PendingWorldEntry::Server { .. }) => CafeGameEntryKind::RemoteServer,
+            None if cafe_control_title_requested(
+                &self.loading.settings,
+                cfg!(target_os = "cafe") && option_env!("HORIZON_WIIU_CEMU_CONTROL") == Some("1"),
+            ) =>
+            {
+                CafeGameEntryKind::TitleScreen
+            }
             None => return Ok(None),
         };
         if self.status() != CafeLoadingStatus::ReadyForHandoff {
-            return Err(if entry_kind == CafeGameEntryKind::RemoteServer {
-                "Cafe remote server requested before Loading was ready".into()
-            } else {
-                "local Cafe world requested before Loading was ready".into()
-            });
+            return Err(match entry_kind {
+                CafeGameEntryKind::RemoteServer => {
+                    "Cafe remote server requested before Loading was ready"
+                }
+                CafeGameEntryKind::LocalWorld => {
+                    "local Cafe world requested before Loading was ready"
+                }
+                CafeGameEntryKind::TitleScreen => {
+                    "Cafe control title requested before Loading was ready"
+                }
+            }
+            .into());
         }
         let result = self.start_pending_game_inner(entry_kind);
         if let Err(error) = &result {
@@ -22517,6 +22549,9 @@ impl CafeLoadingSession {
                 }
                 CafeGameEntryKind::RemoteServer => {
                     self.loading.remote_server_failure = Some(error.to_string());
+                }
+                CafeGameEntryKind::TitleScreen => {
+                    self.loading.error = Some(error.to_string().into());
                 }
             }
         }
@@ -22671,6 +22706,14 @@ impl CafeGameSession {
     /// consumed its pending entry while starting the connection or world.
     pub fn entry_kind(&self) -> CafeGameEntryKind {
         self.entry_kind
+    }
+
+    /// Snapshot before a frame: an async start may clear its state on failure.
+    pub fn starting_entry_kind(&self) -> Option<CafeGameEntryKind> {
+        cafe_starting_entry_kind(
+            self.game.pending_entry.as_ref(),
+            self.game.integrated_starting.is_some(),
+        )
     }
 
     /// Feed the host's canonical Cafe controller sample into the normal game
@@ -24221,6 +24264,47 @@ fn is_game_master_block(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cafe_starting_entry_distinguishes_title_world_and_server() {
+        assert_eq!(cafe_starting_entry_kind(None, false), None);
+        assert_eq!(
+            cafe_starting_entry_kind(None, true),
+            Some(CafeGameEntryKind::LocalWorld)
+        );
+        let remote = PendingWorldEntry::Server {
+            address: "example.invalid:25565".into(),
+            name: "Player".into(),
+            lan: false,
+            cookies: None,
+        };
+        assert_eq!(
+            cafe_starting_entry_kind(Some(&remote), false),
+            Some(CafeGameEntryKind::RemoteServer)
+        );
+        let local = PendingWorldEntry::Local {
+            folder: "test".into(),
+            name: None,
+            seed: None,
+            creative: false,
+            create: None,
+        };
+        assert_eq!(
+            cafe_starting_entry_kind(Some(&local), false),
+            Some(CafeGameEntryKind::LocalWorld)
+        );
+    }
+
+    #[test]
+    fn cafe_control_title_respects_opt_in_and_no_ai() {
+        let mut settings = Settings::default();
+        assert!(!cafe_control_title_requested(&settings, true));
+        settings.extras.agent_control = true;
+        assert!(!cafe_control_title_requested(&settings, false));
+        assert!(cafe_control_title_requested(&settings, true));
+        settings.extras.no_ai = true;
+        assert!(!cafe_control_title_requested(&settings, true));
+    }
+
     #[test]
     fn cafe_partial_presentation_counts_without_claiming_completeness() {
         let mut drawn = false;
