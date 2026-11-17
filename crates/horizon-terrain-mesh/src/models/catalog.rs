@@ -18,6 +18,7 @@ use horizon_world::{
     chunk::BlockState,
     registry::{BlockRegistry, BlockStateId},
 };
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -288,7 +289,7 @@ impl StateModels {
                     Ok((key.clone(), values))
                 })
                 .collect::<Result<_>>()?;
-            let possible: Vec<Properties> = serde_json::from_value(facts["states"].clone())?;
+            let possible = Vec::<Properties>::deserialize(&facts["states"])?;
             // Vanilla's BlockStateModelLoader: a definition that does not
             // read or bind is logged and left out; with none left the block
             // gets no model, and the other blocks still load. A file several
@@ -635,6 +636,54 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn model_states_bind_and_reject_invalid_state_definitions() -> Result<()> {
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("horizon-model-states-{}", std::process::id())),
+        );
+        let blockstates = fixture.0.join("assets/minecraft/blockstates");
+        fs::create_dir_all(&blockstates)?;
+        fs::write(
+            blockstates.join("air.json"),
+            r#"{"variants":{"":{"model":"minecraft:block/air"}}}"#,
+        )?;
+        fixture.write("minecraft:block/air", r#"{"elements":[]}"#);
+        let registry = BlockRegistry::from_facts_json(
+            &br#"{"states":[["minecraft:air",true,false,"","minecraft:air"]],"defaults":{"minecraft:air":0}}"#[..],
+        )?;
+        let load = |states: Value| {
+            let facts = BTreeMap::from([(
+                "minecraft:air".to_owned(),
+                serde_json::json!({"schema": {}, "states": states}),
+            )]);
+            StateModels::from_facts(
+                &fixture.0,
+                &registry,
+                &["air"],
+                &mut Sprites::default(),
+                &facts,
+            )
+        };
+        let models = load(serde_json::json!([{}]))?;
+        assert!(models.state(BlockStateId(0)).is_some());
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!(3),
+            serde_json::json!([null]),
+            serde_json::json!([{"powered": 1}]),
+        ] {
+            assert!(load(invalid).is_err());
+        }
+        let mismatch = load(serde_json::json!([]))
+            .err()
+            .expect("registry mismatch");
+        assert_eq!(
+            mismatch.to_string(),
+            "model state definitions disagree with the imported block registry"
+        );
+        Ok(())
     }
 
     #[test]
