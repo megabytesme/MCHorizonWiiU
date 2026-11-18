@@ -38,6 +38,17 @@ impl Update<'_> {
 
 /// Compute Horizon's frame selection and interpolation for one atlas tick.
 pub fn prepare(states: &mut [State], size: [u32; 2], tick: u64) -> Update<'_> {
+    prepare_if(states, size, tick, |_| true)
+}
+
+/// Prepare only sprites whose atlas regions can be sampled by this frame.
+/// Skipped sprites retain their old state and catch up when next selected.
+pub fn prepare_if(
+    states: &mut [State],
+    size: [u32; 2],
+    tick: u64,
+    mut selected: impl FnMut(Rect) -> bool,
+) -> Update<'_> {
     let [width, height] = size;
     let mut patches = Vec::new();
     let mut next = Vec::new();
@@ -47,7 +58,7 @@ pub fn prepare(states: &mut [State], size: [u32; 2], tick: u64) -> Update<'_> {
         // when the sprite interpolates.
         let blend = animation.blend(tick);
         let state = (blend.frame, blend.next, blend.millis);
-        if state == *previous {
+        if state == *previous || !selected(*rect) {
             continue;
         }
         let (w, h) = rect.texels((width, height));
@@ -119,5 +130,36 @@ mod tests {
         halfway.commit();
         let next = prepare(&mut states, [4, 4], 2);
         assert_eq!(next.patches()[0].rgba, [100, 200, 0, 255].repeat(4));
+    }
+    #[test]
+    fn skipped_animation_catches_up_when_selected_and_retries_on_failure() {
+        let animation = test_frames(
+            0,
+            vec![vec![0, 0, 0, 255], vec![100, 200, 0, 255]],
+            r#"{"frametime":2,"interpolate":true,"frames":[0,1]}"#,
+        );
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        let mut states = track(&[(rect, animation)]);
+        let skipped = prepare_if(&mut states, [1, 1], 0, |_| false);
+        assert!(skipped.patches().is_empty());
+        skipped.commit();
+        let visible = prepare_if(&mut states, [1, 1], 1, |_| true);
+        assert_eq!(visible.patches()[0].rgba, [50, 100, 0, 255]);
+        drop(visible);
+        let retry = prepare_if(&mut states, [1, 1], 1, |_| true);
+        assert_eq!(retry.patches()[0].rgba, [50, 100, 0, 255]);
+        retry.commit();
+        assert!(
+            prepare_if(&mut states, [1, 1], 1, |_| true)
+                .patches()
+                .is_empty()
+        );
     }
 }

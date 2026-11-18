@@ -34,6 +34,67 @@ fn prepare_animations(
     }
 }
 
+/// Conservative UV bounds for each triangle in the HUD batch. Returning None
+/// on malformed geometry keeps every animation update rather than guessing.
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn triangle_uv_bounds(vertices: &[horizon_hud_data::HudVertex]) -> Option<Vec<[f32; 4]>> {
+    if !vertices.len().is_multiple_of(3) {
+        return None;
+    }
+    let mut bounds = Vec::with_capacity(vertices.len() / 3);
+    for triangle in vertices.as_chunks::<3>().0 {
+        let mut min = [1.0f32; 2];
+        let mut max = [0.0f32; 2];
+        for vertex in triangle {
+            for (axis, &value) in vertex.uv.iter().enumerate() {
+                if !value.is_finite() {
+                    return None;
+                }
+                let value = value.clamp(0.0, 1.0);
+                min[axis] = min[axis].min(value);
+                max[axis] = max[axis].max(value);
+            }
+        }
+        bounds.push([min[0], min[1], max[0], max[1]]);
+    }
+    Some(bounds)
+}
+
+/// Point filtering and clamping are conservative at atlas edges: include an
+/// extra texel around each patch, and select every region if geometry is unknown.
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn animation_may_be_sampled(
+    rect: horizon_client_hud::Rect,
+    size: [u32; 2],
+    triangles: Option<&[[f32; 4]]>,
+) -> bool {
+    let [width, height] = size;
+    let Some(triangles) = triangles else {
+        return true;
+    };
+    if width == 0 || height == 0 {
+        return true;
+    }
+    let x = (rect.u0 * width as f32).round();
+    let y = (rect.v0 * height as f32).round();
+    let (w, h) = rect.texels((width, height));
+    let bounds = [
+        (x - 1.0) / width as f32,
+        (y - 1.0) / height as f32,
+        (x + w as f32 + 1.0) / width as f32,
+        (y + h as f32 + 1.0) / height as f32,
+    ];
+    if bounds.iter().any(|v| !v.is_finite()) {
+        return true;
+    }
+    triangles.iter().any(|triangle| {
+        triangle[2] >= bounds[0]
+            && triangle[0] <= bounds[2]
+            && triangle[3] >= bounds[1]
+            && triangle[1] <= bounds[3]
+    })
+}
+
 /// Borrows the original batch while retaining Horizon's ordered blend runs.
 pub struct BatchFrame<'a> {
     batch: &'a HudBatch,
@@ -173,12 +234,22 @@ impl<'shader> HorizonPresenter<'shader> {
             viewport: layout_viewport,
             pack_text_shader: self.pack_text_shader,
         };
-        let update = prepare_animations(
-            &mut self.animations,
-            self.atlas_size,
-            tick,
-            animated_textures,
-        );
+        let atlas_size = self.atlas_size;
+        let triangles = if animated_textures {
+            triangle_uv_bounds(&batch.vertices)
+        } else {
+            None
+        };
+        let update = if animated_textures {
+            Some(horizon_client_hud::sprite_animations::prepare_if(
+                &mut self.animations,
+                atlas_size,
+                tick,
+                |rect| animation_may_be_sampled(rect, atlas_size, triangles.as_deref()),
+            ))
+        } else {
+            None
+        };
         if let Some(update) = update {
             let frame = frame.frame();
             unsafe {
@@ -256,7 +327,7 @@ mod tests {
         assert_eq!(frame.runs, &[(0..6, Blend::Alpha)]);
         assert!(Prepared::new(&frame).is_ok());
 
-        batch.blend_since(0, Blend::Invert);
+        batch.blend_since(0, Blend::Vignette);
         let view = BatchFrame::new(&atlas, &batch, [640, 480]);
         assert!(matches!(
             Prepared::new(&view.frame()),
@@ -308,7 +379,7 @@ mod tests {
 
     #[test]
     fn animation_option_preserves_retry_state_when_disabled() {
-        use horizon_client_hud::{sprite_animations, Rect};
+        use horizon_client_hud::{Rect, sprite_animations};
         use horizon_terrain_mesh::sprites::test_frames;
 
         let animation = test_frames(
@@ -335,5 +406,55 @@ mod tests {
         assert!(prepare_animations(&mut states, [1, 1], 2, false).is_none());
         let resumed = prepare_animations(&mut states, [1, 1], 2, true).unwrap();
         assert_eq!(resumed.patches()[0].rgba, [100, 200, 0, 255]);
+    }
+    #[test]
+    fn animation_visibility_conservatively_covers_triangle_uvs_and_edges() {
+        use horizon_client_hud::Rect;
+        use horizon_hud_data::HudVertex;
+        let vertex = |u, v| HudVertex {
+            pos: [0.0, 0.0],
+            uv: [u, v],
+            color: 0,
+            depth: 0.0,
+            glint_uv: [0.0, 0.0],
+            text: 0,
+        };
+        let rect = Rect {
+            u0: 0.5,
+            v0: 0.5,
+            u1: 0.625,
+            v1: 0.625,
+            w: 1,
+            h: 1,
+        };
+        let away = [vertex(0.0, 0.0), vertex(0.1, 0.0), vertex(0.0, 0.1)];
+        assert!(!animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&away).as_deref()
+        ));
+        let enclosing = [vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(0.0, 1.0)];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&enclosing).as_deref()
+        ));
+        let edge = [vertex(0.49, 0.5); 3];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&edge).as_deref()
+        ));
+        let unknown = [vertex(f32::NAN, 0.0); 3];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&unknown).as_deref()
+        ));
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&away[..2]).as_deref()
+        ));
     }
 }
