@@ -8,6 +8,8 @@ pub mod events;
 pub mod input;
 pub mod logging;
 pub mod path;
+#[cfg(any(target_os = "cafe", test))]
+pub mod resource_directory;
 pub use events::{
     ClientDeviceEvent, ClientWindowEvent, ImeEvent, MouseScrollDelta, PhysicalPosition,
     PhysicalSize, TouchPhase,

@@ -185,6 +185,9 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
     #[cfg(target_os = "cafe")]
     log::info!("Horizon emissive scan: layers={layer_count} candidates={base_count}");
 
+    #[cfg(target_os = "cafe")]
+    let mut directory_misses =
+        horizon_client_platform::resource_directory::DirectoryMissCache::default();
     let mut pairs = Vec::new();
     #[cfg(target_os = "cafe")]
     let _scan_stage = crate::spans::startup::step("core.optifine_emissive.scan");
@@ -210,6 +213,10 @@ pub fn load_optifine(root: &Path, sprites: &mut Sprites) -> Vec<(String, String)
                 (overlay, file)
             }
         };
+        #[cfg(target_os = "cafe")]
+        if !directory_misses.may_exist(&file) {
+            continue;
+        }
         if !std::fs::metadata(&file).is_ok_and(|m| m.is_file()) {
             continue;
         }
