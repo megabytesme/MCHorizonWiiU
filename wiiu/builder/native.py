@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -113,8 +114,6 @@ def stage_source(directory, workspace, release_tree, patch):
 
 
 def write_cargo_inputs(directory, source, inputs, lock, bridge):
-    cargo = directory / "cargo-recipe"
-    cargo.mkdir(exist_ok=True)
     dependency_root = directory / "external"
     dependency_root.mkdir(exist_ok=True)
     for name in OVERLAYS:
@@ -123,24 +122,32 @@ def write_cargo_inputs(directory, source, inputs, lock, bridge):
             shutil.copytree(inputs / name, target)
         if inventory_digest(target) != lock["overlay_sha256"][name]:
             raise ValueError(f"staged dependency overlay differs: {name}")
-    base = (source / "wiiu/loading_app/Cargo.toml").read_text()
+    loading_app = source / "wiiu/loading_app"
+    base = (loading_app / "Cargo.toml").read_text()
+    # Cargo's local package identities include their paths relative to the
+    # top-level workspace. Keep all dependencies below the same root.
     base = base.replace("[lib]\n", "[lib]\npath = " + json.dumps(
-        str(source / "wiiu/loading_app/src/lib.rs")) + "\n")
-    # Preserve the pinned crate features. Resolve the manifest's relative
-    # Cargo paths against the reconstructed loading_app, not the caller.
-    import re
+        (loading_app / "src/lib.rs").relative_to(directory).as_posix()) + "\n")
     base = re.sub(r'path = "([.][^"]+)"', lambda match: "path = " + json.dumps(
-        str((source / "wiiu/loading_app" / match[1]).resolve())), base)
+        (loading_app / match[1]).resolve().relative_to(directory).as_posix()), base)
+    # Exact exclusions preserve the nested Horizon workspace's inherited
+    # package metadata and avoid adding our patched dependencies as members.
+    excluded = sorted({Path("source") / Path(os.fsdecode(name)).parent
+                       for name in git(source, "ls-files", "-z", "*Cargo.toml").stdout.split(b"\0")
+                       if name} | {Path("external") / name for name in OVERLAYS})
+    base = base.replace("[workspace]\n", "[workspace]\nexclude = " + json.dumps(
+        [path.as_posix() for path in excluded]) + "\n")
     add = {
         "wgpu-hal": source / "third_party/wgpu-hal", "naga": source / "third_party/naga",
         "libmimalloc-sys": source / "third_party/libmimalloc-sys",
         **{name: dependency_root / name for name in OVERLAYS},
     }
-    manifest = cargo / "Cargo.toml"
+    manifest = directory / "Cargo.toml"
     manifest.write_text(base.rstrip() + "\n" + "".join(
-        f'{name} = {{ path = {json.dumps(str(path))} }}\n' for name, path in add.items()), newline="\n")
-    (cargo / "Cargo.lock").write_bytes(bridge["lock"])
-    (cargo / "winit_tv_size.c").write_bytes(bridge["tv_size"])
+        f'{name} = {{ path = {json.dumps(path.relative_to(directory).as_posix())} }}\n'
+        for name, path in add.items()), newline="\n")
+    (directory / "Cargo.lock").write_bytes(bridge["lock"])
+    (directory / "winit_tv_size.c").write_bytes(bridge["tv_size"])
     return manifest
 
 
@@ -150,7 +157,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     settings = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC",
                 "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
     identity = {
-        "recipe": recipe_hash, "toolchain": tools, "environment": settings,
+        "recipe": recipe_hash, "toolchain": tools, "environment": settings, "workspace_layout": 2,
         "resources": resources_hash, "assembly": str(assembly.resolve()),
     }
     key = digest(json.dumps(identity, sort_keys=True).encode())

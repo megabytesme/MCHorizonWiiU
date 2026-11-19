@@ -8,8 +8,8 @@ resources.
 
 ## Game bridge changes required
 
-The following observations are from the launcher branch's game baseline
-`5a8360e3ee5f9c5c040a13325666459fee480826`.
+The standalone game recipe pins `1a0a2948c33d11744eb403247cb566b0aa3ee858`.
+Use the assembled source to review and implement the following changes.
 
 1. **Fallible hosted entry.** The existing `entry::main_with_cafe_host` uses
    `main_with_runner`, which can call `std::process::exit` on error. Expose
@@ -100,12 +100,12 @@ The following observations are from the launcher branch's game baseline
 
 ## Packaging and acceptance
 
-The default `pregame-hosted-v1.json` pins the launcher recipe and the
-existing patch-assembly proof. A game recipe needs a separately reviewed
-Horizon revision, launcher/game compatibility, checked input hashes,
-reviewed Cafe sysroot and dependency overlays, and a host-linking build
-that runs both components in one RPX. The launcher package uses the
-standalone core/renderer and contains no Mojang assets.
+The [compatibility recipe](../../catalog/compatibility-v1.json) pins the
+source and inputs for the standalone Night and game packages. The first
+combined RPX needs a reviewed game revision, a declared launcher/game
+compatibility pair, verified Cafe toolchain and overlays, and a native link
+that uses one process host for both components. Private runtime resources
+are prepared and verified separately from the packages.
 
 Validate a real adapter first with a fresh private world. Start, edit an
 observable block, Save & Quit, verify completion and release, reopen the

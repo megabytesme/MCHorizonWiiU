@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 
 import core
@@ -116,6 +117,44 @@ class AssemblyTests(unittest.TestCase):
             (assembled / "game").write_bytes(b"corrupted after assembly\n")
             with self.assertRaisesRegex(ValueError, "verified index"):
                 source.verify_assembly(stable, recipe, "fixture")
+
+
+class CargoInputsTests(unittest.TestCase):
+    def test_local_packages_use_the_same_relative_paths_in_two_build_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "inputs"
+            for name in native.OVERLAYS:
+                crate = inputs / name
+                crate.mkdir(parents=True)
+                (crate / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+            lock = {"overlay_sha256": {name: native.inventory_digest(inputs / name)
+                                       for name in native.OVERLAYS}}
+            bridge = {"lock": b"Cargo lock fixture", "tv_size": b"native link fixture"}
+            manifests = []
+            for name in ("first", "second"):
+                build = root / name
+                staged = build / "source"
+                loading_app = staged / "wiiu/loading_app"
+                loading_app.mkdir(parents=True)
+                git_out(staged, "init", "--quiet", "--template=")
+                (loading_app / "Cargo.toml").write_text(
+                    '[lib]\n\n[workspace]\n\n[dependencies]\n'
+                    'horizon-client = { path = "../../crates/horizon-client" }\n'
+                    '\n[patch.crates-io]\n')
+                client = staged / "crates/horizon-client"
+                client.mkdir(parents=True)
+                (client / "Cargo.toml").write_text('[package]\nname = "horizon-client"\n')
+                git_out(staged, "add", "wiiu/loading_app/Cargo.toml", "crates/horizon-client/Cargo.toml")
+                manifest = native.write_cargo_inputs(build, staged, inputs, lock, bridge)
+                self.assertEqual(manifest.parent, build)
+                manifests.append(manifest.read_bytes())
+            self.assertEqual(*manifests)
+            resolved = tomllib.loads(manifests[0].decode())
+            self.assertEqual(resolved["lib"]["path"], "source/wiiu/loading_app/src/lib.rs")
+            self.assertEqual(resolved["dependencies"]["horizon-client"]["path"], "source/crates/horizon-client")
+            self.assertEqual(resolved["patch"]["crates-io"]["winit"]["path"], "external/winit")
+            self.assertIn("source/crates/horizon-client", resolved["workspace"]["exclude"])
 
 
 class OutputTests(unittest.TestCase):
