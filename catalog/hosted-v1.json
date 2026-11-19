@@ -3,9 +3,9 @@
   "hosted_client": "0.5.0",
   "base_recipe_sha256": "31d859bcfcb6d5401ef83610202731a1421c93e3c738cfe43739cf1946dcc27c",
   "input_tree": "af17b86aef2d1a2d1c2f0f7ef0f391cf579e64ac",
-  "output_tree": "5d7081ab9e7f59989124c988641361d0886b7308",
+  "output_tree": "690291bc2614281ef071575f89d6c566c8469d26",
   "files": {
-    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0001-cafe-hosted-session.patch": "6b8252adbbe5a08c0c36c870c056f7584b23068776d5a536586388c040a264b0",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0001-cafe-hosted-session.patch": "8cc9d575a85d27d9ddd13133d923a8741c50752da84226435a7119e976a0a565",
     "wiiu/game-bridge/hosted.patch": "79228b034e0943a4867d6d835952609b75295465ff1bfeed94c7d70576b6ccf9",
     "wiiu/game-bridge/hosted.rs": "8e18c6f4f147b28a68e74232fd1e33046626947eddbaf97d5a407a04676a9451"
   }
