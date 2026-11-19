@@ -104,7 +104,14 @@ class AssemblyTests(unittest.TestCase):
                 source.assemble(upstream, "HEAD", recipe, "fixture", temp / "wrong", root=port)
             stable = temp / "assembled"
             source.assemble(upstream, base, recipe, "fixture", stable, root=port)
-            assembled = source.verify_assembly(stable, recipe, "fixture")
+            # Another process may refresh the assembly index while this build
+            # verifies its contents. Verification only needs to read it.
+            shared_index_lock = stable / "source/.git/index.lock"
+            shared_index_lock.touch()
+            try:
+                assembled = source.verify_assembly(stable, recipe, "fixture")
+            finally:
+                shared_index_lock.unlink()
             self.assertEqual((assembled / "game").read_bytes(), b"patched game\n")
             self.assertEqual((assembled / "wiiu/client").read_bytes(), b"native client\n")
             with self.assertRaisesRegex(ValueError, "already exists"):

@@ -1,5 +1,6 @@
 """Exact upstream and native source assembly for the port-only repository."""
 from pathlib import Path, PurePosixPath
+import shutil
 import tempfile
 
 from core import (ROOT, TARGET, VERSION, VERSION_PATTERN, digest, fields, file_digest,
@@ -126,7 +127,14 @@ def apply_patch(workspace, patch):
     git(workspace, "apply", *args, input_bytes=patch)
 
 
-def staged_tree(workspace):
+def staged_tree(workspace, *, readonly=False):
+    if readonly:
+        # write-tree may refresh the index's cached tree. Validate on a private
+        # index so independent builders can consume the same assembly.
+        with tempfile.TemporaryDirectory(prefix="wiiu-index-") as scratch:
+            index = Path(scratch) / "index"
+            shutil.copyfile(workspace / ".git/index", index)
+            return git(workspace, "write-tree", index=index).stdout.decode("ascii").strip()
     return git(workspace, "write-tree").stdout.decode("ascii").strip()
 
 
@@ -209,7 +217,7 @@ def verify_assembly(root, recipe, recipe_hash):
             or record.get("diagnostic") is not False
             or record.get("native") != recipe["native"]["commit"]
             or record.get("tree") != recipe["native"]["tree"]
-            or staged_tree(workspace) != recipe["native"]["tree"]):
+            or staged_tree(workspace, readonly=True) != recipe["native"]["tree"]):
         raise ValueError("assembly does not match the stable game recipe")
     if git(workspace, "diff", "--quiet", "--ignore-submodules=all", check=False).returncode:
         raise ValueError("assembled source differs from the verified index")

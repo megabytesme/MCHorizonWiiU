@@ -55,7 +55,34 @@ python3 -B wiiu/builder/build.py verify-output /path/to/build-record.json
 The game command produces `HorizonWiiU-Game.rpx` and
 `HorizonWiiU-Game.wuhb`. Its record lists exact tools, assembly and private
 overlay hashes, commands and package hashes. Keep the assembly directory
-while reusing its game build cache. The game has its own acceptance scope.
+while reusing its game build cache. Cargo sees the same relative path for
+each local package in every fresh build root, including the verified
+dependency overlays. The pinned Rust toolchain also embeds absolute workspace paths in parts
+of the runtime and symbol table. For byte-for-byte comparison across
+independent directories, use the Linux mount-namespace wrapper. It presents
+`/var/tmp/horizon-wiiu-build` separately to each compiler while keeping each
+host build directory and target isolated. The kernel must allow unprivileged
+user namespaces. A container can provide the same mount with the pinned
+installed tools. The wrapper prints the host-facing record path.
+
+```sh
+for run in first second; do
+  bash tools/build_cafe_game_isolated.sh "$scratch/$run" \
+    --assembly "$scratch/stable" --inputs "$inputs" > "$scratch/$run.record"
+  python3 -B wiiu/builder/build.py verify-output "$(cat "$scratch/$run.record")"
+done
+first=$(dirname "$(cat "$scratch/first.record")")
+second=$(dirname "$(cat "$scratch/second.record")")
+cmp "$first/HorizonWiiU-Game.rpx" "$second/HorizonWiiU-Game.rpx"
+cmp "$first/HorizonWiiU-Game.wuhb" "$second/HorizonWiiU-Game.wuhb"
+```
+
+The standalone game reads its app directory from
+`/vol/external01/wiiu/apps/HorizonWiiU` and finds the prepared cache at
+`.local/horizon-client/26.3` inside it by default. For an emulator run, use
+a dedicated portable Cemu profile with a scratch SD directory and create
+that app layout there. Keep real saves and credentials outside the profile.
+No runtime resource tree is required to boot the Night launcher fixture.
 
 ## Private resources and validation
 
@@ -63,7 +90,10 @@ Use the reconstructed Horizon preparation tool with your legally obtained
 Minecraft files. The builder can inventory and reuse a pre-existing cache.
 The generated inventory stays private. Pass both options to `build-game`
 to record the checked cache identity. Compilation can run without assets
-because the standalone client opens them at run time.
+because the standalone client opens them at run time. The inventory checks
+file content and guards reuse. A bootable cache also needs the pinned game's
+`horizon-resources.json` and its required files. A detached data pack alone
+can pass an inventory check and still fail runtime resource validation.
 
 ```sh
 python3 -B wiiu/builder/build.py inventory-resources /path/to/prepared --output "$scratch/private-resources.json"

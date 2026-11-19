@@ -55,10 +55,12 @@ def file_digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def git(directory, *args, input_bytes=None, check=True):
+def git(directory, *args, input_bytes=None, check=True, index=None):
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-               GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
+               GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1", GIT_OPTIONAL_LOCKS="0")
+    if index is not None:
+        env["GIT_INDEX_FILE"] = str(index)
     return subprocess.run(
         ["git", "-C", str(directory), "-c", "core.autocrlf=false",
          "-c", f"core.hooksPath={os.devnull}", *args],
