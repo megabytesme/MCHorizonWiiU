@@ -124,7 +124,7 @@ extern "C" fn horizon_pregame_run() -> i32 {
         return 1;
     };
     #[cfg(horizon_wiiu_hosted)]
-    let mut storage = storage;
+    let mut storage = Some(storage);
     #[cfg(not(horizon_wiiu_hosted))]
     let mut launcher = {
         let fixture = cfg!(horizon_wiiu_pregame_fixture).then_some(Instance::DEMO);
@@ -138,6 +138,10 @@ extern "C" fn horizon_pregame_run() -> i32 {
     );
     let mut displayed = None;
     let mut frame = 0_u32;
+    #[cfg(horizon_wiiu_hosted)]
+    let mut exit_code = 0;
+    #[cfg(not(horizon_wiiu_hosted))]
+    let exit_code = 0;
     loop {
         match unsafe { shell_process() } {
             1 => launcher.focus(true),
@@ -158,22 +162,25 @@ extern "C" fn horizon_pregame_run() -> i32 {
         #[cfg(horizon_wiiu_hosted)]
         if let Some(driver) = launcher.live_driver() {
             unsafe { shell_destroy_view() };
-            drop(storage);
+            drop(storage.take());
             trace(c"game.borrowed_foreground");
-            let terminal_save_failure = driver.run();
+            if driver.run() {
+                exit_code = 3;
+            }
             launcher.advance();
             launcher.input_lost();
-            if unsafe { shell_process() } == 2 {
-                return finish(&mut launcher, if terminal_save_failure { 3 } else { 0 });
-            }
+            displayed = None;
+            continue;
+        }
+        #[cfg(horizon_wiiu_hosted)]
+        let Some(storage) = storage.as_ref() else {
             let Some(restored) = open_view() else {
                 return finish(&mut launcher, 2);
             };
-            storage = restored;
-            displayed = None;
+            storage = Some(restored);
             trace(c"game.returned_foreground");
             continue;
-        }
+        };
         let mut samples = [Sample::default(); 16];
         let count = unsafe { shell_poll_input(samples.as_mut_ptr()) };
         if count < 0 {
@@ -232,7 +239,7 @@ extern "C" fn horizon_pregame_run() -> i32 {
         frame = frame.wrapping_add(1);
         launcher.advance();
     }
-    finish(&mut launcher, 0)
+    finish(&mut launcher, exit_code)
 }
 
 fn finish(launcher: &mut Launcher<'_, impl crate::session::SessionFactory>, code: i32) -> i32 {

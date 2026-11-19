@@ -21,7 +21,7 @@ index e56f03cad0b9d33e2b7403d7e61f9de834a7b4d1..b7ac7e82e7190c6efb1a438e065a8d18
  if(HORIZON_WIIU_TRACE_VPAD_INPUT)
     target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
 diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
-index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18aff0b858d2 100644
+index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..26c4136f1a4ed7337e7f850cd2038bab0b00b9d3 100644
 --- a/wiiu/loading_app/src/lib.rs
 +++ b/wiiu/loading_app/src/lib.rs
 @@ -31,6 +31,7 @@ unsafe extern "C" {
@@ -32,15 +32,15 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
      fn horizon_wiiu_swkbd_input_occupied() -> i32;
      fn horizon_swkbd_request(initial_text: *const u16, max_utf16_units: i32) -> i32;
      fn horizon_swkbd_is_open() -> i32;
-@@ -58,6 +59,8 @@ const REMOTE_SERVER_START_FAILED: i32 = 6;
- static CAFE_ALLOCATOR: horizon_client_platform::cafe_memory::MeasuredSystem =
-     horizon_client_platform::cafe_memory::MeasuredSystem;
+@@ -160,6 +161,8 @@ fn report_core_topology_once() {
+     }
+ }
  
 +mod hosted;
 +
- const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
- // Set at compile time only for diagnosing host-loop stalls or input delays.
- const VERBOSE_HOST_TRACE: bool = match option_env!("HORIZON_WIIU_VERBOSE_HOST_TRACE") {
+ /// Called by C before WHB/GX2 initialization so all getrandom versions are
+ /// anchored and the Cafe system RNG is checked before platform startup.
+ #[no_mangle]
 @@ -439,6 +442,9 @@ struct LoadingHost<'a> {
      failure: Option<String>,
      local_world_start_failed: bool,
@@ -61,17 +61,27 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
          }
      }
  
-@@ -902,6 +911,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -902,6 +911,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
          let mut no_pending_game_reported = false;
          let mut first_game_frame_started = false;
          let mut first_game_frame_returned = false;
 +        let mut hosted_save_failed = false;
++        let mut hosted_fault_close = false;
 +        let mut hosted_confirm_held = false;
 +        let mut hosted_cancel_held = true;
          loop {
              host_loop_iteration = host_loop_iteration.saturating_add(1);
              let now = Instant::now();
-@@ -976,6 +988,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -956,7 +969,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     loop_control
+                 );
+             }
+-            if !host_running || loop_control == EventLoopControl::Exit {
++            if !host_running || (loop_control == EventLoopControl::Exit && !hosted_fault_close) {
+                 if trace_this_iteration {
+                     log::info!(
+                         "Horizon Cafe host loop trace iteration={} phase=loop_guard.exit",
+@@ -976,6 +989,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                  );
              }
              let focused = self.update_focus(session, game_session.as_mut());
@@ -82,7 +92,7 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
              if trace_this_iteration {
                  log::info!(
                      "Horizon Cafe host loop trace iteration={} phase=focus.end focused={}",
-@@ -1183,6 +1199,22 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1183,6 +1200,22 @@ impl CafeLoadingHost for LoadingHost<'_> {
                  trace_vpad = false;
              }
  
@@ -105,7 +115,7 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
              let swkbd_occupied = unsafe { horizon_wiiu_swkbd_input_occupied() != 0 };
              let swkbd_open = unsafe { horizon_swkbd_is_open() != 0 };
              let mut native_input_this_frame =
-@@ -1439,7 +1471,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1439,7 +1472,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
                      }
                      let handoff_started_at = Instant::now();
                      match session.start_pending_game() {
@@ -117,13 +127,20 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
                              self.button_history.clear();
                              self.pad_blocked_until_neutral = true;
                              log::info!(
-@@ -1496,6 +1531,28 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1496,6 +1532,35 @@ impl CafeLoadingHost for LoadingHost<'_> {
                  );
              }
  
-+            if let Some(game) = game_session.as_mut().filter(|game| self.hosted && game.hosted_save_pending()) {
++            if let Some(game) = game_session.as_mut()
++                .filter(|game| self.hosted && (hosted_fault_close || game.hosted_save_pending()))
++            {
 +                if !hosted_save_failed || (retry_save && !native_input_this_frame) {
-+                    match game.poll_hosted_save() {
++                    let save = if game.hosted_save_pending() {
++                        game.poll_hosted_save()
++                    } else {
++                        game.begin_hosted_save().map(|()| false)
++                    };
++                    match save {
 +                        Ok(true) => {
 +                            self.hosted_saved = true;
 +                            startup_report!("hosted save barrier completed");
@@ -146,7 +163,20 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18af
              if trace_draw {
                  startup_report!("loading first draw begin");
              }
-@@ -1673,10 +1730,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1626,6 +1691,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     startup_report!("Cafe Loading draw failed");
+                 }
+                 self.failure = Some(error.to_string());
++                if self.hosted && game_session.as_ref().is_some_and(CafeGameSession::hosted_needs_close) {
++                    // Preserve the active world on a late rendering failure.
++                    // Even this path must go through the durable close barrier.
++                    hosted_fault_close = true;
++                    continue;
++                }
+                 break;
+             }
+             frames_since_progress_report = frames_since_progress_report.saturating_add(1);
+@@ -1673,10 +1744,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
          );
          // Every way out of the host loop releases touch and controller edges
          // while the Loading session and its event loop are still alive.

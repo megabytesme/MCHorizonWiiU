@@ -42,7 +42,7 @@ index a6bda4a6c7c728165269d9d992dd21c8a24cefd6..69056ae961718e09e0c8827c96f291f1
      let result = run();
      cafe_startup_stage!("game runner returned");
 diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
-index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a359140e331 100644
+index 63c6f122c960b970afd6a112a7db2c293e34a146..2f32706576134fefa1d2ff57f3b14040d0339dbf 100644
 --- a/crates/horizon-client/src/game.rs
 +++ b/crates/horizon-client/src/game.rs
 @@ -3232,6 +3232,7 @@ struct Game<'a> {
@@ -106,7 +106,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
              #[cfg(target_os = "cafe")]
              next_memory_sample: None,
          }))
-@@ -22771,11 +22797,41 @@ impl CafeLoadingSession {
+@@ -22771,11 +22797,52 @@ impl CafeLoadingSession {
  pub struct CafeGameSession {
      game: Game<'static>,
      entry_kind: CafeGameEntryKind,
@@ -124,6 +124,17 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
 +    #[cfg(target_os = "cafe")]
 +    pub fn hosted_save_pending(&self) -> bool {
 +        self.game.pending_save.as_ref().is_some_and(|save| save.quit)
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn begin_hosted_save(&mut self) -> Result<()> {
++        self.game.begin_closing_save(true)
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn hosted_needs_close(&self) -> bool {
++        !self.game.saved_for_exit && (self.game.session_lock.is_some()
++            || self.game.integrated.is_some() || self.game.remote.is_some())
 +    }
 +
 +    /// False means the save barrier is still pending. Errors preserve it.
@@ -148,7 +159,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
      /// Keep Game's input and logical framebuffer calculations aligned with
      /// the active GamePad layout. Invalid dimensions leave the last valid
      /// Cafe size intact.
-@@ -22911,7 +22967,12 @@ impl CafeGameSession {
+@@ -22911,7 +22978,12 @@ impl CafeGameSession {
                  };
                  let _ = sender.send(response.to_string());
              }) {
@@ -162,7 +173,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
                  Err(error) => {
                      if let Some(reply) = self.game.pending_screenshot.take() {
                          let _ = reply.send(serde_json::json!({"error": format!("cannot start screenshot encoder: {error}")}).to_string());
-@@ -22982,7 +23043,7 @@ impl CafeGameSession {
+@@ -22982,7 +23054,7 @@ impl CafeGameSession {
          &mut self,
          presenter: &mut dyn CafeLoadingPresenter,
      ) -> Result<Option<bool>> {
@@ -171,7 +182,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
      }
  
      /// Reuse the original Game loading HUD while its integrated server opens
-@@ -22992,6 +23053,7 @@ impl CafeGameSession {
+@@ -22992,6 +23064,7 @@ impl CafeGameSession {
      fn present_loading_frame(
          &mut self,
          presenter: &mut dyn CafeLoadingPresenter,
@@ -179,7 +190,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
      ) -> Result<Option<bool>> {
          let game = &mut self.game;
          let size = presenter.layout_viewport();
-@@ -23006,7 +23068,14 @@ impl CafeGameSession {
+@@ -23006,7 +23079,14 @@ impl CafeGameSession {
              game.gui.atlas.font.reseed(game.visual_ticks() as i64);
          }
          let mut hud = HudBatch::new(size);
@@ -195,7 +206,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
              let upgrade = starting.handle.upgrade();
              if upgrade.is_file_fixing() {
                  horizon_client::widgets::begin_screen(|| {
-@@ -23102,6 +23171,14 @@ impl CafeGameSession {
+@@ -23102,6 +23182,14 @@ impl CafeGameSession {
      }
  }
  
@@ -210,7 +221,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
  /// Cafe loop driver; the returned session remains owned by the caller.
  pub trait CafeLoadingHost: EventLoopCtl {
      fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> Result<()>;
-@@ -23861,16 +23938,47 @@ fn run_loading(
+@@ -23861,16 +23949,47 @@ fn run_loading(
  pub use launch_api::{UsageError, exit_code};
  
  pub fn run_with() -> Result<()> {
@@ -222,10 +233,8 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
  pub fn run_with_cafe_host(host: &mut dyn CafeLoadingHost) -> Result<CafeRunOutcome> {
 -    run_with_mode(Some(host))
 +    run_with_mode(Some(host), None)
- }
- 
--fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<CafeRunOutcome> {
--    let Some(mut options) = Options::read()? else {
++}
++
 +#[cfg(target_os = "cafe")]
 +pub fn hosted_cafe_resources_ready(root: &std::path::Path) -> bool {
 +    std::fs::read(root.join("horizon-resources.json"))
@@ -247,8 +256,10 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
 +    narrator::stop();
 +    horizon_client::discord_presence::stop();
 +    result
-+}
-+
+ }
+ 
+-fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<CafeRunOutcome> {
+-    let Some(mut options) = Options::read()? else {
 +fn run_with_mode(
 +    mut cafe_host: Option<&mut dyn CafeLoadingHost>,
 +    hosted_options: Option<Options>,
@@ -262,7 +273,7 @@ index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a35
          return Ok(CafeRunOutcome::Finished);
      };
      if cafe_host.is_some() {
-@@ -23945,7 +24053,9 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
+@@ -23945,7 +24064,9 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
      // horizon-ctl drives: those start in a source checkout and wrote the list there.
      if !options.offscreen && !synchronous_startup(&options) {
          cafe_game_stage!("heartbeat start begin");

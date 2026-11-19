@@ -31,6 +31,7 @@ struct Probe {
     drained: Cell<bool>,
     exit_error: Cell<Option<SaveError>>,
     game_quit: Cell<bool>,
+    native_outcome: Cell<Option<ReturnTo>>,
     observed_input: RefCell<Option<(String, String, Settings)>>,
 }
 
@@ -43,6 +44,7 @@ impl Default for Probe {
             drained: Cell::new(false),
             exit_error: Cell::new(None),
             game_quit: Cell::new(false),
+            native_outcome: Cell::new(None),
             observed_input: RefCell::default(),
         }
     }
@@ -91,7 +93,9 @@ impl SessionDriver for Driver {
         self.0.prepare.get()
     }
     fn poll_live(&mut self) -> LiveEvent {
-        if self.0.game_quit.replace(false) {
+        if let Some(outcome) = self.0.native_outcome.take() {
+            LiveEvent::Ended(outcome)
+        } else if self.0.game_quit.replace(false) {
             LiveEvent::QuitRequested
         } else {
             LiveEvent::Continue
@@ -153,6 +157,34 @@ fn tap(app: &mut App, button: u32) {
 }
 
 #[test]
+fn completed_native_session_returns_and_restarts_without_a_second_save() {
+    let (mut app, probe) = launcher();
+    for outcome in [ReturnTo::Saved, ReturnTo::Cancelled] {
+        make_live(&mut app, &probe);
+        probe.events.borrow_mut().clear();
+        probe.native_outcome.set(Some(outcome));
+        app.advance();
+        assert_eq!(app.view().page, Page::Home);
+        assert!(app.live_driver().is_none());
+        assert_eq!(*probe.events.borrow(), [Event::Dropped]);
+    }
+}
+
+#[test]
+fn a_failed_native_start_returns_to_error_only_after_the_loop_releases() {
+    let (mut app, probe) = launcher();
+    make_live(&mut app, &probe);
+    probe.events.borrow_mut().clear();
+    probe
+        .native_outcome
+        .set(Some(ReturnTo::StartError(StartError::Resources)));
+    app.advance();
+    assert_eq!(app.view().page, Page::Error);
+    assert_eq!(app.view().error, Some(StartError::Resources));
+    assert_eq!(*probe.events.borrow(), [Event::Dropped]);
+}
+
+#[test]
 fn release_launcher_disables_play_and_hides_fixture_controls() {
     let probe = Rc::new(Probe::default());
     let mut app = Launcher::new(Factory(probe.clone()), None, Settings::default());
@@ -190,6 +222,7 @@ fn release_launcher_disables_play_and_hides_fixture_controls() {
 }
 
 fn make_live(app: &mut App, probe: &Probe) {
+    probe.prepare.set(PreparePoll::Pending { percent: None });
     app.dispatch(Action::Play);
     app.advance();
     assert_eq!(app.view().session, Some(SessionStatus::Preparing(None)));

@@ -25,6 +25,14 @@ class CatalogTests(unittest.TestCase):
         for item in [*self.recipe["series"], self.recipe["diagnostic"]]:
             source.checked_bytes(folder, item["file"], item["sha256"])
 
+    def test_hosted_recipe_uses_the_standalone_pin_and_exact_inputs(self):
+        spec, fingerprint, files = native.hosted_inputs(self.recipe, self.fingerprint)
+        self.assertEqual(fingerprint, core.file_digest(core.ROOT / native.HOSTED_SPEC))
+        self.assertNotEqual(spec["input_tree"], spec["output_tree"])
+        self.assertTrue(all(files))
+        with self.assertRaisesRegex(ValueError, "standalone pin"):
+            native.hosted_inputs(self.recipe, "0" * 64)
+
     def test_reject_duplicate_fields_broken_chain_and_wrong_versions(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             core.parse_json('{"native":{"tree":1,"tree":2}}')
@@ -178,6 +186,17 @@ class OutputTests(unittest.TestCase):
             (root / native.GAME_PACKAGES[0]).write_bytes(b"b")
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 core.verify_outputs(record, root)
+
+    def test_verifies_only_the_combined_pair_for_a_hosted_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in native.HOSTED_PACKAGES:
+                (root / name).write_bytes(b"combined fixture")
+            outputs = core.artifacts(root, native.HOSTED_PACKAGES)
+            record = {"schema": 1, "kind": "wiiu-hosted-game-build", "outputs": outputs}
+            core.verify_outputs(record, root)
+            with self.assertRaises(ValueError):
+                core.verify_outputs(dict(record, kind="wiiu-native-game-build"), root)
 
     def test_reuses_resource_inventory_without_copying_and_detects_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
