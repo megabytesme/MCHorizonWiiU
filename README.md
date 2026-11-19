@@ -5,7 +5,8 @@ and native platform source, a local compatibility catalog and reviewed patch
 artifacts. The builder reconstructs Horizon from an exact upstream Git object.
 
 Start with the [builder](wiiu/builder/README.md), the [source and release
-structure](docs/catalog.md), and the [launcher feature matrix](docs/launcher-features.md).
+structure](docs/catalog.md), the [launcher feature matrix](docs/launcher-features.md), and the
+[build and acceptance record](docs/validation.md).
 The [hosted game bridge contract](wiiu/pregame/INTEGRATION.md) covers the first
 combined RPX.
 

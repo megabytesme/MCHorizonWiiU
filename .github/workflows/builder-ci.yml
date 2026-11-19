@@ -7,6 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: cargo fmt --manifest-path wiiu/pregame/Cargo.toml --check
       - run: python3 -B -m unittest discover -s wiiu/builder -v
       - run: cargo test --locked --manifest-path wiiu/pregame/Cargo.toml
       - run: cargo clippy --locked --manifest-path wiiu/pregame/Cargo.toml --all-targets -- -D warnings
