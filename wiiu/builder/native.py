@@ -199,7 +199,11 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     if hosted:
         identity.update(hosted_recipe=hosted[1], launcher_files=launcher["files"])
     key = digest(json.dumps(identity, sort_keys=True).encode())
-    directory = isolated(build_root) / key
+    output_root = isolated(build_root)
+    # The combined target keeps the caller's isolated workspace stable so
+    # a shell-only relink can reuse the verified Rust game archive. The
+    # per-build receipt still pins both source inventories.
+    directory = output_root if hosted else output_root / key
     directory.mkdir(parents=True, exist_ok=True)
     lockfile = directory / ".building"
     lockfile.mkdir()
@@ -278,7 +282,8 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
         if hosted:
             if client_input(recipe) != launcher or hosted_inputs(recipe, recipe_hash) != hosted:
                 raise ValueError("hosted build inputs changed during compilation")
-            result.update(hosted_recipe=hosted[0], hosted_recipe_sha256=hosted[1], launcher=launcher)
+            result.update(hosted_recipe=hosted[0], hosted_recipe_sha256=hosted[1],
+                          launcher=launcher, build_input_sha256=key)
         write_record(record, result)
     finally:
         lockfile.rmdir()

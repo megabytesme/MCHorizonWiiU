@@ -38,7 +38,8 @@ packages the separate `HorizonLauncher-Night-Fixture` for lifecycle tests.
 
 The hosted recipe extends the exact standalone assembly with a pinned
 Horizon-source patch and Cafe bridge delta. Make a clean local Linux checkout
-of the integration branch before building. The combined build emits
+of the integration branch before building. Set `inputs` to the verified
+private Cafe input directory. The combined build emits
 `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and a hash-checked build record.
 
 ```sh
@@ -48,6 +49,10 @@ python3 -B wiiu/builder/build.py build-hosted --assembly "$scratch/stable" \
 bash tools/build_cafe_game_isolated.sh --hosted "$scratch/hosted-rebuild" \
   --assembly "$scratch/stable" --inputs "$inputs"
 ```
+
+Use a dedicated output directory for each staged hosted game tree. A relink
+can reuse it when only the shell source changes. The builder verifies the
+staged game tree and records the exact launcher inputs for each package.
 
 `build-hosted` accepts the same optional verified private resource inventory
 arguments as `build-game`. The compiled packages contain no runtime resource

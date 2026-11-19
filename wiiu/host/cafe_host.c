@@ -9,6 +9,9 @@
 #include <proc_ui/procui.h>
 #include <vpad/input.h>
 #include <whb/gfx.h>
+#ifdef HORIZON_WIIU_HOSTED
+#include <nn/ac.h>
+#endif
 
 enum { VIEW_WIDTH = 1280, VIEW_HEIGHT = 720, VPAD_CAPACITY = 16 };
 typedef struct LauncherSample { uint32_t buttons, touch, x, y; } LauncherSample;
@@ -66,6 +69,12 @@ void shell_release(void)
 }
 
 #ifdef HORIZON_WIIU_HOSTED
+/* Cafe network bridge used by the existing authenticated LAN service. */
+int32_t horizon_wiiu_assigned_ipv4(uint32_t *out)
+{
+   return NNResult_IsSuccess(ACGetAssignedAddress(out)) ? 0 : -1;
+}
+
 /* Both front ends use this one application pump, on the same thread. */
 int32_t horizon_wiiu_app_is_running(void)
 {

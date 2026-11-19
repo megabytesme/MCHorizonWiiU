@@ -10,9 +10,8 @@ structure](docs/catalog.md), the [launcher feature matrix](docs/launcher-feature
 The [hosted game bridge contract](wiiu/pregame/INTEGRATION.md) covers the first
 combined RPX.
 
-The two build targets produce a standalone Horizon Night launcher and the
-standalone native game. They have separate build and acceptance records. The
-launcher shows Play as unavailable until the real game is integrated.
-An explicit Cemu fixture build exercises the hosted mock session.
-The catalog is an unsigned local release recipe. Use the accompanying pinned
-inputs and build records to verify what went into the packages.
+The combined build starts in Horizon Night and runs the actual Cafe game in
+one RPX. Start Game uses an installed Horizon 26.3 preparation. Standalone
+Night, standalone game, and the mock test fixture remain diagnostic targets.
+Each package has its own build and acceptance record. The local catalogs
+record hashes and compatibility. Publisher signing is pending.

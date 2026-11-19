@@ -16,8 +16,8 @@ CafeOS-native services for those boundaries.
 | `patches/<revision>/` | Two binary-safe Horizon deltas and a separate diagnostic patch | Smaller reviewed upstream submissions and formal patch releases |
 | `tools/` | Patch regeneration, Cafe input inventory, public-tree and native packaging checks | Publisher candidate automation |
 | `wiiu/builder/` | Reusable Python core, source assembler, native builder, thin CLI and host tests | Desktop front end and toolchain provisioning |
-| `wiiu/pregame/` and `wiiu/host/` | Official Night UI, hosted session contract and one ProcUI/GX2 host | Borrowed real-game renderer, readiness and save acknowledgement |
-| `wiiu/game-bridge/` | Original standalone Cafe client entry and build glue | Fallible game entry and explicit hosted save/teardown |
+| `wiiu/pregame/` and `wiiu/host/` | Official Night UI, shared ProcUI/GX2 host and borrowed game renderer | Physical foreground and repeated-world acceptance |
+| `wiiu/game-bridge/` | Original standalone Cafe entry, fallible hosted entry and explicit save barrier | Physical and repeated-session validation |
 | Wii U platform modules | Tracked renderer, input, audio, networking, filesystem, entropy and standard-library adapters | Independently distributed dependency snapshots after review |
 | `.github/workflows/` | Read-only compatibility and host checks | Release and hardware acceptance automation |
 
@@ -69,3 +69,8 @@ Build and Cemu records describe exact RPX hashes. Reconstructed source,
 successful compilation, Cemu behavior and physical acceptance are separate
 evidence. Previous hardware tests remain attached to their original RPX.
 The current catalog has no signing trust root.
+
+The [combined recipe](../catalog/hosted-v1.json) adds client version 0.5.0
+on top of the unchanged standalone recipe and pinned workspace overlay.
+It verifies a separate host delta, Horizon patch and final source tree.
+The historical standalone packages keep their own hashes and acceptance.
