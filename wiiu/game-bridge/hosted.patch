@@ -21,7 +21,7 @@ index e56f03cad0b9d33e2b7403d7e61f9de834a7b4d1..b7ac7e82e7190c6efb1a438e065a8d18
  if(HORIZON_WIIU_TRACE_VPAD_INPUT)
     target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
 diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
-index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..26c4136f1a4ed7337e7f850cd2038bab0b00b9d3 100644
+index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..4adfde80f9ba8889dd009ac74d5e3bc166f13c0b 100644
 --- a/wiiu/loading_app/src/lib.rs
 +++ b/wiiu/loading_app/src/lib.rs
 @@ -31,6 +31,7 @@ unsafe extern "C" {
@@ -97,8 +97,8 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..26c4136f1a4ed7337e7f850cd2038bab
              }
  
 +            let fresh_buttons = fresh_sample.is_some() && !terminal_error;
-+            let confirm_held = pad.buttons & 1 != 0;
-+            let cancel_held = pad.buttons & 2 != 0;
++            let confirm_held = pad.held(horizon_client::gamepad::Button::East); // Wii U A
++            let cancel_held = pad.held(horizon_client::gamepad::Button::South); // Wii U B
 +            let retry_save = fresh_buttons && confirm_held && !hosted_confirm_held;
 +            let cancel_startup = fresh_buttons && cancel_held && !hosted_cancel_held;
 +            if fresh_buttons {

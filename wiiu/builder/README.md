@@ -34,6 +34,27 @@ To assemble the traced world-reopen source, pass `--diagnostic` and a new
 output path. The default launcher leaves game launch unavailable. `build --fixture`
 packages the separate `HorizonLauncher-Night-Fixture` for lifecycle tests.
 
+## Unified Horizon Night and game
+
+The hosted recipe extends the exact standalone assembly with a pinned
+Horizon-source patch and Cafe bridge delta. Make a clean local Linux checkout
+of the integration branch before building. The combined build emits
+`HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and a hash-checked build record.
+
+```sh
+python3 -B wiiu/builder/build.py build-hosted --assembly "$scratch/stable" \
+  --inputs "$inputs" --output "$scratch/hosted"
+# Optional stable compiler mount for comparisons between build directories.
+bash tools/build_cafe_game_isolated.sh --hosted "$scratch/hosted-rebuild" \
+  --assembly "$scratch/stable" --inputs "$inputs"
+```
+
+`build-hosted` accepts the same optional verified private resource inventory
+arguments as `build-game`. The compiled packages contain no runtime resource
+bytes. Run the combined RPX in the NSS-patched Cemu interpreter with a fresh
+portable SD under `wiiu/apps/HorizonWiiU` and a complete prepared cache there.
+The wrapper requires unprivileged Linux mount namespaces.
+
 ## Standalone native game
 
 Create a private input directory with the verified `winit/`, `ring/`, `png/`,

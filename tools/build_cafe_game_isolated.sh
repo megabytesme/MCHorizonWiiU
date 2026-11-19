@@ -2,8 +2,14 @@
 # Give independent build directories the same compiler-visible path.
 set -euo pipefail
 
+target=build-game
+if [[ "${1:-}" == --hosted ]]; then
+    target=build-hosted
+    shift
+fi
+
 if (( $# < 2 )); then
-    echo "Usage: $0 <build-directory> --assembly <path> --inputs <path> [build-game options]" >&2
+    echo "Usage: $0 [--hosted] <build-directory> --assembly <path> --inputs <path> [build-game options]" >&2
     exit 2
 fi
 
@@ -34,10 +40,11 @@ record=$(
         mount --bind -- "$1" "$2"
         workspace=$2
         builder=$3
-        shift 3
-        python3 -B "$builder" build-game --output "$workspace" "$@" |
+        target=$4
+        shift 4
+        python3 -B "$builder" "$target" --output "$workspace" "$@" |
             awk "{ if (NR > 1) print previous > \"/dev/stderr\"; previous=\$0 } END { print previous }"
-    ' -- "$destination" "$workspace" "$project/wiiu/builder/build.py" "$@"
+    ' -- "$destination" "$workspace" "$project/wiiu/builder/build.py" "$target" "$@"
 )
 if [[ "$record" != "$workspace/"*/build-record.json ]]; then
     echo "The builder did not emit a verified record." >&2

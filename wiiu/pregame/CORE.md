@@ -8,8 +8,8 @@ membership and action availability before dispatching each press or tap.
 
 The Cafe host owns one ProcUI pump, WHB GX2 initialization, and the display
 targets. The host borrows `Launcher::live_driver` for a foreground gameplay
-frame. Launcher navigation receives input during shell frames. The real
-adapter will receive typed native game input during its live frames. On
+frame. Launcher navigation receives input during shell frames. The hosted
+adapter runs the original typed native game input and frame loop in place. On
 foreground loss, the session releases foreground-only resources before the
 host acknowledges release. The next acquire uses fresh targets and neutral
 input evidence. The prototype renderer is also used for the fixture's live
@@ -27,6 +27,7 @@ single `SessionDriver` that owns its startup work and any partial resources.
 | Preparing | Backend reports ready | Live |
 | Preparing | Cancel or startup error | Stop, drain, drop, then show Play or the startup error |
 | Live | Host action or game quit request | Saving |
+| Live | Borrowed Cafe game loop returns a verified save/release or exit result | Released, then Play or an error |
 | Saving | Save or disconnect confirmed | Stop, drain, drop, then show Play |
 | Saving | Backend reports failure | Save failed, with retry available |
 | Save failed | Retry | Saving |

@@ -51,7 +51,7 @@ fn run(player: &str) -> i32 {
     let mut host = LoadingHost::new(&mut presenter);
     host.hosted = true;
     host.pad_blocked_until_neutral = true;
-    startup_report!("hosted game entry");
+    unsafe { super::OSReport(c"Horizon Wii U startup: hosted game entry\n".as_ptr()) };
     let outcome = horizon_client::entry::run_hosted_cafe(&mut host, &resources(), player);
     if host.hosted_exit_save_failed {
         return OS_SAVE_FAILED;

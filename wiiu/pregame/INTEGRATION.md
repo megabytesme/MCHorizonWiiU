@@ -1,117 +1,64 @@
-# Connecting the native Horizon client
+# Native Horizon Night handoff
 
-The launcher side owns the hosted lifecycle. The explicit Night fixture
-runs `MockFactory`. The default package leaves game launch unavailable.
-Connect a real `SessionFactory` after the native game
-branch publishes a reviewed game pin and save/reopen result. Build and test
-the bridge in a fresh checkout with scratch worlds and privately prepared
-resources.
+The combined RPX starts in Horizon Night with one C owner of ProcUI and WHB.
+The game loop and shell run on the same Cafe thread. The standalone recipe
+retains the original entrypoint and the world-reopening instrumentation
+remains a separate opt-in patch.
 
-## Game bridge changes required
+## Ownership and execution
 
-The standalone game recipe pins `1a0a2948c33d11744eb403247cb566b0aa3ee858`.
-Use the assembled source to review and implement the following changes.
+1. The launcher checks the installed preparation manifest for Horizon 26.3.
+   The previous instance directory remains the app root. The game opens its
+   original settings and uses the offline profile selected in Night.
+2. On Start Game, the shell releases its GX2 HUD and CPU vertex storage.
+   The game constructs its original GX2 presenter, resource loader and native
+   game session. The launcher retains its small logical view and preferences.
+3. The game polls the same application ProcUI pump. The borrowed native loop
+   dispatches the original VPAD state, calibrated touch, USB keyboard and
+   mouse, and CafeOS keyboard results. On release it neutralizes input before
+   the shared host acknowledges foreground release. It obtains current WHB
+   surfaces again after reacquisition.
+4. Horizon's normal world and server menus remain in the game's UI. Rendering,
+   world generation, gameplay settings, and the existing authenticated LAN
+   Agent Control stay with Horizon. B is interpreted by the active game while
+   it owns input.
+5. The original Save & Quit operation requests the hosted close barrier.
+   Pending saves keep polling and a failed attempt retains its session and
+   shows an error. A retries the retained save stage. Persistent writer or
+   server errors can still require OS exit, which records the failure.
+   Game shutdown clears input and closes the session. Rust drops Game, joins
+   the screenshot encoder and loader, and drops the borrowed presenter before
+   the next launcher frame. Night rebuilds its HUD after it regains foreground.
 
-1. **Fallible hosted entry.** The existing `entry::main_with_cafe_host` uses
-   `main_with_runner`, which can call `std::process::exit` on error. Expose
-   a host entry that returns errors and separates app-wide entropy,
-   allocator, logging, hooks and registration from per-session startup.
-   Consume the explicit `LaunchConfig` for the prepared resources, game
-   directory, profile and local-world ID or server endpoint. Keep
-   process-global arguments, logging and paths consistent across sessions.
-   If any existing path still depends on the working directory, resolve or
-   scope it before workers start and keep private app data outside the
-   resource cache. Inspect `crates/horizon-client/src/entry.rs` in the assembled game tree.
-2. **Retain an owned startup driver.** Adapt `CafeLoadingSession` and
-   `start_pending_game`. The driver must retain Loading and any
-   `CafeGameSession` created while opening a world or server. Poll the
-   existing loading work and report actual progress where available. Signal
-   `Ready` only when the game can take over rendering and input. Review the
-   readiness boundary around `world_loading_complete` and the first
-   successfully presented frame. Stop and join partial work on cancel or
-   failure, including the case where a worker completes after cancellation.
-   See `crates/horizon-client/src/game.rs` in the assembled tree and the
-   [existing host loop](../game-bridge/src/lib.rs).
-3. **Keep one native host.** Reuse the presenter's borrowed GX2 frame/backend
-   and input adapters. Use the launcher's one ProcUI pump and WHB
-   initialization. Split preparation, tick, input and presentation out of the
-   standalone Loading loop. Forward typed VPAD, touch, keyboard and mouse
-   input from the host only to the owner of the foreground frame. Never
-   interpret a regular in-game B press as a launcher quit request. On
-   background release, neutralize devices and drain any foreground-dependent
-   GPU work before acknowledging ProcUI. Reacquire dimensions and current
-   surfaces after WHB restores them. Use one AX owner. Stop callbacks and
-   free voices before release, and call `AXQuit` only if the session
-   acquired AX. Review process and foreground heap budgets across multiple
-   session cycles.
-4. **Expose a durable save outcome.** `CafeGameSession::frame` returns
-   `Ok(false)` while `pending_save` exists, and `shutdown` logs failures
-   without returning them. Neither provides the completion signal for this
-   host. Reuse the game's `begin_closing_save` and `poll_closing_save`
-   barrier, and export an explicit pending/succeeded/failed result for the
-   hosted Save & Quit path. Preserve the game's existing integrated-server
-   stop, remote disconnect, metadata updates, player writes, chunk writes,
-   synchronization and world lock. Route the game's own Save & Quit action
-   to the hosted adapter so the launcher can take over after cleanup. The
-   game layer must define a safe retry of a partially completed save.
-   Retain the same state and world reservation after a failed save. Surface
-   a typed error that the launcher can present without exposing credentials
-   or paths. See `crates/horizon-client/src/game/saving.rs` in the assembled tree.
-5. **Separate drain from successful save.** Stop and join loading, chunk,
-   save, integrated server, networking, render upload and screenshot work.
-   Release input capture and audio, drain GX2 work, then destroy session GPU
-   resources and drop the game and its world reservation. Emit `poll_stop`
-   success only when Drop is safe and callbacks can no longer touch the
-   session. The launcher does not render Play before this point. On
-   CafeOS exit, settle the current phase using `shutdown_for_exit`. A
-   forced-exit error must be observable and still arrange cleanup. Keep
-   the ProcUI save-ready notification distinct from world-save success.
-   Check callback ordering, the time available to settle an OS exit, and
-   HOME release/reacquire on hardware before enabling the real driver.
+Loading can be cancelled with B during the initial resource load. Quitting
+from the original title also returns to Night. The host handles a CafeOS exit
+separately and reports any save failure on that path. The hosted entry
+does not use the standalone process-exit error branch. Mod hooks, logger
+and other entry setup are installed once, with the normal resource and
+settings paths used during each new game session.
 
-## Instance, account, settings and Agent Control
+## Pinned build and data
 
-- Resolve local world IDs inside the explicit instance root. Validate
-  server addresses and ports. Validate the prepared resource directory,
-  expected game version and exact private manifest digest before use.
-  `PreparedResources` carries the expected digest. The mock neither reads
-  resource bytes nor asserts that a configured directory is verified. Reuse
-  the prepared cache, and stage mutable settings and saves separately.
-- The current UI selects two built-in offline identities. A future profile
-  service supplies saved names and opaque account IDs. Resolve entitlement
-  and deliver the selected game identity in memory. Use the existing
-  device-code and refresh-vault interfaces. Keep request and refresh
-  credentials out of launch args, logs, instance data and resource
-  manifests. Use session-only Microsoft sign-in until a protected vault is
-  available. Sign-out must revoke the launcher session and remove its
-  protected refresh record.
-- Load settings via the host before constructing `Launcher`. Persist input
-  changes through a dedicated settings store with atomic replacement.
-  Each session gets a settings snapshot. `touch_navigation` is a shell
-  preference. Feed gameplay's own typed input and game settings to its
-  adapter.
-- Keep the hardware-tested game MCP in place. A future app-owned listener
-  publishes launcher tools in its own scope. Once the game enters Live,
-  it can register existing game tools under an opaque generation handle.
-  Withdraw the registration and drain in-flight requests before game
-  teardown. Preserve authenticated pairing across restarts in a reviewed
-  store. Coordinate the transition to one endpoint before replacing the
-  standalone transport. Standard MCP HTTP and optional Aroma discovery
-  can follow the integrated driver.
+The [hosted recipe](../../catalog/hosted-v1.json) checks the exact stable game
+tree after the archived workspace overlay. It adds the Horizon-source patch,
+the port glue patch and the port-owned bridge source, then verifies the final
+staged Git tree. Builder provenance records the shell source hashes separately.
+Use the [builder runbook](../builder/README.md) for build and local test commands.
 
-## Packaging and acceptance
+The fixed active app root is `/vol/external01/wiiu/apps/HorizonWiiU`. The
+prepared cache is `.local/horizon-client/26.3` inside that root. The installed
+manifest supplies the game version at startup. The original loader still
+validates and reads the actual preparation. A private builder/resource
+inventory can record complete file integrity for a given test or artifact.
+Game settings, logs and saves belong to the app root. Use a fresh portable
+Cemu SD directory and private lawful copies when testing.
 
-The [compatibility recipe](../../catalog/compatibility-v1.json) pins the
-source and inputs for the standalone Night and game packages. The first
-combined RPX needs a reviewed game revision, a declared launcher/game
-compatibility pair, verified Cafe toolchain and overlays, and a native link
-that uses one process host for both components. Private runtime resources
-are prepared and verified separately from the packages.
+## Integration acceptance
 
-Validate a real adapter first with a fresh private world. Start, edit an
-observable block, Save & Quit, verify completion and release, reopen the
-same world and verify the edit, then repeat. Run analogous local failure
-and remote disconnect checks. Record the exact artifact hash and separate
-host, Cemu and hardware acceptance. Physical saved-world reopening remains
-with the native game investigation. This branch provides mock lifecycle
-evidence and a standalone Night package.
+Validate real world entry, save completion, file flush and reopening the same
+scratch world. Verify normal exit, resource failure, loading cancellation,
+disconnect and a repeated session. Record the RPX and emulator hashes and
+explicitly identify the game settings used. Confirm repeated allocator usage,
+AX and input cleanup, HOME release and foreground reacquisition, and CafeOS
+exit separately on a physical Wii U before deployment. The launcher feature
+matrix records the outstanding launcher services.
