@@ -25,12 +25,13 @@ def main(argv=None):
             command.add_argument("--fixture", action="store_true", help="build a separate hosted demo for Cemu testing")
         if name == "assemble":
             command.add_argument("--diagnostic", action="store_true")
-    game = commands.add_parser("build-game")
-    game.add_argument("--assembly", type=Path, required=True)
-    game.add_argument("--inputs", type=Path, required=True)
-    game.add_argument("--output", type=Path, required=True)
-    game.add_argument("--resources", type=Path)
-    game.add_argument("--resource-manifest", type=Path)
+    for name in ("build-game", "build-hosted"):
+        game = commands.add_parser(name)
+        game.add_argument("--assembly", type=Path, required=True)
+        game.add_argument("--inputs", type=Path, required=True)
+        game.add_argument("--output", type=Path, required=True)
+        game.add_argument("--resources", type=Path)
+        game.add_argument("--resource-manifest", type=Path)
     resources = commands.add_parser("inventory-resources")
     resources.add_argument("root", type=Path)
     resources.add_argument("--output", type=Path, required=True)
@@ -45,14 +46,15 @@ def main(argv=None):
             print(core.inspect_resources(args.root, args.output))
         else:
             recipe, fingerprint = source.read_recipe(args.manifest)
-            if args.command == "build-game":
+            if args.command in ("build-game", "build-hosted"):
                 if bool(args.resources) != bool(args.resource_manifest):
                     raise ValueError("provide both --resources and --resource-manifest")
                 asset_hash = None
                 if args.resources:
                     asset_hash = native.verify_resources(args.resources, args.resource_manifest)
                 print(native.build_game(recipe, fingerprint, args.assembly.resolve(),
-                                        args.inputs.resolve(), args.output, asset_hash))
+                                        args.inputs.resolve(), args.output, asset_hash,
+                                        integrated=args.command == "build-hosted"))
             elif args.command == "assemble":
                 print(source.assemble(args.source, args.revision, recipe, fingerprint,
                                       args.output, args.diagnostic))

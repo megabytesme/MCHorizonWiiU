@@ -10,4 +10,4 @@ publish = false
 path = "src/lib.rs"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(horizon_wiiu_cafe)', 'cfg(horizon_wiiu_pregame_fixture)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(horizon_wiiu_cafe)', 'cfg(horizon_wiiu_pregame_fixture)', 'cfg(horizon_wiiu_hosted)'] }

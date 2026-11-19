@@ -43,6 +43,8 @@ pub enum SavePoll {
 pub enum LiveEvent {
     Continue,
     QuitRequested,
+    /// The borrowed native loop returned only after save and resource drain.
+    Ended(ReturnTo),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,11 +172,11 @@ impl<D: SessionDriver> HostedSession<D> {
                 PreparePoll::Ready => self.status = SessionStatus::Live,
                 PreparePoll::Failed(error) => self.stop(ReturnTo::StartError(error)),
             },
-            SessionStatus::Live => {
-                if self.driver.poll_live() == LiveEvent::QuitRequested {
-                    self.save_and_quit();
-                }
-            }
+            SessionStatus::Live => match self.driver.poll_live() {
+                LiveEvent::Continue => {}
+                LiveEvent::QuitRequested => self.save_and_quit(),
+                LiveEvent::Ended(outcome) => self.status = SessionStatus::Released(outcome),
+            },
             SessionStatus::Saving => match self.driver.poll_save() {
                 SavePoll::Pending => {}
                 SavePoll::Complete => self.stop(ReturnTo::Saved),

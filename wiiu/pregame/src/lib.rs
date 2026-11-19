@@ -9,7 +9,9 @@ pub mod session;
 mod cafe;
 #[cfg(horizon_wiiu_cafe)]
 pub mod canvas;
-#[cfg(horizon_wiiu_cafe)]
+#[cfg(horizon_wiiu_hosted)]
+mod hosted;
+#[cfg(all(horizon_wiiu_cafe, not(horizon_wiiu_hosted)))]
 mod mock;
 
 pub const UP: u32 = 1;

@@ -1,0 +1,177 @@
+diff --git a/wiiu/loading_app/CMakeLists.txt b/wiiu/loading_app/CMakeLists.txt
+index e56f03cad0b9d33e2b7403d7e61f9de834a7b4d1..b7ac7e82e7190c6efb1a438e065a8d18815e3e3c 100644
+--- a/wiiu/loading_app/CMakeLists.txt
++++ b/wiiu/loading_app/CMakeLists.txt
+@@ -179,13 +179,16 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../loading_host"
+ 
+ add_executable(horizon_wiiu_loading_app
+    "${WUT_CRT0_OBJECT}"
+-   main.c
+    memory.c
+    ../audio/audio.c
+    ../platform/src/keyboard_bridge.c
+    ../platform/src/mouse_bridge.c
+    ../platform/src/vpad_bridge.c
+    "${HORIZON_WIIU_WINIT_TV_SIZE_SOURCE}")
++if(NOT HORIZON_WIIU_HOSTED_SHELL)
++   message(FATAL_ERROR "Set HORIZON_WIIU_HOSTED_SHELL to the verified Night source")
++endif()
++add_subdirectory("${HORIZON_WIIU_HOSTED_SHELL}" "${CMAKE_CURRENT_BINARY_DIR}/night")
+ target_include_directories(horizon_wiiu_loading_app PRIVATE ../audio ../platform/src)
+ if(HORIZON_WIIU_TRACE_VPAD_INPUT)
+    target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..711ff0be8997e45644b4e75e378d93141850a069 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -31,6 +31,7 @@ unsafe extern "C" {
+     fn OSGetThreadAffinity(thread: *mut std::ffi::c_void) -> u32;
+     fn horizon_wiiu_app_is_running() -> i32;
+     fn horizon_wiiu_app_is_focused() -> i32;
++    fn horizon_wiiu_hosted_ack_release();
+     fn horizon_wiiu_swkbd_input_occupied() -> i32;
+     fn horizon_swkbd_request(initial_text: *const u16, max_utf16_units: i32) -> i32;
+     fn horizon_swkbd_is_open() -> i32;
+@@ -58,6 +59,8 @@ const REMOTE_SERVER_START_FAILED: i32 = 6;
+ static CAFE_ALLOCATOR: horizon_client_platform::cafe_memory::MeasuredSystem =
+     horizon_client_platform::cafe_memory::MeasuredSystem;
+ 
++mod hosted;
++
+ const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
+ // Set at compile time only for diagnosing host-loop stalls or input delays.
+ const VERBOSE_HOST_TRACE: bool = match option_env!("HORIZON_WIIU_VERBOSE_HOST_TRACE") {
+@@ -439,6 +442,9 @@ struct LoadingHost<'a> {
+     failure: Option<String>,
+     local_world_start_failed: bool,
+     remote_server_start_failed: bool,
++    hosted: bool,
++    hosted_saved: bool,
++    hosted_exit_save_failed: bool,
+ }
+ 
+ impl<'a> LoadingHost<'a> {
+@@ -470,6 +476,9 @@ impl<'a> LoadingHost<'a> {
+             failure: None,
+             local_world_start_failed: false,
+             remote_server_start_failed: false,
++            hosted: false,
++            hosted_saved: false,
++            hosted_exit_save_failed: false,
+         }
+     }
+ 
+@@ -902,6 +911,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         let mut no_pending_game_reported = false;
+         let mut first_game_frame_started = false;
+         let mut first_game_frame_returned = false;
++        let mut hosted_save_failed = false;
++        let mut hosted_confirm_held = false;
++        let mut hosted_cancel_held = true;
+         loop {
+             host_loop_iteration = host_loop_iteration.saturating_add(1);
+             let now = Instant::now();
+@@ -976,6 +988,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 );
+             }
+             let focused = self.update_focus(session, game_session.as_mut());
++            if self.hosted && !focused {
++                // The app host waits until the game has relinquished input.
++                unsafe { horizon_wiiu_hosted_ack_release() };
++            }
+             if trace_this_iteration {
+                 log::info!(
+                     "Horizon Cafe host loop trace iteration={} phase=focus.end focused={}",
+@@ -1183,6 +1199,22 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 trace_vpad = false;
+             }
+ 
++            let fresh_buttons = fresh_sample.is_some() && !terminal_error;
++            let confirm_held = pad.buttons & 1 != 0;
++            let cancel_held = pad.buttons & 2 != 0;
++            let retry_save = fresh_buttons && confirm_held && !hosted_confirm_held;
++            let cancel_startup = fresh_buttons && cancel_held && !hosted_cancel_held;
++            if fresh_buttons {
++                hosted_confirm_held = confirm_held;
++                hosted_cancel_held = cancel_held;
++            }
++            if self.hosted && game_session.is_none()
++                && cancel_startup && session.hosted_can_cancel()
++            {
++                startup_report!("hosted loading cancelled");
++                break;
++            }
++
+             let swkbd_occupied = unsafe { horizon_wiiu_swkbd_input_occupied() != 0 };
+             let swkbd_open = unsafe { horizon_swkbd_is_open() != 0 };
+             let mut native_input_this_frame =
+@@ -1439,7 +1471,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     }
+                     let handoff_started_at = Instant::now();
+                     match session.start_pending_game() {
+-                        Ok(Some(game)) => {
++                        Ok(Some(mut game)) => {
++                            if self.hosted {
++                                game.enable_hosted_return();
++                            }
+                             self.button_history.clear();
+                             self.pad_blocked_until_neutral = true;
+                             log::info!(
+@@ -1496,6 +1531,30 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 );
+             }
+ 
++            if self.hosted && let Some(game) = &mut game_session
++                && game.hosted_save_pending()
++            {
++                if !hosted_save_failed || (retry_save && !native_input_this_frame) {
++                    match game.poll_hosted_save() {
++                        Ok(true) => {
++                            self.hosted_saved = true;
++                            startup_report!("hosted save barrier completed");
++                            break;
++                        }
++                        Ok(false) => { hosted_save_failed = false; }
++                        Err(error) => {
++                            hosted_save_failed = true;
++                            log::error!("Cafe hosted save remains incomplete: {error}");
++                            startup_report!("hosted save barrier failed");
++                        }
++                    }
++                }
++                if let Err(error) = game.draw_hosted_save(self.presenter, hosted_save_failed) {
++                    log::error!("Cafe hosted save screen: {error}");
++                }
++                std::thread::sleep(Duration::from_millis(16));
++                continue;
++            }
+             if trace_draw {
+                 startup_report!("loading first draw begin");
+             }
+@@ -1673,10 +1732,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         );
+         // Every way out of the host loop releases touch and controller edges
+         // while the Loading session and its event loop are still alive.
+-        if let Some(game) = &mut game_session {
+-            game.shutdown();
++        if self.hosted {
++            self.release_on_exit(session, game_session.as_mut());
++            if let Some(game) = &mut game_session {
++                if let Err(error) = game.shutdown_hosted() {
++                    log::error!("Cafe hosted shutdown save failed: {error}");
++                    self.hosted_exit_save_failed = true;
++                }
++            }
++            drop(game_session);
++            session.drain_hosted()?;
++            startup_report!("hosted game and loading workers released");
++        } else {
++            if let Some(game) = &mut game_session {
++                game.shutdown();
++            }
++            self.release_on_exit(session, game_session.as_mut());
+         }
+-        self.release_on_exit(session, game_session.as_mut());
+         Ok(())
+     }
+ }

@@ -172,6 +172,8 @@ def verify_outputs(record, directory):
         raise ValueError("unsupported build record")
     if record.get("kind") == "wiiu-native-game-build":
         names = ["HorizonWiiU-Game.rpx", "HorizonWiiU-Game.wuhb"]
+    elif record.get("kind") == "wiiu-hosted-game-build":
+        names = ["HorizonWiiU.rpx", "HorizonWiiU.wuhb"]
     elif record.get("kind") == "wiiu-pregame-build":
         theme = record.get("theme", "preview")
         if not isinstance(theme, str) or theme not in THEMES:

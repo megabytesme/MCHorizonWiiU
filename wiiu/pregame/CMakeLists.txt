@@ -12,7 +12,13 @@ find_program(CARGO_WIIU_EXECUTABLE cargo-wiiu REQUIRED)
 find_program(OBJCOPY_EXECUTABLE powerpc-eabi-objcopy REQUIRED)
 find_program(READRPL_EXECUTABLE readrpl REQUIRED)
 find_program(WUHBTOOL_EXECUTABLE wuhbtool REQUIRED)
-add_subdirectory(../gx2_hud gx2_hud)
+if(NOT TARGET horizon_gx2_hud)
+   add_subdirectory(../gx2_hud gx2_hud)
+endif()
+get_target_property(hud_dir horizon_gx2_hud BINARY_DIR)
+if(TARGET horizon_wiiu_loading_app)
+   set(hosted_cfg --cfg horizon_wiiu_hosted)
+endif()
 
 set(package_name HorizonLauncher-Night)
 set(app_title "Horizon Wii U")
@@ -31,20 +37,32 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS Cargo.toml)
 set(shell_object "${CMAKE_CURRENT_BINARY_DIR}/shell.o")
 add_custom_command(OUTPUT "${shell_object}"
    COMMAND "${CMAKE_COMMAND}" -E env  "CARGO_PKG_VERSION=${launcher_version}" "${CAFE_RUSTC}" --target powerpc-nintendo-cafe --edition 2021
-      --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe ${fixture_cfg}
+      --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe ${fixture_cfg} ${hosted_cfg}
       -C opt-level=s -C panic=abort -C codegen-units=1 -D warnings
       -o "${shell_object}" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
-   DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs "${CAFE_RUSTC}" ${theme_inputs}
+   DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs src/hosted.rs "${CAFE_RUSTC}" ${theme_inputs}
    VERBATIM)
 
 set(shader_object "${CMAKE_CURRENT_BINARY_DIR}/pregame_gsh.o")
 add_custom_command(OUTPUT "${shader_object}"
-   COMMAND "${CMAKE_COMMAND}" -E copy gx2_hud/hud.gsh pregame.gsh
+   COMMAND "${CMAKE_COMMAND}" -E copy "${hud_dir}/hud.gsh" pregame.gsh
    COMMAND "${OBJCOPY_EXECUTABLE}" -I binary -O elf32-powerpc -B powerpc:common
       pregame.gsh pregame_gsh.o
-   DEPENDS horizon_gx2_hud_shader "${CMAKE_CURRENT_BINARY_DIR}/gx2_hud/hud.gsh"
+   DEPENDS horizon_gx2_hud_shader "${hud_dir}/hud.gsh"
    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" VERBATIM)
 set_source_files_properties("${shell_object}" "${shader_object}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+
+if(TARGET horizon_wiiu_loading_app)
+   add_custom_target(horizon_night_objects DEPENDS "${shell_object}" "${shader_object}")
+   set_source_files_properties("${shell_object}" "${shader_object}"
+      TARGET_DIRECTORY horizon_wiiu_loading_app PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+   add_dependencies(horizon_wiiu_loading_app horizon_night_objects)
+   target_sources(horizon_wiiu_loading_app PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/../host/cafe_host.c" "${shell_object}" "${shader_object}")
+   target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_HOSTED=1)
+   target_link_libraries(horizon_wiiu_loading_app PRIVATE horizon_gx2_hud)
+   return()
+endif()
 
 add_executable(horizon_wiiu_pregame ../host/cafe_host.c "${shell_object}" "${shader_object}")
 target_compile_options(horizon_wiiu_pregame PRIVATE -Wall -Wextra -Werror)

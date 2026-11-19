@@ -13,6 +13,14 @@
 enum { VIEW_WIDTH = 1280, VIEW_HEIGHT = 720, VPAD_CAPACITY = 16 };
 typedef struct LauncherSample { uint32_t buttons, touch, x, y; } LauncherSample;
 static HorizonGx2Hud *view;
+#ifdef HORIZON_WIIU_HOSTED
+static bool game_focused;
+static bool game_release_pending;
+static bool app_exiting;
+extern void horizon_wiiu_app_entropy_first(void);
+extern void horizon_wiiu_memory_init(void);
+extern void horizon_wiiu_memory_report_display_surfaces(void);
+#endif
 extern const unsigned char _binary_pregame_gsh_start[];
 extern int32_t horizon_pregame_run(void);
 
@@ -34,9 +42,17 @@ static void saves_ready(void)
 
 int32_t shell_process(void)
 {
+#ifdef HORIZON_WIIU_HOSTED
+   if (app_exiting)
+      return 2;
+#endif
    switch (ProcUIProcessMessages(TRUE)) {
       case PROCUI_STATUS_IN_FOREGROUND: return 1;
-      case PROCUI_STATUS_EXITING: return 2;
+      case PROCUI_STATUS_EXITING:
+#ifdef HORIZON_WIIU_HOSTED
+         app_exiting = true;
+#endif
+         return 2;
       case PROCUI_STATUS_RELEASE_FOREGROUND: return 3;
       default:
          OSSleepTicks(OSMillisecondsToTicks(16));
@@ -48,6 +64,36 @@ void shell_release(void)
 {
    ProcUIDrawDoneRelease();
 }
+
+#ifdef HORIZON_WIIU_HOSTED
+/* Both front ends use this one application pump, on the same thread. */
+int32_t horizon_wiiu_app_is_running(void)
+{
+   const int32_t status = shell_process();
+   game_focused = status == 1;
+   game_release_pending = status == 3;
+   return status != 2;
+}
+
+int32_t horizon_wiiu_app_is_focused(void)
+{
+   return game_focused;
+}
+
+void horizon_wiiu_hosted_ack_release(void)
+{
+   if (game_release_pending) {
+      game_release_pending = false;
+      shell_release();
+   }
+}
+
+void shell_destroy_view(void)
+{
+   horizon_gx2_hud_destroy(view);
+   view = NULL;
+}
+#endif
 
 static uint32_t map_buttons(uint32_t buttons)
 {
@@ -135,6 +181,10 @@ bool shell_present(const HorizonHudVertex *tv_vertices, uint32_t tv_count, uint3
 
 int main(void)
 {
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_wiiu_app_entropy_first();
+   horizon_wiiu_memory_init();
+#endif
    ProcUIInit(saves_ready);
    if (!WHBGfxInit()) {
       shell_trace("gx2.init_failed");
@@ -142,6 +192,9 @@ int main(void)
       return 1;
    }
 
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_wiiu_memory_report_display_surfaces();
+#endif
    const int32_t result = horizon_pregame_run();
    horizon_gx2_hud_destroy(view);
    shell_trace("view.released");

@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 from core import (ROOT, TARGET, artifacts, digest, directory_inventory, file_digest,
-                  git, inspect_toolchain, isolated, parse_json, program, run,
+                  client_input, fields, git, inspect_toolchain, isolated, parse_json, pattern, program, run,
                   write_record, discard_unverified_outputs)
 from source import apply_patch, checked_bytes, staged_tree, verify_assembly
 
@@ -17,6 +17,27 @@ INPUTS_FILE = "catalog/toolchain-cafe-v1.json"
 BRIDGE_FILES = {"lock": "wiiu/game-bridge/offline/Cargo.lock",
                 "tv_size": "wiiu/game-bridge/offline/winit_tv_size.c"}
 GAME_PACKAGES = ["HorizonWiiU-Game.rpx", "HorizonWiiU-Game.wuhb"]
+HOSTED_PACKAGES = ["HorizonWiiU.rpx", "HorizonWiiU.wuhb"]
+HOSTED_SPEC = "catalog/hosted-v1.json"
+HOSTED_BRIDGE = "wiiu/game-bridge/hosted.rs"
+
+
+def hosted_inputs(recipe, recipe_hash):
+    payload = (ROOT / HOSTED_SPEC).read_bytes()
+    spec = parse_json(payload)
+    fields(spec, "schema", "hosted_client", "base_recipe_sha256", "input_tree", "output_tree", "files")
+    if type(spec["schema"]) is not int or spec["schema"] != 1 or spec["base_recipe_sha256"] != recipe_hash:
+        raise ValueError("hosted recipe does not match the standalone pin")
+    pattern(spec["hosted_client"], r"\d+\.\d+\.\d+", "hosted version")
+    for name in ("input_tree", "output_tree"):
+        pattern(spec[name], "[0-9a-f]{40}", name)
+    horizon = f'patches/{recipe["upstream"]["commit"]}/hosted/0001-cafe-hosted-session.patch'
+    files = (horizon, "wiiu/game-bridge/hosted.patch", HOSTED_BRIDGE)
+    fields(spec["files"], *files)
+    for name in files:
+        pattern(spec["files"][name], "[0-9a-f]{64}", "hosted patch hash")
+    return spec, digest(payload), tuple(checked_bytes(ROOT, name, spec["files"][name]) for name in files)
+
 
 
 def inventory_digest(directory):
@@ -80,7 +101,7 @@ def verify_resources(root, manifest):
     return digest(payload)
 
 
-def stage_source(directory, workspace, release_tree, patch):
+def stage_source(directory, workspace, release_tree, patch, hosted=None):
     source = directory / "source"
     stamp = directory / "stage.json"
     # A changed cache is rejected. Allocate a new build root to reconstruct it.
@@ -88,7 +109,8 @@ def stage_source(directory, workspace, release_tree, patch):
         if not stamp.is_file():
             raise ValueError("incomplete staged game source")
         tree = parse_json(stamp.read_bytes())["tree"]
-        if (staged_tree(source) != tree or
+        if ((hosted is not None and tree != hosted[0]["output_tree"]) or
+                staged_tree(source) != tree or
                 git(source, "diff", "--quiet", "--ignore-submodules=all",
                     check=False).returncode or
                 git(source, "ls-files", "--others", "--exclude-standard", "-z").stdout):
@@ -107,7 +129,18 @@ def stage_source(directory, workspace, release_tree, patch):
         git(staged, "read-tree", release_tree)
         git(staged, "checkout-index", "--all", "--index")
         apply_patch(staged, patch)
+        if hosted is not None:
+            spec, _, (horizon, platform, bridge) = hosted
+            if staged_tree(staged) != spec["input_tree"]:
+                raise ValueError("hosted patch preimage does not match")
+            apply_patch(staged, horizon)
+            apply_patch(staged, platform)
+            destination = "wiiu/loading_app/src/hosted.rs"
+            (staged / destination).write_bytes(bridge)
+            git(staged, "add", "--", destination)
         tree = staged_tree(staged)
+        if hosted is not None and tree != hosted[0]["output_tree"]:
+            raise ValueError("hosted patch result does not match")
         staged.rename(source)
     write_record(stamp, {"tree": tree})
     return source, tree
@@ -151,15 +184,20 @@ def write_cargo_inputs(directory, source, inputs, lock, bridge):
     return manifest
 
 
-def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash=None):
+def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash=None, integrated=False):
     workspace = verify_assembly(assembly, recipe, recipe_hash)
     lock, patch, bridge, tools, sysroot = read_native_inputs(recipe, inputs)
+    hosted = hosted_inputs(recipe, recipe_hash) if integrated else None
+    launcher = client_input(recipe) if integrated else None
+    packages = HOSTED_PACKAGES if integrated else GAME_PACKAGES
     settings = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC",
                 "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
     identity = {
         "recipe": recipe_hash, "toolchain": tools, "environment": settings, "workspace_layout": 2,
         "resources": resources_hash, "assembly": str(assembly.resolve()),
     }
+    if hosted:
+        identity.update(hosted_recipe=hosted[1], launcher_files=launcher["files"])
     key = digest(json.dumps(identity, sort_keys=True).encode())
     directory = isolated(build_root) / key
     directory.mkdir(parents=True, exist_ok=True)
@@ -167,9 +205,9 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     lockfile.mkdir()
     record = directory / "build-record.json"
     try:
-        discard_unverified_outputs(directory, record, GAME_PACKAGES)
+        discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
-        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch)
+        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
         manifest = write_cargo_inputs(directory, source, inputs, lock, bridge)
         commands = {name: entry["path"] for name, entry in tools["files"].items()}
         jobs = str(os.cpu_count() or 1)
@@ -203,6 +241,11 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             f"-DCAFEGLSL_COMPILER_EXECUTABLE={commands['glslcompiler']}",
             "-DHORIZON_WIIU_DISABLE_AX_AUDIO=OFF", "-DHORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK=OFF",
         ]
+        if hosted:
+            configure.extend([
+                f"-DHORIZON_WIIU_HOSTED_SHELL={ROOT / 'wiiu/pregame'}",
+                f"-DCAFE_RUSTC={commands['rustc']}",
+            ])
         link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
         run(configure, env)
         run(link, env)
@@ -210,20 +253,33 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             [commands["readrpl"], "-i", str(native / "horizon_wiiu_loading_app.rpx")], text=True)
         if any(name not in imports for name in ("AXInit", "NSSGetRandom", "FSFlushFile")):
             raise ValueError("native game package is missing the expected Cafe imports")
-        shutil.copyfile(native / "horizon_wiiu_loading_app.rpx", directory / GAME_PACKAGES[0])
-        pack = [commands["wuhbtool"], str(directory / GAME_PACKAGES[0]),
-                str(directory / GAME_PACKAGES[1]), "--name=Horizon Wii U Game", "--short-name=Horizon"]
+        if hosted:
+            symbols = subprocess.check_output([commands["powerpc-eabi-nm"], "-g", "--defined-only",
+                str(native / "horizon_wiiu_loading_app.elf")], text=True)
+            for name in ("main", "shell_process", "horizon_pregame_run", "horizon_hosted_game_run"):
+                if sum(line.endswith(f" T {name}") for line in symbols.splitlines()) != 1:
+                    raise ValueError(f"combined executable must define {name} exactly once")
+        shutil.copyfile(native / "horizon_wiiu_loading_app.rpx", directory / packages[0])
+        title = "Horizon Wii U" if hosted else "Horizon Wii U Game"
+        pack = [commands["wuhbtool"], str(directory / packages[0]),
+                str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
         run(pack, env)
-        stage_source(directory, workspace, recipe["native"]["tree"], patch)
-        write_record(record, {
-            "schema": 1, "kind": "wiiu-native-game-build", "recipe_sha256": recipe_hash,
+        stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
+        result = {
+            "schema": 1, "kind": "wiiu-hosted-game-build" if hosted else "wiiu-native-game-build",
+            "recipe_sha256": recipe_hash,
             "recipe": recipe, "assembled_tree": recipe["native"]["tree"], "build_tree": staged,
             "workspace_patch_sha256": lock["workspace_patch_sha256"], "toolchain": tools,
             "toolchain_spec_sha256": recipe["inputs_sha256"], "resources_inventory_sha256": resources_hash,
             "environment": settings, "commands": [cargo, configure, link, pack],
-            "outputs": artifacts(directory, GAME_PACKAGES),
+            "outputs": artifacts(directory, packages),
             "assembly": "passed", "build": "passed", "cemu": "not-run", "hardware": "not-run",
-        })
+        }
+        if hosted:
+            if client_input(recipe) != launcher or hosted_inputs(recipe, recipe_hash) != hosted:
+                raise ValueError("hosted build inputs changed during compilation")
+            result.update(hosted_recipe=hosted[0], hosted_recipe_sha256=hosted[1], launcher=launcher)
+        write_record(record, result)
     finally:
         lockfile.rmdir()
     return record

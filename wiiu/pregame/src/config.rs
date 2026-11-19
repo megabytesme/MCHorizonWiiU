@@ -19,6 +19,7 @@ impl Default for Settings {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorldOrServer<'a> {
+    GameMenu,
     Demo,
     LocalWorld { id: &'a str },
     Server { host: &'a str, port: u16 },

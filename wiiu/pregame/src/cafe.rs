@@ -2,8 +2,13 @@ use core::ffi::{c_char, c_void, CStr};
 use core::ptr::NonNull;
 
 use crate::canvas::{Canvas, Display, Point, Vertex, CAPACITY};
-use crate::config::{Instance, Settings};
+#[cfg(not(horizon_wiiu_hosted))]
+use crate::config::Instance;
+use crate::config::Settings;
+#[cfg(horizon_wiiu_hosted)]
+use crate::hosted::CafeFactory;
 use crate::launcher::{Action, Launcher, Page, Touch, View};
+#[cfg(not(horizon_wiiu_hosted))]
 use crate::mock::MockFactory;
 use crate::session::SessionStatus;
 
@@ -22,6 +27,8 @@ struct Sample {
 extern "C" {
     fn shell_process() -> i32;
     fn shell_release();
+    #[cfg(horizon_wiiu_hosted)]
+    fn shell_destroy_view();
     fn shell_poll_input(samples: *mut Sample) -> i32;
     fn shell_create_view(atlas: *const u8, width: u32, height: u32, capacity: u32) -> bool;
     fn shell_present(
@@ -83,8 +90,7 @@ fn marker(view: View) -> &'static CStr {
     }
 }
 
-#[no_mangle]
-extern "C" fn horizon_pregame_run() -> i32 {
+fn open_view() -> Option<FrameStorage> {
     let atlas = theme::ATLAS;
     if atlas.pixels.len()
         != (atlas.width as usize)
@@ -100,17 +106,36 @@ extern "C" fn horizon_pregame_run() -> i32 {
         }
     {
         trace(c"view.init_failed");
-        return 1;
+        return None;
     }
     let Some(data) =
         NonNull::new(unsafe { calloc(CAPACITY * 2, core::mem::size_of::<Vertex>()) }.cast())
     else {
         trace(c"view.allocation_failed");
+        return None;
+    };
+    Some(FrameStorage(data))
+}
+
+#[no_mangle]
+extern "C" fn horizon_pregame_run() -> i32 {
+    let atlas = theme::ATLAS;
+    let Some(storage) = open_view() else {
         return 1;
     };
-    let storage = FrameStorage(data);
-    let fixture = cfg!(horizon_wiiu_pregame_fixture).then_some(Instance::DEMO);
-    let mut launcher = Launcher::new(MockFactory, fixture, Settings::default());
+    #[cfg(horizon_wiiu_hosted)]
+    let mut storage = storage;
+    #[cfg(not(horizon_wiiu_hosted))]
+    let mut launcher = {
+        let fixture = cfg!(horizon_wiiu_pregame_fixture).then_some(Instance::DEMO);
+        Launcher::new(MockFactory, fixture, Settings::default())
+    };
+    #[cfg(horizon_wiiu_hosted)]
+    let mut launcher = Launcher::new(
+        CafeFactory,
+        crate::hosted::available_instance(),
+        Settings::default(),
+    );
     let mut displayed = None;
     let mut frame = 0_u32;
     loop {
@@ -130,6 +155,25 @@ extern "C" fn horizon_pregame_run() -> i32 {
             }
         }
 
+        #[cfg(horizon_wiiu_hosted)]
+        if let Some(driver) = launcher.live_driver() {
+            unsafe { shell_destroy_view() };
+            drop(storage);
+            trace(c"game.borrowed_foreground");
+            let terminal_save_failure = driver.run();
+            launcher.advance();
+            launcher.input_lost();
+            if unsafe { shell_process() } == 2 {
+                return finish(&mut launcher, if terminal_save_failure { 3 } else { 0 });
+            }
+            let Some(restored) = open_view() else {
+                return finish(&mut launcher, 2);
+            };
+            storage = restored;
+            displayed = None;
+            trace(c"game.returned_foreground");
+            continue;
+        }
         let mut samples = [Sample::default(); 16];
         let count = unsafe { shell_poll_input(samples.as_mut_ptr()) };
         if count < 0 {
@@ -191,7 +235,7 @@ extern "C" fn horizon_pregame_run() -> i32 {
     finish(&mut launcher, 0)
 }
 
-fn finish(launcher: &mut Launcher<'_, MockFactory>, code: i32) -> i32 {
+fn finish(launcher: &mut Launcher<'_, impl crate::session::SessionFactory>, code: i32) -> i32 {
     let result = launcher.close();
     if result.is_err() {
         trace(c"session.exit_failed");

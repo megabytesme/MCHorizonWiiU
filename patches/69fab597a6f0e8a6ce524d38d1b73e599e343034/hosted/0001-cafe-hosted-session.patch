@@ -1,0 +1,320 @@
+diff --git a/crates/horizon-client/src/entry.rs b/crates/horizon-client/src/entry.rs
+index a6bda4a6c7c728165269d9d992dd21c8a24cefd6..69056ae961718e09e0c8827c96f291f128e2d0a9 100644
+--- a/crates/horizon-client/src/entry.rs
++++ b/crates/horizon-client/src/entry.rs
+@@ -33,10 +33,25 @@ pub fn main_with_cafe_host(
+     main_with_runner(mods, || game::run_with_cafe_host(host))
+ }
+ 
++/// Run a launcher-owned Cafe session. Initialization stays process-wide and
++/// recoverable errors are returned to the caller.
++#[cfg(target_os = "cafe")]
++pub fn run_hosted_cafe(
++    host: &mut dyn game::CafeLoadingHost,
++    resources: &std::path::Path,
++    player: &str,
++) -> crate::Result<game::CafeRunOutcome> {
++    static INIT: std::sync::Once = std::sync::Once::new();
++    INIT.call_once(|| { initialize(Default::default()); });
++    let result = game::run_hosted_cafe(host, resources, player);
++    logging::flush();
++    result
++}
++
+ /// Shared executable setup and error handling for the entrypoint's runner.
+ /// Keep platform-specific hosts at this seam so they receive the same mods,
+ /// native hooks, logging, crash reporting, and exit behavior as the desktop.
+-fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::Result<T>) -> T {
++fn initialize(mods: crate::mod_api::Mods) -> (std::path::PathBuf, &'static str, bool) {
+     // First: a trait injection into anything below (logging, the crash handler) calls its mod.
+     cafe_startup_stage!("mod registration begin");
+     if crate::mod_api::MODS.set(mods).is_err() {
+@@ -236,6 +251,11 @@ fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::
+     cafe_startup_stage!("open file limit begin");
+     raise_open_file_limit();
+     cafe_startup_stage!("open file limit complete");
++    (home, side, help)
++}
++
++fn main_with_runner<T>(mods: crate::mod_api::Mods, run: impl FnOnce() -> crate::Result<T>) -> T {
++    let (home, side, help) = initialize(mods);
+     cafe_startup_stage!("game runner begin");
+     let result = run();
+     cafe_startup_stage!("game runner returned");
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 63c6f122c960b970afd6a112a7db2c293e34a146..915ac016512b4bbde3cbe8e74cd16a359140e331 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -3232,6 +3232,7 @@ struct Game<'a> {
+     saved_for_exit: bool,
+     native_client_stopped: bool,
+     pending_save: Option<saving::ClosingSave>,
++    cafe_hosted: bool,
+     /// The last world frame reached the swap chain. A window the compositor
+     /// stops showing gets no frames, and the event loop must not spin on it.
+     frame_drawn: bool,
+@@ -13143,6 +13144,9 @@ impl Game<'_> {
+         self.clear_waypoints();
+         self.post_effects.clear();
+         self.spectated_post_effect = None;
++        if self.cafe_hosted {
++            return self.begin_closing_save(true);
++        }
+         if self.external_server() {
+             return self.leave_server(None);
+         }
+@@ -20303,6 +20307,7 @@ impl<'a> Game<'a> {
+             saved_for_exit: false,
+             native_client_stopped: false,
+             pending_save: None,
++            cafe_hosted: false,
+             frame_drawn: true,
+             world_icon: None,
+             forced_hit: None,
+@@ -22453,6 +22458,26 @@ fn cafe_starting_entry_kind(
+ }
+ 
+ impl CafeLoadingSession {
++    /// Wait for the owned loader and menu preloader before releasing the session.
++    #[cfg(target_os = "cafe")]
++    pub fn hosted_can_cancel(&self) -> bool {
++        self.loading.loaded.is_none() && self.loading.options.is_some()
++            && self.loading.menu.pending.is_none()
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn drain_hosted(&mut self) -> Result<()> {
++        let resources = self.loading.handle.take().map(std::thread::JoinHandle::join);
++        let world = self.loading.menu.creation_job.take().map(std::thread::JoinHandle::join);
++        if matches!(resources, Some(Err(_))) || matches!(world, Some(Err(_))) {
++            return Err("Cafe loader worker panicked".into());
++        }
++        if let Some(Ok(Err(error))) = world {
++            return Err(error.into());
++        }
++        Ok(())
++    }
++
+     pub fn poll(&mut self, event_loop: &dyn EventLoopCtl) -> bool {
+         self.loading.poll_platform(event_loop)
+     }
+@@ -22729,6 +22754,7 @@ impl CafeLoadingSession {
+         Ok(Some(CafeGameSession {
+             game,
+             entry_kind,
++            screenshot_worker: None,
+             #[cfg(target_os = "cafe")]
+             next_memory_sample: None,
+         }))
+@@ -22771,11 +22797,41 @@ impl CafeLoadingSession {
+ pub struct CafeGameSession {
+     game: Game<'static>,
+     entry_kind: CafeGameEntryKind,
++    screenshot_worker: Option<std::thread::JoinHandle<()>>,
+     #[cfg(target_os = "cafe")]
+     next_memory_sample: Option<Instant>,
+ }
+ 
+ impl CafeGameSession {
++    #[cfg(target_os = "cafe")]
++    pub fn enable_hosted_return(&mut self) {
++        self.game.cafe_hosted = true;
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn hosted_save_pending(&self) -> bool {
++        self.game.pending_save.as_ref().is_some_and(|save| save.quit)
++    }
++
++    /// False means the save barrier is still pending. Errors preserve it.
++    #[cfg(target_os = "cafe")]
++    pub fn poll_hosted_save(&mut self) -> Result<bool> {
++        self.game.poll_closing_save()
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn draw_hosted_save(&mut self, presenter: &mut dyn CafeLoadingPresenter, failed: bool) -> Result<()> {
++        self.present_loading_frame(presenter, Some(failed)).map(|_| ())
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn shutdown_hosted(&mut self) -> Result<()> {
++        self.game.pad_close_output();
++        let saved = self.game.save_for_exit();
++        self.game.finish_perf();
++        saved
++    }
++
+     /// Keep Game's input and logical framebuffer calculations aligned with
+     /// the active GamePad layout. Invalid dimensions leave the last valid
+     /// Cafe size intact.
+@@ -22911,7 +22967,12 @@ impl CafeGameSession {
+                 };
+                 let _ = sender.send(response.to_string());
+             }) {
+-                Ok(_) => self.game.cafe_screenshot_result = Some(receiver),
++                Ok(worker) => {
++                    if let Some(previous) = self.screenshot_worker.replace(worker) {
++                        let _ = previous.join();
++                    }
++                    self.game.cafe_screenshot_result = Some(receiver);
++                },
+                 Err(error) => {
+                     if let Some(reply) = self.game.pending_screenshot.take() {
+                         let _ = reply.send(serde_json::json!({"error": format!("cannot start screenshot encoder: {error}")}).to_string());
+@@ -22982,7 +23043,7 @@ impl CafeGameSession {
+         &mut self,
+         presenter: &mut dyn CafeLoadingPresenter,
+     ) -> Result<Option<bool>> {
+-        self.present_loading_frame(presenter)
++        self.present_loading_frame(presenter, None)
+     }
+ 
+     /// Reuse the original Game loading HUD while its integrated server opens
+@@ -22992,6 +23053,7 @@ impl CafeGameSession {
+     fn present_loading_frame(
+         &mut self,
+         presenter: &mut dyn CafeLoadingPresenter,
++        saving_failed: Option<bool>,
+     ) -> Result<Option<bool>> {
+         let game = &mut self.game;
+         let size = presenter.layout_viewport();
+@@ -23006,7 +23068,14 @@ impl CafeGameSession {
+             game.gui.atlas.font.reseed(game.visual_ticks() as i64);
+         }
+         let mut hud = HudBatch::new(size);
+-        if let Some(starting) = &game.integrated_starting {
++        if let Some(failed) = saving_failed {
++            let message = if failed {
++                "Save failed. A retries. Use HOME for system exit."
++            } else {
++                "Saving world..."
++            };
++            horizon_client::level_loading::draw_progress(&mut hud, &game.gui.atlas, message, 0.0);
++        } else if let Some(starting) = &game.integrated_starting {
+             let upgrade = starting.handle.upgrade();
+             if upgrade.is_file_fixing() {
+                 horizon_client::widgets::begin_screen(|| {
+@@ -23102,6 +23171,14 @@ impl CafeGameSession {
+     }
+ }
+ 
++impl Drop for CafeGameSession {
++    fn drop(&mut self) {
++        if let Some(worker) = self.screenshot_worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
+ /// Cafe loop driver; the returned session remains owned by the caller.
+ pub trait CafeLoadingHost: EventLoopCtl {
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> Result<()>;
+@@ -23861,16 +23938,47 @@ fn run_loading(
+ pub use launch_api::{UsageError, exit_code};
+ 
+ pub fn run_with() -> Result<()> {
+-    run_with_mode(None).map(|_| ())
++    run_with_mode(None, None).map(|_| ())
+ }
+ 
+ #[cfg(target_os = "cafe")]
+ pub fn run_with_cafe_host(host: &mut dyn CafeLoadingHost) -> Result<CafeRunOutcome> {
+-    run_with_mode(Some(host))
++    run_with_mode(Some(host), None)
+ }
+ 
+-fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<CafeRunOutcome> {
+-    let Some(mut options) = Options::read()? else {
++#[cfg(target_os = "cafe")]
++pub fn hosted_cafe_resources_ready(root: &std::path::Path) -> bool {
++    std::fs::read(root.join("horizon-resources.json"))
++        .ok()
++        .and_then(|manifest| serde_json::from_slice::<serde_json::Value>(&manifest).ok())
++        .is_some_and(|manifest| manifest["minecraft"].as_str() == Some(horizon_core::VANILLA_VERSION))
++}
++
++#[cfg(target_os = "cafe")]
++pub fn run_hosted_cafe(
++    host: &mut dyn CafeLoadingHost,
++    resources: &std::path::Path,
++    player: &str,
++) -> Result<CafeRunOutcome> {
++    let mut options = Options::parse(std::iter::empty())?.ok_or("missing Cafe client options")?;
++    options.resources = resources.to_owned();
++    options.player_name = Some(player.to_owned());
++    let result = run_with_mode(Some(host), Some(options));
++    narrator::stop();
++    horizon_client::discord_presence::stop();
++    result
++}
++
++fn run_with_mode(
++    mut cafe_host: Option<&mut dyn CafeLoadingHost>,
++    hosted_options: Option<Options>,
++) -> Result<CafeRunOutcome> {
++    let hosted = hosted_options.is_some();
++    let options = match hosted_options {
++        Some(options) => Some(options),
++        None => Options::read()?,
++    };
++    let Some(mut options) = options else {
+         return Ok(CafeRunOutcome::Finished);
+     };
+     if cafe_host.is_some() {
+@@ -23945,7 +24053,9 @@ fn run_with_mode(mut cafe_host: Option<&mut dyn CafeLoadingHost>) -> Result<Cafe
+     // horizon-ctl drives: those start in a source checkout and wrote the list there.
+     if !options.offscreen && !synchronous_startup(&options) {
+         cafe_game_stage!("heartbeat start begin");
+-        horizon_client::heartbeat::start();
++        if !hosted {
++            horizon_client::heartbeat::start();
++        }
+         cafe_game_stage!("heartbeat start complete");
+         {
+             let player_dir = horizon_client::logging::player_dir();
+diff --git a/crates/horizon-client/src/game/integrated.rs b/crates/horizon-client/src/game/integrated.rs
+index 6612fd62085d2e46c43407bedceb2f42a4ced320..0139ae0c0dff2fe77948204b1b8afdf90b7103e3 100644
+--- a/crates/horizon-client/src/game/integrated.rs
++++ b/crates/horizon-client/src/game/integrated.rs
+@@ -258,7 +258,7 @@ impl Integrated {
+             .as_ref()
+             .is_none_or(|thread| thread.is_finished())
+     }
+-    fn halt(&mut self) -> Result<()> {
++    pub(super) fn halt(&mut self) -> Result<()> {
+         self.request_stop();
+         if let Some(thread) = self.thread.take() {
+             thread
+diff --git a/crates/horizon-client/src/game/saving.rs b/crates/horizon-client/src/game/saving.rs
+index d58ed0e92d63bdd62023c19a425ad46d747fe930..d9ae5e62a0bff3ebd22ff4e7782d1b1011c31601 100644
+--- a/crates/horizon-client/src/game/saving.rs
++++ b/crates/horizon-client/src/game/saving.rs
+@@ -139,7 +139,13 @@ impl Game<'_> {
+                     // Drop/join only after completion; leave_server's teardown
+                     // can then run without blocking on the server's writes.
+                     if save.quit {
+-                        self.integrated.take().unwrap().stop()?;
++                        if self.cafe_hosted {
++                            // Keep the terminal failure available on retry.
++                            self.integrated.as_mut().unwrap().halt()?;
++                            self.integrated.take();
++                        } else {
++                            self.integrated.take().unwrap().stop()?;
++                        }
+                     } else {
+                         self.leave_server(None)?;
+                     }
+diff --git a/crates/horizon-client/src/game/startup_menu.rs b/crates/horizon-client/src/game/startup_menu.rs
+index 02ba1532e09901129b9f4cd06564a818dfedbba0..e7637f1832e00887fe685b54bae3ad4041c2b2c9 100644
+--- a/crates/horizon-client/src/game/startup_menu.rs
++++ b/crates/horizon-client/src/game/startup_menu.rs
+@@ -66,7 +66,7 @@ pub(super) struct StartupMenu {
+     pub reload_packs: bool,
+     /// Worldgen data being prepared for the title's Create screen. It stays
+     /// with the title and moves to Game if Loading hands off before it ends.
+-    creation_job: Option<JoinHandle<std::result::Result<(), String>>>,
++    pub(super) creation_job: Option<JoinHandle<std::result::Result<(), String>>>,
+     /// Browse mods' worker (`mod_browser`).
+     mod_jobs: super::mod_browser::Jobs,
+     pub perf: horizon_client::telemetry::Session,
