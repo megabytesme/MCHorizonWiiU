@@ -3,9 +3,9 @@
 Horizon Night is the launcher's built-in presentation on the TV and GamePad. Use D-pad Up/Down
 to navigate, A to select and B to return with the default input mapping.
 The GamePad also accepts a tap on a visible enabled action. Home includes
-Play, Profiles, Version & resources, Settings and Agent Control. Start demo
-enters a dummy session, and Save & Quit returns to the launcher. Settings
-includes a diagnostic that deliberately exercises partial startup cleanup.
+Play, Profiles, Version & resources, Settings and Agent Control. Play is
+unavailable until the game bridge is ready. The explicit fixture package
+includes Start demo, Save & Quit, and a partial-startup cleanup diagnostic.
 
 See the [launcher core](CORE.md), [real-client integration requirements](INTEGRATION.md),
 and [builder instructions](../builder/README.md). The [first prototype](PROTOTYPE.md)
@@ -66,8 +66,7 @@ The session factory receives a typed configuration snapshot and returns an
 owned driver. The host polls the adapter through preparation, live gameplay,
 save/disconnect completion and resource drain. The launcher shows a retry
 when saving fails and holds the same session. It returns to Play after the
-driver quiesces and drops. The checked-in Cafe driver exercises this protocol
-with a mock session. See the [session contract](CORE.md) and
+driver quiesces and drops. The Cafe fixture exercises this protocol with a mock session. See the [session contract](CORE.md) and
 [game bridge changes](INTEGRATION.md).
 
 The account traits cover offline name validation, device-code initiate,

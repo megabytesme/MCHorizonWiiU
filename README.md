@@ -11,6 +11,7 @@ combined RPX.
 
 The two build targets produce a standalone Horizon Night launcher and the
 standalone native game. They have separate build and acceptance records. The
-launcher presents its hosted mock session while the real game is integrated.
+launcher shows Play as unavailable until the real game is integrated.
+An explicit Cemu fixture build exercises the hosted mock session.
 The catalog is an unsigned local release recipe. Use the accompanying pinned
 inputs and build records to verify what went into the packages.

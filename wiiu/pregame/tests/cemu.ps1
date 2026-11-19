@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$Cemu,
     [Parameter(Mandatory)][string]$Rpx,
-    [Parameter(Mandatory)][string]$Output
+    [Parameter(Mandatory)][string]$Output,
+    [switch]$Production
 )
 $ErrorActionPreference = 'Stop'
 $Cemu = (Resolve-Path -LiteralPath $Cemu).Path
@@ -153,11 +154,15 @@ try {
     $arguments = @('-g', ('"{0}"' -f $Rpx))
     $program = Start-Process -FilePath "$Output/Cemu.exe" -WorkingDirectory $Output -WindowStyle Hidden -ArgumentList $arguments -PassThru
 
-    Wait-Step 'frame.home.play'
-    Save-Frame 'home'
-
-    Send-Key 83 # D-pad Down
-    Wait-Step 'frame.home.profiles'
+    if ($Production) {
+        Wait-Step 'frame.home.profiles'
+        Save-Frame 'home'
+    } else {
+        Wait-Step 'frame.home.play'
+        Save-Frame 'home'
+        Send-Key 83 # D-pad Down
+        Wait-Step 'frame.home.profiles'
+    }
     Send-Key 90 # A
     Wait-Step 'frame.profiles'
     Send-Key 83
@@ -194,40 +199,44 @@ try {
     Save-Frame 'agent'
     Send-Key 88
     Wait-Step 'frame.home.agent' 2
-    foreach ($step in 1..4) { Send-Key 87 } # D-pad Up
-    Wait-Step 'frame.home.play' 2
+    if ($Production) {
+        Send-Key 83 # D-pad Down from Agent Control.
+    } else {
+        foreach ($step in 1..4) { Send-Key 87 } # D-pad Up
+        Wait-Step 'frame.home.play' 2
 
-    Send-Key 90
-    Wait-Step 'frame.loading'
-    Save-Frame 'loading'
-    Wait-Step 'frame.session'
-    Save-Frame 'session'
-    Send-Key 88
-    Wait-Step 'frame.home.play' 3
+        Send-Key 90
+        Wait-Step 'frame.loading'
+        Save-Frame 'loading'
+        Wait-Step 'frame.session'
+        Save-Frame 'session'
+        Send-Key 88
+        Wait-Step 'frame.home.play' 3
 
-    Send-Key 90
-    Wait-Step 'frame.loading' 2
-    Send-Key 88
-    Wait-Step 'frame.home.play' 4
+        Send-Key 90
+        Wait-Step 'frame.loading' 2
+        Send-Key 88
+        Wait-Step 'frame.home.play' 4
 
-    foreach ($step in 1..3) { Send-Key 83 }
-    Wait-Step 'frame.home.settings' 3
-    Send-Key 90
-    Wait-Step 'frame.settings' 3
-    Send-Key 83
-    Send-Key 83
-    Send-Key 90
-    Wait-Step 'frame.startup_error'
-    Save-Frame 'error'
-    Send-Key 88
-    Wait-Step 'frame.home.play' 5
+        foreach ($step in 1..3) { Send-Key 83 }
+        Wait-Step 'frame.home.settings' 3
+        Send-Key 90
+        Wait-Step 'frame.settings' 3
+        Send-Key 83
+        Send-Key 83
+        Send-Key 90
+        Wait-Step 'frame.startup_error'
+        Save-Frame 'error'
+        Send-Key 88
+        Wait-Step 'frame.home.play' 5
 
-    Send-Key 90
-    Wait-Step 'frame.session' 2
-    Send-Key 88
-    Wait-Step 'frame.home.play' 6
+        Send-Key 90
+        Wait-Step 'frame.session' 2
+        Send-Key 88
+        Wait-Step 'frame.home.play' 6
 
-    Send-Key 87 # Up wraps to Close Horizon.
+        Send-Key 87 # Up wraps to Close Horizon.
+    }
     Wait-Step 'frame.home.close'
     Send-Key 90
     Wait-Step 'procui.closed'
@@ -247,9 +256,10 @@ try {
         'frame.loading', 'session.allocated', 'session.stop_requested',
         'frame.loading.stopping', 'session.quiescent', 'session.released'
     )
-    $expected = $saveLifecycle + $abortLifecycle + $abortLifecycle +
-        @('frame.startup_error') + $saveLifecycle +
-        @('launcher.closed', 'view.released', 'gx2.closed', 'procui.closed')
+    $expected = @('launcher.closed', 'view.released', 'gx2.closed', 'procui.closed')
+    if (!$Production) {
+        $expected = $saveLifecycle + $abortLifecycle + $abortLifecycle + @('frame.startup_error') + $saveLifecycle + $expected
+    }
     if (($lifecycle -join ',') -cne ($expected -join ',')) {
         throw "Unexpected lifecycle markers. See $log"
     }
@@ -258,6 +268,7 @@ try {
         schema = 1
         kind = 'wiiu-pregame-cemu-acceptance'
         result = 'passed'
+        fixture = !$Production.IsPresent
         rpx_sha256 = (Get-FileHash -LiteralPath $Rpx).Hash.ToLowerInvariant()
         emulator_sha256 = (Get-FileHash -LiteralPath $Cemu).Hash.ToLowerInvariant()
         emulator_settings = @(Select-String -LiteralPath $log -Pattern 'CPU-Mode:|Async compile:|Using Vulkan' |
@@ -270,7 +281,11 @@ try {
         })
     }
     $evidence | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$Output/cemu-acceptance.json" -Encoding ascii
-    Write-Output 'Cemu VPAD navigation, save and drain, cancellation, failed startup, repeat launch, and guest exit passed.'
+    if ($Production) {
+        Write-Output 'Cemu production navigation and guest exit passed.'
+    } else {
+        Write-Output 'Cemu VPAD navigation, save and drain, cancellation, failed startup, repeat launch, and guest exit passed.'
+    }
 } finally {
     if ($program -and !$program.HasExited) { $program.Kill(); $program.WaitForExit() }
     foreach ($name in $prior.Keys) {

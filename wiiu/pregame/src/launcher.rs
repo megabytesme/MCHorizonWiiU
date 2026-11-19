@@ -76,6 +76,7 @@ impl OfflineProfile {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceSelection {
+    Unavailable,
     BuiltInDemo,
     Prepared,
 }
@@ -83,6 +84,7 @@ pub enum ResourceSelection {
 impl ResourceSelection {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Unavailable => "Unavailable",
             Self::BuiltInDemo => "Built-in demo",
             Self::Prepared => "Prepared game",
         }
@@ -149,12 +151,15 @@ impl View {
 
     pub fn description(self) -> &'static str {
         match self.page {
-            Page::Home if self.resources == ResourceSelection::BuiltInDemo => {
+            Page::Home if self.resources != ResourceSelection::Prepared => {
                 "Native game bridge pending."
             }
             Page::Home => "Review the selected Horizon instance.",
             Page::Profiles => "Select a local offline profile.",
             Page::Versions => match self.resources {
+                ResourceSelection::Unavailable => {
+                    "Game resources will be available when the native bridge is ready."
+                }
                 ResourceSelection::BuiltInDemo => "The demo uses built-in resources.",
                 ResourceSelection::Prepared => "This instance uses prepared game resources.",
             },
@@ -211,7 +216,7 @@ impl View {
     }
 
     pub fn rows(self) -> impl ExactSizeIterator<Item = Row> {
-        actions(self.page)
+        self.actions(self.page)
             .iter()
             .copied()
             .map(move |action| self.row(action))
@@ -223,6 +228,9 @@ impl View {
         let (label, detail, state) = match action {
             Play if self.resources == ResourceSelection::BuiltInDemo => {
                 ("Start demo", "Built-in fixture", Available)
+            }
+            Play if self.resources == ResourceSelection::Unavailable => {
+                ("Start Game", "Unavailable", Disabled)
             }
             Play => ("Start Game", self.resources.label(), Available),
             Profiles => ("Profiles", self.profile.name(), Available),
@@ -286,6 +294,27 @@ impl View {
         }
     }
 
+    fn actions(self, page: Page) -> &'static [Action] {
+        use Action::*;
+        match page {
+            Page::Home => &[Play, Profiles, Versions, Settings, AgentControl, Quit],
+            Page::Profiles => &[Player, Guest, MicrosoftSignIn, Back],
+            Page::Versions if self.resources == ResourceSelection::BuiltInDemo => {
+                &[DemoResources, GameResources, Back]
+            }
+            Page::Versions => &[GameResources, Back],
+            Page::Settings if self.resources == ResourceSelection::BuiltInDemo => {
+                &[SwapButtons, ToggleTouch, TestStartupError, Back]
+            }
+            Page::Settings => &[SwapButtons, ToggleTouch, Back],
+            Page::AgentControl => &[PairAgent, Back],
+            Page::Loading => &[CancelLoading],
+            Page::Session => &[SaveAndQuit],
+            Page::Error => &[DismissError],
+            Page::Exiting => &[],
+        }
+    }
+
     fn profile_state(self, profile: OfflineProfile) -> ActionState {
         if self.profile == profile {
             ActionState::Selected
@@ -303,21 +332,6 @@ fn on_off(enabled: bool) -> &'static str {
     }
 }
 
-fn actions(page: Page) -> &'static [Action] {
-    use Action::*;
-    match page {
-        Page::Home => &[Play, Profiles, Versions, Settings, AgentControl, Quit],
-        Page::Profiles => &[Player, Guest, MicrosoftSignIn, Back],
-        Page::Versions => &[DemoResources, GameResources, Back],
-        Page::Settings => &[SwapButtons, ToggleTouch, TestStartupError, Back],
-        Page::AgentControl => &[PairAgent, Back],
-        Page::Loading => &[CancelLoading],
-        Page::Session => &[SaveAndQuit],
-        Page::Error => &[DismissError],
-        Page::Exiting => &[],
-    }
-}
-
 /// A hardware sample after DRC calibration and theme hit testing. An invalid
 /// touch breaks a gesture. A missing hardware sample is handled by the host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,7 +343,7 @@ pub enum Touch {
 
 pub struct Launcher<'a, F: SessionFactory> {
     factory: F,
-    instance: Instance<'a>,
+    instance: Option<Instance<'a>>,
     session: Option<HostedSession<F::Driver>>,
     view: View,
     pending: Option<StartMode>,
@@ -341,10 +355,16 @@ pub struct Launcher<'a, F: SessionFactory> {
 }
 
 impl<'a, F: SessionFactory> Launcher<'a, F> {
-    pub fn new(factory: F, instance: Instance<'a>, settings: Settings) -> Self {
-        let resources = match instance.resources {
-            Resources::BuiltInDemo => ResourceSelection::BuiltInDemo,
-            Resources::Prepared(_) => ResourceSelection::Prepared,
+    pub fn new(factory: F, instance: Option<Instance<'a>>, settings: Settings) -> Self {
+        let resources = match instance.map(|instance| instance.resources) {
+            None => ResourceSelection::Unavailable,
+            Some(Resources::BuiltInDemo) => ResourceSelection::BuiltInDemo,
+            Some(Resources::Prepared(_)) => ResourceSelection::Prepared,
+        };
+        let focus = if instance.is_some() {
+            Action::Play
+        } else {
+            Action::Profiles
         };
         Self {
             factory,
@@ -352,7 +372,7 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
             session: None,
             view: View {
                 page: Page::Home,
-                focused: Some(Action::Play),
+                focused: Some(focus),
                 profile: OfflineProfile::Player,
                 settings,
                 resources,
@@ -482,7 +502,7 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
     }
 
     fn move_focus(&mut self, forward: bool) {
-        let options = actions(self.view.page);
+        let options = self.view.actions(self.view.page);
         let Some(current) = options
             .iter()
             .position(|action| Some(*action) == self.view.focused)
@@ -513,14 +533,15 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
     }
 
     fn enabled(&self, action: Action) -> bool {
-        actions(self.view.page).contains(&action)
+        self.view.actions(self.view.page).contains(&action)
             && self.view.row(action).state != ActionState::Disabled
     }
 
     fn show(&mut self, page: Page, focus: Option<Action>) {
         self.view.page = page;
         self.view.focused = focus.filter(|action| self.enabled(*action)).or_else(|| {
-            actions(page)
+            self.view
+                .actions(page)
                 .iter()
                 .copied()
                 .find(|action| self.enabled(*action))
@@ -603,10 +624,10 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
         if !self.foreground {
             return;
         }
-        if let Some(mode) = self.pending.take() {
+        if let (Some(mode), Some(instance)) = (self.pending.take(), self.instance) {
             let config = LaunchConfig {
                 profile: Profile::Offline(OfflineName::for_builtin(self.view.profile.name())),
-                instance: self.instance,
+                instance,
                 settings: self.view.settings,
             };
             match self.factory.start(config, mode) {
@@ -651,7 +672,9 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
         };
         let focus_valid = match self.view.focused {
             Some(action) => self.enabled(action),
-            None => !actions(page)
+            None => !self
+                .view
+                .actions(page)
                 .iter()
                 .any(|action| self.view.row(*action).state != ActionState::Disabled),
         };

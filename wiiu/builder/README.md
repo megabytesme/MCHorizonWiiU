@@ -31,8 +31,8 @@ The launcher build takes the chosen client files from the current committed
 port checkout. It produces `HorizonLauncher-Night.rpx` and
 `HorizonLauncher-Night.wuhb`. An assembly is a separate receipt and checkout.
 To assemble the traced world-reopen source, pass `--diagnostic` and a new
-output path. The launcher remains a hosted mock during development of the
-combined process.
+output path. The default launcher leaves game launch unavailable. `build --fixture`
+packages the separate `HorizonLauncher-Night-Fixture` for lifecycle tests.
 
 ## Standalone native game
 
@@ -105,7 +105,8 @@ cargo test --locked --manifest-path wiiu/pregame/Cargo.toml --target-dir "$scrat
 Run the isolated launcher Cemu fixture from Windows for emulator evidence.
 
 ```powershell
-./wiiu/pregame/tests/cemu.ps1 -Cemu 'C:/tools/Cemu/Cemu.exe' -Rpx 'C:/scratch/HorizonLauncher-Night.rpx' -Output "$env:TEMP/port-night-cemu"
+./wiiu/pregame/tests/cemu.ps1 -Production -Cemu 'C:/tools/Cemu/Cemu.exe' -Rpx 'C:/scratch/HorizonLauncher-Night.rpx' -Output "$env:TEMP/port-night-cemu"
+./wiiu/pregame/tests/cemu.ps1 -Cemu 'C:/tools/Cemu/Cemu.exe' -Rpx 'C:/scratch/HorizonLauncher-Night-Fixture.rpx' -Output "$env:TEMP/port-night-fixture-cemu"
 ```
 
 A build record establishes compilation and package integrity. Cemu launcher

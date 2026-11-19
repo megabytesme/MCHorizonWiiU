@@ -21,6 +21,8 @@ def main(argv=None):
         command.add_argument("--revision", default="HEAD")
         if name != "validate":
             command.add_argument("--output", type=Path, required=True)
+        if name == "build":
+            command.add_argument("--fixture", action="store_true", help="build a separate hosted demo for Cemu testing")
         if name == "assemble":
             command.add_argument("--diagnostic", action="store_true")
     game = commands.add_parser("build-game")
@@ -62,7 +64,7 @@ def main(argv=None):
                     source.checked_bytes(patches, item["file"], item["sha256"])
                 source.checked_bytes(core.ROOT, native.INPUTS_FILE, recipe["inputs_sha256"])
                 if args.command == "build":
-                    print(core.build(recipe, fingerprint, args.output))
+                    print(core.build(recipe, fingerprint, args.output, args.fixture))
                 else:
                     print(f"Verified local recipe {fingerprint}, exact upstream pin and patch hashes.")
     except subprocess.CalledProcessError as err:

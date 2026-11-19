@@ -176,7 +176,10 @@ def verify_outputs(record, directory):
         theme = record.get("theme", "preview")
         if not isinstance(theme, str) or theme not in THEMES:
             raise ValueError("unknown build theme")
-        names = [THEMES[theme] + ".rpx", THEMES[theme] + ".wuhb"]
+        fixture = record.get("fixture", False)
+        if type(fixture) is not bool or (fixture and theme != "night"):
+            raise ValueError("unknown launcher fixture")
+        names = launcher_packages(theme, fixture)
     else:
         raise ValueError("unsupported build record")
     expected = record.get("outputs")
@@ -232,7 +235,12 @@ def discard_unverified_outputs(directory, record_path, names=PACKAGE_NAMES):
             (directory / name).unlink(missing_ok=True)
 
 
-def build(recipe, recipe_hash, build_root):
+def launcher_packages(theme, fixture):
+    stem = THEMES[theme] + ("-Fixture" if fixture else "")
+    return [stem + ".rpx", stem + ".wuhb"]
+
+
+def build(recipe, recipe_hash, build_root, fixture=False):
     theme = "night"
     client = client_input(recipe)
     toolchain = inspect_toolchain()
@@ -244,6 +252,7 @@ def build(recipe, recipe_hash, build_root):
         "recipe_sha256": recipe_hash,
         "environment": build_settings,
         "theme": theme,
+        "fixture": fixture,
         "client_files": client["files"],
         "client_root": str(ROOT),
         "toolchain": toolchain,
@@ -255,13 +264,14 @@ def build(recipe, recipe_hash, build_root):
     lock.mkdir()  # Fail if another process is already using this CMake cache.
     record_path = directory / "build-record.json"
     try:
-        names = [THEMES[theme] + ".rpx", THEMES[theme] + ".wuhb"]
+        names = launcher_packages(theme, fixture)
         discard_unverified_outputs(directory, record_path, names)
         record_path.unlink(missing_ok=True)
         tools = {name: item["path"] for name, item in toolchain["files"].items()}
         configure = [
             tools["powerpc-eabi-cmake"], "-S", str(ROOT / "wiiu/pregame"), "-B", str(directory),
             "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+            f"-DHORIZON_WIIU_PREGAME_FIXTURE={'ON' if fixture else 'OFF'}",
             f'-DCMAKE_MAKE_PROGRAM={tools["ninja"]}',
             f'-DCAFE_RUSTC={tools["rustc"]}',
             f'-DCAFEGLSL_COMPILER_EXECUTABLE={tools["glslcompiler"]}',
@@ -277,7 +287,7 @@ def build(recipe, recipe_hash, build_root):
         if client_input(recipe) != client or inspect_toolchain() != toolchain:
             raise ValueError("build inputs changed during compilation")
         record = {
-            "schema": 1, "kind": "wiiu-pregame-build", "recipe": recipe, "theme": theme,
+            "schema": 1, "kind": "wiiu-pregame-build", "recipe": recipe, "theme": theme, "fixture": fixture,
             "recipe_sha256": recipe_hash, "client": client, "toolchain": toolchain,
             "environment": build_settings, "commands": [configure, compile_command], "outputs": artifacts(directory, names),
             "build": "passed",

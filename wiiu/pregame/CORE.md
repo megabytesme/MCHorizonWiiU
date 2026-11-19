@@ -38,7 +38,7 @@ pending. A save failure retains the same session and its world lock. The OS
 exit path reports any terminal save error and releases the session before
 destroying the renderer.
 
-The build ships a mock driver that acquires an allocation during preparation,
+The separate fixture package exercises a mock driver that allocates memory during preparation,
 delays save completion and cleanup independently, and exercises the partial
 startup failure pathway. It uses synthetic data. The mock's timed phases
 serve as a Cemu fixture. Host tests also exercise save failure and retry, the

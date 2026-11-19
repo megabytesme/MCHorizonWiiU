@@ -135,7 +135,7 @@ fn launcher_returns_after_worker_sync_and_world_lease_release() {
             path: scratch.0.clone(),
             gate: Some(gate),
         },
-        Instance::DEMO,
+        Some(Instance::DEMO),
         Settings::default(),
     );
     app.dispatch(Action::Play);

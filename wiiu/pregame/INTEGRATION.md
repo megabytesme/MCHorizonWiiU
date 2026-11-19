@@ -1,7 +1,8 @@
 # Connecting the native Horizon client
 
-The launcher side owns the hosted lifecycle. The checked-in Night executable
-runs `MockFactory`. Connect a real `SessionFactory` after the native game
+The launcher side owns the hosted lifecycle. The explicit Night fixture
+runs `MockFactory`. The default package leaves game launch unavailable.
+Connect a real `SessionFactory` after the native game
 branch publishes a reviewed game pin and save/reopen result. Build and test
 the bridge in a fresh checkout with scratch worlds and privately prepared
 resources.

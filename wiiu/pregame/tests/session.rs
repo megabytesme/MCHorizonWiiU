@@ -138,7 +138,11 @@ type App = Launcher<'static, Factory>;
 
 fn launcher() -> (App, Rc<Probe>) {
     let probe = Rc::new(Probe::default());
-    let mut app = Launcher::new(Factory(probe.clone()), Instance::DEMO, Settings::default());
+    let mut app = Launcher::new(
+        Factory(probe.clone()),
+        Some(Instance::DEMO),
+        Settings::default(),
+    );
     app.sample(0, Touch::Released);
     (app, probe)
 }
@@ -146,6 +150,43 @@ fn launcher() -> (App, Rc<Probe>) {
 fn tap(app: &mut App, button: u32) {
     app.sample(button, Touch::Released);
     app.sample(0, Touch::Released);
+}
+
+#[test]
+fn release_launcher_disables_play_and_hides_fixture_controls() {
+    let probe = Rc::new(Probe::default());
+    let mut app = Launcher::new(Factory(probe.clone()), None, Settings::default());
+    app.sample(0, Touch::Released);
+    assert_eq!(app.view().focused, Some(Action::Profiles));
+    assert_eq!(
+        app.view().rows().next().unwrap().state,
+        ActionState::Disabled
+    );
+    tap(&mut app, UP);
+    assert_eq!(app.view().focused, Some(Action::Quit));
+    tap(&mut app, DOWN);
+    assert_eq!(app.view().focused, Some(Action::Profiles));
+    app.sample(0, Touch::Pressed(Some(Action::Play)));
+    app.sample(0, Touch::Released);
+    app.dispatch(Action::Play);
+    app.advance();
+    assert_eq!(app.view().page, Page::Home);
+
+    app.dispatch(Action::Versions);
+    assert!(app
+        .view()
+        .rows()
+        .all(|row| row.action != Action::DemoResources));
+    app.dispatch(Action::Back);
+    app.dispatch(Action::Settings);
+    assert!(app
+        .view()
+        .rows()
+        .all(|row| row.action != Action::TestStartupError));
+    app.dispatch(Action::TestStartupError);
+    app.advance();
+    assert_eq!(app.view().page, Page::Settings);
+    assert!(probe.events.borrow().is_empty());
 }
 
 fn make_live(app: &mut App, probe: &Probe) {
@@ -414,7 +455,7 @@ fn prepared_instance_keeps_paths_and_settings_in_the_launch_request() {
             manifest_sha256: [42; 32],
         }),
     };
-    let mut app = Launcher::new(Factory(probe.clone()), instance, Settings::default());
+    let mut app = Launcher::new(Factory(probe.clone()), Some(instance), Settings::default());
     app.dispatch(Action::Versions);
     assert!(app
         .view()

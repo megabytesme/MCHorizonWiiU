@@ -16,6 +16,12 @@ add_subdirectory(../gx2_hud gx2_hud)
 
 set(package_name HorizonLauncher-Night)
 set(app_title "Horizon Wii U")
+option(HORIZON_WIIU_PREGAME_FIXTURE "Include the emulator-only hosted demo" OFF)
+if(HORIZON_WIIU_PREGAME_FIXTURE)
+   set(package_name HorizonLauncher-Night-Fixture)
+   set(app_title "Horizon Wii U Fixture")
+   set(fixture_cfg --cfg horizon_wiiu_pregame_fixture)
+endif()
 set(theme_dir "${CMAKE_CURRENT_SOURCE_DIR}/themes/night")
 file(GLOB_RECURSE theme_inputs CONFIGURE_DEPENDS "${theme_dir}/*")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" launcher_version REGEX "^version = ")
@@ -25,7 +31,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS Cargo.toml)
 set(shell_object "${CMAKE_CURRENT_BINARY_DIR}/shell.o")
 add_custom_command(OUTPUT "${shell_object}"
    COMMAND "${CMAKE_COMMAND}" -E env  "CARGO_PKG_VERSION=${launcher_version}" "${CAFE_RUSTC}" --target powerpc-nintendo-cafe --edition 2021
-      --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe
+      --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe ${fixture_cfg}
       -C opt-level=s -C panic=abort -C codegen-units=1 -D warnings
       -o "${shell_object}" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
    DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs "${CAFE_RUSTC}" ${theme_inputs}

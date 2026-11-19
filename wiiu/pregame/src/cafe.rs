@@ -109,7 +109,8 @@ extern "C" fn horizon_pregame_run() -> i32 {
         return 1;
     };
     let storage = FrameStorage(data);
-    let mut launcher = Launcher::new(MockFactory, Instance::DEMO, Settings::default());
+    let fixture = cfg!(horizon_wiiu_pregame_fixture).then_some(Instance::DEMO);
+    let mut launcher = Launcher::new(MockFactory, fixture, Settings::default());
     let mut displayed = None;
     let mut frame = 0_u32;
     loop {
