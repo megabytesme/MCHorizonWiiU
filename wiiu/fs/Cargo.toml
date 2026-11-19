@@ -1,0 +1,12 @@
+[package]
+name = "horizon-wiiu-fs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

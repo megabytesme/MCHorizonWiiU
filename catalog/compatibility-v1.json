@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "builder": "0.3.0",
+  "client": "0.4.0",
+  "launcher": "0.3.0",
+  "patch": "0.2.0",
+  "toolchain": "1.0.0",
+  "target": "powerpc-nintendo-cafe",
+  "upstream": {
+    "commit": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
+    "tree": "e825cb0ee6b84a878d2e8907e743f8e68c43b337",
+    "inventory_sha256": "425ff93fe82d7290e488980f2b54718b199603de97f5d91d20cc4aa381f991f8"
+  },
+  "native": {
+    "commit": "1a0a2948c33d11744eb403247cb566b0aa3ee858",
+    "tree": "e64ecd1968c0057168c2148eef46caf4d79d675c",
+    "inventory_sha256": "148f057846235920dbbdaa5ec43027f4c2a430f39664fe2f4e51481e44449fc2"
+  },
+  "series": [
+    {
+      "file": "0001-cafe-platform.patch",
+      "from": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
+      "to": "e1e2a43c2bbffc6a7bf738786d1d6cdb50926ced",
+      "sha256": "36ea939138158a085db3a6b39540dac421ab17c2eac4696148121b2a662d5fa8"
+    },
+    {
+      "file": "0002-runtime-and-save.patch",
+      "from": "e1e2a43c2bbffc6a7bf738786d1d6cdb50926ced",
+      "to": "1a0a2948c33d11744eb403247cb566b0aa3ee858",
+      "sha256": "8f3fb56507eaf17fd61dedc2d9d965b610d4cda4d714448facea28d9cdd2ecc9"
+    }
+  ],
+  "diagnostic": {
+    "file": "diagnostics/0001-trace-world-reopen.patch",
+    "from": "1a0a2948c33d11744eb403247cb566b0aa3ee858",
+    "to": "7c8ad024b49c5d813862c826931b91ff20fc6d83",
+    "tree": "251c45490e910f3f3be7cf5738abd65275ea99a3",
+    "sha256": "f1a0340b8be51d3f89316097d8621ddd9ec0f8396064f182b610ee8352c3a8fd"
+  },
+  "inputs_sha256": "145da719fe16cc93c64058f03559b0909733a3b111432cd224d260bdaa92f9fb"
+}

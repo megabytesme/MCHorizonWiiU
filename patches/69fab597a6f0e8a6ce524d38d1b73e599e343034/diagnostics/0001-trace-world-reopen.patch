@@ -1,0 +1,399 @@
+diff --git a/crates/horizon-client/src/game/integrated.rs b/crates/horizon-client/src/game/integrated.rs
+index 6612fd62085d2e46c43407bedceb2f42a4ced320..39c2887a094a163fe62cbba5fc95793d67fa1a31 100644
+--- a/crates/horizon-client/src/game/integrated.rs
++++ b/crates/horizon-client/src/game/integrated.rs
+@@ -259,6 +259,7 @@ impl Integrated {
+             .is_none_or(|thread| thread.is_finished())
+     }
+     fn halt(&mut self) -> Result<()> {
++        let _join = startup::step("integrated.shutdown.join");
+         self.request_stop();
+         if let Some(thread) = self.thread.take() {
+             thread
+@@ -564,6 +565,7 @@ impl Game<'_> {
+             return Ok(());
+         };
+         handle.world_name = world_name;
++        startup::mark("integrated.client.received_pipe");
+         self.server_packs_world_pack(&folder);
+         self.connect_local(pipe, &player)?;
+         if let Some(r) = self.remote.as_mut() {
+@@ -584,6 +586,7 @@ impl Game<'_> {
+             last_attempt: None,
+         });
+         self.integrated = Some(handle);
++        startup::mark("integrated.client.started");
+         Ok(())
+     }
+ 
+@@ -880,13 +883,16 @@ impl Game<'_> {
+         let view = &flags.load;
+         view.start(Stage::LoadInitialChunks, 0);
+         view.finish(Stage::LoadInitialChunks);
+-        let _ = ready.send(Ok((pipe, self.level.name.clone())));
++        if ready.send(Ok((pipe, self.level.name.clone()))).is_ok() {
++            startup::mark("integrated.server.sent_pipe");
++        }
+         startup::time("server.settle_spawn", || self.settle_spawn())
+     }
+ 
+     /// `MinecraftServer.stopServer`: the players are saved and sent away,
+     /// then the world is saved.
+     fn stop_integrated(&mut self) -> Result<()> {
++        let _stop = startup::step("integrated.server.stop");
+         // Abort background terrain generation/decoration on shutdown, matching vanilla behavior.
+         self.streaming.abort_generation();
+         // The close request: lifecycle observation stops.
+@@ -919,12 +925,13 @@ impl Game<'_> {
+         }
+         // ServerPlayer.disconnect: nobody is left in a bed.
+         self.free_player_beds()?;
+-        self.save_game()?;
+-        self.lan_close(false);
+-        self.save.flush()?;
++        startup::time("integrated.server.final_save", || self.save_game())?;
++        startup::time("integrated.server.close_host", || self.lan_close(false));
++        startup::time("integrated.server.flush_regions", || self.save.flush())?;
+         // `WorldCloseFinal` follows a successful final save.
+         self.native_lifecycle_world_closed();
+         self.session_lock = None;
++        startup::mark("integrated.server.released_lock");
+         Ok(())
+     }
+ }
+diff --git a/crates/horizon-client/src/game/remote.rs b/crates/horizon-client/src/game/remote.rs
+index 9411ab25f8d817253c113978940f38fdf9b964c0..eb2326d1aab4d836ed8009f0f67c0a090b7577fa 100644
+--- a/crates/horizon-client/src/game/remote.rs
++++ b/crates/horizon-client/src/game/remote.rs
+@@ -1201,6 +1201,10 @@ impl Game<'_> {
+         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
+             return self.begin_closing_save(false);
+         }
++        let integrated = self.integrated.is_some();
++        let _leave = integrated
++            .then(|| horizon_client::spans::startup::step("integrated.client.leave"))
++            .flatten();
+         self.finish_perf();
+         if reason.is_none() {
+             // Leaving on purpose: nothing for auto-reconnect to retry.
+@@ -1235,6 +1239,9 @@ impl Game<'_> {
+         if let Some(mut r) = self.remote.take() {
+             r.session.disconnect();
+         }
++        if integrated {
++            horizon_client::spans::startup::mark("integrated.client.closed_pipe");
++        }
+         super::lan::forget_sync_data();
+         self.gui.atlas.object_skins.clear();
+         self.server_packs_disconnect();
+@@ -1265,7 +1272,11 @@ impl Game<'_> {
+         self.adv = Default::default();
+         self.stats = Default::default();
+         self.score.board = Default::default();
++        let _streaming = integrated
++            .then(|| horizon_client::spans::startup::step("integrated.client.release_streaming"))
++            .flatten();
+         self.streaming = Streaming::new(Arc::new(NoTerrain), self.worker_context(), 1);
++        drop(_streaming);
+         self.streaming.paused = true;
+         self.world = World::new(self.res.facts().air, 0);
+         self.player = None;
+@@ -1952,6 +1963,15 @@ impl Game<'_> {
+                     name,
+                     uuid,
+                 } => {
++                    let _registries = self
++                        .integrated
++                        .is_some()
++                        .then(|| {
++                            horizon_client::spans::startup::step(
++                                "integrated.client.apply_registries",
++                            )
++                        })
++                        .flatten();
+                     self.set_registries(registries);
+                     self.extras_joined();
+                     // handleLogin: the level loading screen replaces any dialog.
+@@ -3247,6 +3267,9 @@ impl Game<'_> {
+                 self.debug_charts.ping.log(delay);
+             }
+             C::Login(p) => {
++                if self.integrated.is_some() {
++                    horizon_client::spans::startup::mark("integrated.client.play_login");
++                }
+                 self.test_highlights.clear();
+                 self.forget_synced_recipes();
+                 self.level.hardcore = p.hardcore;
+@@ -5987,6 +6010,9 @@ impl Game<'_> {
+             return;
+         };
+         if section_ready && r.level_load.wants_player_section() {
++            if self.integrated.is_some() {
++                horizon_client::spans::startup::mark("integrated.client.player_section_ready");
++            }
+             r.level_load.player_section_ready();
+         }
+         r.level_load.tick_client_load(now, check);
+@@ -5996,6 +6022,9 @@ impl Game<'_> {
+         #[cfg(target_os = "cafe")]
+         horizon_client_platform::cafe_memory::report("world.before_ready_frame");
+         r.level_load.finish();
++        if self.integrated.is_some() {
++            horizon_client::spans::startup::mark("integrated.client.level_ready");
++        }
+         if !r.loaded_sent {
+             r.loaded_sent = true;
+             self.send(S::PlayerLoaded(Empty));
+diff --git a/crates/horizon-client/src/lan/conn.rs b/crates/horizon-client/src/lan/conn.rs
+index 80407c2f075d84322495c36a9a77da5e18a85c94..8019b822b1a9cb3826859020c9983eeb62ce4120 100644
+--- a/crates/horizon-client/src/lan/conn.rs
++++ b/crates/horizon-client/src/lan/conn.rs
+@@ -470,7 +470,14 @@ pub fn serve_local(
+     pipe: horizon_protocol::connection::Pipe,
+     shared: Arc<Shared>,
+ ) -> Result<(), String> {
+-    serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared, None)
++    let _connection = crate::spans::startup::step("integrated.server.local_negotiation");
++    let result = serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared, None);
++    if crate::spans::startup::on()
++        && let Err(reason) = &result
++    {
++        log::warn!("Horizon local game connection ended during negotiation: {reason}");
++    }
++    result
+ }
+ 
+ fn serve_connection(
+@@ -874,6 +881,7 @@ fn login_and_configure(
+     name: &str,
+     properties: Vec<login::Property>,
+ ) -> Result<Option<Parts>, String> {
++    let local = c.is_memory();
+     let e = |e: horizon_protocol::Error| e.to_string();
+     // ServerLoginPacketListenerImpl: memory connections are not compressed.
+     let threshold = shared.config.compression_threshold;
+@@ -905,6 +913,9 @@ fn login_and_configure(
+     }
+     c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
+     // Configuration.
++    let _configuration = local
++        .then(|| crate::spans::startup::step("integrated.server.configuration"))
++        .flatten();
+     let sync_data = shared.sync();
+     let sync: &SyncData = &sync_data;
+     let send = |c: &mut Connection, p: cfg::Clientbound| c.send(&p.encode()).map_err(e);
+@@ -1110,6 +1121,9 @@ fn login_and_configure(
+         return Ok(None);
+     }
+     send(c, cfg::Clientbound::FinishConfiguration(Empty))?;
++    if local {
++        crate::spans::startup::mark("integrated.server.sent_finish_configuration");
++    }
+     loop {
+         let (id, payload) = c.recv().map_err(e)?;
+         match decode_config(id, &payload).map_err(e)? {
+@@ -1296,6 +1310,7 @@ fn play(
+         .is_some_and(|p| p.required);
+     let session = PlayConn {
+         conn,
++        local: address == MEMORY_ADDRESS,
+         shared: shared.clone(),
+         uuid: parts.uuid,
+         name: parts.name.clone(),
+@@ -1330,12 +1345,16 @@ fn play(
+         return;
+     }
+     let (socket, reader, writer) = c.detach();
++    if address == MEMORY_ADDRESS {
++        crate::spans::startup::mark("integrated.server.queued_local_play");
++    }
+     io_pool::adopt(socket, (reader, writer), outbox, session, READ_TIMEOUT);
+ }
+ 
+ /// A player's play state on its network thread.
+ struct PlayConn {
+     conn: u32,
++    local: bool,
+     shared: Arc<Shared>,
+     uuid: u128,
+     name: String,
+@@ -1405,6 +1424,12 @@ impl io_pool::Session for PlayConn {
+         Some(play::Clientbound::KeepAlive(cfg::KeepAlive { id }).encode())
+     }
+     fn left(&mut self, reason: String) {
++        if self.local && crate::spans::startup::on() {
++            log::info!(
++                "Horizon local game connection left play: conn={} reason={reason}",
++                self.conn
++            );
++        }
+         let _ = self.shared.events.send(NetEvent::Left(self.conn, reason));
+         self.shared.closing.fetch_add(1, Ordering::AcqRel);
+     }
+diff --git a/crates/horizon-client/src/net.rs b/crates/horizon-client/src/net.rs
+index 326961b408e1714f90a9109247acf5e6864ca29d..19c0412380f2e519d6465af1ba54fdecdc8b47fd 100644
+--- a/crates/horizon-client/src/net.rs
++++ b/crates/horizon-client/src/net.rs
+@@ -659,6 +659,12 @@ fn run(
+     lan: bool,
+     recorder: &Arc<Mutex<Option<StudioRecorder>>>,
+ ) -> Result<Reason, Reason> {
++    use crate::spans::startup;
++
++    let memory = local.is_some();
++    let login = memory
++        .then(|| startup::step("integrated.client.login"))
++        .flatten();
+     let (host, port, mut c) = if let Some(pipe) = local {
+         (address.to_owned(), 0, Connection::local(pipe))
+     } else {
+@@ -801,7 +807,11 @@ fn run(
+             login::Clientbound::Unknown(..) => {}
+         }
+     };
++    drop(login);
+     status(send, &tr(lang, "connect.joining"));
++    let configuration = memory
++        .then(|| startup::step("integrated.client.configuration"))
++        .flatten();
+     // ClientHandshakePacketListenerImpl.handleLoginFinished: the brand, then
+     // the client information.
+     c.send(
+@@ -824,7 +834,12 @@ fn run(
+         send,
+         cookies,
+         resources,
++        memory,
+     )?;
++    drop(configuration);
++    if memory {
++        startup::mark("integrated.client.configuration_acknowledged");
++    }
+     let _ = send.send(Event::Joined {
+         registries: Arc::new(registries),
+         uuid: profile.uuid,
+@@ -908,6 +923,7 @@ fn receive_play(
+                     send,
+                     cookies,
+                     resources,
++                    false,
+                 )?;
+                 let _ = send.send(Event::Reconfigured(Arc::new(registries)));
+             }
+@@ -1008,6 +1024,7 @@ fn configure(
+     send: &Sender<Event>,
+     cookies: &Cookies,
+     resources: &Path,
++    trace_local: bool,
+ ) -> Result<Dynamic, Reason> {
+     let mut registries = Dynamic::default();
+     let mut content_verified = false;
+@@ -1028,6 +1045,9 @@ fn configure(
+         {
+             cfg::Clientbound::KeepAlive(k) => reply(cfg::Serverbound::KeepAlive(k))?,
+             cfg::Clientbound::CustomPayload(p) if p.channel == crate::content_identity::CHANNEL => {
++                let _identity = trace_local
++                    .then(|| crate::spans::startup::step("integrated.client.content_identity"))
++                    .flatten();
+                 let hash = crate::content_identity::identity(resources)
+                     .map_err(|_| Reason::plain(crate::content_identity::MISMATCH.to_string()))?;
+                 content_verified = p.data == hash;
+@@ -1076,6 +1096,9 @@ fn configure(
+                 let _ = send.send(Event::Features(p.features));
+             }
+             cfg::Clientbound::RegistryData(mut r) => {
++                let _registry = trace_local
++                    .then(|| crate::spans::startup::step("integrated.client.registry"))
++                    .flatten();
+                 fill_known_entries(&mut r, resources);
+                 registries.add(r);
+             }
+@@ -1119,6 +1142,9 @@ fn configure(
+             }
+             cfg::Clientbound::Disconnect(d) => return Err(Reason::tag(&d.reason, lang)),
+             cfg::Clientbound::FinishConfiguration(_) => {
++                if trace_local {
++                    crate::spans::startup::mark("integrated.client.received_finish_configuration");
++                }
+                 registries.custom_components = content_verified;
+                 let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+                 let w = w.as_mut().ok_or_else(|| Reason::plain("Disconnected"))?;
+@@ -1861,6 +1887,7 @@ mod tests {
+                 &send,
+                 &Cookies::default(),
+                 &root,
++                false,
+             )
+         });
+         let mut server = Connection::local(server);
+diff --git a/tools/agent_control_e2e.py b/tools/agent_control_e2e.py
+index 79a75d60fd1b7654ae0aa2d8f471b35dff12e656..26ff1aa2a1f36c9914a81d42456e8dc0778aae6e 100644
+--- a/tools/agent_control_e2e.py
++++ b/tools/agent_control_e2e.py
+@@ -906,10 +906,65 @@ def pause_save_scenario(d, out):
+     return {'saved_on_pause': saved}
+ 
+ 
++def reopen_scenario(d, _out):
++    """Save and reopen twice in one game process, keeping blocks and weather."""
++    world = 'Reopen'
++    d('click_button', label='Singleplayer')
++    d('type', text=world, field='name', replace=True)
++    d('click_button', label='Allow Commands: OFF')
++    d('click_button', label='World')
++    d('type', text='12345', field='seed', replace=True)
++    d('click_button', label='Create New World')
++    d('wait_for', condition='loaded', timeout=400)
++    state = d('state')
++    assert state['gamemode'] == 'survival', state
++    x, y, z = state['player']['block_pos']
++    markers = []
++
++    for cycle, weather, raining, block in (
++        (0, 'rain', True, 'gold_block'),
++        (1, 'clear', False, 'emerald_block'),
++    ):
++        pos = (x + cycle, y + 3, z)
++        markers.append((pos, f'minecraft:{block}'))
++        d('command', command=f'setblock {pos[0]} {pos[1]} {pos[2]} minecraft:{block}')
++        d('command', command=f'weather {weather} 3600s')
++        # Weather changes arrive on the local play connection after the command reply.
++        deadline = time.monotonic() + 15
++        while True:
++            observed = d('state')['weather']
++            if observed['raining'] == raining or time.monotonic() >= deadline:
++                break
++            d('wait', ticks=10)
++        assert observed['raining'] == raining, observed
++        # For the integrated server, disconnect enters the same closing save as
++        # Save and Quit. This works without a rendered pause screen.
++        d('disconnect')
++        d('wait_for', condition='screen', value='title', timeout=120)
++        saved = [w for w in d('worlds')['worlds'] if w['folder'] == world]
++        assert len(saved) == 1 and not saved[0]['corrupted'], saved
++        d('open', world=world)
++        d('wait_for', condition='loaded', timeout=400)
++        state = d('state')
++        assert state['world'] == world and state['player'] is not None, state
++        assert state['weather']['raining'] == raining, state['weather']
++        for (bx, by, bz), expected in markers:
++            # The playable frame only requires the player's own section.
++            deadline = time.monotonic() + 30
++            while True:
++                found = d('block', x=bx, y=by, z=bz)
++                if found['loaded'] or time.monotonic() >= deadline:
++                    break
++                d('wait', ticks=10)
++            assert found['loaded'] and found['block'] == expected, found
++
++    return {'reopens': 2, 'persisted_blocks': len(markers)}
++
++
+ SCENARIOS = {'survival': scenario, 'ui': ui_scenario, 'options': options_scenario, 'events': events_scenario,
+              'consume': consume_scenario, 'use-screen': use_screen_scenario, 'pick': pick_scenario,
+              'suggestions': suggestions_scenario, 'manage': manage_scenario, 'pause-save': pause_save_scenario,
+-             'repro': repro_scenario}
++             'repro': repro_scenario, 'reopen': reopen_scenario}
+ 
+ 
+ REFUSAL = "AI features are off: turn off No AI in the launcher's settings"

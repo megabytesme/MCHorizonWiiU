@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<emulated_controller>
+  <type>Wii U GamePad</type>
+  <controller>
+    <api>Keyboard</api>
+    <uuid>Keyboard</uuid>
+    <display_name>Keyboard</display_name>
+    <mappings>
+      <entry><mapping>17</mapping><button>87</button></entry>
+      <entry><mapping>18</mapping><button>83</button></entry>
+      <entry><mapping>19</mapping><button>65</button></entry>
+      <entry><mapping>20</mapping><button>68</button></entry>
+      <entry><mapping>21</mapping><button>73</button></entry>
+      <entry><mapping>22</mapping><button>75</button></entry>
+      <entry><mapping>23</mapping><button>74</button></entry>
+      <entry><mapping>24</mapping><button>76</button></entry>
+      <entry><mapping>1</mapping><button>32</button></entry>
+      <entry><mapping>3</mapping><button>88</button></entry>
+      <entry><mapping>4</mapping><button>90</button></entry>
+    </mappings>
+  </controller>
+</emulated_controller>

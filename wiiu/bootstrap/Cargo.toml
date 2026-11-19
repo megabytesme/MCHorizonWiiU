@@ -1,0 +1,21 @@
+[package]
+name = "horizon-wiiu-bootstrap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[features]
+default = []
+diagnostic-fixture = ["dep:horizon-core"]
+wiiu-worldgen-render = []
+
+[dependencies]
+libm = "=0.2.16"
+horizon-core = { path = "../../crates/horizon-core", default-features = false, features = ["wiiu-core"], optional = true }
+horizon-terrain-data = { path = "../../crates/horizon-terrain-data" }
+horizon-wiiu-gx2-terrain = { path = "../gx2_terrain" }
+
+[workspace]

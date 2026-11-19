@@ -1,0 +1,15 @@
+[package]
+name = "horizon-wiiu-entropy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Cafe system randomness adapters for Horizon dependencies"
+
+[target.'cfg(target_os = "cafe")'.dependencies]
+getrandom02 = { package = "getrandom", version = "=0.2.17", features = ["custom"] }
+getrandom03 = { package = "getrandom", version = "=0.3.4" }
+getrandom04 = { package = "getrandom", version = "=0.4.3" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("cafe"))'] }

@@ -1,0 +1,3 @@
+[submodule "wiiu/bootstrap/.cafe"]
+	path = wiiu/bootstrap/.cafe
+	url = https://github.com/rust-wiiu/cafe-target-spec

@@ -1,0 +1,22 @@
+diff --git a/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterALU.hpp b/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterALU.hpp
+index fe9316f..6c24362 100644
+--- a/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterALU.hpp
++++ b/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterALU.hpp
+@@ -514,0 +515,9 @@ static void PPCInterpreter_CRNOR(PPCInterpreter_t* hCPU, uint32 opcode)
++static void PPCInterpreter_CRNAND(PPCInterpreter_t* hCPU, uint32 opcode)
++{
++	PPC_OPC_TEMPL_X_CR();
++	uint8 bitA = ppc_getCRBit(hCPU, crA);
++	uint8 bitB = ppc_getCRBit(hCPU, crB);
++	ppc_setCRBit(hCPU, crD, (bitA & bitB) ^ 1);
++	PPCInterpreter_nextInstruction(hCPU);
++}
++
+diff --git a/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterImpl.cpp b/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterImpl.cpp
+index cacfa4a..c44dd75 100644
+--- a/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterImpl.cpp
++++ b/src/Cafe/HW/Espresso/Interpreter/PPCInterpreterImpl.cpp
+@@ -660,0 +661,3 @@ public:
++			case 225:
++				PPCInterpreter_CRNAND(hCPU, opcode);
++				break;

@@ -1,0 +1,13 @@
+* text=auto eol=lf
+wiiu/** -text
+third_party/getrandom-0.4.3/** -text
+tools/horizon_wiiu_capture.py -text
+tools/wiiu_normalize_rpl_relocations.py -text
+tools/wiiu_recompress_rpx.py -text
+catalog/game-gitmodules -text
+*.patch -text
+*.patch -whitespace
+wiiu/builder/** text=auto eol=lf
+wiiu/host/** text=auto eol=lf
+wiiu/pregame/** text=auto eol=lf
+wiiu/pregame/themes/night/notices/** -whitespace

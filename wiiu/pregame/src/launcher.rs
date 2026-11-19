@@ -1,0 +1,673 @@
+//! Portable launcher state and presentation contract. The native host owns
+//! frame timing and provides input samples and a concrete session factory.
+
+use crate::accounts::{OfflineName, Profile};
+use crate::config::{Instance, LaunchConfig, Resources, Settings};
+use crate::session::{
+    HostedSession, ReturnTo, SaveError, SessionFactory, SessionStatus, StartError, StartMode,
+};
+use crate::{ACCEPT, BACK, DOWN, UP};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Page {
+    Home,
+    Profiles,
+    Versions,
+    Settings,
+    AgentControl,
+    Loading,
+    Session,
+    Error,
+    Exiting,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Action {
+    Play,
+    Profiles,
+    Versions,
+    Settings,
+    AgentControl,
+    Quit,
+    Player,
+    Guest,
+    MicrosoftSignIn,
+    DemoResources,
+    GameResources,
+    SwapButtons,
+    ToggleTouch,
+    TestStartupError,
+    PairAgent,
+    Back,
+    CancelLoading,
+    SaveAndQuit,
+    DismissError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionState {
+    Available,
+    Selected,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Row {
+    pub action: Action,
+    pub label: &'static str,
+    pub detail: &'static str,
+    pub state: ActionState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineProfile {
+    Player,
+    Guest,
+}
+
+impl OfflineProfile {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Player => "Player",
+            Self::Guest => "Guest",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceSelection {
+    BuiltInDemo,
+    Prepared,
+}
+
+impl ResourceSelection {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BuiltInDemo => "Built-in demo",
+            Self::Prepared => "Prepared game",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentStatus {
+    Unavailable,
+    Offline,
+    Paired,
+}
+
+/// A future app-scope implementation runs one listener. Gameplay registrations
+/// use opaque generation handles that the host must withdraw before game Drop.
+/// No transport or pairing is installed by the launcher prototype.
+pub trait AgentControl {
+    type Registration;
+    type Tools: ?Sized;
+    type Error;
+
+    fn start(&mut self) -> Result<(), Self::Error>;
+    fn status(&self) -> AgentStatus;
+    fn register_session(&mut self, tools: &Self::Tools) -> Result<Self::Registration, Self::Error>;
+    fn withdraw_session(&mut self, registration: Self::Registration);
+    fn shutdown(&mut self);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct View {
+    pub page: Page,
+    pub focused: Option<Action>,
+    pub profile: OfflineProfile,
+    pub settings: Settings,
+    pub resources: ResourceSelection,
+    pub agent_status: AgentStatus,
+    pub error: Option<StartError>,
+    pub session: Option<SessionStatus>,
+}
+
+impl View {
+    pub fn title(self) -> &'static str {
+        match self.page {
+            Page::Home => "Play",
+            Page::Profiles => "Profiles",
+            Page::Versions => "Version & resources",
+            Page::Settings => "Settings",
+            Page::AgentControl => "Agent Control",
+            Page::Loading if matches!(self.session, Some(SessionStatus::Stopping(_))) => {
+                "Releasing session"
+            }
+            Page::Loading => "Preparing session",
+            Page::Session => match self.session {
+                Some(SessionStatus::Saving) => "Saving session",
+                Some(SessionStatus::SaveFailed(_)) => "Could not finish saving",
+                Some(SessionStatus::Stopping(_)) => "Releasing session",
+                _ if self.resources == ResourceSelection::BuiltInDemo => "Demo session",
+                _ => "Horizon session",
+            },
+            Page::Error => "Could not start",
+            Page::Exiting => "Closing Horizon",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self.page {
+            Page::Home if self.resources == ResourceSelection::BuiltInDemo => {
+                "Native game bridge pending."
+            }
+            Page::Home => "Review the selected Horizon instance.",
+            Page::Profiles => "Select a local offline profile.",
+            Page::Versions => match self.resources {
+                ResourceSelection::BuiltInDemo => "The demo uses built-in resources.",
+                ResourceSelection::Prepared => "This instance uses prepared game resources.",
+            },
+            Page::Settings => "Input preferences apply during this launch.",
+            Page::AgentControl => "Launcher pairing is unavailable in this build.",
+            Page::Loading if matches!(self.session, Some(SessionStatus::Stopping(_))) => {
+                "Waiting for startup workers and resources to close."
+            }
+            Page::Loading if self.resources == ResourceSelection::BuiltInDemo => {
+                "Preparing the built-in demo."
+            }
+            Page::Loading => "Preparing the selected Horizon instance.",
+            Page::Session => match self.session {
+                Some(SessionStatus::Saving) => "Waiting for the session to finish saving.",
+                Some(SessionStatus::SaveFailed(SaveError::Write)) => {
+                    "The save failed. Retry before returning to the launcher."
+                }
+                Some(SessionStatus::SaveFailed(SaveError::Disconnect)) => {
+                    "The connection did not close cleanly. Try again."
+                }
+                Some(SessionStatus::SaveFailed(SaveError::Shutdown)) => {
+                    "The session could not finish closing. Try again."
+                }
+                Some(SessionStatus::Stopping(_)) => "Closing session workers and resources.",
+                _ if self.resources == ResourceSelection::BuiltInDemo => {
+                    "Prototype gameplay session. No world is loaded."
+                }
+                _ => "The selected Horizon instance is active.",
+            },
+            Page::Error => match self.error {
+                Some(StartError::Fixture) => "The startup error test released its partial session.",
+                Some(StartError::OutOfMemory) => "Session memory is unavailable.",
+                Some(StartError::Resources) => "The prepared resources failed verification.",
+                Some(StartError::Engine) => "Horizon could not prepare the selected instance.",
+                _ => "The profile or launch target is unavailable.",
+            },
+            Page::Exiting => "Releasing launcher resources.",
+        }
+    }
+
+    pub fn progress(self) -> Option<u8> {
+        match self.session {
+            Some(SessionStatus::Preparing(percent)) => percent,
+            _ => None,
+        }
+    }
+
+    pub fn footer(self) -> &'static str {
+        if self.settings.swap_buttons {
+            "D-pad Move    B Select    A Back"
+        } else {
+            "D-pad Move    A Select    B Back"
+        }
+    }
+
+    pub fn rows(self) -> impl ExactSizeIterator<Item = Row> {
+        actions(self.page)
+            .iter()
+            .copied()
+            .map(move |action| self.row(action))
+    }
+
+    fn row(self, action: Action) -> Row {
+        use Action::*;
+        use ActionState::*;
+        let (label, detail, state) = match action {
+            Play if self.resources == ResourceSelection::BuiltInDemo => {
+                ("Start demo", "Built-in fixture", Available)
+            }
+            Play => ("Start Game", self.resources.label(), Available),
+            Profiles => ("Profiles", self.profile.name(), Available),
+            Versions => ("Version & resources", env!("CARGO_PKG_VERSION"), Available),
+            Settings => ("Settings", "Controller and touch", Available),
+            AgentControl => ("Agent Control", "Unavailable", Available),
+            Quit => ("Close Horizon", "", Available),
+            Player => (
+                "Player",
+                "Offline profile",
+                self.profile_state(OfflineProfile::Player),
+            ),
+            Guest => (
+                "Guest",
+                "Offline profile",
+                self.profile_state(OfflineProfile::Guest),
+            ),
+            MicrosoftSignIn => ("Microsoft account", "Sign-in provider pending", Disabled),
+            DemoResources if self.resources == ResourceSelection::BuiltInDemo => {
+                ("Built-in demo", "Ready", Selected)
+            }
+            DemoResources => ("Built-in demo", "Unavailable for this instance", Disabled),
+            GameResources if self.resources == ResourceSelection::Prepared => {
+                ("Installed game resources", "Configured", Selected)
+            }
+            GameResources => ("Installed game resources", "Game bridge pending", Disabled),
+            SwapButtons => (
+                "Swap A and B",
+                on_off(self.settings.swap_buttons),
+                Available,
+            ),
+            ToggleTouch => (
+                "GamePad touch",
+                on_off(self.settings.touch_navigation),
+                Available,
+            ),
+            TestStartupError if self.resources == ResourceSelection::BuiltInDemo => {
+                ("Test startup error", "Run diagnostic", Available)
+            }
+            TestStartupError => ("Test startup error", "Demo only", Disabled),
+            PairAgent => ("Pair a PC", "Launcher pairing pending", Disabled),
+            Back => ("Back", "", Available),
+            CancelLoading if matches!(self.session, Some(SessionStatus::Stopping(_))) => {
+                ("Cancel", "Please wait", Disabled)
+            }
+            CancelLoading => ("Cancel", "", Available),
+            SaveAndQuit => match self.session {
+                Some(SessionStatus::Live) => ("Save & Quit", "Return to launcher", Available),
+                Some(SessionStatus::SaveFailed(_)) => {
+                    ("Retry Save & Quit", "Return to launcher", Available)
+                }
+                _ => ("Save & Quit", "Please wait", Disabled),
+            },
+            DismissError => ("Return to Play", "", Available),
+        };
+        Row {
+            action,
+            label,
+            detail,
+            state,
+        }
+    }
+
+    fn profile_state(self, profile: OfflineProfile) -> ActionState {
+        if self.profile == profile {
+            ActionState::Selected
+        } else {
+            ActionState::Available
+        }
+    }
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled {
+        "On"
+    } else {
+        "Off"
+    }
+}
+
+fn actions(page: Page) -> &'static [Action] {
+    use Action::*;
+    match page {
+        Page::Home => &[Play, Profiles, Versions, Settings, AgentControl, Quit],
+        Page::Profiles => &[Player, Guest, MicrosoftSignIn, Back],
+        Page::Versions => &[DemoResources, GameResources, Back],
+        Page::Settings => &[SwapButtons, ToggleTouch, TestStartupError, Back],
+        Page::AgentControl => &[PairAgent, Back],
+        Page::Loading => &[CancelLoading],
+        Page::Session => &[SaveAndQuit],
+        Page::Error => &[DismissError],
+        Page::Exiting => &[],
+    }
+}
+
+/// A hardware sample after DRC calibration and theme hit testing. An invalid
+/// touch breaks a gesture. A missing hardware sample is handled by the host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Touch {
+    Released,
+    Pressed(Option<Action>),
+    Invalid,
+}
+
+pub struct Launcher<'a, F: SessionFactory> {
+    factory: F,
+    instance: Instance<'a>,
+    session: Option<HostedSession<F::Driver>>,
+    view: View,
+    pending: Option<StartMode>,
+    foreground: bool,
+    previous_buttons: Option<u32>,
+    touch_ready: bool,
+    touch_held: bool,
+    touch_action: Option<Action>,
+}
+
+impl<'a, F: SessionFactory> Launcher<'a, F> {
+    pub fn new(factory: F, instance: Instance<'a>, settings: Settings) -> Self {
+        let resources = match instance.resources {
+            Resources::BuiltInDemo => ResourceSelection::BuiltInDemo,
+            Resources::Prepared(_) => ResourceSelection::Prepared,
+        };
+        Self {
+            factory,
+            instance,
+            session: None,
+            view: View {
+                page: Page::Home,
+                focused: Some(Action::Play),
+                profile: OfflineProfile::Player,
+                settings,
+                resources,
+                agent_status: AgentStatus::Unavailable,
+                error: None,
+                session: None,
+            },
+            pending: None,
+            foreground: true,
+            previous_buttons: None,
+            touch_ready: false,
+            touch_held: false,
+            touch_action: None,
+        }
+    }
+
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// The host lends a foreground frame and gameplay input to this driver.
+    /// A preparation, save or teardown frame belongs to the shell.
+    pub fn live_driver(&mut self) -> Option<&mut F::Driver> {
+        if !self.foreground {
+            return None;
+        }
+        self.session.as_mut()?.live_driver()
+    }
+
+    pub fn focus(&mut self, foreground: bool) {
+        if self.foreground != foreground {
+            self.foreground = foreground;
+            self.input_lost();
+            if let Some(session) = self.session.as_mut() {
+                session.foreground(foreground);
+            }
+        }
+    }
+
+    pub fn input_lost(&mut self) {
+        self.previous_buttons = None;
+        self.touch_ready = false;
+        self.touch_held = false;
+        self.touch_action = None;
+    }
+
+    pub fn sample(&mut self, held: u32, touch: Touch) {
+        if !self.foreground || self.view.page == Page::Exiting {
+            return;
+        }
+        let Some(previous) = self.previous_buttons else {
+            if held == 0 {
+                self.previous_buttons = Some(0);
+            }
+            self.handle_touch(touch);
+            return;
+        };
+        self.previous_buttons = Some(held);
+        let pressed = held & !previous;
+        if pressed != 0 {
+            self.touch_action = None;
+            self.controller(pressed);
+        }
+        self.handle_touch(touch);
+    }
+
+    fn handle_touch(&mut self, touch: Touch) {
+        if !self.view.settings.touch_navigation {
+            return;
+        }
+        match touch {
+            Touch::Invalid => {
+                self.touch_ready = false;
+                self.touch_held = false;
+                self.touch_action = None;
+            }
+            Touch::Released => {
+                self.touch_ready = true;
+                self.touch_held = false;
+                if let Some(action) = self.touch_action.take() {
+                    self.dispatch(action);
+                }
+            }
+            Touch::Pressed(action) if self.touch_ready => {
+                if self.touch_held {
+                    if action != self.touch_action {
+                        self.touch_action = None;
+                    }
+                } else {
+                    self.touch_held = true;
+                    self.touch_action = action.filter(|id| self.enabled(*id));
+                    if self.touch_action.is_some() {
+                        self.view.focused = self.touch_action;
+                    }
+                }
+            }
+            Touch::Pressed(_) => {}
+        }
+    }
+
+    fn controller(&mut self, pressed: u32) {
+        let (accept, back) = if self.view.settings.swap_buttons {
+            (BACK, ACCEPT)
+        } else {
+            (ACCEPT, BACK)
+        };
+        if pressed & back != 0 {
+            match self.view.page {
+                Page::Home => {}
+                Page::Loading => self.dispatch(Action::CancelLoading),
+                Page::Session => self.dispatch(Action::SaveAndQuit),
+                Page::Error => self.dispatch(Action::DismissError),
+                _ => self.dispatch(Action::Back),
+            }
+            return;
+        }
+        match pressed & (UP | DOWN) {
+            UP => self.move_focus(false),
+            DOWN => self.move_focus(true),
+            _ => {}
+        }
+        if pressed & accept != 0 {
+            if let Some(action) = self.view.focused {
+                self.dispatch(action);
+            }
+        }
+    }
+
+    fn move_focus(&mut self, forward: bool) {
+        let options = actions(self.view.page);
+        let Some(current) = options
+            .iter()
+            .position(|action| Some(*action) == self.view.focused)
+        else {
+            return;
+        };
+        let next = if forward {
+            options
+                .iter()
+                .copied()
+                .cycle()
+                .skip(current + 1)
+                .take(options.len())
+                .find(|action| self.enabled(*action))
+        } else {
+            options
+                .iter()
+                .rev()
+                .copied()
+                .cycle()
+                .skip(options.len() - current)
+                .take(options.len())
+                .find(|action| self.enabled(*action))
+        };
+        if next.is_some() {
+            self.view.focused = next;
+        }
+    }
+
+    fn enabled(&self, action: Action) -> bool {
+        actions(self.view.page).contains(&action)
+            && self.view.row(action).state != ActionState::Disabled
+    }
+
+    fn show(&mut self, page: Page, focus: Option<Action>) {
+        self.view.page = page;
+        self.view.focused = focus.filter(|action| self.enabled(*action)).or_else(|| {
+            actions(page)
+                .iter()
+                .copied()
+                .find(|action| self.enabled(*action))
+        });
+        self.view.error = None;
+        self.touch_action = None;
+        self.touch_ready = false;
+    }
+
+    /// Shared transition entry point. Gestures and renderers cannot activate a
+    /// disabled action or an action belonging to a different page.
+    pub fn dispatch(&mut self, action: Action) {
+        if !self.foreground || !self.enabled(action) {
+            return;
+        }
+        use Action::*;
+        match action {
+            Play | TestStartupError => {
+                let mode = if action == Play {
+                    StartMode::Normal
+                } else {
+                    StartMode::TestError
+                };
+                self.pending = Some(mode);
+                self.show(Page::Loading, None);
+            }
+            Profiles => self.show(
+                Page::Profiles,
+                Some(match self.view.profile {
+                    OfflineProfile::Player => Player,
+                    OfflineProfile::Guest => Guest,
+                }),
+            ),
+            Versions => self.show(Page::Versions, None),
+            Settings => self.show(Page::Settings, None),
+            AgentControl => self.show(Page::AgentControl, None),
+            // Close Horizon is available only on Home, after all sessions are gone.
+            Quit => {
+                self.show(Page::Exiting, None);
+            }
+            Player => self.view.profile = OfflineProfile::Player,
+            Guest => self.view.profile = OfflineProfile::Guest,
+            SwapButtons => self.view.settings.swap_buttons = !self.view.settings.swap_buttons,
+            ToggleTouch => {
+                self.view.settings.touch_navigation = !self.view.settings.touch_navigation;
+                self.touch_ready = false;
+            }
+            Back => {
+                let focus = match self.view.page {
+                    Page::Profiles => Profiles,
+                    Page::Versions => Versions,
+                    Page::Settings => Settings,
+                    _ => AgentControl,
+                };
+                self.show(Page::Home, Some(focus));
+            }
+            CancelLoading => {
+                self.pending = None;
+                if let Some(session) = self.session.as_mut() {
+                    session.cancel();
+                    self.update_session_view();
+                } else {
+                    self.show(Page::Home, None);
+                }
+            }
+            SaveAndQuit => {
+                if let Some(session) = self.session.as_mut() {
+                    session.save_and_quit();
+                    self.update_session_view();
+                }
+            }
+            DismissError => self.show(Page::Home, None),
+            DemoResources | GameResources | PairAgent | MicrosoftSignIn => {}
+        }
+    }
+
+    /// Poll one unit of work per foreground host-loop iteration, including
+    /// iterations when a live game has no frame to present.
+    pub fn advance(&mut self) {
+        if !self.foreground {
+            return;
+        }
+        if let Some(mode) = self.pending.take() {
+            let config = LaunchConfig {
+                profile: Profile::Offline(OfflineName::for_builtin(self.view.profile.name())),
+                instance: self.instance,
+                settings: self.view.settings,
+            };
+            match self.factory.start(config, mode) {
+                Ok(driver) => self.session = Some(HostedSession::new(driver)),
+                Err(error) => {
+                    self.show(Page::Error, None);
+                    self.view.error = Some(error);
+                    return;
+                }
+            }
+        }
+        if let Some(session) = self.session.as_mut() {
+            session.advance();
+            self.update_session_view();
+        }
+    }
+
+    fn update_session_view(&mut self) {
+        let Some(status) = self.session.as_ref().map(HostedSession::status) else {
+            return;
+        };
+        if let SessionStatus::Released(outcome) = status {
+            drop(self.session.take());
+            self.view.session = None;
+            match outcome {
+                ReturnTo::Cancelled | ReturnTo::Saved => self.show(Page::Home, None),
+                ReturnTo::StartError(error) => {
+                    self.show(Page::Error, None);
+                    self.view.error = Some(error);
+                }
+            }
+            return;
+        }
+
+        self.view.session = Some(status);
+        let page = match status {
+            SessionStatus::Preparing(_)
+            | SessionStatus::Stopping(ReturnTo::Cancelled | ReturnTo::StartError(_)) => {
+                Page::Loading
+            }
+            _ => Page::Session,
+        };
+        let focus_valid = match self.view.focused {
+            Some(action) => self.enabled(action),
+            None => !actions(page)
+                .iter()
+                .any(|action| self.view.row(*action).state != ActionState::Disabled),
+        };
+        if page != self.view.page || !focus_valid {
+            self.show(page, None);
+        }
+    }
+
+    pub fn close(&mut self) -> Result<(), SaveError> {
+        self.pending = None;
+        let result = self
+            .session
+            .take()
+            .map_or(Ok(()), HostedSession::shutdown_for_exit);
+        self.view.session = None;
+        self.show(Page::Exiting, None);
+        result
+    }
+}

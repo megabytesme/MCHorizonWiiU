@@ -1,0 +1,37 @@
+foreach(required CARGO PACKAGE_ELF READRPL RPX)
+   if(NOT DEFINED ${required})
+      message(FATAL_ERROR "${required} is required")
+   endif()
+endforeach()
+
+# Do not replace the last successful RPX until its replacement is validated.
+string(RANDOM LENGTH 24 ALPHABET 0123456789abcdef suffix)
+set(temporary "${RPX}.${suffix}.tmp.rpx")
+if(EXISTS "${temporary}")
+   message(FATAL_ERROR "Temporary RPX already exists: ${temporary}")
+endif()
+execute_process(COMMAND "${CARGO}" wiiu rpx "${PACKAGE_ELF}" "${temporary}"
+   RESULT_VARIABLE result ERROR_VARIABLE error)
+if(NOT result STREQUAL "0")
+   file(REMOVE "${temporary}")
+   message(FATAL_ERROR "RPX conversion failed: ${error}")
+endif()
+execute_process(COMMAND "${READRPL}" -i "${temporary}"
+   RESULT_VARIABLE result OUTPUT_VARIABLE imports ERROR_VARIABLE error)
+string(REGEX MATCH "Section [0-9]+: SHT_RPL_IMPORTS, \\.fimport_coreinit,[^\n]*\n(  [^\n]*\n)*"
+   coreinit "${imports}")
+if(NOT result STREQUAL "0" OR NOT coreinit MATCHES "\n    exit[\r\n]")
+   file(REMOVE "${temporary}")
+   message(FATAL_ERROR "RPX is missing the coreinit exit import: ${error}")
+endif()
+if(imports MATCHES "__rplwrap_[A-Za-z0-9_]*")
+   set(wrapper "${CMAKE_MATCH_0}")
+   file(REMOVE "${temporary}")
+   message(FATAL_ERROR "RPX contains unsupported WUT wrapper import: ${wrapper}")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" -E rename "${temporary}" "${RPX}"
+   RESULT_VARIABLE result ERROR_VARIABLE error)
+if(NOT result STREQUAL "0")
+   file(REMOVE "${temporary}")
+   message(FATAL_ERROR "Cannot install validated RPX: ${error}")
+endif()

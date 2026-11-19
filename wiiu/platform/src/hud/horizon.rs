@@ -1,0 +1,513 @@
+//! Adapt Horizon's original CPU HUD to the GX2 presenter.
+
+use horizon_client_hud::{HudAtlas, HudBatch};
+
+#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+use super::Error;
+use super::{Blend, Frame};
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+use std::borrow::Cow;
+use std::ops::Range;
+
+/// Prepare the original CPU atlas for a new renderer. Horizon's atlas pixels
+/// omit glyphs rasterized into an earlier GPU texture, so their cache must be
+/// reset before the new renderer is created, as in `build_renderer`.
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn prepare_atlas(atlas: &HudAtlas) -> Cow<'_, [u8]> {
+    atlas.font.reset_cache();
+    atlas.pixels()
+}
+
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn prepare_animations(
+    states: &mut horizon_client_hud::sprite_animations::States,
+    size: [u32; 2],
+    tick: u64,
+    enabled: bool,
+) -> Option<horizon_client_hud::sprite_animations::Update<'_>> {
+    if enabled {
+        Some(horizon_client_hud::sprite_animations::prepare(
+            states, size, tick,
+        ))
+    } else {
+        None
+    }
+}
+
+/// Conservative UV bounds for each triangle in the HUD batch. Returning None
+/// on malformed geometry keeps every animation update rather than guessing.
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn triangle_uv_bounds(vertices: &[horizon_hud_data::HudVertex]) -> Option<Vec<[f32; 4]>> {
+    if !vertices.len().is_multiple_of(3) {
+        return None;
+    }
+    let mut bounds = Vec::with_capacity(vertices.len() / 3);
+    for triangle in vertices.as_chunks::<3>().0 {
+        let glint = triangle[0].uv[0] >= 2.0;
+        let mut min = [1.0f32; 2];
+        let mut max = [0.0f32; 2];
+        for vertex in triangle {
+            let [u, v] = vertex.uv;
+            if (u >= 2.0) != glint {
+                return None;
+            }
+            let u = if glint { u - 2.0 } else { u };
+            for (axis, value) in [u, v].into_iter().enumerate() {
+                if !value.is_finite() {
+                    return None;
+                }
+                let value = value.clamp(0.0, 1.0);
+                min[axis] = min[axis].min(value);
+                max[axis] = max[axis].max(value);
+            }
+        }
+        bounds.push([min[0], min[1], max[0], max[1]]);
+    }
+    Some(bounds)
+}
+
+/// Point filtering and clamping are conservative at atlas edges: include an
+/// extra texel around each patch, and select every region if geometry is unknown.
+#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
+fn animation_may_be_sampled(
+    rect: horizon_client_hud::Rect,
+    size: [u32; 2],
+    triangles: Option<&[[f32; 4]]>,
+) -> bool {
+    let [width, height] = size;
+    let Some(triangles) = triangles else {
+        return true;
+    };
+    if width == 0 || height == 0 {
+        return true;
+    }
+    let x = (rect.u0 * width as f32).round();
+    let y = (rect.v0 * height as f32).round();
+    let (w, h) = rect.texels((width, height));
+    let bounds = [
+        (x - 1.0) / width as f32,
+        (y - 1.0) / height as f32,
+        (x + w as f32 + 1.0) / width as f32,
+        (y + h as f32 + 1.0) / height as f32,
+    ];
+    if bounds.iter().any(|v| !v.is_finite()) {
+        return true;
+    }
+    triangles.iter().any(|triangle| {
+        triangle[2] >= bounds[0]
+            && triangle[0] <= bounds[2]
+            && triangle[3] >= bounds[1]
+            && triangle[1] <= bounds[3]
+    })
+}
+
+/// Borrows the original batch while retaining Horizon's ordered blend runs.
+pub struct BatchFrame<'a> {
+    batch: &'a HudBatch,
+    runs: Vec<(Range<u32>, Blend)>,
+    viewport: [u32; 2],
+    pack_text_shader: bool,
+}
+
+impl<'a> BatchFrame<'a> {
+    /// Build a frame for a physical viewport.
+    pub fn new(atlas: &HudAtlas, batch: &'a HudBatch, viewport: [u32; 2]) -> Self {
+        Self {
+            batch,
+            runs: batch.runs(),
+            viewport,
+            pack_text_shader: atlas.text_shader.is_some(),
+        }
+    }
+
+    /// Borrow the original vertices and patches for one synchronous draw.
+    pub fn frame(&self) -> Frame<'_> {
+        Frame {
+            vertices: &self.batch.vertices,
+            runs: &self.runs,
+            patches: &self.batch.patches,
+            viewport: self.viewport,
+            scale: self.batch.scale,
+            pack_text_shader: self.pack_text_shader,
+        }
+    }
+}
+
+/// A GX2 presenter initialized from one specific Horizon atlas revision.
+#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+pub struct HorizonPresenter<'shader> {
+    presenter: super::Presenter<'shader>,
+    atlas_revision: u64,
+    atlas_size: [u32; 2],
+    pack_text_shader: bool,
+    animations: horizon_client_hud::sprite_animations::States,
+}
+
+#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+impl<'shader> HorizonPresenter<'shader> {
+    /// Upload one image per CIT rule slot for this atlas revision.
+    ///
+    /// # Safety
+    /// The render thread must own the live GX2 presenter.
+    pub unsafe fn set_cit_glints(
+        &mut self,
+        size: [u32; 2],
+        pixels: &[u8],
+        slots: &[super::CitSlot],
+    ) -> Result<(), Error> {
+        self.presenter.set_cit_glints(size, pixels, slots)
+    }
+
+    /// Create a presenter from the original Horizon atlas.
+    ///
+    /// # Safety
+    /// GX2 must be initialized and remain valid on this thread until drop.
+    /// `gfd` must be an aligned, complete, valid presenter shader GFD and
+    /// remain alive until the returned presenter is dropped. Create the
+    /// presenter before laying out its first batch: this resets the font cache
+    /// and batches from an earlier renderer may contain stale glyph UVs.
+    pub unsafe fn new(gfd: &'shader [u8], atlas: &HudAtlas, capacity: u32) -> Result<Self, Error> {
+        // `pixels()` can decompress into an owned buffer. GX2 copies those
+        // pixels during creation, before the temporary buffer is dropped.
+        let pixels = prepare_atlas(atlas);
+        let mut presenter =
+            super::Presenter::new(gfd, atlas.width, atlas.height, &pixels, capacity)?;
+        let (rgba, width, height) = &atlas.glint;
+        if !rgba.is_empty() {
+            presenter.set_glint_texture(*width, *height, rgba)?;
+        }
+        Ok(Self {
+            presenter,
+            atlas_revision: atlas.revision,
+            atlas_size: [atlas.width, atlas.height],
+            pack_text_shader: atlas.text_shader.is_some(),
+            animations: horizon_client_hud::sprite_animations::track(&atlas.sprite_animations),
+        })
+    }
+
+    /// Draw one Horizon batch at its current game tick. When Horizon's
+    /// `animated_textures` option is enabled, sprite updates are committed
+    /// only after the GX2 presenter accepts the frame.
+    ///
+    /// # Safety
+    /// The calling render thread must have a valid GX2 color target bound.
+    /// This changes GX2 render state.
+    pub unsafe fn draw(
+        &mut self,
+        atlas: &HudAtlas,
+        batch: &HudBatch,
+        viewport: [u32; 2],
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        self.draw_inner(atlas, batch, viewport, None, tick, animated_textures)
+    }
+
+    /// Draw one original Horizon batch into a target viewport rectangle while
+    /// preserving the viewport and scale used to lay out the batch.
+    ///
+    /// Use the layout viewport passed to `HudBatch::new` as
+    /// `layout_viewport`; `target` is `[x, y, width, height]` on the active
+    /// GX2 target. Its aspect ratio must match the layout viewport within 0.5%.
+    /// A host can letterbox a differently shaped output rectangle. Reuse the
+    /// same batch for each output instead of drawing the menu again.
+    ///
+    /// Animated sprite updates are committed only after this target accepts
+    /// the frame, matching [`Self::draw`].
+    ///
+    /// # Safety
+    /// The calling render thread must have a valid GX2 color target bound.
+    /// This changes GX2 render state.
+    pub unsafe fn draw_to(
+        &mut self,
+        atlas: &HudAtlas,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: [u32; 4],
+        output: u32,
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        self.draw_inner(
+            atlas,
+            batch,
+            layout_viewport,
+            Some((target, output)),
+            tick,
+            animated_textures,
+        )
+    }
+
+    /// Draw a previously prepared atlas's new Horizon batch without borrowing
+    /// the atlas again. This is used by Cafe's live Game callback, whose HUD
+    /// artwork is prepared before frame construction and then consumed from
+    /// the presentation contract.
+    ///
+    /// # Safety
+    /// The render thread must have a valid GX2 color target bound.
+    pub unsafe fn draw_batch_to(
+        &mut self,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: [u32; 4],
+        output: u32,
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        let frame = BatchFrame {
+            batch,
+            runs: batch.runs(),
+            viewport: layout_viewport,
+            pack_text_shader: self.pack_text_shader,
+        };
+        self.presenter
+            .set_glint_style(batch.glint_alpha, batch.glint_colour);
+        self.presenter.set_end_portal(batch.end_portal);
+        let atlas_size = self.atlas_size;
+        // The portal shader samples its two atlas rectangles independently of
+        // vertex UVs. Keep their updates even if the geometry uses a white texel.
+        let triangles = if animated_textures
+            && !frame
+                .runs
+                .iter()
+                .any(|(_, blend)| *blend == Blend::EndPortal)
+        {
+            triangle_uv_bounds(&batch.vertices)
+        } else {
+            None
+        };
+        let update = if animated_textures {
+            Some(horizon_client_hud::sprite_animations::prepare_if(
+                &mut self.animations,
+                atlas_size,
+                tick,
+                |rect| animation_may_be_sampled(rect, atlas_size, triangles.as_deref()),
+            ))
+        } else {
+            None
+        };
+        if let Some(update) = update {
+            let frame = frame.frame();
+            unsafe {
+                self.presenter.draw_with_patches_to_output(
+                    &frame,
+                    update.patches(),
+                    target,
+                    output,
+                )?;
+            }
+            update.commit();
+        } else {
+            let frame = frame.frame();
+            unsafe {
+                self.presenter.draw_to_output(&frame, target, output)?;
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn draw_inner(
+        &mut self,
+        atlas: &HudAtlas,
+        batch: &HudBatch,
+        layout_viewport: [u32; 2],
+        target: Option<([u32; 4], u32)>,
+        tick: u64,
+        animated_textures: bool,
+    ) -> Result<(), Error> {
+        if atlas.revision != self.atlas_revision || [atlas.width, atlas.height] != self.atlas_size {
+            return Err(Error::Invalid);
+        }
+        let frame = BatchFrame::new(atlas, batch, layout_viewport);
+        self.presenter
+            .set_glint_style(batch.glint_alpha, batch.glint_colour);
+        self.presenter.set_end_portal(batch.end_portal);
+        let update = prepare_animations(
+            &mut self.animations,
+            self.atlas_size,
+            tick,
+            animated_textures,
+        );
+        if let Some(update) = update {
+            let frame = frame.frame();
+            match target {
+                Some((target, output)) => unsafe {
+                    self.presenter.draw_with_patches_to_output(
+                        &frame,
+                        update.patches(),
+                        target,
+                        output,
+                    )?;
+                },
+                None => unsafe {
+                    self.presenter.draw_with_patches(&frame, update.patches())?;
+                },
+            }
+            update.commit();
+        } else {
+            let frame = frame.frame();
+            match target {
+                Some((target, output)) => unsafe {
+                    self.presenter.draw_to_output(&frame, target, output)?
+                },
+                None => unsafe { self.presenter.draw(&frame)? },
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hud::Prepared;
+
+    #[test]
+    fn borrows_horizons_real_batch_and_preserves_cit_blend() {
+        let atlas = HudAtlas::boot();
+        let mut batch = HudBatch::new([640, 480]);
+        batch.fill(&atlas, 1.0, 2.0, 3.0, 4.0, 0xff00ffff);
+        let view = BatchFrame::new(&atlas, &batch, [640, 480]);
+        let frame = view.frame();
+        assert_eq!(frame.vertices.as_ptr(), batch.vertices.as_ptr());
+        assert_eq!(frame.patches.as_ptr(), batch.patches.as_ptr());
+        assert_eq!(frame.viewport, [640, 480]);
+        assert_eq!(frame.scale, batch.scale);
+        assert_eq!(frame.runs, &[(0..6, Blend::Alpha)]);
+        assert!(Prepared::new(&frame).is_ok());
+
+        batch.blend_since(0, Blend::CitGlint(2));
+        let view = BatchFrame::new(&atlas, &batch, [640, 480]);
+        assert_eq!(view.frame().runs, &[(0..6, Blend::CitGlint(2))]);
+        assert!(Prepared::new(&view.frame()).is_ok());
+    }
+
+    #[test]
+    fn a_new_presenter_uses_original_pixels_and_resets_font_cache() {
+        let mut atlas = HudAtlas::boot();
+        let old_epoch = atlas.font.epoch();
+        let expected = atlas.pixels().into_owned();
+        atlas.pack_pixels();
+        assert!(atlas.pixels.is_empty());
+        let pixels = prepare_atlas(&atlas);
+        assert_eq!(pixels.as_ref(), expected);
+        assert!(matches!(pixels, Cow::Owned(_)));
+        assert_ne!(atlas.font.epoch(), old_epoch);
+    }
+
+    #[test]
+    fn animated_patches_precede_the_original_glyph_patches_without_copying() {
+        use horizon_hud_data::Patch;
+
+        let atlas = HudAtlas::boot();
+        let mut batch = HudBatch::new([640, 480]);
+        batch.fill(&atlas, 1.0, 2.0, 3.0, 4.0, 0xffffffff);
+        batch.patches.push(Patch {
+            x: 2,
+            y: 3,
+            width: 1,
+            height: 1,
+            rgba: vec![1, 2, 3, 4],
+        });
+        let animated = [Patch {
+            x: 4,
+            y: 5,
+            width: 1,
+            height: 1,
+            rgba: vec![5, 6, 7, 8],
+        }];
+        let view = BatchFrame::new(&atlas, &batch, [640, 480]);
+        let frame = view.frame();
+        let prepared = Prepared::with_extra_patches(&frame, &animated).unwrap();
+        assert_eq!(prepared.patches.len(), 2);
+        assert_eq!(prepared.patches[0].rgba, animated[0].rgba.as_ptr());
+        assert_eq!(prepared.patches[1].rgba, batch.patches[0].rgba.as_ptr());
+    }
+
+    #[test]
+    fn animation_option_preserves_retry_state_when_disabled() {
+        use horizon_client_hud::{Rect, sprite_animations};
+        use horizon_terrain_mesh::sprites::test_frames;
+
+        let animation = test_frames(
+            0,
+            vec![vec![0, 0, 0, 255], vec![100, 200, 0, 255]],
+            r#"{"frametime":2,"interpolate":true,"frames":[0,1]}"#,
+        );
+        let rect = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        let mut states = sprite_animations::track(&[(rect, animation)]);
+        assert!(prepare_animations(&mut states, [1, 1], 0, false).is_none());
+        let first = prepare_animations(&mut states, [1, 1], 0, true).unwrap();
+        assert_eq!(first.patches()[0].rgba, [0, 0, 0, 255]);
+        drop(first);
+        let retry = prepare_animations(&mut states, [1, 1], 0, true).unwrap();
+        assert_eq!(retry.patches().len(), 1);
+        retry.commit();
+        assert!(prepare_animations(&mut states, [1, 1], 2, false).is_none());
+        let resumed = prepare_animations(&mut states, [1, 1], 2, true).unwrap();
+        assert_eq!(resumed.patches()[0].rgba, [100, 200, 0, 255]);
+    }
+    #[test]
+    fn animation_visibility_conservatively_covers_triangle_uvs_and_edges() {
+        use horizon_client_hud::Rect;
+        use horizon_hud_data::HudVertex;
+        let vertex = |u, v| HudVertex {
+            pos: [0.0, 0.0],
+            uv: [u, v],
+            color: 0,
+            depth: 0.0,
+            glint_uv: [0.0, 0.0],
+            text: 0,
+        };
+        let rect = Rect {
+            u0: 0.5,
+            v0: 0.5,
+            u1: 0.625,
+            v1: 0.625,
+            w: 1,
+            h: 1,
+        };
+        let away = [vertex(0.0, 0.0), vertex(0.1, 0.0), vertex(0.0, 0.1)];
+        assert!(!animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&away).as_deref()
+        ));
+        let enclosing = [vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(0.0, 1.0)];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&enclosing).as_deref()
+        ));
+        let edge = [vertex(0.49, 0.5); 3];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&edge).as_deref()
+        ));
+        let glint_mask = [vertex(2.5, 0.5); 3];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&glint_mask).as_deref()
+        ));
+        let unknown = [vertex(f32::NAN, 0.0); 3];
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&unknown).as_deref()
+        ));
+        assert!(animation_may_be_sampled(
+            rect,
+            [32, 32],
+            triangle_uv_bounds(&away[..2]).as_deref()
+        ));
+    }
+}

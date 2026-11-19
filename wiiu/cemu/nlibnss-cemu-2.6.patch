@@ -1,0 +1,41 @@
+diff --git a/src/Cafe/OS/libs/nlibnss/nlibnss.cpp b/src/Cafe/OS/libs/nlibnss/nlibnss.cpp
+index 0c8ee28..dc994e3 100644
+--- a/src/Cafe/OS/libs/nlibnss/nlibnss.cpp
++++ b/src/Cafe/OS/libs/nlibnss/nlibnss.cpp
+@@ -2,0 +3,3 @@
++#include "Cafe/HW/MMU/MMU.h"
++#include <atomic>
++#include <openssl/rand.h>
+@@ -5,0 +9,28 @@ namespace nlibnss
++	static std::atomic<bool> s_ready{false};
++	static constexpr sint32 INVALID_ARG = static_cast<sint32>(0xFFD1FFF7u);
++	static constexpr sint32 NOT_INITIALIZED = static_cast<sint32>(0xFFD1FFFBu);
++	static constexpr sint32 RNG_FAILED = static_cast<sint32>(0xFFD1FFFFu);
++
++	int NSSInit()
++	{
++		if (RAND_status() != 1 && RAND_poll() != 1)
++			return RNG_FAILED;
++		if (RAND_status() != 1)
++			return RNG_FAILED;
++		s_ready.store(true, std::memory_order_release);
++		return 0;
++	}
++
++	int NSSGetRandom(uint8* buffer, sint32 size)
++	{
++		if (!buffer || size < 0)
++			return INVALID_ARG;
++		if (!s_ready.load(std::memory_order_acquire))
++			return NOT_INITIALIZED;
++		if (size == 0)
++			return 0;
++		const MPTR addr = memory_getVirtualOffsetFromPointer(buffer);
++		if (!memory_isAddressRangeAccessible(addr, static_cast<uint32>(size)))
++			return INVALID_ARG;
++		return RAND_bytes(buffer, size) == 1 ? 0 : RNG_FAILED;
++	}
+@@ -33,0 +65,3 @@ namespace nlibnss
++		s_ready.store(false, std::memory_order_release);
++		cafeExportRegister("nlibnss", NSSInit, LogType::Placeholder);
++		cafeExportRegister("nlibnss", NSSGetRandom, LogType::Placeholder);

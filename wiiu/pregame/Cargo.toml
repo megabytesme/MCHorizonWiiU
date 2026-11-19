@@ -1,0 +1,13 @@
+[package]
+name = "horizon-wiiu-pregame"
+version = "0.3.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(horizon_wiiu_cafe)'] }

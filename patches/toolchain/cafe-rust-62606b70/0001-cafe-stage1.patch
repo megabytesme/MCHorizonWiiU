@@ -1,0 +1,867 @@
+diff --git a/compiler/rustc_target/src/spec/targets/powerpc_nintendo_cafe.rs b/compiler/rustc_target/src/spec/targets/powerpc_nintendo_cafe.rs
+index b45828eaf9d785dc5ed7898e1ce2b1e9ebca0c83..949947738c70e04427eb7d3b295cfad2db51e620 100644
+--- a/compiler/rustc_target/src/spec/targets/powerpc_nintendo_cafe.rs
++++ b/compiler/rustc_target/src/spec/targets/powerpc_nintendo_cafe.rs
+@@ -1,7 +1,7 @@
+ use rustc_abi::Endian;
+ 
+ use crate::spec::{
+-    Arch, Cc, CodeModel, LinkerFlavor, Lld, Os, RelocModel, Target, TargetMetadata,
++    Arch, Cc, CodeModel, LinkerFlavor, Lld, Os, PanicStrategy, RelocModel, Target, TargetMetadata,
+     TargetOptions,
+ };
+ 
+@@ -38,6 +38,7 @@ pub(crate) fn target() -> Target {
+             pre_link_args,
+             relocation_model: RelocModel::Static,
+             code_model: Some(CodeModel::Large),
++            panic_strategy: PanicStrategy::Abort,
+             max_atomic_width: Some(32),
+             supports_stack_protector: false,
+             exe_suffix: ".elf".into(),
+diff --git a/library/Cargo.lock b/library/Cargo.lock
+index 51df1e1ac3ea5c8f44b70a2f51ad8cdde8d09ef5..e8eb3fa4beef695eba09979f0a545aed22417850 100644
+--- a/library/Cargo.lock
++++ b/library/Cargo.lock
+@@ -408,6 +408,8 @@ dependencies = [
+ [[package]]
+ name = "unwinding"
+ version = "0.2.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4b134ada16dda9e435abe2a6d76a01d497bc60707357845a15f9b0ed42dc88ce"
+ dependencies = [
+  "gimli",
+  "rustc-std-workspace-core",
+diff --git a/library/Cargo.toml b/library/Cargo.toml
+index 413716afcf30d304d6291e2ab1d0dacf6c03b8ed..788c990c163440c389f4891cc0b3fa521ba79ad4 100644
+--- a/library/Cargo.toml
++++ b/library/Cargo.toml
+@@ -88,6 +88,3 @@ rustc-std-workspace-std = { path = 'rustc-std-workspace-std' }
+ 
+ # See comments in `library/windows-sys/Cargo.toml` for why this is patched
+ windows-sys = { path = 'windows-sys' }
+-
+-# Local PowerPC support until it is released.
+-unwinding = { path = "../../unwinding" }
+diff --git a/library/panic_unwind/src/lib.rs b/library/panic_unwind/src/lib.rs
+index 7007fca2d86a0a762ee39746419d5fcd9cc9c081..d25d94258a16ee94ad743da7b9d3e7dd6f3aaab2 100644
+--- a/library/panic_unwind/src/lib.rs
++++ b/library/panic_unwind/src/lib.rs
+@@ -36,7 +36,6 @@
+         all(target_family = "windows", target_env = "gnu"),
+         target_os = "psp",
+         target_os = "xous",
+-        target_os = "cafe",
+         target_os = "solid_asp3",
+         all(target_family = "unix", not(any(target_os = "espidf", target_os = "nuttx"))),
+         all(target_vendor = "fortanix", target_env = "sgx"),
+diff --git a/library/std/src/sys/net/connection/socket/cafe.rs b/library/std/src/sys/net/connection/socket/cafe.rs
+index c72bd06c0334b3417a10e8a8a4b8d17f5a989f58..450431b9b1fde5f8df0916d68c605b05beb767fe 100644
+--- a/library/std/src/sys/net/connection/socket/cafe.rs
++++ b/library/std/src/sys/net/connection/socket/cafe.rs
+@@ -6,9 +6,12 @@
+ use crate::ffi::{c_int, c_long};
+ use crate::io::{self, BorrowedBuf, BorrowedCursor, IoSlice, IoSliceMut};
+ use crate::net::{Shutdown, SocketAddr};
+-use crate::sync::Once;
++use crate::sync::{
++    atomic::{AtomicBool, Ordering},
++    Arc, Mutex, Once,
++};
+ use crate::sys::pal::unsupported;
+-use crate::time::Duration;
++use crate::time::{Duration, Instant};
+ use crate::{cmp, mem, ptr};
+ 
+ /// POSIX names for the shared socket code, backed by `cafe_sys::nsys::net::socket`.
+@@ -100,8 +103,8 @@ pub struct addrinfo {
+     pub const IPV6_ADD_MEMBERSHIP: c_int = 20;
+     pub const IPV6_DROP_MEMBERSHIP: c_int = 21;
+ 
+-    // nsysnet has no timeout options; the shared code only passes these back to
+-    // `set_timeout`/`timeout`, which report them as unsupported.
++    // nsysnet has no timeout socket options. Cafe std emulates receive timeouts
++    // with select; send timeouts remain unsupported.
+     pub const SO_SNDTIMEO: c_int = 0x1005;
+     pub const SO_RCVTIMEO: c_int = 0x1006;
+ 
+@@ -288,6 +291,10 @@ fn to_timeval(dur: Duration) -> sys::TimeVal {
+     tv
+ }
+ 
++/// Bound select waits so a Cafe shutdown can cancel an in-flight timed read
++/// even if nsysnet does not wake select for shutdown immediately.
++const READ_TIMEOUT_POLL: Duration = Duration::from_millis(50);
++
+ pub fn init() {
+     static INIT: Once = Once::new();
+     INIT.call_once(|| unsafe {
+@@ -299,7 +306,29 @@ pub fn init() {
+     });
+ }
+ 
+-pub struct Socket(c_int);
++pub struct Socket(Arc<SocketHandle>);
++
++struct SocketHandle {
++    fd: c_int,
++    socket_type: sys::Type,
++    read_timeout: Mutex<Option<Duration>>,
++    nonblocking_update: Mutex<()>,
++    nonblocking: AtomicBool,
++    read_shutdown: AtomicBool,
++}
++
++impl Socket {
++    fn from_raw(fd: c_int, socket_type: sys::Type) -> Socket {
++        Socket(Arc::new(SocketHandle {
++            fd,
++            socket_type,
++            read_timeout: Mutex::new(None),
++            nonblocking_update: Mutex::new(()),
++            nonblocking: AtomicBool::new(false),
++            read_shutdown: AtomicBool::new(false),
++        }))
++    }
++}
+ 
+ impl Socket {
+     pub fn new(family: c_int, ty: c_int) -> io::Result<Socket> {
+@@ -307,19 +336,19 @@ pub fn new(family: c_int, ty: c_int) -> io::Result<Socket> {
+             return Err(io::const_error!(io::ErrorKind::Unsupported, "only IPv4 is supported"));
+         }
+         cvt(unsafe { sys::socket(sys::Family(family), sys::Type(ty), sys::Protocol::IP) })
+-            .map(Socket)
++            .map(|fd| Socket::from_raw(fd, sys::Type(ty)))
+     }
+ 
+     pub fn connect(&self, addr: &SocketAddr) -> io::Result<()> {
+         let (addr, len) = socket_addr_to_c(addr);
+-        cvt(unsafe { netc::connect(self.0, addr.as_ptr(), len) }).map(drop)
++        cvt(unsafe { netc::connect(self.as_raw(), addr.as_ptr(), len) }).map(drop)
+     }
+ 
+     pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Result<()> {
+         if timeout.is_zero() {
+             return Err(io::Error::ZERO_TIMEOUT);
+         }
+-        if !(0..u32::BITS as c_int).contains(&self.0) {
++        if !(0..u32::BITS as c_int).contains(&self.as_raw()) {
+             return Err(io::const_error!(io::ErrorKind::Unsupported, "socket cannot be polled"));
+         }
+ 
+@@ -332,10 +361,10 @@ pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Resul
+             Err(e) => return Err(e),
+         }
+ 
+-        let mut writefds = sys::FdSet { bits: 1 << self.0 };
++        let mut writefds = sys::FdSet { bits: 1 << self.as_raw() };
+         let mut timeout = to_timeval(timeout);
+         let n = cvt(unsafe {
+-            sys::select(self.0 + 1, ptr::null_mut(), &mut writefds, ptr::null_mut(), &mut timeout)
++            sys::select(self.as_raw() + 1, ptr::null_mut(), &mut writefds, ptr::null_mut(), &mut timeout)
+         })?;
+         if n == 0 {
+             return Err(io::const_error!(io::ErrorKind::TimedOut, "connection timed out"));
+@@ -347,16 +376,107 @@ pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Resul
+     }
+ 
+     pub fn accept(&self, storage: *mut sockaddr, len: *mut socklen_t) -> io::Result<Socket> {
+-        cvt(unsafe { sys::accept(self.0, storage.cast(), len) }).map(Socket)
++        cvt(unsafe { sys::accept(self.as_raw(), storage.cast(), len) })
++            .map(|fd| Socket::from_raw(fd, self.0.socket_type))
+     }
+ 
+     pub fn duplicate(&self) -> io::Result<Socket> {
+-        unsupported()
++        Ok(Socket(Arc::clone(&self.0)))
++    }
++
++    fn read_timeout(&self) -> Option<Duration> {
++        *self.0.read_timeout.lock().unwrap_or_else(|e| e.into_inner())
++    }
++
++    fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
++        let fd = self.as_raw();
++        if !(0..sys::FD_SETSIZE as c_int).contains(&fd) || fd >= u32::BITS as c_int {
++            return Err(io::const_error!(io::ErrorKind::Unsupported, "socket cannot be polled"));
++        }
++        let mut readfds = sys::FdSet { bits: 1 << fd };
++        let mut timeout = to_timeval(timeout);
++        let ready = cvt(unsafe {
++            sys::select(fd + 1, &mut readfds, ptr::null_mut(), ptr::null_mut(), &mut timeout)
++        })?;
++        Ok(ready != 0)
++    }
++
++    /// Run one receive using a fresh timeout for this syscall. `MSG_DONTWAIT`
++    /// is per-call, so clones keep their shared blocking mode unchanged. A
++    /// short select slice observes `Shutdown::Read` without manufacturing a
++    /// timeout when the configured timeout is `None`.
++    fn receive<T>(
++        &self,
++        flags: sys::MsgFlags,
++        mut recv: impl FnMut(sys::MsgFlags) -> io::Result<T>,
++        shutdown_value: Option<T>,
++    ) -> io::Result<T> {
++        let Some(timeout) = self.read_timeout() else {
++            let flags = if self.0.nonblocking.load(Ordering::Acquire) {
++                flags | sys::MsgFlags::DONTWAIT
++            } else {
++                flags
++            };
++            return recv(flags);
++        };
++        if self.0.nonblocking.load(Ordering::Acquire) {
++            return recv(flags | sys::MsgFlags::DONTWAIT);
++        }
++
++        let started = Instant::now();
++        let mut shutdown_value = shutdown_value;
++        loop {
++            if self.0.socket_type == sys::Type::STREAM
++                && self.0.read_shutdown.load(Ordering::Acquire)
++            {
++                return shutdown_value.take().ok_or_else(|| {
++                    io::const_error!(io::ErrorKind::NotConnected, "socket read side is shut down")
++                });
++            }
++            if self.0.nonblocking.load(Ordering::Acquire) {
++                return recv(flags | sys::MsgFlags::DONTWAIT);
++            }
++            let remaining = timeout.saturating_sub(started.elapsed());
++            if remaining.is_zero() {
++                return Err(io::const_error!(io::ErrorKind::TimedOut, "connection timed out"));
++            }
++            let wait = remaining.min(READ_TIMEOUT_POLL);
++            let readable = match self.wait_readable(wait) {
++                Ok(readable) => readable,
++                // Retry signals against the original deadline. The next loop
++                // iteration also checks read shutdown and observes timeout.
++                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
++                Err(error) => return Err(error),
++            };
++            if !readable {
++                continue;
++            }
++            if self.0.socket_type == sys::Type::STREAM
++                && self.0.read_shutdown.load(Ordering::Acquire)
++            {
++                return shutdown_value.take().ok_or_else(|| {
++                    io::const_error!(io::ErrorKind::NotConnected, "socket read side is shut down")
++                });
++            }
++            match recv(flags | sys::MsgFlags::DONTWAIT) {
++                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
++                result => return result,
++            }
++        }
+     }
+ 
+     fn recv_with_flags(&self, mut buf: BorrowedCursor<'_, u8>, flags: sys::MsgFlags) -> io::Result<()> {
+         let len = cmp::min(buf.capacity(), c_int::MAX as usize) as c_int;
+-        let ret = cvt(unsafe { sys::recv(self.0, buf.as_mut().as_mut_ptr().cast(), len, flags) })?;
++        if len == 0 {
++            return Ok(());
++        }
++        let ret = self.receive(
++            flags,
++            |flags| cvt(unsafe {
++                sys::recv(self.as_raw(), buf.as_mut().as_mut_ptr().cast(), len, flags)
++            }),
++            (self.0.socket_type == sys::Type::STREAM).then_some(0),
++        )?;
+         unsafe { buf.advance(ret as usize) };
+         Ok(())
+     }
+@@ -394,16 +514,23 @@ fn recv_from_with_flags(
+         let mut storage: netc::sockaddr_storage = unsafe { mem::zeroed() };
+         let mut addrlen = size_of_val(&storage) as socklen_t;
+         let len = cmp::min(buf.len(), c_int::MAX as usize) as c_int;
+-        let n = cvt(unsafe {
+-            sys::recvfrom(
+-                self.0,
++        let n = self.receive(
++            flags,
++            |flags| {
++                addrlen = size_of_val(&storage) as socklen_t;
++                cvt(unsafe {
++                    sys::recvfrom(
++                self.as_raw(),
+                 buf.as_mut_ptr().cast(),
+                 len,
+                 flags,
+                 (&raw mut storage).cast(),
+                 &mut addrlen,
+-            )
+-        })?;
++                    )
++                })
++            },
++            None,
++        )?;
+         Ok((n as usize, unsafe { socket_addr_from_c(&storage, addrlen as usize)? }))
+     }
+ 
+@@ -417,7 +544,7 @@ pub fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+ 
+     fn send(&self, buf: &[u8]) -> io::Result<usize> {
+         let len = cmp::min(buf.len(), c_int::MAX as usize) as c_int;
+-        cvt(unsafe { sys::send(self.0, buf.as_ptr().cast(), len, sys::MsgFlags::NONE) }).map(|n| n as usize)
++        cvt(unsafe { sys::send(self.as_raw(), buf.as_ptr().cast(), len, sys::MsgFlags::NONE) }).map(|n| n as usize)
+     }
+ 
+     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+@@ -429,12 +556,36 @@ pub fn is_write_vectored(&self) -> bool {
+         false
+     }
+ 
+-    pub fn set_timeout(&self, _: Option<Duration>, _: c_int) -> io::Result<()> {
+-        unsupported()
++    pub fn set_timeout(&self, timeout: Option<Duration>, kind: c_int) -> io::Result<()> {
++        if kind == netc::SO_SNDTIMEO && timeout.is_none() {
++            return Ok(());
++        }
++        if kind != netc::SO_RCVTIMEO {
++            return unsupported();
++        }
++        if timeout.is_some_and(|duration| duration.is_zero()) {
++            return Err(io::const_error!(io::ErrorKind::InvalidInput, "cannot set a 0 duration timeout"));
++        }
++        if let Some(timeout) = timeout {
++            // nsysnet select uses a 32-bit fd_set; fail at configuration time
++            // rather than claiming a timeout that cannot be enforced.
++            let fd = self.as_raw();
++            if !(0..sys::FD_SETSIZE as c_int).contains(&fd) || fd >= u32::BITS as c_int {
++                return Err(io::const_error!(io::ErrorKind::Unsupported, "socket cannot be polled"));
++            }
++            *self.0.read_timeout.lock().unwrap_or_else(|e| e.into_inner()) = Some(timeout);
++        } else {
++            *self.0.read_timeout.lock().unwrap_or_else(|e| e.into_inner()) = None;
++        }
++        Ok(())
+     }
+ 
+-    pub fn timeout(&self, _: c_int) -> io::Result<Option<Duration>> {
+-        unsupported()
++    pub fn timeout(&self, kind: c_int) -> io::Result<Option<Duration>> {
++        if kind == netc::SO_RCVTIMEO {
++            Ok(self.read_timeout())
++        } else {
++            unsupported()
++        }
+     }
+ 
+     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+@@ -443,7 +594,11 @@ pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+             Shutdown::Read => sys::Shutdown::Read,
+             Shutdown::Both => sys::Shutdown::ReadWrite,
+         };
+-        cvt(unsafe { sys::shutdown(self.0, how) }).map(drop)
++        cvt(unsafe { sys::shutdown(self.as_raw(), how) })?;
++        if matches!(how, sys::Shutdown::Read | sys::Shutdown::ReadWrite) {
++            self.0.read_shutdown.store(true, Ordering::Release);
++        }
++        Ok(())
+     }
+ 
+     pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
+@@ -478,7 +633,10 @@ pub fn nodelay(&self) -> io::Result<bool> {
+     }
+ 
+     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+-        unsafe { setsockopt(self, netc::SOL_SOCKET, netc::SO_NONBLOCK, nonblocking as c_int) }
++        let _update = self.0.nonblocking_update.lock().unwrap_or_else(|e| e.into_inner());
++        unsafe { setsockopt(self, netc::SOL_SOCKET, netc::SO_NONBLOCK, nonblocking as c_int)? };
++        self.0.nonblocking.store(nonblocking, Ordering::Release);
++        Ok(())
+     }
+ 
+     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+@@ -487,12 +645,12 @@ pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+     }
+ 
+     pub fn as_raw(&self) -> c_int {
+-        self.0
++        self.0.fd
+     }
+ }
+ 
+-impl Drop for Socket {
++impl Drop for SocketHandle {
+     fn drop(&mut self) {
+-        unsafe { sys::close(self.0) };
++        unsafe { sys::close(self.fd) };
+     }
+ }
+diff --git a/library/std/src/sys/personality/mod.rs b/library/std/src/sys/personality/mod.rs
+index d14aae9518c1b6fc8b160dd8d89bd9f47a7c5223..be79643bdf8467c5ecee08e5d2f43102064ce3ca 100644
+--- a/library/std/src/sys/personality/mod.rs
++++ b/library/std/src/sys/personality/mod.rs
+@@ -29,7 +29,6 @@ fn rust_eh_personality() {
+         all(target_family = "windows", target_env = "gnu"),
+         target_os = "psp",
+         target_os = "xous",
+-        target_os = "cafe",
+         target_os = "solid_asp3",
+         all(target_family = "unix", not(target_os = "espidf"), not(target_os = "nuttx")),
+         all(target_vendor = "fortanix", target_env = "sgx"),
+diff --git a/library/std/src/sys/thread/cafe.rs b/library/std/src/sys/thread/cafe.rs
+index 655752b621ec5de65a2e7f33c8a4635ae263d83a..10818028d626cda00a0ac1a99bd59dfdcdada5a2 100644
+--- a/library/std/src/sys/thread/cafe.rs
++++ b/library/std/src/sys/thread/cafe.rs
+@@ -121,6 +121,7 @@ extern "C" fn thread_start(_int_arg: i32, data: *mut c_void) -> i32 {
+     rust_start();
+     crate::sys::thread_local::key::run_dtors();
+     crate::rt::thread_cleanup();
++    crate::sys::thread_local::key::release_thread_table();
+     0
+ }
+ 
+diff --git a/library/std/src/sys/thread_local/key/cafe.rs b/library/std/src/sys/thread_local/key/cafe.rs
+index 4ecf6a8c541dd0361f4089e303fd9e7b46a2fba1..f16860c2b169f56994a3299abd0ed233f951e83d 100644
+--- a/library/std/src/sys/thread_local/key/cafe.rs
++++ b/library/std/src/sys/thread_local/key/cafe.rs
+@@ -1,5 +1,6 @@
+ use cafe_sys::coreinit::thread;
+ 
++use crate::cell::UnsafeCell;
+ use crate::ptr;
+ use crate::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+ use crate::sync::atomic::{Atomic, AtomicPtr, AtomicUsize};
+@@ -7,39 +8,229 @@
+ pub type Key = usize;
+ type Dtor = unsafe extern "C" fn(*mut u8);
+ 
+-// Cafe OS has 16 thread-specific slots per thread. Slot 0 is skipped
+-// because 0 is the "not yet created" sentinel of `LazyKey`.
+-const SLOT_COUNT: usize = 16;
+-static NEXT_KEY: Atomic<usize> = AtomicUsize::new(1);
++// Cafe OS exposes 16 thread-specific values. WUT reserves 14 and 15, so
++// reserve the app-owned slot 13 as the root of Rust's logical TLS table.
++// A WUT application embedding this std must not use OS_THREAD_SPECIFIC_13.
++const THREAD_TABLE_OS_SLOT: i32 = 13;
+ 
+-static DTORS: [Atomic<*mut ()>; SLOT_COUNT] =
+-    [const { AtomicPtr::new(ptr::null_mut()) }; SLOT_COUNT];
++// The old Cafe implementation exposed only 15 logical keys because it mapped
++// each key directly to an OS slot. Rust's thread-local statics and std need
++// more. Keep the table bounded and allocation-free to avoid TLS/allocator
++// recursion during first access.
++const KEY_COUNT: usize = 512;
++const THREAD_TABLE_COUNT: usize = 256;
++const KEY_INDEX_BITS: usize = 9;
++const KEY_INDEX_MASK: usize = KEY_COUNT - 1;
++const KEY_GENERATION_MAX: usize = usize::MAX >> KEY_INDEX_BITS;
++
++const KEY_FREE: usize = 0;
++const KEY_INITIALIZING: usize = 1;
++const KEY_LIVE: usize = 2;
++const KEY_RETIRED: usize = 3;
++
++struct KeyMetadata {
++    state: AtomicUsize,
++    dtor: Atomic<*mut ()>,
++}
++
++impl KeyMetadata {
++    const fn new() -> Self {
++        Self {
++            state: AtomicUsize::new(KEY_FREE),
++            dtor: AtomicPtr::new(ptr::null_mut()),
++        }
++    }
++}
++
++static KEYS: [KeyMetadata; KEY_COUNT] = [const { KeyMetadata::new() }; KEY_COUNT];
++
++#[derive(Clone, Copy)]
++struct TlsCell {
++    generation: usize,
++    value: *mut u8,
++}
++
++impl TlsCell {
++    const fn empty() -> Self {
++        Self {
++            generation: 0,
++            value: ptr::null_mut(),
++        }
++    }
++}
++
++struct ThreadTable {
++    claimed: AtomicUsize,
++    values: UnsafeCell<[TlsCell; KEY_COUNT]>,
++}
++
++impl ThreadTable {
++    const fn new() -> Self {
++        Self {
++            claimed: AtomicUsize::new(0),
++            values: UnsafeCell::new([TlsCell::empty(); KEY_COUNT]),
++        }
++    }
++}
++
++// A table is only accessed by the OS thread whose slot 13 points to it. The
++// atomic claim bit transfers ownership before the pointer is published and
++// after the previous owner has cleared it.
++unsafe impl Sync for ThreadTable {}
++
++static THREAD_TABLES: [ThreadTable; THREAD_TABLE_COUNT] =
++    [const { ThreadTable::new() }; THREAD_TABLE_COUNT];
++
++#[inline]
++const fn key_state(generation: usize, state: usize) -> usize {
++    (generation << 2) | state
++}
+ 
+ pub fn create(dtor: Option<Dtor>) -> Key {
+-    let key = NEXT_KEY.fetch_add(1, Relaxed);
+-    if key >= SLOT_COUNT {
+-        rtabort!("out of TLS keys");
++    for index in 1..KEY_COUNT {
++        let metadata = &KEYS[index];
++        let previous_state = metadata.state.load(Relaxed);
++        if previous_state & 3 != KEY_FREE {
++            continue;
++        }
++
++        let previous_generation = previous_state >> 2;
++        if previous_generation == KEY_GENERATION_MAX {
++            let _ = metadata.state.compare_exchange(
++                previous_state,
++                key_state(previous_generation, KEY_RETIRED),
++                Acquire,
++                Relaxed,
++            );
++            continue;
++        }
++
++        let generation = previous_generation + 1;
++        if metadata
++            .state
++            .compare_exchange(
++                previous_state,
++                key_state(generation, KEY_INITIALIZING),
++                Acquire,
++                Relaxed,
++            )
++            .is_err()
++        {
++            continue;
++        }
++        metadata
++            .dtor
++            .store(dtor.map_or(ptr::null_mut(), |dtor| dtor as *mut ()), Relaxed);
++        metadata.state.store(key_state(generation, KEY_LIVE), Release);
++        return (generation << KEY_INDEX_BITS) | index;
+     }
+-    if let Some(dtor) = dtor {
+-        DTORS[key].store(dtor as *mut (), Release);
++
++    rtabort!("out of Cafe TLS logical keys (maximum 511 active keys)");
++}
++
++#[inline]
++fn decode_key(key: Key) -> Option<(usize, usize)> {
++    let index = key & KEY_INDEX_MASK;
++    let generation = key >> KEY_INDEX_BITS;
++    if index == 0 || generation == 0 || index >= KEY_COUNT {
++        None
++    } else {
++        Some((index, generation))
+     }
+-    key
+ }
+ 
+-/// Runs the destructors of the calling thread's values, like POSIX does at thread exit.
+-/// Destructors may store new values, so this repeats for a few rounds.
+-pub fn run_dtors() {
++#[inline]
++fn key_is_live(index: usize, generation: usize) -> bool {
++    let metadata = &KEYS[index];
++    metadata.state.load(Acquire) == key_state(generation, KEY_LIVE)
++}
++
++/// Return this thread's table, creating it from the static pool if necessary.
++/// This path must stay allocation-free and must not use std locks or TLS.
++fn thread_table() -> &'static ThreadTable {
++    let existing = unsafe { thread::get_specific(THREAD_TABLE_OS_SLOT).cast::<ThreadTable>() };
++    if !existing.is_null() {
++        return unsafe { &*existing };
++    }
++
++    for table in &THREAD_TABLES {
++        if table
++            .claimed
++            .compare_exchange(0, 1, Acquire, Relaxed)
++            .is_err()
++        {
++            continue;
++        }
++
++        // Clear every cell before making the table visible to the new owner.
++        // This prevents values from a thread whose table was reclaimed from
++        // being observed after table reuse.
++        unsafe { *table.values.get() = [TlsCell::empty(); KEY_COUNT] };
++        unsafe {
++            thread::set_specific(
++                THREAD_TABLE_OS_SLOT,
++                (table as *const ThreadTable).cast_mut().cast(),
++            )
++        };
++        return table;
++    }
++
++    rtabort!("out of Cafe TLS thread tables (maximum 256 live threads)");
++}
++
++fn existing_thread_table() -> Option<&'static ThreadTable> {
++    let table = unsafe { thread::get_specific(THREAD_TABLE_OS_SLOT).cast::<ThreadTable>() };
++    if table.is_null() {
++        None
++    } else {
++        Some(unsafe { &*table })
++    }
++}
++
++/// Runs the destructors of the calling thread's values, like POSIX does at
++/// thread exit. Destructors may store new values, so this repeats for a few
++/// rounds. The table is reclaimed only after runtime thread cleanup.
++fn run_dtors_for(only_index: Option<usize>) {
++    let Some(table) = existing_thread_table() else {
++        return;
++    };
++
+     for _ in 0..4 {
+         let mut ran = false;
+-        for key in 1..SLOT_COUNT {
+-            let dtor = DTORS[key].load(Acquire);
+-            let value = unsafe { get(key) };
++        for index in 1..KEY_COUNT {
++            if only_index.is_some_and(|only| only != index) {
++                continue;
++            }
++            let metadata = &KEYS[index];
++            let state = metadata.state.load(Acquire);
++            if state & 3 != KEY_LIVE {
++                continue;
++            }
++            let generation = state >> 2;
++            let dtor = metadata.dtor.load(Acquire);
++            let cell = unsafe { (*table.values.get())[index] };
++            let value = if cell.generation == generation {
++                cell.value
++            } else {
++                ptr::null_mut()
++            };
+             if dtor.is_null() || value.is_null() {
+                 continue;
+             }
++
+             unsafe {
+-                set(key, ptr::null_mut());
+-                crate::mem::transmute::<*mut (), Dtor>(dtor)(value);
++                (*table.values.get())[index] = TlsCell {
++                    generation,
++                    value: ptr::null_mut(),
++                };
++            }
++
++            // A concurrent destroy/recreate invalidates this generation.
++            // Do not dispatch a destructor belonging to a raced-away key.
++            if key_is_live(index, generation)
++                && metadata.dtor.load(Acquire) == dtor
++            {
++                unsafe { crate::mem::transmute::<*mut (), Dtor>(dtor)(value) };
+             }
+             ran = true;
+         }
+@@ -49,15 +240,116 @@ pub fn run_dtors() {
+     }
+ }
+ 
++pub fn run_dtors() {
++    run_dtors_for(None);
++}
++
++/// Release the current thread's table after all std runtime cleanup has had a
++/// chance to access its TLS. Values left after the four destructor rounds are
++/// intentionally leaked, as in the existing Cafe backend.
++pub fn release_thread_table() {
++    let Some(table) = existing_thread_table() else {
++        return;
++    };
++
++    // Do not let a later owner observe pointers from the previous thread.
++    unsafe { *table.values.get() = [TlsCell::empty(); KEY_COUNT] };
++    unsafe { thread::set_specific(THREAD_TABLE_OS_SLOT, ptr::null_mut()) };
++    table.claimed.store(0, Release);
++}
++
++// A test-only C ABI hook lets the target probe exercise the production
++// four-round loop with a raw key. `thread_local!` deliberately prevents a
++// destructor from resurrecting its own LocalKey, so that case cannot be
++// expressed through the public std API.
++#[cfg(cafe_tls_probe)]
++static TLS_PROBE_KEY: AtomicUsize = AtomicUsize::new(0);
++#[cfg(cafe_tls_probe)]
++static TLS_PROBE_DTOR_CALLS: AtomicUsize = AtomicUsize::new(0);
++#[cfg(cafe_tls_probe)]
++static TLS_PROBE_VALUE: u8 = 0;
++
++#[cfg(cafe_tls_probe)]
++unsafe extern "C" fn tls_probe_self_resurrect(value: *mut u8) {
++    let calls = TLS_PROBE_DTOR_CALLS.fetch_add(1, Relaxed) + 1;
++    if calls < 4 {
++        let key = TLS_PROBE_KEY.load(Acquire);
++        unsafe { set(key, value) };
++    }
++}
++
++#[cfg(cafe_tls_probe)]
++#[unsafe(no_mangle)]
++pub extern "C" fn horizon_cafe_tls_self_rearm_probe() -> u32 {
++    TLS_PROBE_DTOR_CALLS.store(0, Relaxed);
++    let key = create(Some(tls_probe_self_resurrect));
++    TLS_PROBE_KEY.store(key, Release);
++    unsafe { set(key, &raw const TLS_PROBE_VALUE as *mut u8) };
++    let Some((index, _)) = decode_key(key) else {
++        return 0;
++    };
++    run_dtors_for(Some(index));
++    let calls = TLS_PROBE_DTOR_CALLS.load(Acquire) as u32;
++    unsafe {
++        set(key, ptr::null_mut());
++        destroy(key);
++    }
++    calls
++}
++
+ #[inline]
+ pub unsafe fn set(key: Key, value: *mut u8) {
+-    unsafe { thread::set_specific(key as i32, value.cast()) }
++    let Some((index, generation)) = decode_key(key) else {
++        return;
++    };
++    if !key_is_live(index, generation) {
++        return;
++    }
++    let table = thread_table();
++    unsafe { (*table.values.get())[index] = TlsCell { generation, value } };
+ }
+ 
+ #[inline]
+ pub unsafe fn get(key: Key) -> *mut u8 {
+-    unsafe { thread::get_specific(key as i32).cast() }
++    let Some((index, generation)) = decode_key(key) else {
++        return ptr::null_mut();
++    };
++    if !key_is_live(index, generation) {
++        return ptr::null_mut();
++    }
++    let Some(table) = existing_thread_table() else {
++        return ptr::null_mut();
++    };
++    let cell = unsafe { (*table.values.get())[index] };
++    if cell.generation == generation {
++        cell.value
++    } else {
++        ptr::null_mut()
++    }
+ }
+ 
+ #[inline]
+-pub unsafe fn destroy(_key: Key) {}
++pub unsafe fn destroy(key: Key) {
++    let Some((index, generation)) = decode_key(key) else {
++        return;
++    };
++    let metadata = &KEYS[index];
++    if metadata
++        .state
++        .compare_exchange(
++            key_state(generation, KEY_LIVE),
++            key_state(generation, KEY_INITIALIZING),
++            Acquire,
++            Relaxed,
++        )
++            .is_err()
++    {
++        return;
++    }
++
++    // Invalidate the dtor before making this index available for reuse. Each
++    // thread's cell carries the generation, so an old value cannot leak into
++    // a newly allocated key even if a set raced with this destroy.
++    metadata.dtor.store(ptr::null_mut(), Release);
++    metadata.state.store(key_state(generation, KEY_FREE), Release);
++}
+diff --git a/library/std/src/sys/thread_local/mod.rs b/library/std/src/sys/thread_local/mod.rs
+index eb0c24b20c878f95495acbf5f9d19dfcf5ca016f..065528d71dffcdfe713989c2a6367487b1511efe 100644
+--- a/library/std/src/sys/thread_local/mod.rs
++++ b/library/std/src/sys/thread_local/mod.rs
+@@ -203,6 +203,7 @@ pub(crate) mod key {
+             mod racy;
+             mod cafe;
+             pub(crate) use cafe::run_dtors;
++            pub(crate) use cafe::release_thread_table;
+             pub(super) use cafe::{Key, get, set};
+             use cafe::{create, destroy};
+             pub(super) use racy::LazyKey;
+diff --git a/library/unwind/Cargo.toml b/library/unwind/Cargo.toml
+index a809f7b8b2c6e8b26fb19b8a0366d69b5f02faeb..628b9d5e8c3ec2b0101f4a99df8081e93ab12f80 100644
+--- a/library/unwind/Cargo.toml
++++ b/library/unwind/Cargo.toml
+@@ -19,9 +19,6 @@ libc = { version = "0.2.140", features = ['rustc-dep-of-std'], default-features
+ [target.'cfg(target_os = "xous")'.dependencies]
+ unwinding = { version = "0.2.7", features = ['rustc-dep-of-std', 'unwinder', 'fde-custom'], default-features = false }
+ 
+-[target.'cfg(target_os = "cafe")'.dependencies]
+-unwinding = { version = "0.2.10", features = ['rustc-dep-of-std', 'unwinder', 'fde-static'], default-features = false }
+-
+ [features]
+ 
+ # Only applies for Linux and Fuchsia targets
+diff --git a/library/unwind/src/lib.rs b/library/unwind/src/lib.rs
+index ed3e9655babd5991ebfc1d4d1bdba0223ca118f6..fb0acdab835a904a177b20059f82fa2a6c65a53c 100644
+--- a/library/unwind/src/lib.rs
++++ b/library/unwind/src/lib.rs
+@@ -30,7 +30,6 @@
+         all(target_vendor = "fortanix", target_env = "sgx"),
+         all(target_os = "wasi", panic = "unwind"),
+         target_os = "xous",
+-        target_os = "cafe",
+     ) => {
+         mod libunwind;
+         pub use libunwind::*;
+diff --git a/library/unwind/src/libunwind.rs b/library/unwind/src/libunwind.rs
+index 21c2432a1cd7f481b7a214ff9f257f1b40a47a1c..4dc3cb393181cdf1f01aec23572f283ea7abadd8 100644
+--- a/library/unwind/src/libunwind.rs
++++ b/library/unwind/src/libunwind.rs
+@@ -8,10 +8,6 @@
+     EhFrameFinder, FrameInfo, FrameInfoKind, set_custom_eh_frame_finder,
+ };
+ 
+-// Use the unwinding crate as unwinder on Cafe OS
+-#[cfg(target_os = "cafe")]
+-use unwinding as _;
+-
+ pub use crate::types::*;
+ 
+ pub type _Unwind_Ptr = *const u8;
+diff --git a/library/unwind/src/types.rs b/library/unwind/src/types.rs
+index cfef14e5e5cbba04bf5cd2028a8e07a6cb7ac43a..d299d8e7e2252bf9283bd1afa5f41d438fdacf76 100644
+--- a/library/unwind/src/types.rs
++++ b/library/unwind/src/types.rs
+@@ -56,7 +56,7 @@ pub struct _Unwind_Exception {
+ }
+ 
+ // Check the size of _Unwind_Exception against the source of truth when using the unwinding crate.
+-#[cfg(any(target_os = "xous", target_os = "cafe"))]
++#[cfg(target_os = "xous")]
+ const _: () = {
+     assert!(size_of::<unwinding::abi::UnwindException>() == size_of::<_Unwind_Exception>());
+ };

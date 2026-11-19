@@ -1,0 +1,9 @@
+[package]
+name = "horizon-wiiu-cafe-tls-host-tests"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"

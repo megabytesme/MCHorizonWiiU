@@ -1,0 +1,125 @@
+--- a/library/std/src/sys/net/connection/socket/cafe.rs
++++ b/library/std/src/sys/net/connection/socket/cafe.rs
+@@ -6,7 +6,7 @@
+ use crate::ffi::{c_int, c_long};
+ use crate::io::{self, BorrowedBuf, BorrowedCursor, IoSlice, IoSliceMut};
+ use crate::net::{Shutdown, SocketAddr};
+-use crate::sync::Once;
++use crate::sync::{Arc, Once};
+ use crate::sys::pal::unsupported;
+ use crate::time::Duration;
+ use crate::{cmp, mem, ptr};
+@@ -299,7 +299,15 @@
+     });
+ }
+ 
+-pub struct Socket(c_int);
++pub struct Socket(Arc<SocketHandle>);
++
++struct SocketHandle(c_int);
++
++impl Socket {
++    fn from_raw(fd: c_int) -> Socket {
++        Socket(Arc::new(SocketHandle(fd)))
++    }
++}
+ 
+ impl Socket {
+     pub fn new(family: c_int, ty: c_int) -> io::Result<Socket> {
+@@ -307,19 +315,19 @@
+             return Err(io::const_error!(io::ErrorKind::Unsupported, "only IPv4 is supported"));
+         }
+         cvt(unsafe { sys::socket(sys::Family(family), sys::Type(ty), sys::Protocol::IP) })
+-            .map(Socket)
++            .map(Socket::from_raw)
+     }
+ 
+     pub fn connect(&self, addr: &SocketAddr) -> io::Result<()> {
+         let (addr, len) = socket_addr_to_c(addr);
+-        cvt(unsafe { netc::connect(self.0, addr.as_ptr(), len) }).map(drop)
++        cvt(unsafe { netc::connect(self.as_raw(), addr.as_ptr(), len) }).map(drop)
+     }
+ 
+     pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Result<()> {
+         if timeout.is_zero() {
+             return Err(io::Error::ZERO_TIMEOUT);
+         }
+-        if !(0..u32::BITS as c_int).contains(&self.0) {
++        if !(0..u32::BITS as c_int).contains(&self.as_raw()) {
+             return Err(io::const_error!(io::ErrorKind::Unsupported, "socket cannot be polled"));
+         }
+ 
+@@ -332,10 +340,10 @@
+             Err(e) => return Err(e),
+         }
+ 
+-        let mut writefds = sys::FdSet { bits: 1 << self.0 };
++        let mut writefds = sys::FdSet { bits: 1 << self.as_raw() };
+         let mut timeout = to_timeval(timeout);
+         let n = cvt(unsafe {
+-            sys::select(self.0 + 1, ptr::null_mut(), &mut writefds, ptr::null_mut(), &mut timeout)
++            sys::select(self.as_raw() + 1, ptr::null_mut(), &mut writefds, ptr::null_mut(), &mut timeout)
+         })?;
+         if n == 0 {
+             return Err(io::const_error!(io::ErrorKind::TimedOut, "connection timed out"));
+@@ -347,16 +355,16 @@
+     }
+ 
+     pub fn accept(&self, storage: *mut sockaddr, len: *mut socklen_t) -> io::Result<Socket> {
+-        cvt(unsafe { sys::accept(self.0, storage.cast(), len) }).map(Socket)
++        cvt(unsafe { sys::accept(self.as_raw(), storage.cast(), len) }).map(Socket::from_raw)
+     }
+ 
+     pub fn duplicate(&self) -> io::Result<Socket> {
+-        unsupported()
++        Ok(Socket(Arc::clone(&self.0)))
+     }
+ 
+     fn recv_with_flags(&self, mut buf: BorrowedCursor<'_, u8>, flags: sys::MsgFlags) -> io::Result<()> {
+         let len = cmp::min(buf.capacity(), c_int::MAX as usize) as c_int;
+-        let ret = cvt(unsafe { sys::recv(self.0, buf.as_mut().as_mut_ptr().cast(), len, flags) })?;
++        let ret = cvt(unsafe { sys::recv(self.as_raw(), buf.as_mut().as_mut_ptr().cast(), len, flags) })?;
+         unsafe { buf.advance(ret as usize) };
+         Ok(())
+     }
+@@ -396,7 +404,7 @@
+         let len = cmp::min(buf.len(), c_int::MAX as usize) as c_int;
+         let n = cvt(unsafe {
+             sys::recvfrom(
+-                self.0,
++                self.as_raw(),
+                 buf.as_mut_ptr().cast(),
+                 len,
+                 flags,
+@@ -417,7 +425,7 @@
+ 
+     fn send(&self, buf: &[u8]) -> io::Result<usize> {
+         let len = cmp::min(buf.len(), c_int::MAX as usize) as c_int;
+-        cvt(unsafe { sys::send(self.0, buf.as_ptr().cast(), len, sys::MsgFlags::NONE) }).map(|n| n as usize)
++        cvt(unsafe { sys::send(self.as_raw(), buf.as_ptr().cast(), len, sys::MsgFlags::NONE) }).map(|n| n as usize)
+     }
+ 
+     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+@@ -443,7 +451,7 @@
+             Shutdown::Read => sys::Shutdown::Read,
+             Shutdown::Both => sys::Shutdown::ReadWrite,
+         };
+-        cvt(unsafe { sys::shutdown(self.0, how) }).map(drop)
++        cvt(unsafe { sys::shutdown(self.as_raw(), how) }).map(drop)
+     }
+ 
+     pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
+@@ -487,11 +495,11 @@
+     }
+ 
+     pub fn as_raw(&self) -> c_int {
+-        self.0
++        self.0.0
+     }
+ }
+ 
+-impl Drop for Socket {
++impl Drop for SocketHandle {
+     fn drop(&mut self) {
+         unsafe { sys::close(self.0) };
+     }

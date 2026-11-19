@@ -1,0 +1,83 @@
+{
+  "bridge_inputs": {
+    "lock": "4fc4f0018d8c42fd314520d127026b2758584ad8b3bb61778a934ed0bcbb3cde",
+    "tv_size": "a4ad6c7c0e226441e13ac4a687e46077920d70dc7e13bff7ada7f21e26c99990"
+  },
+  "gitlinks": {
+    "wiiu/bootstrap/.cafe": "7fe6bda717628e24f3b01c67fc330c92688a44e1"
+  },
+  "overlay_sha256": {
+    "png": "d7face47a19af8ab81d021f0503b34fbdaec0623a71509ad81aa03895ace6af3",
+    "ring": "fea33af874432485cd2373b9a965f21a5ccd2cca0619608baf98fb0cdc33d2b2",
+    "ureq": "cce63d4f41c2f4c7672dc71129dd5837e3569c360d1603928bd2cbf203e0b2dd",
+    "winit": "e5438c16df823ee20509c71ed12386dcf2fb7e9fcd50d897ee5ee31c62966948"
+  },
+  "rust_source": {
+    "cafe_filesystem_sha256": "ab720ef255fd16a370d30b9169a527acf0039e499ea7649e786b54d9ae91ee36",
+    "commit": "62606b70e351edb297db1fdd4b99c8b8ca440d38",
+    "tracked_diff_sha256": "9826fee690a545c777975469ffc2a53d6b393f7fdc527e882cf23daf13ef070b",
+    "tracked_overlay_paths": [
+      "compiler/rustc_target/src/spec/targets/powerpc_nintendo_cafe.rs",
+      "library/Cargo.lock",
+      "library/Cargo.toml",
+      "library/backtrace",
+      "library/panic_unwind/src/lib.rs",
+      "library/std/src/sys/net/connection/socket/cafe.rs",
+      "library/std/src/sys/personality/mod.rs",
+      "library/std/src/sys/thread/cafe.rs",
+      "library/std/src/sys/thread_local/key/cafe.rs",
+      "library/std/src/sys/thread_local/mod.rs",
+      "library/unwind/Cargo.toml",
+      "library/unwind/src/lib.rs",
+      "library/unwind/src/libunwind.rs",
+      "library/unwind/src/types.rs"
+    ]
+  },
+  "schema": 1,
+  "toolchain": {
+    "files": {
+      "cargo": "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55",
+      "cargo-wiiu": "c85d29f81b87c5edf3a99522fcad5940a4503332e2c2cb5f2c0ee574085ec9e4",
+      "cmake": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638",
+      "gcc/as": "ebb96eb91005f5b6516a58478efc89416a43a11e9239e9fa5eeac1f0c20e05e7",
+      "gcc/cc1": "12e6a83f96f1acbf0a50b3262844cea2b96bcdeb0560bdc11ca85c0740860e01",
+      "gcc/ld": "1fe878476b61fcb650c988f8f682bdf0afc1435637e5bd9d558d1c61e7b31922",
+      "gcc/libc.a": "cb8c3e33434d60d7767010b24bc8beba899e2eb386dc071da92cc3e54f765b5d",
+      "gcc/libgcc.a": "623b38def2df94e58a3c217e8e9ce4440c9071e12bb945a3ff92bb2f1e30bdaa",
+      "gcc/libm.a": "67cde7a63b8c17c8ce1843fd1158940577e523db3fe92719055c33071614e686",
+      "glslcompiler": "8268622fbaade63707d649c212e990ef871a4d1657450d03dc2ff85f8fa4ec90",
+      "ninja": "5965527e09fe2b3787772aa4f711d6a36b393e7f2fcaa744a7a96c5a4ddf59cb",
+      "powerpc-eabi-ar": "6ec7328f214630b8c5d8986b2b641eb9dee7acfe1bd0043819db662c59b1540c",
+      "powerpc-eabi-cmake": "ee87536e1f4826f2f13008c3b935d5dfaaa901f9e1d64979642570070fd96786",
+      "powerpc-eabi-g++": "e4513a941e3ea6794295ce5758a6333f24c8f289280005bbe0e6279bcb61847e",
+      "powerpc-eabi-gcc": "be3ef2cd21bc7da3f0689c3be2a0c427ad0f0df4b808281c1d4a99064456b302",
+      "powerpc-eabi-nm": "a8e90be3a6619e6236df601f852d23b5f14dcaaf7fa0ce74adaa717102fce990",
+      "powerpc-eabi-objcopy": "1e03326f5947c99de5896a4ed0241959cb3b8fbe8ba4991ef64eabc5ccedb0e7",
+      "readrpl": "b55a458599793596acfd233915f28d635eb4d16c10818cbcb942bd9594b0dc0f",
+      "rust/libLLVM-23-rust-1.101.0-nightly.so": "ccfd1258407eda67c3335f740a9e03e62b28ad830683c11524033d5013334938",
+      "rust/libLLVM.so.23.1-rust-1.101.0-nightly": "df169e71ee3e2cae60f774ebcb1e372964531dd98652b3b8dbf2349866e30b61",
+      "rust/libcore-8c6158bc4796d611.rlib": "fd4711748f4924733de29dc85c764f47bf9a29213bd40aed0c6762664dd757f8",
+      "rust/librustc_driver-dc384dfdf85f9584.so": "46a73ff8cc26ab4039ab3b1bdca321cc24e241674cdd28d9e0ff697923661113",
+      "rustc": "81eedd871c42741e79047e7d74d7d7cfabea095fdd4c11d4cc8d826be8fff583",
+      "wuhbtool": "c7805e61cb714a7c128e3c355bdc13c2a0b441d8e400d6201f9ee0c6b16b367a",
+      "wut/lib/libwut.a": "015007736b886aedcca8c85053a2bdd1c071d34e60a44ab9b1db8d731bba07b6",
+      "wut/share/wut.cmake": "27dad010b1849120bc8a92be426d0eb9091e1cfc41d7af9593f27f4dd3f288db",
+      "wut/share/wut.ld": "f99fdd90d24a92b411b04b5b9e78f8354af949c56b32a1094df5bde905f0c07c",
+      "wut/share/wut.specs": "db4b0f1c0ad0fe8dadddee0c1829b7e9ecfcb2266b69aea4649ed9c15198111c",
+      "wut/share/wut.toolchain.cmake": "79e818897961e2f1469c20dac73454edb67fac267259dc75c7bcd1fed43ee663"
+    },
+    "nightly_cargo_sha256": "930e3e6c13345dc5b0ebd6b4bd53dbf4fc40d21227ca8669e17e6935c17c7a83",
+    "nightly_cargo_version": "cargo 1.101.0-nightly (3c747ea3e 2026-11-03)\nrelease: 1.101.0-nightly\ncommit-hash: 3c747ea3ead23951c1b43a5edfcbdb449135ddeb\ncommit-date: 2026-11-03\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.6 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)\nssl: OpenSSL 3.6.3 9 Jun 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]",
+    "target_library_inventory_sha256": "920b24e314d1612b61a83df7dc17ff133c3154e6d63cb17965fe1306f0f06316",
+    "versions": {
+      "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+      "cmake": "cmake version 3.28.3\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).",
+      "ninja": "1.11.1",
+      "powerpc-eabi-gcc": "powerpc-eabi-gcc (devkitPPC) 16.2.0\nCopyright (C) 2026 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+      "rustc": "rustc 1.101.0-dev\nbinary: rustc\ncommit-hash: unknown\ncommit-date: unknown\nhost: x86_64-unknown-linux-gnu\nrelease: 1.101.0-dev\nLLVM version: 23.1.3"
+    },
+    "wut_header_inventory_sha256": "e9f2a4a4bf00a12ef369ffcfdb08582529c9c5f9cd68774b5339f91d042ccd2b"
+  },
+  "version": "1.0.0",
+  "workspace_patch_sha256": "69cfb7175eb948fdffb460fcaad8ccb88e350ee0a89950a25c38766ceff87b50"
+}

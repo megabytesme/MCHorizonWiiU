@@ -1,0 +1,1369 @@
+[
+  {
+    "source": "catalog/game-gitmodules",
+    "destination": ".gitmodules",
+    "mode": "100644",
+    "sha256": "187256784c0ab17717e3a12bd541a28e9542f9ec609e9606c3af24b4b0dea3d0"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/.cargo_vcs_info.json",
+    "destination": "third_party/getrandom-0.4.3/.cargo_vcs_info.json",
+    "mode": "100644",
+    "sha256": "14b81d3c44670e34376d60d06a5e24a78548bb3ad32be81e6ecee66a36de096d"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/CHANGELOG.md",
+    "destination": "third_party/getrandom-0.4.3/CHANGELOG.md",
+    "mode": "100644",
+    "sha256": "5ad60c6d4d6a55f347e263538d348682c0fb198334a4113a9aa5d94093ec7aeb"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/Cargo.lock",
+    "destination": "third_party/getrandom-0.4.3/Cargo.lock",
+    "mode": "100644",
+    "sha256": "743068b6375eb32c15b242739227028eb2f6b995d5e8a02feef8b9a9e52ea212"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/Cargo.toml",
+    "destination": "third_party/getrandom-0.4.3/Cargo.toml",
+    "mode": "100644",
+    "sha256": "67c751d76abcbaca23d337462b2648f0955a503538508865b869eae6113b4b53"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/Cargo.toml.orig",
+    "destination": "third_party/getrandom-0.4.3/Cargo.toml.orig",
+    "mode": "100644",
+    "sha256": "eebe7c6d086d3f40c2fa79f8784b00c36dc501e49b2757a1caa97e7fa4dbacf7"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/LICENSE-APACHE",
+    "destination": "third_party/getrandom-0.4.3/LICENSE-APACHE",
+    "mode": "100644",
+    "sha256": "aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/LICENSE-MIT",
+    "destination": "third_party/getrandom-0.4.3/LICENSE-MIT",
+    "mode": "100644",
+    "sha256": "523a42c25d245dde9c015f882cec7f4555aad883382a6cf19b4b7d9b2cd5419b"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/README.md",
+    "destination": "third_party/getrandom-0.4.3/README.md",
+    "mode": "100644",
+    "sha256": "700180aadb3c22383920a2c9dd2fa7fedaf2e5992a0924a061ae09aae19cc69e"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/SECURITY.md",
+    "destination": "third_party/getrandom-0.4.3/SECURITY.md",
+    "mode": "100644",
+    "sha256": "816ea79f8c7937888ab5a972a1efb270c4bada028b448953a195359fe11d526e"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/benches/buffer.rs",
+    "destination": "third_party/getrandom-0.4.3/benches/buffer.rs",
+    "mode": "100644",
+    "sha256": "cae45dc9e4fa0db8206f76a0a9b4b7a05f9cd0eda33d42f29887ca76f949522c"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/build.rs",
+    "destination": "third_party/getrandom-0.4.3/build.rs",
+    "mode": "100644",
+    "sha256": "662faa06d7b2a9c5bea2c17a127a90e00b9f9b31105b0360da516e47cf816e95"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends.rs",
+    "mode": "100644",
+    "sha256": "4eeedf166b675594c32254a2ee99bf93ff8bc4e7f37f5bdfc33fb56e666fc17d"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/apple_other.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/apple_other.rs",
+    "mode": "100644",
+    "sha256": "f8fa784588f347cfd7c2b5f37a96b23d446f95c3157668069d7146e281fa783b"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/custom.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/custom.rs",
+    "mode": "100644",
+    "sha256": "30587ac79f10b9f0d460a85aac448eba6b11960a2db6fe0be483f222d8498633"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/efi_rng.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/efi_rng.rs",
+    "mode": "100644",
+    "sha256": "b22e505a5e85eadf1bc0bab8f7e96f226109a5cd3fb289dee06e7ed5a36ac1ef"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/esp_idf.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/esp_idf.rs",
+    "mode": "100644",
+    "sha256": "98d4997dcf7c0869883a617f8b5f341f9c97f4e21365c68de97db783215ae864"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/extern_impl.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/extern_impl.rs",
+    "mode": "100644",
+    "sha256": "0a13d8e059ee5203cf414101017a92d9f7289f86451a23d872c471b24279ece1"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/fuchsia.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/fuchsia.rs",
+    "mode": "100644",
+    "sha256": "4404823618bf1ac30f998a080cf46712596871de954fc0681cd8328b2e598e78"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/getentropy.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/getentropy.rs",
+    "mode": "100644",
+    "sha256": "10f9486239aea0506eedcb13b553ed064addf27a902d8e19728a811a763dbcc7"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/getrandom.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/getrandom.rs",
+    "mode": "100644",
+    "sha256": "da934695a424479f4eb80ba3a2aab97316f3bb6ed158523160eae1e3670e2b40"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/hermit.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/hermit.rs",
+    "mode": "100644",
+    "sha256": "f485c6431111c0867b1ebb76ce592a8502c4d88f07ea1a9c0650d235298518af"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/linux_android_with_fallback.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/linux_android_with_fallback.rs",
+    "mode": "100644",
+    "sha256": "78a5c62a17d654cccb66bc0772c7017e57b0b6451e0d7135f834917456f343fb"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/linux_raw.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/linux_raw.rs",
+    "mode": "100644",
+    "sha256": "94f6a494edd6ab99eca1989294b1064b58ba502f401b642aedbc3b97e98c0bf7"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/netbsd.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/netbsd.rs",
+    "mode": "100644",
+    "sha256": "a4fe488579d20976d4288a18d7059cc2d6cf662f55a95ab369e9866ef8ed8ce6"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/rdrand.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/rdrand.rs",
+    "mode": "100644",
+    "sha256": "013c90b04f882ea82a73cc82b8d282227e2cfe9fe7d4f8eae9020a1b17aeb3b1"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/rndr.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/rndr.rs",
+    "mode": "100644",
+    "sha256": "edded389094deef0207fdf08acdf9c2e10d9ae8576cc64f7af21333cab0d0448"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/solaris.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/solaris.rs",
+    "mode": "100644",
+    "sha256": "8f3e51f90f56b64c4c1376cdd5399f1fcac5a19d3a88c7ec04f355c1b543bcaa"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/solid.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/solid.rs",
+    "mode": "100644",
+    "sha256": "c89c809996aa656e2ef13b0753e7c7f742a047b9e72174806467d27946d88385"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/unsupported.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/unsupported.rs",
+    "mode": "100644",
+    "sha256": "a531ab9883b7d7b584c6f37a5c13543ec63d25d3acc36608d57d5d82ef44cbff"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/use_file.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/use_file.rs",
+    "mode": "100644",
+    "sha256": "37dfc2ed2a454064196a2a268fc3bc90318ea1db11a9e24a77d53474c5001d70"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/vxworks.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/vxworks.rs",
+    "mode": "100644",
+    "sha256": "2e10e1c1039e353353cf7bbeab8c9b2b33368ca28a0b1b1557e8a86e1b705471"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/wasi_p1.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/wasi_p1.rs",
+    "mode": "100644",
+    "sha256": "5bf346a3f2e654243bddab1a323f7aa07dee2636d35308d5fac9038ac862bf17"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/wasi_p2_3.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/wasi_p2_3.rs",
+    "mode": "100644",
+    "sha256": "48c183d7048db5cd36a9c3339a3380a09d85b8b74690ca3f69969f68b083e691"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/wasm_js.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/wasm_js.rs",
+    "mode": "100644",
+    "sha256": "4a9bf118575514709adf807cf6a4bd4e248b0e02f2a292bd32a01af2ad99e51c"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/windows.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/windows.rs",
+    "mode": "100644",
+    "sha256": "814c83c3142e521b5d1d1f03743585328ffe385373b6cdcca58ee11b693b3fb8"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/backends/windows_legacy.rs",
+    "destination": "third_party/getrandom-0.4.3/src/backends/windows_legacy.rs",
+    "mode": "100644",
+    "sha256": "d4619333768daf09c1abf28b08a972a9c6c1e2e57dca9c153821e27feb62b9ed"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/error.rs",
+    "destination": "third_party/getrandom-0.4.3/src/error.rs",
+    "mode": "100644",
+    "sha256": "529e5d8e3b119bc8f1cb1cde844c667a321d7f2cda764e5a1b7459d75c7050a3"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/error_std_impls.rs",
+    "destination": "third_party/getrandom-0.4.3/src/error_std_impls.rs",
+    "mode": "100644",
+    "sha256": "32a3469b0a1291f2182d9bd98b9bdb6232ed259b7747b3665cbe8c3124483957"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/lib.rs",
+    "destination": "third_party/getrandom-0.4.3/src/lib.rs",
+    "mode": "100644",
+    "sha256": "68bd1f2daa0aec1b55da25c07744869728a8be25d7c7d127bc788cd50fd8687b"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/sys_rng.rs",
+    "destination": "third_party/getrandom-0.4.3/src/sys_rng.rs",
+    "mode": "100644",
+    "sha256": "ff110b2095252c34270d1c88b600e261eb4c2e96cb79b6e6512b41c37529d7eb"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/util.rs",
+    "destination": "third_party/getrandom-0.4.3/src/util.rs",
+    "mode": "100644",
+    "sha256": "b1f6bb46c35e1bc71faed96aaaac82be99df636b2e6bdcd676e898a669dee37f"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/utils/get_errno.rs",
+    "destination": "third_party/getrandom-0.4.3/src/utils/get_errno.rs",
+    "mode": "100644",
+    "sha256": "d5afe0e5e41a32a85105fb5242156fc1c15096fd0ebb20363cb3368a5e63c7b2"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/utils/lazy_bool.rs",
+    "destination": "third_party/getrandom-0.4.3/src/utils/lazy_bool.rs",
+    "mode": "100644",
+    "sha256": "573d5575c859c816262f44875f36c6aa8c58ecd5b2b1cf484d2415a6a41957d7"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/utils/lazy_ptr.rs",
+    "destination": "third_party/getrandom-0.4.3/src/utils/lazy_ptr.rs",
+    "mode": "100644",
+    "sha256": "5c0c29f1d636f303f65be626c998f0ef7f3e3329d6be1696479af07e53370920"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/utils/sanitizer.rs",
+    "destination": "third_party/getrandom-0.4.3/src/utils/sanitizer.rs",
+    "mode": "100644",
+    "sha256": "f9db2840b940d620efef7c5b6ab3a25ba24c46a15fdb5aecb37a22ed249d4bad"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/src/utils/sys_fill_exact.rs",
+    "destination": "third_party/getrandom-0.4.3/src/utils/sys_fill_exact.rs",
+    "mode": "100644",
+    "sha256": "d18e26399844e96b0a8e6ff0e82a9d7d3ee315e97e31eb51498430b201cb768c"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/tests/mod.rs",
+    "destination": "third_party/getrandom-0.4.3/tests/mod.rs",
+    "mode": "100644",
+    "sha256": "6f8ffe1b36d104906e5ed6f8f189c2c51e6b6135a564d218609d3b74a9ac6c67"
+  },
+  {
+    "source": "third_party/getrandom-0.4.3/tests/sys_rng.rs",
+    "destination": "third_party/getrandom-0.4.3/tests/sys_rng.rs",
+    "mode": "100644",
+    "sha256": "25aab3742e8c927a2f15a668d5d0808d4fd54cf69c07be9ea794d5bf30f66466"
+  },
+  {
+    "source": "tools/horizon_wiiu_capture.py",
+    "destination": "tools/horizon_wiiu_capture.py",
+    "mode": "100644",
+    "sha256": "111932b01436e23df6b9eeb166de18c4fe1de785fdb7bea43c82b7c9bb7f4af5"
+  },
+  {
+    "source": "tools/wiiu_normalize_rpl_relocations.py",
+    "destination": "tools/wiiu_normalize_rpl_relocations.py",
+    "mode": "100644",
+    "sha256": "88a28ade957b186b1dc42624bd2e289c264df01177a5179f5bdcc5e9776c63be"
+  },
+  {
+    "source": "tools/wiiu_recompress_rpx.py",
+    "destination": "tools/wiiu_recompress_rpx.py",
+    "mode": "100644",
+    "sha256": "7c3d83a857e7fe89fd054120954ef20164ba2f2c41338152e61043b649b0c967"
+  },
+  {
+    "source": "wiiu/GX2_INTEGRATION.md",
+    "destination": "wiiu/GX2_INTEGRATION.md",
+    "mode": "100644",
+    "sha256": "21ee55a633a2ad13d6aa79d5950b96c9a517641119e863952abf49b3bd81d735"
+  },
+  {
+    "source": "wiiu/RENDERER_CHECKPOINT.md",
+    "destination": "wiiu/RENDERER_CHECKPOINT.md",
+    "mode": "100644",
+    "sha256": "0d835dfe8d9afb8a36ede38f78300e228a6c12311e405e0bae1c1dd761e447b0"
+  },
+  {
+    "source": "wiiu/RENDERER_PARITY.md",
+    "destination": "wiiu/RENDERER_PARITY.md",
+    "mode": "100644",
+    "sha256": "aecb7490a94e08aa2337c3fefe41b3b453152f58567993333fe7c7a34f6e3c5d"
+  },
+  {
+    "source": "wiiu/audio/audio.c",
+    "destination": "wiiu/audio/audio.c",
+    "mode": "100644",
+    "sha256": "a3ce9cc69e79c563d24330b8c3e6c0dd94b261b991077088e0c027985b0df3cb"
+  },
+  {
+    "source": "wiiu/audio/audio.h",
+    "destination": "wiiu/audio/audio.h",
+    "mode": "100644",
+    "sha256": "4000561470e21538b43eb1514e3f2a144ba1ba240fe233948bc689405b7e2dc2"
+  },
+  {
+    "destination": "wiiu/bootstrap/.cafe",
+    "mode": "160000",
+    "object": "7fe6bda717628e24f3b01c67fc330c92688a44e1"
+  },
+  {
+    "source": "wiiu/bootstrap/.cargo/config.toml",
+    "destination": "wiiu/bootstrap/.cargo/config.toml",
+    "mode": "100644",
+    "sha256": "e273a42656fb2168884d5e82278a6f10e3700d819671c81071f9da0d419aaed2"
+  },
+  {
+    "source": "wiiu/bootstrap/CMakeLists.txt",
+    "destination": "wiiu/bootstrap/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "298ddace9df22a9ea70f21bd76fa5179f69273ead709a86239873dbb94465c51"
+  },
+  {
+    "source": "wiiu/bootstrap/Cargo.lock",
+    "destination": "wiiu/bootstrap/Cargo.lock",
+    "mode": "100644",
+    "sha256": "dfcd606dc4331e238fc979713ad14a33f4b836d5da9bcb009667078fe0b827d9"
+  },
+  {
+    "source": "wiiu/bootstrap/Cargo.toml",
+    "destination": "wiiu/bootstrap/Cargo.toml",
+    "mode": "100644",
+    "sha256": "5e91761402386c630ff93440794e509ffa9ac28301f8f91b70dfa2962966a05a"
+  },
+  {
+    "source": "wiiu/bootstrap/build.sh",
+    "destination": "wiiu/bootstrap/build.sh",
+    "mode": "100644",
+    "sha256": "a969796d31a852e98db91efe7d43843bb2ec69e68905e633db01aa52add715d4"
+  },
+  {
+    "source": "wiiu/bootstrap/prepare_wut_startup.sh",
+    "destination": "wiiu/bootstrap/prepare_wut_startup.sh",
+    "mode": "100644",
+    "sha256": "c5d9e5b50707172b65b5543a49eecab43b5d25f96f26a742deaa4bdbbd09fd5a"
+  },
+  {
+    "source": "wiiu/bootstrap/rust-toolchain.toml",
+    "destination": "wiiu/bootstrap/rust-toolchain.toml",
+    "mode": "100644",
+    "sha256": "e6a58d0dff15a420a29a8ee22852308ff25791bdded2a27af1634cb698f66ca0"
+  },
+  {
+    "source": "wiiu/bootstrap/shaders/block.frag",
+    "destination": "wiiu/bootstrap/shaders/block.frag",
+    "mode": "100644",
+    "sha256": "11ee4d9721e934b31adedfb40dfd58c3a358eab899d9503be2446079ea1de703"
+  },
+  {
+    "source": "wiiu/bootstrap/shaders/block.vert",
+    "destination": "wiiu/bootstrap/shaders/block.vert",
+    "mode": "100644",
+    "sha256": "808337a22f7978f546ebb357fb488378ece89ea9c8db023d1d50c0dbf343e480"
+  },
+  {
+    "source": "wiiu/bootstrap/src/allocator.rs",
+    "destination": "wiiu/bootstrap/src/allocator.rs",
+    "mode": "100644",
+    "sha256": "9780f74d2fb23c94ea8430663a9f4cab4a6c1c0c462865a6d6ffa8a9eb2dd7d5"
+  },
+  {
+    "source": "wiiu/bootstrap/src/lib.rs",
+    "destination": "wiiu/bootstrap/src/lib.rs",
+    "mode": "100644",
+    "sha256": "69850ae84f8361141f2d21945ef95610099f2063cec0161fa4658db6b7b1b60e"
+  },
+  {
+    "source": "wiiu/bootstrap/src/main.c",
+    "destination": "wiiu/bootstrap/src/main.c",
+    "mode": "100644",
+    "sha256": "d61f31f99a2396965cdd367b051a753ade7b3f1030fdaebe559a6efafcb06ef7"
+  },
+  {
+    "source": "wiiu/bootstrap/src/world.rs",
+    "destination": "wiiu/bootstrap/src/world.rs",
+    "mode": "100644",
+    "sha256": "84850675ce66a235f431b4703fa399f89a316a9c064a6adace0b51ae9912ed89"
+  },
+  {
+    "source": "wiiu/cemu/README.md",
+    "destination": "wiiu/cemu/README.md",
+    "mode": "100644",
+    "sha256": "9bb08a5d37beef8e5cd1504e75b4135be7a7c9571640fac1d5f5fbf63bb1121a"
+  },
+  {
+    "source": "wiiu/cemu/controller0.xml",
+    "destination": "wiiu/cemu/controller0.xml",
+    "mode": "100644",
+    "sha256": "6b1f70701e70253f6b06c683a823ccfcfc3887c05b30a27352afc8a52b345bc9"
+  },
+  {
+    "source": "wiiu/cemu/crnand-cemu-2.6.patch",
+    "destination": "wiiu/cemu/crnand-cemu-2.6.patch",
+    "mode": "100644",
+    "sha256": "34787b7d6d3d145483e6e68fcd74a960a031af928ddee438c87b1632380eb63f"
+  },
+  {
+    "source": "wiiu/cemu/fs-callback-cemu-2.6.patch",
+    "destination": "wiiu/cemu/fs-callback-cemu-2.6.patch",
+    "mode": "100644",
+    "sha256": "8e009dc6bfcb570b21cdcdaeb6fbc72fc9aa62df165c8e433a07f2448942a20d"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/CMakeLists.txt",
+    "destination": "wiiu/cemu/host-entropy-test/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "89dca9428c048c555b14dc61ea4ee190f5be2928fc1cbf6e4e4eb8e5dd4f6311"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/README.md",
+    "destination": "wiiu/cemu/host-entropy-test/README.md",
+    "mode": "100644",
+    "sha256": "ce03859d683950f881fccadab9c0f7d9748e7532557c103f58f5800228866d6d"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/link-game.sh",
+    "destination": "wiiu/cemu/host-entropy-test/link-game.sh",
+    "mode": "100644",
+    "sha256": "30f77806fb5a40e6c0e00a1ce984428cf87e1b0b58c5230e4f1f02f68828e15c"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/pool.c",
+    "destination": "wiiu/cemu/host-entropy-test/pool.c",
+    "mode": "100644",
+    "sha256": "952d058e850d9129c246b47d0aa656e40913a4d064568c3c5ba5849165feebae"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/prepare-pool.ps1",
+    "destination": "wiiu/cemu/host-entropy-test/prepare-pool.ps1",
+    "mode": "100644",
+    "sha256": "8a1966a442bd7b68a2a742e57fe8bf3f350e5a1a9902064365ddf2dfb98cf11a"
+  },
+  {
+    "source": "wiiu/cemu/host-entropy-test/smoke.c",
+    "destination": "wiiu/cemu/host-entropy-test/smoke.c",
+    "mode": "100644",
+    "sha256": "503c880e9fc6a3156cafc6eacba4ba97e6b6a2774c2cc280c388ba0f9b7e21bd"
+  },
+  {
+    "source": "wiiu/cemu/nlibnss-cemu-2.6.patch",
+    "destination": "wiiu/cemu/nlibnss-cemu-2.6.patch",
+    "mode": "100644",
+    "sha256": "ea86bfa1599dbd0c464785fce592f7c6944d2fc6c4879b52b60b6aedb8ea409e"
+  },
+  {
+    "source": "wiiu/cemu/nss_abi_probe.rs",
+    "destination": "wiiu/cemu/nss_abi_probe.rs",
+    "mode": "100644",
+    "sha256": "f2427a5d178aa87e15eb29bf76d4c210dc3563f6a36150a18e31e232b72e4942"
+  },
+  {
+    "source": "wiiu/cemu/prepare-control.ps1",
+    "destination": "wiiu/cemu/prepare-control.ps1",
+    "mode": "100644",
+    "sha256": "ad8635d93e8986608405f3aa537cff9cf90839c4e72714eb2edac6583689734c"
+  },
+  {
+    "source": "wiiu/diagnostics/ppc_carry/README.md",
+    "destination": "wiiu/diagnostics/ppc_carry/README.md",
+    "mode": "100644",
+    "sha256": "f78b03155c517dada3211464c4b1f1210d15db82a65c55c8c5349338fb678a6e"
+  },
+  {
+    "source": "wiiu/diagnostics/ppc_carry/build.sh",
+    "destination": "wiiu/diagnostics/ppc_carry/build.sh",
+    "mode": "100644",
+    "sha256": "1ad9712c4fefd48206fd46350479d222c59967c08f049683d61ca97913a95bb0"
+  },
+  {
+    "source": "wiiu/diagnostics/ppc_carry/main.c",
+    "destination": "wiiu/diagnostics/ppc_carry/main.c",
+    "mode": "100644",
+    "sha256": "c61b2f1743ec7e3d0cb50fe03410bc2af69f36bfcdaf096670c825125485bd94"
+  },
+  {
+    "source": "wiiu/entropy/Cargo.toml",
+    "destination": "wiiu/entropy/Cargo.toml",
+    "mode": "100644",
+    "sha256": "17b371165aaa5662cbf2e63dab703bd90e0975e2748bd92c8987f662d433bb83"
+  },
+  {
+    "source": "wiiu/entropy/README.md",
+    "destination": "wiiu/entropy/README.md",
+    "mode": "100644",
+    "sha256": "cb5beae5b9912e742c843acff3cbdd23494cda9328bd211cc0af1ca7ae09202b"
+  },
+  {
+    "source": "wiiu/entropy/probe/Cargo.lock",
+    "destination": "wiiu/entropy/probe/Cargo.lock",
+    "mode": "100644",
+    "sha256": "a8f95a2be40b8833f3dd3f627f7762b7fb272bb7c1db2e2a843ea6dfaf445434"
+  },
+  {
+    "source": "wiiu/entropy/probe/Cargo.toml",
+    "destination": "wiiu/entropy/probe/Cargo.toml",
+    "mode": "100644",
+    "sha256": "e64437e69b134667b5710ec04697e7bac09ad62b540527d8c27d724904ebb011"
+  },
+  {
+    "source": "wiiu/entropy/probe/build.sh",
+    "destination": "wiiu/entropy/probe/build.sh",
+    "mode": "100644",
+    "sha256": "95330419717cc0cbe6abd3542f6582e17a1f1ba229a17c1fa6b65a348f754368"
+  },
+  {
+    "source": "wiiu/entropy/probe/src/lib.rs",
+    "destination": "wiiu/entropy/probe/src/lib.rs",
+    "mode": "100644",
+    "sha256": "063e993f108aee29546828ab4d72a837db60a80e45bea7867391f3bf4d34aad7"
+  },
+  {
+    "source": "wiiu/entropy/src/lib.rs",
+    "destination": "wiiu/entropy/src/lib.rs",
+    "mode": "100644",
+    "sha256": "f07577175ae9f597a3452963994dd9024856010ec51a81a0eac6334ba2732009"
+  },
+  {
+    "source": "wiiu/entropy_probe/CMakeLists.txt",
+    "destination": "wiiu/entropy_probe/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "22259230fed4c82a321222a3d3cdf4a86372a325ea108712cbea6831777a0b13"
+  },
+  {
+    "source": "wiiu/entropy_probe/Cargo.lock",
+    "destination": "wiiu/entropy_probe/Cargo.lock",
+    "mode": "100644",
+    "sha256": "75f54321b892842c63b180d92bb59d3cd71a1cab02582b82519377f78c8e8524"
+  },
+  {
+    "source": "wiiu/entropy_probe/Cargo.toml",
+    "destination": "wiiu/entropy_probe/Cargo.toml",
+    "mode": "100644",
+    "sha256": "b9af36e5609726be11361e433b6b92ba2b93bf140a89ed51ace6ebccad25308f"
+  },
+  {
+    "source": "wiiu/entropy_probe/README.md",
+    "destination": "wiiu/entropy_probe/README.md",
+    "mode": "100644",
+    "sha256": "938109bf1b63e128a4364046eeb683084bb34e5405ec20f7dc8c9527ff1bbc37"
+  },
+  {
+    "source": "wiiu/entropy_probe/build.sh",
+    "destination": "wiiu/entropy_probe/build.sh",
+    "mode": "100644",
+    "sha256": "e88306da8af22772a489ee36aac52537368dbd868edca74b78400e42650fe96a"
+  },
+  {
+    "source": "wiiu/entropy_probe/main.c",
+    "destination": "wiiu/entropy_probe/main.c",
+    "mode": "100644",
+    "sha256": "3244b94d96cd032eab19bdccb0d1d0e6790e16912921d97b758e92939fabb45d"
+  },
+  {
+    "source": "wiiu/entropy_probe/src/lib.rs",
+    "destination": "wiiu/entropy_probe/src/lib.rs",
+    "mode": "100644",
+    "sha256": "c817f8e794dfdd6624293888c290abc9682ebc5551b04635ad30dc1cca888a4c"
+  },
+  {
+    "source": "wiiu/fs/Cargo.toml",
+    "destination": "wiiu/fs/Cargo.toml",
+    "mode": "100644",
+    "sha256": "bb43608aef010c817270f4f4dd7ca86182f3566bc2465c369a989cebe4c8b458"
+  },
+  {
+    "source": "wiiu/fs/README.md",
+    "destination": "wiiu/fs/README.md",
+    "mode": "100644",
+    "sha256": "b90673af7dcb49f933f31cc29e7058027827ed6db73e27a03347836bcb60278a"
+  },
+  {
+    "source": "wiiu/fs/available_space.c",
+    "destination": "wiiu/fs/available_space.c",
+    "mode": "100644",
+    "sha256": "f129ba34679977c9ecd893460c063cc279edcd9d29236b5d4b254a73d9e135ef"
+  },
+  {
+    "source": "wiiu/fs/build.rs",
+    "destination": "wiiu/fs/build.rs",
+    "mode": "100644",
+    "sha256": "d7fb6ae6a05a0466f4bc5411ac1a6880729a834c1d1db374574d2f2ce8abd3b3"
+  },
+  {
+    "source": "wiiu/fs/src/lib.rs",
+    "destination": "wiiu/fs/src/lib.rs",
+    "mode": "100644",
+    "sha256": "8b1643f2836fc424d6e567df6f275d1fb80f2cf05093fd2b13fcee43486ff8f5"
+  },
+  {
+    "source": "wiiu/gx2_hud/CMakeLists.txt",
+    "destination": "wiiu/gx2_hud/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "290af1219495f5742bebc77d2956a2b44264ac264c130d4b227729af1b903b18"
+  },
+  {
+    "source": "wiiu/gx2_hud/README.md",
+    "destination": "wiiu/gx2_hud/README.md",
+    "mode": "100644",
+    "sha256": "093b1f89be8b62d35f790ad116bd8461d372ad7feca52667f6500e8070982953"
+  },
+  {
+    "source": "wiiu/gx2_hud/build.sh",
+    "destination": "wiiu/gx2_hud/build.sh",
+    "mode": "100644",
+    "sha256": "fc55086b6172e8b07803251735eaf28632d718064cf7dc24b3eae9be95b4010e"
+  },
+  {
+    "source": "wiiu/gx2_hud/cit_glint.c",
+    "destination": "wiiu/gx2_hud/cit_glint.c",
+    "mode": "100644",
+    "sha256": "5fa8e2dc7189a2d5c3377ae599f3a1a532e2e5597632b444ef2602a20ccc4401"
+  },
+  {
+    "source": "wiiu/gx2_hud/cit_glint.h",
+    "destination": "wiiu/gx2_hud/cit_glint.h",
+    "mode": "100644",
+    "sha256": "4992162b7bc3c3576218e7169daedb4602660a3161f4970e73409450241698c6"
+  },
+  {
+    "source": "wiiu/gx2_hud/diagnostic/CMakeLists.txt",
+    "destination": "wiiu/gx2_hud/diagnostic/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "661f4cb8c9688f7000214591df19cac32ea93e40a644b4e83cb30300106a62e8"
+  },
+  {
+    "source": "wiiu/gx2_hud/diagnostic/README.md",
+    "destination": "wiiu/gx2_hud/diagnostic/README.md",
+    "mode": "100644",
+    "sha256": "9f9b184268509d913f62033f52f10e8a9c5bd8b52b151647cc783b9fce1b64e7"
+  },
+  {
+    "source": "wiiu/gx2_hud/diagnostic/build.sh",
+    "destination": "wiiu/gx2_hud/diagnostic/build.sh",
+    "mode": "100644",
+    "sha256": "111d99f9997716f0f7c46d11db881317b1ba8dab60cc919f44de40951a7a9794"
+  },
+  {
+    "source": "wiiu/gx2_hud/diagnostic/main.c",
+    "destination": "wiiu/gx2_hud/diagnostic/main.c",
+    "mode": "100644",
+    "sha256": "f06d296830dd08be1a4ebbf040be416e54fb597ea2fc3ce0018251b62cc48880"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud.c",
+    "destination": "wiiu/gx2_hud/hud.c",
+    "mode": "100644",
+    "sha256": "6a53322d256787f89ba2d9799005c754062df5b492f8eb0cacfc2685cb008e5b"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud.frag",
+    "destination": "wiiu/gx2_hud/hud.frag",
+    "mode": "100644",
+    "sha256": "e1c0ef670e52f7dab2804024d26fb84d00e01fcd0ed4b45453543fa5086ad1a6"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud.h",
+    "destination": "wiiu/gx2_hud/hud.h",
+    "mode": "100644",
+    "sha256": "c5c5ce3f4687d5e79764e2f5dc280a66168003496f351317ec91f490c8b62196"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud.vert",
+    "destination": "wiiu/gx2_hud/hud.vert",
+    "mode": "100644",
+    "sha256": "e62f54db104f9c71902b47bc790f9abff475fbe0c5696158f71980fac8157aa8"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud_data.c",
+    "destination": "wiiu/gx2_hud/hud_data.c",
+    "mode": "100644",
+    "sha256": "7388f438a5a3f6eda4dd2f28c55eaf5aa86fcc3e1b62f4ebbdad66f26464df16"
+  },
+  {
+    "source": "wiiu/gx2_hud/hud_data.h",
+    "destination": "wiiu/gx2_hud/hud_data.h",
+    "mode": "100644",
+    "sha256": "410abc7e18441bf8ea54ab70afff113c601a1378de63760b32b9cd8d40ce1be7"
+  },
+  {
+    "source": "wiiu/gx2_hud/tests/hud_data_test.c",
+    "destination": "wiiu/gx2_hud/tests/hud_data_test.c",
+    "mode": "100644",
+    "sha256": "4e9d651b2a29693303684dd90af35b1afa7641021723e847933cf9d5aa504700"
+  },
+  {
+    "source": "wiiu/gx2_panorama/CMakeLists.txt",
+    "destination": "wiiu/gx2_panorama/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "5d93e43c4f7b32bc875c37eefc12045ebe4fb4046e0fd66de616508872c6d707"
+  },
+  {
+    "source": "wiiu/gx2_panorama/panorama.c",
+    "destination": "wiiu/gx2_panorama/panorama.c",
+    "mode": "100644",
+    "sha256": "79f6faa7bbe3aa2c8acc5e3c8cf0d811d8984b12abf0ece8200dee4bd36b5d63"
+  },
+  {
+    "source": "wiiu/gx2_panorama/panorama.frag",
+    "destination": "wiiu/gx2_panorama/panorama.frag",
+    "mode": "100644",
+    "sha256": "3181004ac0774bad5f5cdaf087616392c628cda29414668c5812b78a3a2f43e8"
+  },
+  {
+    "source": "wiiu/gx2_panorama/panorama.h",
+    "destination": "wiiu/gx2_panorama/panorama.h",
+    "mode": "100644",
+    "sha256": "445bb0af98d5e1fb6ad735c6d76bcf097e8934987d6a2aea424d492fdbff6a83"
+  },
+  {
+    "source": "wiiu/gx2_panorama/panorama.vert",
+    "destination": "wiiu/gx2_panorama/panorama.vert",
+    "mode": "100644",
+    "sha256": "09d08d6297ef65a3f17891ec3566b113e577469fbdefc32e515feea2539b146e"
+  },
+  {
+    "source": "wiiu/gx2_terrain/CMakeLists.txt",
+    "destination": "wiiu/gx2_terrain/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "fc3fba47ccb26a0ea106837346021a9489f7a80c93ef6580d9112fbc0b3a8a3d"
+  },
+  {
+    "source": "wiiu/gx2_terrain/Cargo.toml",
+    "destination": "wiiu/gx2_terrain/Cargo.toml",
+    "mode": "100644",
+    "sha256": "141c6ec2d721d97c1cbee0d605e44aaa64af6a774d5db9564cafa28b7660c93e"
+  },
+  {
+    "source": "wiiu/gx2_terrain/src/lib.rs",
+    "destination": "wiiu/gx2_terrain/src/lib.rs",
+    "mode": "100644",
+    "sha256": "dc1cc6d3545b076cb287b704213ec63689ba5403d3b0ff420ef7c2b3983a762c"
+  },
+  {
+    "source": "wiiu/gx2_terrain/terrain.c",
+    "destination": "wiiu/gx2_terrain/terrain.c",
+    "mode": "100644",
+    "sha256": "61d9f5922a9573a9b409314a077f209c23e5baf853e284eceed231f963046442"
+  },
+  {
+    "source": "wiiu/gx2_terrain/terrain.frag",
+    "destination": "wiiu/gx2_terrain/terrain.frag",
+    "mode": "100644",
+    "sha256": "4cbec1c7f431e3b09e8875baf5ffdf475b1c4d4b084876b61ce469756b0bba47"
+  },
+  {
+    "source": "wiiu/gx2_terrain/terrain.h",
+    "destination": "wiiu/gx2_terrain/terrain.h",
+    "mode": "100644",
+    "sha256": "e30ffef230824da43469fa2138f7ac9ef2dfb523b41d5e1bbc21eb2bf27989e0"
+  },
+  {
+    "source": "wiiu/gx2_terrain/terrain.vert",
+    "destination": "wiiu/gx2_terrain/terrain.vert",
+    "mode": "100644",
+    "sha256": "272cf0994662188b13375269ff614e674b92ca22a2f657c4bc251319e141fbd0"
+  },
+  {
+    "source": "wiiu/gx2_terrain/terrain_buffers.h",
+    "destination": "wiiu/gx2_terrain/terrain_buffers.h",
+    "mode": "100644",
+    "sha256": "19f90a5bb19f81bccdb2d79d057ded9c10be8b4c80a383999b0a87379b2f58c9"
+  },
+  {
+    "source": "wiiu/gx2_terrain/tests/buffers.c",
+    "destination": "wiiu/gx2_terrain/tests/buffers.c",
+    "mode": "100644",
+    "sha256": "352a26d9ff04e5b46e3d557b1efeec2523208af0a1895dbd12b10eb1d64576ab"
+  },
+  {
+    "source": "wiiu/hud_probe/CMakeLists.txt",
+    "destination": "wiiu/hud_probe/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "2a86cd44663f94fbe217cadafe76de8588d25c145c5a562db72a34a324ed4e66"
+  },
+  {
+    "source": "wiiu/hud_probe/Cargo.lock",
+    "destination": "wiiu/hud_probe/Cargo.lock",
+    "mode": "100644",
+    "sha256": "b3d547c329d25fbb858d517dd1783987253f63492279e5264e49f5be4199f9cc"
+  },
+  {
+    "source": "wiiu/hud_probe/Cargo.toml",
+    "destination": "wiiu/hud_probe/Cargo.toml",
+    "mode": "100644",
+    "sha256": "67dac9d967ad4343662a4989a4fdf4ae6e320b164a15ade5cac7f5817b7e911a"
+  },
+  {
+    "source": "wiiu/hud_probe/README.md",
+    "destination": "wiiu/hud_probe/README.md",
+    "mode": "100644",
+    "sha256": "92ed3b668ea6363e790429681dafe25d66883f57e29ba726a3c21c6d5be1a34a"
+  },
+  {
+    "source": "wiiu/hud_probe/build.sh",
+    "destination": "wiiu/hud_probe/build.sh",
+    "mode": "100644",
+    "sha256": "18eb0c5b44437e801d7c09e3c48772d7ca76c23d00fb35ee793d62b1cfab5b45"
+  },
+  {
+    "source": "wiiu/hud_probe/main.c",
+    "destination": "wiiu/hud_probe/main.c",
+    "mode": "100644",
+    "sha256": "873ee2061d6ff9628e4ff2cf419f147bf0e72afc51cd72dbb1ffa845e5e84e9e"
+  },
+  {
+    "source": "wiiu/hud_probe/src/lib.rs",
+    "destination": "wiiu/hud_probe/src/lib.rs",
+    "mode": "100644",
+    "sha256": "18f9e9498d1ad6b5c0f7ef369d8ca66698df30f1d31b8e486b7d44837b3dd1a9"
+  },
+  {
+    "source": "wiiu/game-bridge/.cafe/linker.ld",
+    "destination": "wiiu/loading_app/.cafe/linker.ld",
+    "mode": "100644",
+    "sha256": "d97514356bb41d55c64ba51c0e8c6bc9919092d090224fa08f599be85a6d4087"
+  },
+  {
+    "source": "wiiu/game-bridge/.cafe/powerpc-cafe-nintendo.json",
+    "destination": "wiiu/loading_app/.cafe/powerpc-cafe-nintendo.json",
+    "mode": "100644",
+    "sha256": "bb548d4d0930f11efe07149e287b95b2f40eaf30e20c21df19f4bc52a73344be"
+  },
+  {
+    "source": "wiiu/game-bridge/.cargo/config.toml",
+    "destination": "wiiu/loading_app/.cargo/config.toml",
+    "mode": "100644",
+    "sha256": "e273a42656fb2168884d5e82278a6f10e3700d819671c81071f9da0d419aaed2"
+  },
+  {
+    "source": "wiiu/game-bridge/CMakeLists.txt",
+    "destination": "wiiu/loading_app/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "a68b85d934c114b55107954185d3f21c2c61788030e1662968c060e23bc8b5bf"
+  },
+  {
+    "source": "wiiu/game-bridge/Cargo.lock",
+    "destination": "wiiu/loading_app/Cargo.lock",
+    "mode": "100644",
+    "sha256": "729873a70ffc30df722d54e05fac6359c0e91904fb962bb7a442584eaeb69cb7"
+  },
+  {
+    "source": "wiiu/game-bridge/Cargo.toml",
+    "destination": "wiiu/loading_app/Cargo.toml",
+    "mode": "100644",
+    "sha256": "68e42f49b9ae45f853c364dd7048789bd1d41fefb26bef06b6a5a025d7dfe089"
+  },
+  {
+    "source": "wiiu/game-bridge/README.md",
+    "destination": "wiiu/loading_app/README.md",
+    "mode": "100644",
+    "sha256": "94893bb01bcb1c483dd840503f0c4050ff0b51ed9f4e9d28caa133b60fa97592"
+  },
+  {
+    "source": "wiiu/game-bridge/agent-control.md",
+    "destination": "wiiu/loading_app/agent-control.md",
+    "mode": "100644",
+    "sha256": "2bb9583fc5ea9903d0f9d6af6616d4d35cb1dff4116d49564c69c96ce2779c45"
+  },
+  {
+    "source": "wiiu/game-bridge/cmake/prepare_wut_linker.cmake",
+    "destination": "wiiu/loading_app/cmake/prepare_wut_linker.cmake",
+    "mode": "100644",
+    "sha256": "7b13eb7917b03e04578640553bf9e84998d6511a17febfde3c40feffd7243aa8"
+  },
+  {
+    "source": "wiiu/game-bridge/main.c",
+    "destination": "wiiu/loading_app/main.c",
+    "mode": "100644",
+    "sha256": "fe9e29b0e6a4fcc7bdb344c42ccf495244f8b1005c00eb4553b63af731625b9d"
+  },
+  {
+    "source": "wiiu/game-bridge/memory.c",
+    "destination": "wiiu/loading_app/memory.c",
+    "mode": "100644",
+    "sha256": "13991f462654fd4758dee92b5d463845e1a48d02367a5e3dd5a04f781a363457"
+  },
+  {
+    "source": "wiiu/game-bridge/rust-toolchain.toml",
+    "destination": "wiiu/loading_app/rust-toolchain.toml",
+    "mode": "100644",
+    "sha256": "e6a58d0dff15a420a29a8ee22852308ff25791bdded2a27af1634cb698f66ca0"
+  },
+  {
+    "source": "wiiu/game-bridge/src/lib.rs",
+    "destination": "wiiu/loading_app/src/lib.rs",
+    "mode": "100644",
+    "sha256": "05e243909c416d4d8381ed027df2629eb67e95e3e365ace57a4308980b9bbc8a"
+  },
+  {
+    "source": "wiiu/loading_host/CMakeLists.txt",
+    "destination": "wiiu/loading_host/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "9a938cc5ae48acab8b4c501464f29fcebdd017e5a44b810b39a48eb8c1967fc2"
+  },
+  {
+    "source": "wiiu/loading_host/Cargo.toml",
+    "destination": "wiiu/loading_host/Cargo.toml",
+    "mode": "100644",
+    "sha256": "f36022d3e7eb4ecec47d57f8621bb69ee2479467700cf323a848fd5b0df5086a"
+  },
+  {
+    "source": "wiiu/loading_host/README.md",
+    "destination": "wiiu/loading_host/README.md",
+    "mode": "100644",
+    "sha256": "ced83654997ac358df4019ad5ece635d0098204084102117f40e78adaa02352e"
+  },
+  {
+    "source": "wiiu/loading_host/lib.rs",
+    "destination": "wiiu/loading_host/lib.rs",
+    "mode": "100644",
+    "sha256": "e4aca6418675d1cee66e65f83fb3fde2abc91334961b81cfda570aa63a2e41e5"
+  },
+  {
+    "source": "wiiu/loading_host/loading_host.c",
+    "destination": "wiiu/loading_host/loading_host.c",
+    "mode": "100644",
+    "sha256": "70672cc1794ce92044f5edabb1fd97f7e83da509f3f7222f0e4002296ad13be9"
+  },
+  {
+    "source": "wiiu/loading_host/loading_host.h",
+    "destination": "wiiu/loading_host/loading_host.h",
+    "mode": "100644",
+    "sha256": "970893b8d385a308c472fff985c49593eda1e1fcb9b94cb25ec5fc5bffd2c344"
+  },
+  {
+    "source": "wiiu/loading_host/swkbd_bridge.cpp",
+    "destination": "wiiu/loading_host/swkbd_bridge.cpp",
+    "mode": "100644",
+    "sha256": "c15b7acb5209077d9ed526839c3f272a0b182289d43c4b0b1848ff167dc2dbe6"
+  },
+  {
+    "source": "wiiu/loading_host/swkbd_bridge.h",
+    "destination": "wiiu/loading_host/swkbd_bridge.h",
+    "mode": "100644",
+    "sha256": "64169f0ad6651c7f7f50ce717ddf598bbbb656dbb13095f83cdbbfa30bfa36d9"
+  },
+  {
+    "source": "wiiu/package_rpx.cmake",
+    "destination": "wiiu/package_rpx.cmake",
+    "mode": "100644",
+    "sha256": "342d7689a5e7b6e2fc691cf07201c74ec38a253058666c77a9c13690f499cdbe"
+  },
+  {
+    "source": "wiiu/platform/Cargo.lock",
+    "destination": "wiiu/platform/Cargo.lock",
+    "mode": "100644",
+    "sha256": "9f572943d7068295e2c922c8443316d59be99c8cb7f7233926d3461aa2e0218f"
+  },
+  {
+    "source": "wiiu/platform/Cargo.toml",
+    "destination": "wiiu/platform/Cargo.toml",
+    "mode": "100644",
+    "sha256": "ad8812ea13e1933b0caab46846a4623d99d981c9f0ac0d6e558d42ff9f682e79"
+  },
+  {
+    "source": "wiiu/platform/src/audio.rs",
+    "destination": "wiiu/platform/src/audio.rs",
+    "mode": "100644",
+    "sha256": "3e89ace940267522946d912ec5e8184fbce5ec1f0d5fb443d585020e84b5601a"
+  },
+  {
+    "source": "wiiu/platform/src/cemu_global_session_lock.c",
+    "destination": "wiiu/platform/src/cemu_global_session_lock.c",
+    "mode": "100644",
+    "sha256": "02ff6b978ce518921714d166414a0013e7b3ed6aaa8398972f8cc0d63e4ef474"
+  },
+  {
+    "source": "wiiu/platform/src/hud.rs",
+    "destination": "wiiu/platform/src/hud.rs",
+    "mode": "100644",
+    "sha256": "80dda234a48f1a845e4f69b3086f465c1021f931916b43fe8aaeac96af7d23e9"
+  },
+  {
+    "source": "wiiu/platform/src/hud/horizon.rs",
+    "destination": "wiiu/platform/src/hud/horizon.rs",
+    "mode": "100644",
+    "sha256": "2d7d4e8608ad0ad56be7df5fb40bfc7f4689e19b456dd88978f9fe9473e77ff1"
+  },
+  {
+    "source": "wiiu/platform/src/keyboard.rs",
+    "destination": "wiiu/platform/src/keyboard.rs",
+    "mode": "100644",
+    "sha256": "19d554be318edcf7ea8cd4d9bf41ad608e23089cacbe0a448d6ff8530d71ac7a"
+  },
+  {
+    "source": "wiiu/platform/src/keyboard_bridge.c",
+    "destination": "wiiu/platform/src/keyboard_bridge.c",
+    "mode": "100644",
+    "sha256": "01e0dddb6dae70beaa83229ab07e0c851533dd11f4a39e683c445c108e6a0b01"
+  },
+  {
+    "source": "wiiu/platform/src/keyboard_bridge.h",
+    "destination": "wiiu/platform/src/keyboard_bridge.h",
+    "mode": "100644",
+    "sha256": "8ab697153be098c2293ad19a1a0ac174b3853313505278793b3876362ab237ca"
+  },
+  {
+    "source": "wiiu/platform/src/lib.rs",
+    "destination": "wiiu/platform/src/lib.rs",
+    "mode": "100644",
+    "sha256": "75afde504bcc95d1be23b112ef2b4be65cdfa9905b42cd3173be135bff936c46"
+  },
+  {
+    "source": "wiiu/platform/src/mouse.rs",
+    "destination": "wiiu/platform/src/mouse.rs",
+    "mode": "100644",
+    "sha256": "863c158186e4aab81c9f848594bf9c84a3ec54eed10d9fb73581c1fee172066e"
+  },
+  {
+    "source": "wiiu/platform/src/mouse_bridge.c",
+    "destination": "wiiu/platform/src/mouse_bridge.c",
+    "mode": "100644",
+    "sha256": "eff4937fc8c46516fed879524a4187bc9a8fe317cc95c9681dde29d962b42151"
+  },
+  {
+    "source": "wiiu/platform/src/mouse_bridge.h",
+    "destination": "wiiu/platform/src/mouse_bridge.h",
+    "mode": "100644",
+    "sha256": "884e5c0fc0474e7b85f24109c8a2d7ec49ebf19f259c27af6c0fbd276700f18f"
+  },
+  {
+    "source": "wiiu/platform/src/touch.rs",
+    "destination": "wiiu/platform/src/touch.rs",
+    "mode": "100644",
+    "sha256": "973414dd04e07052503aecf5f8b626b66563257cb28ca2a50062e094125b17ee"
+  },
+  {
+    "source": "wiiu/platform/src/vpad_bridge.c",
+    "destination": "wiiu/platform/src/vpad_bridge.c",
+    "mode": "100644",
+    "sha256": "a1a333f19f7a8676ae4fedb0a79e1a440ba060a89582281176dea4406f402142"
+  },
+  {
+    "source": "wiiu/platform/src/vpad_bridge.h",
+    "destination": "wiiu/platform/src/vpad_bridge.h",
+    "mode": "100644",
+    "sha256": "e1b48826e1a919ce2d11e52bf57a83ffcbcc70ee4c0c048a81bc071ced274649"
+  },
+  {
+    "source": "wiiu/platform/tests/stubs/coreinit/debug.h",
+    "destination": "wiiu/platform/tests/stubs/coreinit/debug.h",
+    "mode": "100644",
+    "sha256": "7e5281cb0bd0d1ceb87e35226b9292fe6c40b48e6d9ef5b6f0c3b3e9db545a5c"
+  },
+  {
+    "source": "wiiu/platform/tests/stubs/swkbd_bridge.h",
+    "destination": "wiiu/platform/tests/stubs/swkbd_bridge.h",
+    "mode": "100644",
+    "sha256": "8f605457d9983c950bb3cd7dc557279b7b2b29867a8c8f1710e800b345752b7d"
+  },
+  {
+    "source": "wiiu/platform/tests/stubs/vpad/input.h",
+    "destination": "wiiu/platform/tests/stubs/vpad/input.h",
+    "mode": "100644",
+    "sha256": "e84cfe2c076647b4b1a6a8ef27f6d2cee019f5a75e9c5662105c71b992ecc579"
+  },
+  {
+    "source": "wiiu/platform/tests/vpad_bridge_harness.c",
+    "destination": "wiiu/platform/tests/vpad_bridge_harness.c",
+    "mode": "100644",
+    "sha256": "3bb3839bee159bddecfa284e4128494b2d05229729a124779ef856f32dac78f0"
+  },
+  {
+    "source": "wiiu/platform/tests/vpad_history.c",
+    "destination": "wiiu/platform/tests/vpad_history.c",
+    "mode": "100644",
+    "sha256": "8121adfbbda6978167bfa2217d7741705374c3dc24c153154f3dc34b271308fe"
+  },
+  {
+    "source": "wiiu/ring/README.md",
+    "destination": "wiiu/ring/README.md",
+    "mode": "100644",
+    "sha256": "5c97fc1c6613602e131e5c7120de802169cc98526afff257d8f1848f4a0c4a00"
+  },
+  {
+    "source": "wiiu/ring/prepare.sh",
+    "destination": "wiiu/ring/prepare.sh",
+    "mode": "100644",
+    "sha256": "dd251a1be149d33a4ca90ba85fc228a00e1194a38348c277bc30afb76318c060"
+  },
+  {
+    "source": "wiiu/ring/ring-0.17.14-cafe.patch",
+    "destination": "wiiu/ring/ring-0.17.14-cafe.patch",
+    "mode": "100644",
+    "sha256": "34f03479b325c255cb341157812f07877d49d377cc02be2d675d5d55ee815f66"
+  },
+  {
+    "source": "wiiu/rust-std-socket/CMakeLists.txt",
+    "destination": "wiiu/rust-std-socket/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "5f643d75a52785fef5f9f4d92470dbf40050f618fbee1cc79375f1634a6a2912"
+  },
+  {
+    "source": "wiiu/rust-std-socket/Cargo.lock",
+    "destination": "wiiu/rust-std-socket/Cargo.lock",
+    "mode": "100644",
+    "sha256": "ee1117e22582756207242147872d70bb43f1a62d5eab233474f4ce7335e0e92b"
+  },
+  {
+    "source": "wiiu/rust-std-socket/Cargo.toml",
+    "destination": "wiiu/rust-std-socket/Cargo.toml",
+    "mode": "100644",
+    "sha256": "b05fcbdd14bde4854f2f184b9876ca758298079a77cae15dca540efc3f310098"
+  },
+  {
+    "source": "wiiu/rust-std-socket/README.md",
+    "destination": "wiiu/rust-std-socket/README.md",
+    "mode": "100644",
+    "sha256": "221ce1051cc87f5374f54e6f74fc910d3557e7dcac466259602aa52ef16894f2"
+  },
+  {
+    "source": "wiiu/rust-std-socket/build_probe.sh",
+    "destination": "wiiu/rust-std-socket/build_probe.sh",
+    "mode": "100644",
+    "sha256": "da0725166e8b592fe786ac87a01e9b5890462b2891d060e00c9dbb5d4bae7dd9"
+  },
+  {
+    "source": "wiiu/rust-std-socket/cafe-socket-clone.patch",
+    "destination": "wiiu/rust-std-socket/cafe-socket-clone.patch",
+    "mode": "100644",
+    "sha256": "385706eae34f090cdc9debc9a3fd071fa583575b46150945faec5866f8436909"
+  },
+  {
+    "source": "wiiu/rust-std-socket/clone_lifetime_harness.rs",
+    "destination": "wiiu/rust-std-socket/clone_lifetime_harness.rs",
+    "mode": "100644",
+    "sha256": "eeb7062a81e9e9cdc2fb78007620581caa944d14e19b006a32da92d000683114"
+  },
+  {
+    "source": "wiiu/rust-std-socket/main.c",
+    "destination": "wiiu/rust-std-socket/main.c",
+    "mode": "100644",
+    "sha256": "4dfe94f5c67724e08e812215b3822603e933493efb56e492dc0db9a1da7f853c"
+  },
+  {
+    "source": "wiiu/rust-std-socket/src/lib.rs",
+    "destination": "wiiu/rust-std-socket/src/lib.rs",
+    "mode": "100644",
+    "sha256": "dff92db650648078c726579d43c444b3f6f799341a53bd9b23b13745120f2ace"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/CMakeLists.txt",
+    "destination": "wiiu/rust-std-timeout/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "631b9d73752f569e77bb596cdec3dd29ca8354b156e4f77c611409944ef4647d"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/Cargo.lock",
+    "destination": "wiiu/rust-std-timeout/Cargo.lock",
+    "mode": "100644",
+    "sha256": "e5d71f78e1eaf3b2df95af0dfa7dd22dc67aced324826b8d7a36896bf4a4ffbd"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/Cargo.toml",
+    "destination": "wiiu/rust-std-timeout/Cargo.toml",
+    "mode": "100644",
+    "sha256": "f35dae674e2612e3cae4c33a0b0f497a96d53cc38ac883efe1bd718859a6bfc7"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/README.md",
+    "destination": "wiiu/rust-std-timeout/README.md",
+    "mode": "100644",
+    "sha256": "bed6245b7f804c02341d4464caa9ccf290df18fa047358a79ed8934eca1d76fb"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/build_probe.sh",
+    "destination": "wiiu/rust-std-timeout/build_probe.sh",
+    "mode": "100644",
+    "sha256": "7ca9aba1fbed08479fc3abc562ee64baafd0964017bf1a217700572695f10cdb"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/library/std/src/sys/net/connection/socket/cafe-clone-base.rs",
+    "destination": "wiiu/rust-std-timeout/library/std/src/sys/net/connection/socket/cafe-clone-base.rs",
+    "mode": "100644",
+    "sha256": "74d802334e388ea647f4c3d0692b89330bd1ef0ce4733cf4a783aaa5617eb582"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/library/std/src/sys/net/connection/socket/cafe.rs",
+    "destination": "wiiu/rust-std-timeout/library/std/src/sys/net/connection/socket/cafe.rs",
+    "mode": "100644",
+    "sha256": "dd51edad562dc0a136201998f4fd20f25c62f4cd8caaca3d6130abfd0fa9b021"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/main.c",
+    "destination": "wiiu/rust-std-timeout/main.c",
+    "mode": "100644",
+    "sha256": "10cd1fc700ce76c98fada0a7c0de2d0f2d960f9e030eb8502013f2e9924581a7"
+  },
+  {
+    "source": "wiiu/rust-std-timeout/src/lib.rs",
+    "destination": "wiiu/rust-std-timeout/src/lib.rs",
+    "mode": "100644",
+    "sha256": "49a1c7174fd6aa17cdbd337f9a980a1fc68ba704730cf53ccd3c6dff8a61fb63"
+  },
+  {
+    "source": "wiiu/rust-std-tls/CMakeLists.txt",
+    "destination": "wiiu/rust-std-tls/CMakeLists.txt",
+    "mode": "100644",
+    "sha256": "2588b096aa11555d7c8f684b74b03e1d924f0fc88d3c4e49deed5d35d83a61f0"
+  },
+  {
+    "source": "wiiu/rust-std-tls/Cargo.lock",
+    "destination": "wiiu/rust-std-tls/Cargo.lock",
+    "mode": "100644",
+    "sha256": "9784dd5126eb06fbf50247f51c9cfe5ee8c5de6084b2a039454d832f4d01caa2"
+  },
+  {
+    "source": "wiiu/rust-std-tls/Cargo.toml",
+    "destination": "wiiu/rust-std-tls/Cargo.toml",
+    "mode": "100644",
+    "sha256": "b8aceb2f42a45256e79bc1cbabc82c578948b16fe8286a6996e31f88e8c0b510"
+  },
+  {
+    "source": "wiiu/rust-std-tls/README.md",
+    "destination": "wiiu/rust-std-tls/README.md",
+    "mode": "100644",
+    "sha256": "1f4e50d72dd6967ff6ff24ff7acd84df159ab5fdfc44870a14f8dc098d6701eb"
+  },
+  {
+    "source": "wiiu/rust-std-tls/build_probe.sh",
+    "destination": "wiiu/rust-std-tls/build_probe.sh",
+    "mode": "100644",
+    "sha256": "354dabe6d5c1f4dd4e5832394dec3c6efbf87aaba383a7c2a08448e33b9ecf41"
+  },
+  {
+    "source": "wiiu/rust-std-tls/host-tests/Cargo.lock",
+    "destination": "wiiu/rust-std-tls/host-tests/Cargo.lock",
+    "mode": "100644",
+    "sha256": "f8b0078642c5e8321baa63ed45f229bfb6d6ec093c3e21ccf4c5ac96fa5b0df9"
+  },
+  {
+    "source": "wiiu/rust-std-tls/host-tests/Cargo.toml",
+    "destination": "wiiu/rust-std-tls/host-tests/Cargo.toml",
+    "mode": "100644",
+    "sha256": "e36134e085b85a53b340079a88b2ca761cb2e8694e0f0cabf92b370a8c68abd4"
+  },
+  {
+    "source": "wiiu/rust-std-tls/host-tests/src/lib.rs",
+    "destination": "wiiu/rust-std-tls/host-tests/src/lib.rs",
+    "mode": "100644",
+    "sha256": "36bffe94653e01471a2013e8e8797e46fce1cba5db22f1c398686512f1380d85"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread/cafe-base.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread/cafe-base.rs",
+    "mode": "100644",
+    "sha256": "7e8ef730585009fbef1f56f81749855df9403138ccb910228a13f37ef082770a"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread/cafe.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread/cafe.rs",
+    "mode": "100644",
+    "sha256": "16d3a47e340302864b5720cc19251cecdf0fa8347373058916ad7574c25821f4"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread_local/key/cafe-base.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread_local/key/cafe-base.rs",
+    "mode": "100644",
+    "sha256": "949bc2053f665911fe8cb910a41bac1951d3bc81d340aa7e9c9a1b6365e0fb16"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread_local/key/cafe.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread_local/key/cafe.rs",
+    "mode": "100644",
+    "sha256": "47b39e1321c85b33bc0cf20e469e03c0c0d917bf580a8f10cc79ea266b37056a"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread_local/mod-base.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread_local/mod-base.rs",
+    "mode": "100644",
+    "sha256": "bb7add954638f22fcb7fb9f73cf7edcdb71ff340c6cf7a5c3c8b87025a418604"
+  },
+  {
+    "source": "wiiu/rust-std-tls/library/std/src/sys/thread_local/mod.rs",
+    "destination": "wiiu/rust-std-tls/library/std/src/sys/thread_local/mod.rs",
+    "mode": "100644",
+    "sha256": "50ce4077fed972200ec1dd707a59546894a22e0672986e43b4ccca51c0a559d8"
+  },
+  {
+    "source": "wiiu/rust-std-tls/main.c",
+    "destination": "wiiu/rust-std-tls/main.c",
+    "mode": "100644",
+    "sha256": "6188e789fabdf97defbd47fdce99c95bbc23009f0b7c3b36f9a844a73334b203"
+  },
+  {
+    "source": "wiiu/rust-std-tls/src/lib.rs",
+    "destination": "wiiu/rust-std-tls/src/lib.rs",
+    "mode": "100644",
+    "sha256": "6a4ae5ee93cf059cc8de2489015231717dc23d446605812968b9191bd42d15a2"
+  },
+  {
+    "source": "wiiu/worldgen/Cargo.lock",
+    "destination": "wiiu/worldgen/Cargo.lock",
+    "mode": "100644",
+    "sha256": "118d0e8ead49e7070492ce47b3744c3edb92b250dec4d88f7a3f4d3ca3a426e5"
+  },
+  {
+    "source": "wiiu/worldgen/Cargo.toml",
+    "destination": "wiiu/worldgen/Cargo.toml",
+    "mode": "100644",
+    "sha256": "03a877199b0c9b55375780bebf5d269699d4dabcbe0fef8fd1b2a8de2576e10f"
+  },
+  {
+    "source": "wiiu/worldgen/examples/atlas_builder.rs",
+    "destination": "wiiu/worldgen/examples/atlas_builder.rs",
+    "mode": "100644",
+    "sha256": "2c61f8e69cbcf62c1bee7e85ad89fd62537703765f7c85ae43e85e68a71fcef9"
+  },
+  {
+    "source": "wiiu/worldgen/examples/world_probe.rs",
+    "destination": "wiiu/worldgen/examples/world_probe.rs",
+    "mode": "100644",
+    "sha256": "041404bc2de677d4557cceb869d03af539757dd4c6e7473baaa3bf6dd03cd698"
+  },
+  {
+    "source": "wiiu/worldgen/src/lib.rs",
+    "destination": "wiiu/worldgen/src/lib.rs",
+    "mode": "100644",
+    "sha256": "c082abab6f164eab4ffa673ddc7b58667df00a4c2789411c922f17b8028b90c3"
+  }
+]

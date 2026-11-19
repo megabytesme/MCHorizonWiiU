@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "rust_commit": "62606b70e351edb297db1fdd4b99c8b8ca440d38",
+  "patched_tree": "b72914e00e6514a96274cca10723af1f3593fcd5",
+  "patch_sha256": "47566040cffab41f23227f0b87241aaeb1fe06be1471f301a3d94dc5f6c14c38",
+  "excluded_local_path": "library/backtrace",
+  "build_evidence": "apply-only"
+}

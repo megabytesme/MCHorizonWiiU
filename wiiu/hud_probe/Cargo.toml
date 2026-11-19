@@ -1,0 +1,20 @@
+[package]
+name = "horizon-wiiu-hud-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+horizon-client-hud = { path = "../../crates/horizon-client-hud" }
+horizon-hud-data = { path = "../../crates/horizon-hud-data" }
+horizon-wiiu-platform = { path = "../platform", features = ["cafe", "horizon-hud"] }
+horizon-wiiu-entropy = { path = "../entropy" }
+
+[workspace]
+
+[patch.crates-io]
+naga = { path = "../../third_party/naga" }
+getrandom = { path = "../../third_party/getrandom-0.4.3" }

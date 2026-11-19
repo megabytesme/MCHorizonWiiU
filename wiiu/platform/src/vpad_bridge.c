@@ -1,0 +1,164 @@
+#include "vpad_bridge.h"
+#include <stddef.h>
+#include <coreinit/debug.h>
+#include <vpad/input.h>
+#include "swkbd_bridge.h"
+
+static int32_t swkbd_input_occupied;
+static int32_t trace_first_poll = 1;
+static int32_t have_button_baseline;
+static uint32_t last_button_hold;
+static int32_t button_proc_mode_initialized;
+static int32_t button_proc_mode_tight;
+#ifdef HORIZON_WIIU_TRACE_VPAD_INPUT
+static int32_t trace_have_last_input;
+static uint32_t trace_last_hold;
+static int32_t trace_last_touched;
+static uint16_t trace_last_touch_validity;
+#endif
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+static uint32_t trace_swkbd_vpad_calls;
+#endif
+
+static void
+update_swkbd(const VPADStatus *status, int32_t trace)
+{
+   if (status == NULL) {
+      if (trace) OSReport("Horizon Cafe input trace: swkbd IsOpen begin\n");
+      int32_t open = horizon_swkbd_is_open();
+      if (trace) OSReport("Horizon Cafe input trace: swkbd IsOpen complete\n");
+      swkbd_input_occupied = open != 0;
+      return;
+   }
+
+   if (trace) OSReport("Horizon Cafe input trace: swkbd Calc begin\n");
+   int32_t result = horizon_swkbd_calc(status);
+   if (trace) OSReport("Horizon Cafe input trace: swkbd Calc complete\n");
+   if (result != 0) {
+      swkbd_input_occupied = 1;
+      return;
+   }
+   if (trace) OSReport("Horizon Cafe input trace: swkbd IsOpen begin\n");
+   int32_t open = horizon_swkbd_is_open();
+   if (trace) OSReport("Horizon Cafe input trace: swkbd IsOpen complete\n");
+   swkbd_input_occupied = open != 0;
+}
+
+int32_t
+horizon_wiiu_swkbd_input_occupied(void)
+{
+   return swkbd_input_occupied;
+}
+
+int32_t
+horizon_wiiu_vpad_read(HorizonVpadBatch *batch)
+{
+   int32_t trace = trace_first_poll;
+   trace_first_poll = 0;
+
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   uint32_t swkbd_vpad_call = 0;
+   int32_t trace_swkbd_vpad = 0;
+   if (horizon_swkbd_is_open() != 0) {
+      swkbd_vpad_call = ++trace_swkbd_vpad_calls;
+      trace_swkbd_vpad = swkbd_vpad_call <= 96;
+      if (trace_swkbd_vpad) {
+         OSReport("Horizon Cafe SWKBD vpad=%u stage=VPADRead.begin\n",
+                  (unsigned)swkbd_vpad_call);
+      }
+   }
+#endif
+   VPADStatus statuses[HORIZON_VPAD_SAMPLE_CAPACITY];
+   VPADReadError error = VPAD_READ_SUCCESS;
+   const int32_t swkbd_open = horizon_swkbd_is_open() != 0;
+   const int32_t use_tight_mode = horizon_vpad_uses_tight_button_mode(
+      swkbd_open, swkbd_input_occupied);
+   if (!button_proc_mode_initialized || use_tight_mode != button_proc_mode_tight) {
+      VPADSetButtonProcMode(VPAD_CHAN_0, use_tight_mode
+         ? VPAD_BUTTON_PROC_MODE_TIGHT : VPAD_BUTTON_PROC_MODE_LOOSE);
+      button_proc_mode_initialized = 1;
+      button_proc_mode_tight = use_tight_mode;
+   }
+   if (trace) OSReport("Horizon Cafe input trace: VPADRead begin\n");
+   int32_t count = VPADRead(VPAD_CHAN_0, statuses,
+                            HORIZON_VPAD_SAMPLE_CAPACITY, &error);
+   if (trace) {
+      OSReport("Horizon Cafe input trace: VPADRead complete count=%d error=%d\n",
+               count, (int32_t)error);
+   }
+#ifdef HORIZON_WIIU_TRACE_SWKBD
+   if (trace_swkbd_vpad) {
+      OSReport("Horizon Cafe SWKBD vpad=%u stage=VPADRead.returned count=%d error=%d\n",
+               (unsigned)swkbd_vpad_call, count, (int32_t)error);
+   }
+#endif
+   if (error != VPAD_READ_SUCCESS) {
+      update_swkbd(NULL, trace);
+      return (int32_t)error;
+   }
+   if (count <= 0) {
+      update_swkbd(NULL, trace);
+      return VPAD_READ_NO_SAMPLES;
+   }
+   /* WUT returns newest first; the shared history helper restores event order. */
+   const VPADStatus *status = &statuses[0];
+#ifdef HORIZON_WIIU_TRACE_VPAD_INPUT
+   const int32_t touched = status->tpNormal.touched != 0;
+   const int32_t input_changed = !trace_have_last_input ||
+      status->hold != trace_last_hold || status->trigger != 0 || status->release != 0 ||
+      touched != trace_last_touched ||
+      (touched && status->tpNormal.validity != trace_last_touch_validity);
+   if (input_changed) {
+      OSReport("Horizon Cafe VPAD input: hold=%08x trigger=%08x release=%08x "
+               "raw_touch=%u validity=%u x=%u y=%u\n",
+               (unsigned)status->hold, (unsigned)status->trigger,
+               (unsigned)status->release,
+               (unsigned)status->tpNormal.touched,
+               (unsigned)status->tpNormal.validity,
+               (unsigned)status->tpNormal.x, (unsigned)status->tpNormal.y);
+   }
+   trace_last_hold = status->hold;
+   trace_last_touched = touched;
+   trace_last_touch_validity = status->tpNormal.validity;
+   trace_have_last_input = 1;
+#endif
+   update_swkbd(status, trace);
+   batch->transition_count = 0;
+   HorizonVpadButtonSample button_samples[HORIZON_VPAD_SAMPLE_CAPACITY];
+   for (int32_t i = 0; i < count; ++i) {
+      button_samples[i].hold = statuses[i].hold;
+      button_samples[i].trigger = statuses[i].trigger;
+      button_samples[i].release = statuses[i].release;
+   }
+   batch->transition_count = horizon_vpad_collect_button_history(
+      button_samples, (uint32_t)count, have_button_baseline ? last_button_hold : 0,
+      batch->transitions, HORIZON_VPAD_HISTORY_CAPACITY);
+   if (count > 0) {
+      last_button_hold = statuses[0].hold;
+      have_button_baseline = 1;
+   }
+   batch->latest.buttons = status->hold;
+   batch->latest.left_x = status->leftStick.x;
+   batch->latest.left_y = status->leftStick.y;
+   batch->latest.right_x = status->rightStick.x;
+   batch->latest.right_y = status->rightStick.y;
+   batch->latest.touch_x = 0;
+   batch->latest.touch_y = 0;
+   batch->latest.touch_active = status->tpNormal.touched != 0;
+   batch->latest.touch_valid = 0;
+   if (status->tpNormal.touched != 0) {
+      VPADTouchData calibrated;
+      if (trace) OSReport("Horizon Cafe input trace: touch calibration begin\n");
+      VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_1920X1080,
+                                 &calibrated, &status->tpNormal);
+      if (trace) OSReport("Horizon Cafe input trace: touch calibration complete\n");
+      if (calibrated.validity == VPAD_VALID && calibrated.touched != 0 &&
+          calibrated.x < 1920 && calibrated.y < 1080) {
+         batch->latest.touch_x = calibrated.x;
+         batch->latest.touch_y = calibrated.y;
+         batch->latest.touch_valid = 1;
+      }
+   }
+   if (trace) OSReport("Horizon Cafe input trace: VPAD sample conversion complete\n");
+   return 1;
+}

@@ -1,0 +1,33 @@
+{
+    "arch": "powerpc",
+    "os": "cafe",
+    "vendor": "nintendo",
+    "cpu": "750",
+    "data-layout": "E-m:e-p:32:32-Fn32-i64:64-n32",
+    "env": "eabi",
+    "llvm-target": "powerpc-none-eabi",
+    "dynamic-linking": false,
+    "target-endian": "big",
+    "target-c-int-width": 32,
+    "target-pointer-width": 32,
+    "max-atomic-width": 32,
+    "atomic-cas": true,
+    "features": "+hard-float,+fpu,+longcall",
+    "linker-flavor": "ld.lld",
+    "linker": "rust-lld",
+    "pre-link-args": {
+        "ld.lld": ["-T.cafe/linker.ld", "--gc-sections", "--emit-relocs", "-znocopyreloc", "--whole-archive"]
+    },
+    "panic-strategy": "abort",
+    "relocation-model": "static",
+    "code-model": "large",
+    "executables": true,
+    "binary-format": "elf",
+    "exe-suffix": ".elf",
+    "position-independent-executables": false,
+    "relax-elf-relocations": false,
+    "eh-frame-header": true,
+    "has-rpath": false,
+    "no-default-libraries": true,
+    "supports-stack-protector": false
+}

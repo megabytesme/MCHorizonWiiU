@@ -1,0 +1,15 @@
+[package]
+name = "horizon-wiiu-cafe-tls-probe"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

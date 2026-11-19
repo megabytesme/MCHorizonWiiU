@@ -1,0 +1,204 @@
+use core::ffi::{c_char, c_void, CStr};
+use core::ptr::NonNull;
+
+use crate::canvas::{Canvas, Display, Point, Vertex, CAPACITY};
+use crate::config::{Instance, Settings};
+use crate::launcher::{Action, Launcher, Page, Touch, View};
+use crate::mock::MockFactory;
+use crate::session::SessionStatus;
+
+#[path = "../themes/night/theme.rs"]
+mod theme;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Sample {
+    buttons: u32,
+    touch: u32,
+    x: u32,
+    y: u32,
+}
+
+extern "C" {
+    fn shell_process() -> i32;
+    fn shell_release();
+    fn shell_poll_input(samples: *mut Sample) -> i32;
+    fn shell_create_view(atlas: *const u8, width: u32, height: u32, capacity: u32) -> bool;
+    fn shell_present(
+        tv: *const Vertex,
+        tv_count: u32,
+        tv_color: u32,
+        drc: *const Vertex,
+        drc_count: u32,
+        drc_color: u32,
+    ) -> bool;
+    fn shell_trace(message: *const c_char);
+    fn shell_measure(tv_vertices: u32, drc_vertices: u32, atlas_bytes: u32);
+    fn calloc(count: usize, size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+}
+
+pub(crate) fn trace(message: &'static CStr) {
+    unsafe { shell_trace(message.as_ptr()) }
+}
+
+struct FrameStorage(NonNull<Vertex>);
+
+impl Drop for FrameStorage {
+    fn drop(&mut self) {
+        unsafe { free(self.0.as_ptr().cast()) }
+    }
+}
+
+fn marker(view: View) -> &'static CStr {
+    match view.page {
+        Page::Home => match view.focused {
+            Some(Action::Profiles) => c"frame.home.profiles",
+            Some(Action::Versions) => c"frame.home.versions",
+            Some(Action::Settings) => c"frame.home.settings",
+            Some(Action::AgentControl) => c"frame.home.agent",
+            Some(Action::Quit) => c"frame.home.close",
+            _ => c"frame.home.play",
+        },
+        Page::Profiles if matches!(view.profile, crate::launcher::OfflineProfile::Guest) => {
+            c"frame.profiles.guest_selected"
+        }
+        Page::Profiles => c"frame.profiles",
+        Page::Versions => c"frame.versions",
+        Page::Settings if view.settings.swap_buttons => c"frame.settings.swapped",
+        Page::Settings => c"frame.settings",
+        Page::AgentControl => c"frame.agent",
+        Page::Loading if matches!(view.session, Some(SessionStatus::Stopping(_))) => {
+            c"frame.loading.stopping"
+        }
+        Page::Loading => c"frame.loading",
+        Page::Session => match view.session {
+            Some(SessionStatus::Saving) => c"frame.session.saving",
+            Some(SessionStatus::SaveFailed(_)) => c"frame.session.save_failed",
+            Some(SessionStatus::Stopping(_)) => c"frame.session.stopping",
+            _ => c"frame.session",
+        },
+        Page::Error => c"frame.startup_error",
+        Page::Exiting => c"frame.exiting",
+    }
+}
+
+#[no_mangle]
+extern "C" fn horizon_pregame_run() -> i32 {
+    let atlas = theme::ATLAS;
+    if atlas.pixels.len()
+        != (atlas.width as usize)
+            .saturating_mul(atlas.height as usize)
+            .saturating_mul(4)
+        || !unsafe {
+            shell_create_view(
+                atlas.pixels.as_ptr(),
+                atlas.width,
+                atlas.height,
+                CAPACITY as u32,
+            )
+        }
+    {
+        trace(c"view.init_failed");
+        return 1;
+    }
+    let Some(data) =
+        NonNull::new(unsafe { calloc(CAPACITY * 2, core::mem::size_of::<Vertex>()) }.cast())
+    else {
+        trace(c"view.allocation_failed");
+        return 1;
+    };
+    let storage = FrameStorage(data);
+    let mut launcher = Launcher::new(MockFactory, Instance::DEMO, Settings::default());
+    let mut displayed = None;
+    let mut frame = 0_u32;
+    loop {
+        match unsafe { shell_process() } {
+            1 => launcher.focus(true),
+            2 => break,
+            3 => {
+                launcher.focus(false);
+                displayed = None;
+                unsafe { shell_release() };
+                continue;
+            }
+            _ => {
+                launcher.focus(false);
+                displayed = None;
+                continue;
+            }
+        }
+
+        let mut samples = [Sample::default(); 16];
+        let count = unsafe { shell_poll_input(samples.as_mut_ptr()) };
+        if count < 0 {
+            launcher.input_lost();
+        } else {
+            for sample in samples.into_iter().take(count as usize) {
+                let touch = match sample.touch {
+                    0 => Touch::Released,
+                    1 => Touch::Pressed(theme::hit_test(
+                        launcher.view(),
+                        Point {
+                            x: sample.x as f32,
+                            y: sample.y as f32,
+                        },
+                    )),
+                    _ => Touch::Invalid,
+                };
+                launcher.sample(sample.buttons, touch);
+            }
+        }
+
+        let view = launcher.view();
+        if view.page == Page::Exiting {
+            break;
+        }
+        let pixels = storage.0.as_ptr();
+        let mut tv = Canvas::new(
+            unsafe { core::slice::from_raw_parts_mut(pixels, CAPACITY) },
+            &atlas,
+        );
+        let mut drc = Canvas::new(
+            unsafe { core::slice::from_raw_parts_mut(pixels.add(CAPACITY), CAPACITY) },
+            &atlas,
+        );
+        // The fixture uses the launcher renderer for its live page. A real
+        // host instead borrows live_driver() and gives it this foreground frame.
+        theme::paint(&mut tv, view, Display::Tv, frame);
+        theme::paint(&mut drc, view, Display::GamePad, frame);
+
+        let (Some((tv_ptr, tv_count, tv_color)), Some((drc_ptr, drc_count, drc_color))) =
+            (tv.output(), drc.output())
+        else {
+            trace(c"view.batch_overflow");
+            return finish(&mut launcher, 2);
+        };
+        if !unsafe { shell_present(tv_ptr, tv_count, tv_color, drc_ptr, drc_count, drc_color) } {
+            trace(c"view.draw_failed");
+            return finish(&mut launcher, 2);
+        }
+        let current = marker(view);
+        if displayed != Some(current) {
+            trace(current);
+            unsafe { shell_measure(tv_count, drc_count, atlas.pixels.len() as u32) };
+            displayed = Some(current);
+        }
+        frame = frame.wrapping_add(1);
+        launcher.advance();
+    }
+    finish(&mut launcher, 0)
+}
+
+fn finish(launcher: &mut Launcher<'_, MockFactory>, code: i32) -> i32 {
+    let result = launcher.close();
+    if result.is_err() {
+        trace(c"session.exit_failed");
+    }
+    trace(c"launcher.closed");
+    if result.is_err() {
+        3
+    } else {
+        code
+    }
+}

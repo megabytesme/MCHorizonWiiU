@@ -1,0 +1,7 @@
+diff --git a/src/Cafe/OS/libs/coreinit/coreinit_FS.cpp b/src/Cafe/OS/libs/coreinit/coreinit_FS.cpp
+index 0fc8912..e6fd85e 100644
+--- a/src/Cafe/OS/libs/coreinit/coreinit_FS.cpp
++++ b/src/Cafe/OS/libs/coreinit/coreinit_FS.cpp
+@@ -745 +745 @@ namespace coreinit
+-		__FSUpdateQueue(&cmd->fsClientBody->fsCmdQueue);
++		__FSUpdateQueue(&client->fsCmdQueue);
