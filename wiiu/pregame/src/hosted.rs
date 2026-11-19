@@ -24,7 +24,7 @@ pub(crate) fn available_instance() -> Option<Instance<'static>> {
             game_version: "26.3",
             // The offline builder records the full resource inventory independently.
             // The game validates the installed preparation manifest on startup.
-            manifest_sha256: [0; 32],
+            manifest_sha256: None,
         }),
     })
 }

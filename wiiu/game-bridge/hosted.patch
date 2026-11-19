@@ -21,7 +21,7 @@ index e56f03cad0b9d33e2b7403d7e61f9de834a7b4d1..b7ac7e82e7190c6efb1a438e065a8d18
  if(HORIZON_WIIU_TRACE_VPAD_INPUT)
     target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
 diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
-index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..711ff0be8997e45644b4e75e378d93141850a069 100644
+index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..79add4022826f7330f5805687f4c18aff0b858d2 100644
 --- a/wiiu/loading_app/src/lib.rs
 +++ b/wiiu/loading_app/src/lib.rs
 @@ -31,6 +31,7 @@ unsafe extern "C" {
@@ -117,13 +117,11 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..711ff0be8997e45644b4e75e378d9314
                              self.button_history.clear();
                              self.pad_blocked_until_neutral = true;
                              log::info!(
-@@ -1496,6 +1531,30 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1496,6 +1531,28 @@ impl CafeLoadingHost for LoadingHost<'_> {
                  );
              }
  
-+            if self.hosted && let Some(game) = &mut game_session
-+                && game.hosted_save_pending()
-+            {
++            if let Some(game) = game_session.as_mut().filter(|game| self.hosted && game.hosted_save_pending()) {
 +                if !hosted_save_failed || (retry_save && !native_input_this_frame) {
 +                    match game.poll_hosted_save() {
 +                        Ok(true) => {
@@ -148,7 +146,7 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..711ff0be8997e45644b4e75e378d9314
              if trace_draw {
                  startup_report!("loading first draw begin");
              }
-@@ -1673,10 +1732,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1673,10 +1730,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
          );
          // Every way out of the host loop releases touch and controller edges
          // while the Loading session and its event loop are still alive.

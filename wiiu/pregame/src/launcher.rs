@@ -151,12 +151,21 @@ impl View {
 
     pub fn description(self) -> &'static str {
         match self.page {
+            Page::Home
+                if self.resources == ResourceSelection::Unavailable
+                    && cfg!(horizon_wiiu_hosted) =>
+            {
+                "Prepared Horizon 26.3 resources are required."
+            }
             Page::Home if self.resources != ResourceSelection::Prepared => {
                 "Native game bridge pending."
             }
             Page::Home => "Review the selected Horizon instance.",
             Page::Profiles => "Select a local offline profile.",
             Page::Versions => match self.resources {
+                ResourceSelection::Unavailable if cfg!(horizon_wiiu_hosted) => {
+                    "Install the prepared Horizon 26.3 resource directory."
+                }
                 ResourceSelection::Unavailable => {
                     "Game resources will be available when the native bridge is ready."
                 }

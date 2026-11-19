@@ -71,7 +71,7 @@ impl SessionFactory for Factory {
                     id: "scratch-world"
                 }
             );
-            assert_eq!(resources.manifest_sha256, [42; 32]);
+            assert_eq!(resources.manifest_sha256, Some([42; 32]));
             assert_eq!(resources.game_version, "26.3");
             *self.0.observed_input.borrow_mut() = Some((
                 config.instance.game_directory.to_owned(),
@@ -452,7 +452,7 @@ fn prepared_instance_keeps_paths_and_settings_in_the_launch_request() {
         resources: Resources::Prepared(PreparedResources {
             directory: "/scratch/resources",
             game_version: "26.3",
-            manifest_sha256: [42; 32],
+            manifest_sha256: Some([42; 32]),
         }),
     };
     let mut app = Launcher::new(Factory(probe.clone()), Some(instance), Settings::default());

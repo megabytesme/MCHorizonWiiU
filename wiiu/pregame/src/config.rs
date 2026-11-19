@@ -31,7 +31,7 @@ pub enum WorldOrServer<'a> {
 pub struct PreparedResources<'a> {
     pub directory: &'a str,
     pub game_version: &'a str,
-    pub manifest_sha256: [u8; 32],
+    pub manifest_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
