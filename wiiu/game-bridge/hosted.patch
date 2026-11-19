@@ -21,7 +21,7 @@ index e56f03cad0b9d33e2b7403d7e61f9de834a7b4d1..b7ac7e82e7190c6efb1a438e065a8d18
  if(HORIZON_WIIU_TRACE_VPAD_INPUT)
     target_compile_definitions(horizon_wiiu_loading_app PRIVATE HORIZON_WIIU_TRACE_VPAD_INPUT=1)
 diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
-index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..4adfde80f9ba8889dd009ac74d5e3bc166f13c0b 100644
+index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..bfa02c76d101b08b25fc23ad73c14b6347d58973 100644
 --- a/wiiu/loading_app/src/lib.rs
 +++ b/wiiu/loading_app/src/lib.rs
 @@ -31,6 +31,7 @@ unsafe extern "C" {
@@ -176,7 +176,7 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..4adfde80f9ba8889dd009ac74d5e3bc1
                  break;
              }
              frames_since_progress_report = frames_since_progress_report.saturating_add(1);
-@@ -1673,10 +1744,23 @@ impl CafeLoadingHost for LoadingHost<'_> {
+@@ -1673,10 +1744,26 @@ impl CafeLoadingHost for LoadingHost<'_> {
          );
          // Every way out of the host loop releases touch and controller edges
          // while the Loading session and its event loop are still alive.
@@ -188,6 +188,9 @@ index a69e00af5f425de2f11b0ba3f33acd4aedb1b73c..4adfde80f9ba8889dd009ac74d5e3bc1
 +                if let Err(error) = game.shutdown_hosted() {
 +                    log::error!("Cafe hosted shutdown save failed: {error}");
 +                    self.hosted_exit_save_failed = true;
++                }
++                if let Err(error) = game.drain_hosted_workers() {
++                    self.failure.get_or_insert_with(|| error.to_string());
 +                }
 +            }
 +            drop(game_session);
