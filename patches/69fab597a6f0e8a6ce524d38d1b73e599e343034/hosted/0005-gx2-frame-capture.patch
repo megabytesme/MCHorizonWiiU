@@ -1,0 +1,782 @@
+diff --git a/crates/horizon-client-platform/src/cafe_memory.rs b/crates/horizon-client-platform/src/cafe_memory.rs
+index 450b6eb9b916d0f7bcc0ec203a471a5bf25ebafb..d80a5a202ee551a9ef7150872e9654dd4f5e6b95 100644
+--- a/crates/horizon-client-platform/src/cafe_memory.rs
++++ b/crates/horizon-client-platform/src/cafe_memory.rs
+@@ -42,6 +42,13 @@ pub fn report(label: &str) {
+     }
+ }
+ 
++pub(crate) fn profile_snapshot() {
++    use crate::cafe_profile::{Counter, count};
++    count(Counter::RustLive, LIVE.load(Relaxed));
++    count(Counter::RustPeak, PEAK.load(Relaxed));
++    count(Counter::RustBlocks, BLOCKS.load(Relaxed));
++}
++
+ pub struct MeasuredSystem;
+ 
+ impl MeasuredSystem {
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c810e5a94d5589949e015d41e42a56858b03e9c
+--- /dev/null
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -0,0 +1,142 @@
++//! Cafe capture spans. Frame spans are owned by the main host thread.
++//! Thread-independent workload totals are recorded by Worker scopes.
++use std::marker::PhantomData;
++
++#[repr(u32)]
++#[derive(Clone, Copy)]
++pub enum Stage {
++    Input,
++    Idle,
++    WorldUpdate,
++    Streaming,
++    Tick,
++    Entities,
++    Particles,
++    Hud,
++    StageArtwork,
++    TerrainUpload,
++    TextureUpload,
++    SubmitTv,
++    SubmitDrc,
++    WaitFlip,
++    Finish,
++    TerrainWait,
++    Screenshot,
++    SavePoll,
++    Sleep,
++}
++
++#[repr(u32)]
++#[derive(Clone, Copy)]
++pub enum Worker {
++    Streaming,
++    Mesh,
++    Integrated,
++    Save,
++}
++
++#[repr(u32)]
++pub enum Phase {
++    Loading = 2,
++    Title,
++    WorldEntry,
++    Playing,
++    Menu,
++    Closing,
++}
++
++#[repr(u32)]
++pub enum Counter {
++    Presented,
++    Partial,
++    SectionDraws,
++    Indices,
++    UploadBytes,
++    HudVertices,
++    RustLive,
++    RustPeak,
++    RustBlocks,
++}
++
++unsafe extern "C" {
++    fn horizon_gx2_profile_begin(phase: u32) -> bool;
++    fn horizon_gx2_profile_finish();
++    fn horizon_gx2_profile_phase(phase: u32);
++    fn horizon_gx2_profile_stamp() -> u64;
++    fn horizon_gx2_profile_end(stage: u32, begin: u64);
++    fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
++    fn horizon_gx2_profile_count(counter: u32, value: u32);
++}
++
++pub struct Frame(bool, PhantomData<*mut ()>);
++impl Frame {
++    pub fn begin() -> Self {
++        Self(unsafe { horizon_gx2_profile_begin(Phase::Loading as u32) }, PhantomData)
++    }
++}
++impl Drop for Frame {
++    fn drop(&mut self) {
++        if !self.0 {
++            return;
++        }
++        super::cafe_memory::profile_snapshot();
++        unsafe { horizon_gx2_profile_finish() };
++    }
++}
++
++pub fn phase(phase: Phase) {
++    unsafe { horizon_gx2_profile_phase(phase as u32) }
++}
++
++pub fn count(counter: Counter, value: usize) {
++    unsafe { horizon_gx2_profile_count(counter as u32, value as u32) }
++}
++
++pub struct Span {
++    stage: Stage,
++    started: u64,
++    host_thread: PhantomData<*mut ()>,
++}
++impl Span {
++    pub fn new(stage: Stage) -> Self {
++        Self {
++            stage,
++            started: unsafe { horizon_gx2_profile_stamp() },
++            host_thread: PhantomData,
++        }
++    }
++}
++impl Drop for Span {
++    fn drop(&mut self) {
++        if self.started != 0 {
++            unsafe { horizon_gx2_profile_end(self.stage as u32, self.started) };
++        }
++    }
++}
++
++pub struct Work(Worker, u64);
++impl Work {
++    pub fn new(worker: Worker) -> Self {
++        Self(worker, unsafe { horizon_gx2_profile_stamp() })
++    }
++}
++impl Drop for Work {
++    fn drop(&mut self) {
++        if self.1 != 0 {
++            unsafe { horizon_gx2_profile_worker_end(self.0 as u32, self.1) };
++        }
++    }
++}
++
++/// The portable game sources use this macro to keep the Cafe hooks target-only.
++#[macro_export]
++macro_rules! cafe_span {
++    ($stage:ident) => {
++        #[cfg(target_os = "cafe")]
++        let _cafe_span = $crate::cafe_profile::Span::new($crate::cafe_profile::Stage::$stage);
++    };
++    ($binding:ident, $stage:ident) => {
++        #[cfg(target_os = "cafe")]
++        let $binding = $crate::cafe_profile::Span::new($crate::cafe_profile::Stage::$stage);
++    };
++}
+diff --git a/crates/horizon-client-platform/src/lib.rs b/crates/horizon-client-platform/src/lib.rs
+index 2c4448600979fac6274f656aaf96a369b8745f13..4ef0d79665657bf40dbb3c35aee61af2dda257a1 100644
+--- a/crates/horizon-client-platform/src/lib.rs
++++ b/crates/horizon-client-platform/src/lib.rs
+@@ -3,6 +3,8 @@
+ #[cfg(target_os = "cafe")]
+ pub mod cafe_memory;
+ #[cfg(target_os = "cafe")]
++pub mod cafe_profile;
++#[cfg(target_os = "cafe")]
+ pub mod cafe_net;
+ #[cfg(target_os = "cafe")]
+ #[allow(unexpected_cfgs)] // Opt-in only for the temporary Cafe/Cemu diagnostic build.
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index a358f059568187b2269ff6bc4b0a0ea5a4a1463a..c93ecc474096a3b364c245f4b60645047e9ac200 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -911,7 +911,18 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
+                     mesh_scratch: MeshScratch::default(),
+                 }
+             },
+-            |local| self.run_job(job.job, local),
++            |local| {
++                #[cfg(target_os = "cafe")]
++                let _work = {
++                    use horizon_client_platform::cafe_profile::{Work, Worker};
++                    Work::new(match &job.job {
++                        Job::Mesh(..) => Worker::Mesh,
++                        Job::Save(..) => Worker::Save,
++                        _ => Worker::Streaming,
++                    })
++                };
++                self.run_job(job.job, local)
++            },
+         );
+         if let Some((kind, started)) = started {
+             // A generation job that found the column saved loaded it.
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index cae798ada92f0eda9493874abf14b7ccad60421d..fb5030eb7e133112900832bb025f255ac5d609e1 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -11823,6 +11823,7 @@ impl Game<'_> {
+         // Particles (ParticleEngine.extract): camera-facing quads.
+         self.mark_stage(out.len(), "PARTICLES");
+         let world = &self.world;
++        horizon_client_platform::cafe_span!(particles, Particles);
+         let particle_mode = self.settings.horizon.particle_culling;
+         if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
+             self.particles.render(
+@@ -11860,6 +11861,8 @@ impl Game<'_> {
+             }
+             self.finish_async_particle_culling();
+         }
++        #[cfg(target_os = "cafe")]
++        drop(particles);
+         laps.lap("eg_particles");
+         // Breaking progress overlays (destroy_stage_0..9): ours and the other players'.
+         self.mark_stage(out.len(), "DESTROY");
+@@ -13099,6 +13102,10 @@ impl Game<'_> {
+     }
+ 
+     pub(super) fn save_for_exit(&mut self) -> Result<()> {
++        #[cfg(target_os = "cafe")]
++        let _work = horizon_client_platform::cafe_profile::Work::new(
++            horizon_client_platform::cafe_profile::Worker::Save,
++        );
+         if self.native_window() && !self.native_client_stopped {
+             self.native_client_stopped = true;
+             self.native_client_stopping();
+@@ -16024,6 +16031,10 @@ impl Game<'_> {
+     /// generated chunk is saved, hundreds at a time, encoded and written on
+     /// the region writer meanwhile.
+     fn save_game_with(&mut self, wait: bool) -> Result<()> {
++        #[cfg(target_os = "cafe")]
++        let _work = horizon_client_platform::cafe_profile::Work::new(
++            horizon_client_platform::cafe_profile::Worker::Save,
++        );
+         if self.remote.is_some() {
+             return Ok(());
+         }
+@@ -16593,7 +16604,10 @@ impl Game<'_> {
+             }
+         });
+         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+-        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
++        let mut hud = {
++            horizon_client_platform::cafe_span!(Hud);
++            horizon_client::spans::time("hud", || self.hud(size))
++        };
+         self.flush_ime(&mut hud);
+         self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
+         self.resolve_inline_profiles(&hud.inline_profiles);
+@@ -16616,6 +16630,7 @@ impl Game<'_> {
+         if !title {
+             let (built, static_sections, visible_static_sections, static_stats) =
+                 spans::time("entity_geometry", || {
++                    horizon_client_platform::cafe_span!(Entities);
+                     self.entity_geometry(camera, alpha, fov_degrees, entities)
+                 });
+             entities = built;
+@@ -17706,6 +17721,7 @@ impl Game<'_> {
+             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
+         let native_uploads = cafe_terrain.is_some();
+         let (uploads, unloaded) = horizon_client::spans::time("streaming", || {
++            horizon_client_platform::cafe_span!(Streaming);
+             if native_uploads {
+                 self.streaming
+                     .update_with_upload_backpressure(&mut self.world, self.pending_uploads.len())
+@@ -19462,6 +19478,7 @@ impl Game<'_> {
+                             backend as &mut dyn horizon_client::presentation::TerrainBackend
+                         });
+                         horizon_client::spans::time("update_world", || {
++                            horizon_client_platform::cafe_span!(WorldUpdate);
+                             self.update_world_with_terrain(terrain_backend)
+                         });
+                         horizon_client::spans::time("spawn_player", || self.spawn_player())?;
+@@ -19479,7 +19496,10 @@ impl Game<'_> {
+                             if self.tick_script.armed() {
+                                 self.tick_script_step(event_loop);
+                             }
+-                            horizon_client::spans::time("tick", || self.tick())?;
++                            horizon_client::spans::time("tick", || {
++                                horizon_client_platform::cafe_span!(Tick);
++                                self.tick()
++                            })?;
+                             // Cave mood (a shader pack's playerMood) samples on a random
+                             // seeded from the clock: under `HORIZON_STILL` it waits for the
+                             // world and draws from its tick.
+@@ -22961,7 +22981,23 @@ impl CafeGameSession {
+                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
+             }
+         }
+-        self.game.idle(event_loop);
++        #[cfg(target_os = "cafe")]
++        {
++            use horizon_client_platform::cafe_profile::{Phase, phase};
++            phase(if !self.world_loading_complete() {
++                Phase::WorldEntry
++            } else if self.game.title.is_some() {
++                Phase::Title
++            } else if self.game.screen == Screen::Playing {
++                Phase::Playing
++            } else {
++                Phase::Menu
++            });
++        }
++        {
++            horizon_client_platform::cafe_span!(Idle);
++            self.game.idle(event_loop);
++        }
+         if let Some(error) = &self.game.error {
+             return Err(error.to_string().into());
+         }
+@@ -22969,6 +23005,7 @@ impl CafeGameSession {
+             return Ok(false);
+         }
+ 
++        horizon_client_platform::cafe_span!(artwork, StageArtwork);
+         backend.prepare_game_artwork(CafeGameArtwork {
+             atlas: &self.game.gui.atlas,
+             cit_glints: self
+@@ -22985,6 +23022,8 @@ impl CafeGameSession {
+             hud_generation: self.game.gui.atlas.revision,
+             terrain_generation: self.game.pack.render.generation,
+         })?;
++        #[cfg(target_os = "cafe")]
++        drop(artwork);
+         let capture = std::mem::take(&mut self.game.cafe_screenshot_requested);
+         if let Some(output) = capture {
+             backend.request_screenshot(output);
+diff --git a/crates/horizon-client/src/game/levels.rs b/crates/horizon-client/src/game/levels.rs
+index 200093dcb10e231eac63cc02c589d5b2d754236f..3e290d6906e85959cfd8038fc581c8a659ad99e7 100644
+--- a/crates/horizon-client/src/game/levels.rs
++++ b/crates/horizon-client/src/game/levels.rs
+@@ -561,6 +561,10 @@ impl Game<'_> {
+     /// `tick_server` as a server thread runs it. With `HORIZON_SPIKES=MS`, a
+     /// tick longer than MS is logged with its thread CPU time and spans.
+     pub(super) fn tick_server_timed(&mut self, paused: bool) -> Result<()> {
++        #[cfg(target_os = "cafe")]
++        let _work = horizon_client_platform::cafe_profile::Work::new(
++            horizon_client_platform::cafe_profile::Worker::Integrated,
++        );
+         self.tick_server_spans(paused, |_, _, _, _| {})
+     }
+ 
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index b83ceee214778321aa76ee20ecd1c429ea689256..38c772c884869af34cab30de59b3f474e1b9542d 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -918,6 +918,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         let mut hosted_confirm_held = false;
+         let mut hosted_cancel_held = true;
+         loop {
++            use horizon_client_platform::cafe_profile::{self, Phase, Span, Stage};
++            let _capture = cafe_profile::Frame::begin();
+             host_loop_iteration = host_loop_iteration.saturating_add(1);
+             let now = Instant::now();
+             let periodic_trace_due =
+@@ -990,6 +992,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     host_loop_iteration
+                 );
+             }
++            let input_capture = Span::new(Stage::Input);
+             let focused = self.update_focus(session, game_session.as_mut());
+             if self.hosted && !focused {
+                 // The app host waits until the game has relinquished input.
+@@ -1461,6 +1464,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     host_loop_iteration
+                 );
+             }
++            drop(input_capture);
+             let loading_status = session.status();
+             if loading_status != last_loading_status {
+                 log::info!(
+@@ -1544,7 +1548,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 .filter(|game| self.hosted && (hosted_fault_close || game.hosted_save_pending()))
+             {
+                 hosted::mcp::withdraw();
++                cafe_profile::phase(Phase::Closing);
+                 if !hosted_save_failed || (retry_save && !native_input_this_frame) {
++                    let _save = Span::new(Stage::SavePoll);
+                     let save = if game.hosted_save_pending() {
+                         game.poll_hosted_save()
+                     } else {
+@@ -1567,6 +1573,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 if let Err(error) = game.draw_hosted_save(self.presenter, hosted_save_failed) {
+                     log::error!("Cafe hosted save screen: {error}");
+                 }
++                let _sleep = Span::new(Stage::Sleep);
+                 std::thread::sleep(Duration::from_millis(16));
+                 continue;
+             }
+@@ -1737,6 +1744,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                         host_loop_iteration
+                     );
+                 }
++                let _sleep = Span::new(Stage::Sleep);
+                 std::thread::sleep(delay.min(Duration::from_millis(16)));
+                 if trace_this_iteration {
+                     log::info!(
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 0783bf16b7344248f2e714da58e520a4c9d05d29..fb7b3f1771d18c4ffcab169e7a5069db4cdc0595 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -49,7 +49,7 @@ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+-   loading_host.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}")
++   loading_host.c gx2_profile.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/Cargo.toml b/wiiu/loading_host/Cargo.toml
+index 8e38bdf983c4569de5dd712dab830b2bdac75c4c..ebf00e6a6d86d488e44e7ce72e7368409a5f1842 100644
+--- a/wiiu/loading_host/Cargo.toml
++++ b/wiiu/loading_host/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ path = "lib.rs"
+ 
+ [dependencies]
++horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+ horizon-client = { path = "../../crates/horizon-client", default-features = false }
+ horizon-wiiu-platform = { path = "../platform", default-features = false, features = ["cafe", "horizon-hud"] }
+ horizon-wiiu-gx2-terrain = { path = "../gx2_terrain", features = ["atlas"] }
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f68927b173f463a88349b27138647e1ea4f57b0
+--- /dev/null
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -0,0 +1,160 @@
++#include "gx2_profile.h"
++#include <coreinit/debug.h>
++#include <coreinit/time.h>
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#define CAPACITY 4096
++#define STAGES 19
++#define COUNTERS 9
++#define WORKERS 4
++#define ROOT "/vol/external01/wiiu/apps/HorizonWiiU/"
++#define CAPTURE ROOT "gx2-profile.hzp"
++
++typedef struct {
++   uint32_t sequence, phase, start_hi, start_lo, loop_ticks, pacing_ticks;
++   uint32_t stages[STAGES], counters[COUNTERS];
++   uint32_t workers[WORKERS][2];
++} ProfileFrame;
++
++typedef struct {
++   uint32_t magic, version, ticks_per_second, frame_size, capacity, count, total;
++} ProfileHeader;
++
++static _Atomic bool enabled;
++static _Atomic uint32_t workers[WORKERS][2];
++static ProfileFrame ring[CAPACITY], current;
++static uint32_t total;
++static uint64_t epoch, started, previous;
++static uint32_t previous_phase;
++static bool recording;
++
++static uint32_t ticks(uint64_t begin, uint64_t end)
++{
++   uint64_t elapsed = end - begin;
++   return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
++}
++
++void horizon_gx2_profile_init(void)
++{
++   FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
++   if (!marker) return;
++   fclose(marker);
++   epoch = (uint64_t)OSGetSystemTime();
++   atomic_store_explicit(&enabled, true, memory_order_release);
++   OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
++}
++
++bool horizon_gx2_profile_begin(uint32_t phase)
++{
++   if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
++   started = (uint64_t)OSGetSystemTime();
++   current = (ProfileFrame){.phase = phase};
++   recording = true;
++   return true;
++}
++
++void horizon_gx2_profile_phase(uint32_t phase)
++{
++   if (recording) current.phase = phase;
++}
++
++uint64_t horizon_gx2_profile_stamp(void)
++{
++   return atomic_load_explicit(&enabled, memory_order_relaxed)
++      ? (uint64_t)OSGetSystemTime() : 0;
++}
++
++/* A render span is host-thread-only. Worker spans use the separate atomics. */
++void horizon_gx2_profile_end(uint32_t stage, uint64_t begin)
++{
++   if (!begin || !recording || stage >= STAGES) return;
++   uint32_t cost = ticks(begin, (uint64_t)OSGetSystemTime());
++   uint32_t sum = current.stages[stage] + cost;
++   current.stages[stage] = sum < cost ? UINT32_MAX : sum;
++}
++
++void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin)
++{
++   if (!begin || worker >= WORKERS) return;
++   uint32_t cost = ticks(begin, (uint64_t)OSGetSystemTime());
++   atomic_fetch_add_explicit(&workers[worker][0], 1, memory_order_relaxed);
++   atomic_fetch_add_explicit(&workers[worker][1], cost, memory_order_relaxed);
++}
++
++void horizon_gx2_profile_count(uint32_t counter, uint32_t value)
++{
++   if (!recording || counter >= COUNTERS) return;
++   uint32_t sum = current.counters[counter] + value;
++   current.counters[counter] = sum < value ? UINT32_MAX : sum;
++}
++
++void horizon_gx2_profile_finish(void)
++{
++   if (!recording) return;
++   const uint64_t now = (uint64_t)OSGetSystemTime(), offset = started - epoch;
++   current.sequence = total;
++   current.start_hi = (uint32_t)(offset >> 32);
++   current.start_lo = (uint32_t)offset;
++   current.loop_ticks = ticks(started, now);
++   if (total && current.phase == previous_phase)
++      current.pacing_ticks = ticks(previous, started);
++   previous = started;
++   previous_phase = current.phase;
++   for (uint32_t i = 0; i < WORKERS; ++i)
++      for (uint32_t j = 0; j < 2; ++j)
++         current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
++   ring[total++ % CAPACITY] = current;
++   recording = false;
++}
++
++static ProfileHeader header(void)
++{
++   return (ProfileHeader){0x485A5031, 1, OSTimerClockSpeed, sizeof(ProfileFrame),
++                          CAPACITY, total < CAPACITY ? total : CAPACITY, total};
++}
++
++/* Calling thread must own the renderer. Copy the newest records in order.
++ * Every slot consists of big-endian u32 values on Cafe. */
++uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes)
++{
++   if (!out || bytes < sizeof(ProfileHeader) ||
++       !atomic_load_explicit(&enabled, memory_order_acquire)) return 0;
++   ProfileHeader info = header();
++   uint32_t space = (bytes - sizeof(info)) / sizeof(ProfileFrame);
++   if (info.count > space) info.count = space;
++   uint8_t *dst = out;
++   memcpy(dst, &info, sizeof(info));
++   dst += sizeof(info);
++   for (uint32_t i = total - info.count; i < total; ++i) {
++      memcpy(dst, &ring[i % CAPACITY], sizeof(ProfileFrame));
++      dst += sizeof(ProfileFrame);
++   }
++   return (uint32_t)(dst - (uint8_t *)out);
++}
++
++void horizon_gx2_profile_flush(void)
++{
++   if (!atomic_load_explicit(&enabled, memory_order_acquire) || !total) return;
++   recording = false;
++   const ProfileHeader info = header();
++   const uint32_t first = (total - info.count) % CAPACITY;
++   const uint32_t tail = info.count < CAPACITY - first ? info.count : CAPACITY - first;
++   FILE *file = fopen(CAPTURE ".tmp", "wb");
++   if (!file) {
++      OSReport("Horizon GX2 capture open failed\n");
++      return;
++   }
++   const bool written = fwrite(&info, sizeof(info), 1, file) == 1 &&
++      fwrite(&ring[first], sizeof(ProfileFrame), tail, file) == tail &&
++      fwrite(ring, sizeof(ProfileFrame), info.count - tail, file) == info.count - tail;
++   const bool closed = fclose(file) == 0;
++   if (!written || !closed || rename(CAPTURE ".tmp", CAPTURE) != 0) {
++      OSReport("Horizon GX2 capture write failed\n");
++      return;
++   }
++   OSReport("Horizon GX2 capture complete: frames=%u total=%u\n", info.count, total);
++}
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..658aceb32919679cd69bc51b4cdc8578a409c770
+--- /dev/null
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -0,0 +1,25 @@
++#pragma once
++#include <stdbool.h>
++#include <stdint.h>
++
++enum {
++   GX2_PROFILE_NIGHT = 1,
++   GX2_PROFILE_INPUT = 0,
++   GX2_PROFILE_SUBMIT_TV = 11,
++   GX2_PROFILE_SUBMIT_DRC = 12,
++   GX2_PROFILE_WAIT_FLIP = 13,
++   GX2_PROFILE_FINISH = 14,
++   GX2_PROFILE_PRESENTED = 0,
++   GX2_PROFILE_HUD_VERTICES = 5
++};
++
++void horizon_gx2_profile_init(void);
++bool horizon_gx2_profile_begin(uint32_t phase);
++void horizon_gx2_profile_phase(uint32_t phase);
++uint64_t horizon_gx2_profile_stamp(void);
++void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);
++void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin);
++void horizon_gx2_profile_count(uint32_t counter, uint32_t value);
++void horizon_gx2_profile_finish(void);
++uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
++void horizon_gx2_profile_flush(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 9858ef52ce5ceed55ee04e6d36461df423eaf659..e98e8a28af7d97851ecab4161f707d04cc814bee 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -8,6 +8,7 @@
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
+ use horizon_client::chunk::ColumnLayout;
++use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_client::gfx::SectionKey;
+ use horizon_client::graphics::PresentMode;
+ use horizon_client::hud::{
+@@ -620,6 +621,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             // SAFETY: constructor's GX2 and shader lifetime requirements are upheld.
+             self.hud = None;
+             self.cit_generation = None;
++            let _upload = Span::new(Stage::TextureUpload);
+             let profile_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             self.hud = Some(
+                 unsafe { HorizonPresenter::new(self.hud_shader, atlas, self.capacity) }
+@@ -1241,6 +1243,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         })?;
+         if self.cit_generation != Some(artwork.hud_generation) {
+             if let Some(textures) = artwork.cit_glints.filter(|textures| !textures.is_empty()) {
++                let _upload = Span::new(Stage::TextureUpload);
+                 let slots = textures
+                     .slots
+                     .iter()
+@@ -1270,6 +1273,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             self.cit_generation = Some(artwork.hud_generation);
+         }
+         if self.terrain_generation != Some(artwork.terrain_generation) || self.terrain.is_none() {
++            let _upload = Span::new(Stage::TextureUpload);
+             let source = artwork.terrain_pixels.get();
+             let TerrainAtlas { pixels, layout } = TerrainAtlas::from_layers(
+                 &source,
+@@ -1348,6 +1352,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         let vertex_count =
+             u32::try_from(mesh.solid.len()).map_err(|_| "GX2 section vertex count overflow")?;
++        let _upload = Span::new(Stage::TerrainUpload);
+         let mut upload = TerrainUpload {
+             atlas,
+             source: &mesh.solid,
+@@ -1373,6 +1378,10 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             return Err(format!("GX2 indexed section upload failed ({code})").into());
+         }
+         let native = NonNull::new(native).ok_or("GX2 section returned a null resource")?;
++        cafe_profile::count(
++            Counter::UploadBytes,
++            mesh.solid.len() * std::mem::size_of::<TerrainGpuVertex>(),
++        );
+         // Publish only after the upload succeeds. The previous section can
+         // still be drawn if allocation, mapping or conversion fails.
+         self.sections.insert(
+@@ -1487,7 +1496,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 // Wait once before drawing all retained section buffers;
+                 // projection uniforms change per draw, geometry buffers do not.
+                 let wait_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-                unsafe { horizon_gx2_terrain_wait_idle() };
++                {
++                    let _wait = Span::new(Stage::TerrainWait);
++                    unsafe { horizon_gx2_terrain_wait_idle() };
++                }
+                 if let Some(start) = wait_start {
+                     draw.profile.terrain_wait_ns = draw
+                         .profile
+@@ -1503,7 +1515,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.profile.projection_ns =
+                         draw.profile.projection_ns.saturating_add(elapsed_ns(start));
+                 }
++                let mut indices = 0usize;
+                 for (&key, section) in &draw.presenter.sections {
++                    indices += section.vertex_count as usize / 4 * 6;
+                     let Some(projection) = projection.as_ref() else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+@@ -1552,11 +1566,16 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .saturating_add(section.vertex_count / 4 * 6);
+                     }
+                 }
++                cafe_profile::count(Counter::Indices, indices);
+             }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;
+             };
++            if !draw.frame.title && draw.presenter.terrain.is_some() {
++                cafe_profile::count(Counter::SectionDraws, draw.presenter.sections.len());
++            }
++            cafe_profile::count(Counter::HudVertices, draw.frame.hud.vertices.len());
+             let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             if let Err(error) = unsafe {
+                 hud.draw_batch_to(
+@@ -1609,6 +1628,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 _ => CafeScreenshotOutput::GamePad,
+             };
+             if draw.presenter.screenshot_requested == Some(output) {
++                let _readback = Span::new(Stage::Screenshot);
+                 draw.presenter.screenshot_requested = None;
+                 let size = (width as usize)
+                     .checked_mul(height as usize)
+@@ -1679,6 +1699,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     self.unsupported_logged |= *flag;
+                 }
+             }
++            cafe_profile::count(Counter::Partial, 1);
+             self.last_frame_partial = true;
+             Ok(false)
+         } else {
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 0d93561bfc791c75a42f67c2d39258273a1677be..ee7d89ac693850d2daddbc15050dd6aa2e06e1f0 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -1,5 +1,6 @@
+ #include "loading_host.h"
+ #include "swkbd_bridge.h"
++#include "gx2_profile.h"
+ 
+ #include <whb/gfx.h>
+ #include <gx2/event.h>
+@@ -123,20 +124,32 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    uint32_t dimensions[4];
+    if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
+    int result = 0;
++   uint64_t stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRender();
++   horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
++
++   stamp = horizon_gx2_profile_stamp();
+ 
+    WHBGfxBeginRenderTV();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+        horizon_swkbd_draw(0) != 0) result = -2;
+    WHBGfxFinishRenderTV();
++   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
++
++   stamp = horizon_gx2_profile_stamp();
+ 
+    WHBGfxBeginRenderDRC();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+        horizon_swkbd_draw(1) != 0) result = -3;
+    WHBGfxFinishRenderDRC();
++   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
++
++   stamp = horizon_gx2_profile_stamp();
+ 
+    WHBGfxFinishRender();
++   horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   if (result == 0) horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+    return result;
+ }

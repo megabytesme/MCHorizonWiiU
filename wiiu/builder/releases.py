@@ -114,22 +114,26 @@ def validate_release(kind, record):
         pattern(artifact["sha256"], SHA256, "artifact SHA-256")
 
 
-def verify_artifact(artifact, root=ROOT):
-    """Resolve a GitHub artifact at its immutable commit and verify local bytes."""
-    payload = checked_bytes(root, artifact["path"], artifact["sha256"])
-    pinned = git(root, "cat-file", "blob", f'{artifact["commit"]}:{artifact["path"]}').stdout
+def verify_artifact(artifact, root=ROOT, *, check_worktree=True):
+    """Resolve a GitHub artifact at its immutable commit and verify its bytes."""
+    path = relative(artifact["path"]).as_posix()
+    pinned = git(root, "cat-file", "blob", f'{artifact["commit"]}:{path}').stdout
     if digest(pinned) != artifact["sha256"]:
-        raise ValueError(f'Git object does not match {artifact["path"]}')
-    return payload
+        raise ValueError(f"Git object does not match {path}")
+    if check_worktree:
+        checked_bytes(root, path, artifact["sha256"])
+    return pinned
 
 
-def verify_source_inventory(artifact, root=ROOT, revision=None):
-    entries = parse_json(verify_artifact(artifact, root))
+def verify_source_inventory(artifact, root=ROOT, revision=None, *, check_worktree=True):
+    entries = parse_json(verify_artifact(artifact, root, check_worktree=check_worktree))
     if not isinstance(entries, dict) or not entries:
         raise ValueError("empty release source inventory")
     for path, expected in entries.items():
+        relative(path)
         pattern(expected, SHA256, "source inventory SHA-256")
-        checked_bytes(root, path, expected)
+        if check_worktree:
+            checked_bytes(root, path, expected)
         if revision is not None:
             blob = git(root, "cat-file", "blob", f"{revision}:{path}").stdout
             if digest(blob) != expected:
@@ -140,11 +144,12 @@ def verify_source_inventory(artifact, root=ROOT, revision=None):
 def verify_release_files(catalog, root=ROOT):
     for records in catalog["releases"].values():
         for record in records.values():
+            check_worktree = record["status"] == "active"
             for name, artifact in record["artifacts"].items():
                 if name == "sources":
-                    verify_source_inventory(artifact, root, artifact["commit"])
+                    verify_source_inventory(artifact, root, artifact["commit"], check_worktree=check_worktree)
                 elif "commit" in artifact:
-                    verify_artifact(artifact, root)
+                    verify_artifact(artifact, root, check_worktree=check_worktree)
                 elif catalog["signing"] != "p256-sha256-p1363":
                     raise ValueError("prebuilt client references require a signed catalog")
             paths = [record["notes"], *(entry["record"] for entry in record.get("evidence", {}).values())]

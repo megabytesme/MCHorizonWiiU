@@ -1,0 +1,398 @@
+diff --git a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+index 2a507efe32a71ca60a4dc885679e8b4cd6cb9061..30c6e66ee4338cc9a686d96ff9a136ba1e59e2db 100644
+--- a/crates/horizon-client-render/src/gfx.rs
++++ b/crates/horizon-client-render/src/gfx.rs
+@@ -60,6 +60,50 @@ pub use entity_batch::{
+ };
+ pub use view::{View, ViewSet};
+ 
++/// Stock lightmap.fsh for both the desktop and embedded terrain backends.
++pub fn stock_lightmap_pixels(
++    sky: &Sky,
++    darkness: f32,
++    gamma: f32,
++    night_vision: f32,
++    flicker: f32,
++    boss_darken: f32,
++) -> [u8; 16 * 16 * 4] {
++    // lightmap.fsh: per (block, sky) level.
++    let brightness = |level: f32| level / (4.0 - 3.0 * level);
++    let mut pixels = [0u8; 16 * 16 * 4];
++    for s in 0..16 {
++        for b in 0..16 {
++            let block_level = b as f32 / 15.0;
++            let sky_level = s as f32 / 15.0;
++            let block_brightness = brightness(block_level) * (1.4 + flicker);
++            let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
++            // NightVisionColor defaults to 0x999999.
++            let mut color =
++                Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
++            color += Vec3::from(sky.sky_light_color) * sky_brightness;
++            let parabolic = (2.0 * block_level - 1.0).powi(2);
++            let block_color = Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
++            color += block_color * block_brightness;
++            // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
++            color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
++            color -= Vec3::splat(darkness);
++            color = color.clamp(Vec3::ZERO, Vec3::ONE);
++            let max = color.max_element().max(1e-6);
++            let inverted = 1.0 - max;
++            let scaled = 1.0 - inverted.powi(4);
++            let not_gamma = color * (scaled / max);
++            color = color.lerp(not_gamma, gamma);
++            let i = (s * 16 + b) * 4;
++            pixels[i] = (color.x * 255.0) as u8;
++            pixels[i + 1] = (color.y * 255.0) as u8;
++            pixels[i + 2] = (color.z * 255.0) as u8;
++            pixels[i + 3] = 255;
++        }
++    }
++    pixels
++}
++
+ /// Window.getAppropriateLineWidth, in framebuffer pixels.
+ pub fn outline_width(width: u32) -> f32 {
+     2.5f32.max(width as f32 / 1920.0 * 2.5)
+@@ -6612,38 +6656,7 @@ impl Renderer {
+         flicker: f32,
+         boss_darken: f32,
+     ) {
+-        // lightmap.fsh: per (block, sky) level.
+-        let brightness = |level: f32| level / (4.0 - 3.0 * level);
+-        let mut pixels = [0u8; 16 * 16 * 4];
+-        for s in 0..16 {
+-            for b in 0..16 {
+-                let block_level = b as f32 / 15.0;
+-                let sky_level = s as f32 / 15.0;
+-                let block_brightness = brightness(block_level) * (1.4 + flicker);
+-                let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
+-                // NightVisionColor defaults to 0x999999.
+-                let mut color =
+-                    Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
+-                color += Vec3::from(sky.sky_light_color) * sky_brightness;
+-                let parabolic = (2.0 * block_level - 1.0).powi(2);
+-                let block_color = Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
+-                color += block_color * block_brightness;
+-                // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
+-                color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
+-                color -= Vec3::splat(darkness);
+-                color = color.clamp(Vec3::ZERO, Vec3::ONE);
+-                let max = color.max_element().max(1e-6);
+-                let inverted = 1.0 - max;
+-                let scaled = 1.0 - inverted.powi(4);
+-                let not_gamma = color * (scaled / max);
+-                color = color.lerp(not_gamma, gamma);
+-                let i = (s * 16 + b) * 4;
+-                pixels[i] = (color.x * 255.0) as u8;
+-                pixels[i + 1] = (color.y * 255.0) as u8;
+-                pixels[i + 2] = (color.z * 255.0) as u8;
+-                pixels[i + 3] = 255;
+-            }
+-        }
++        let mut pixels = stock_lightmap_pixels(sky, darkness, gamma, night_vision, flicker, boss_darken);
+         if self.fullbright {
+             pixels.fill(255);
+         }
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index fb5030eb7e133112900832bb025f255ac5d609e1..8f01260c12a89e43d01159977507b43fad597154 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -22329,6 +22329,7 @@ pub struct CafeLoadingArtwork<'a> {
+ /// Original Game artwork needed before laying out a Cafe frame. Resource data
+ /// remains owned by Horizon; the backend copies native textures synchronously.
+ pub struct CafeGameArtwork<'a> {
++    pub gamma: f32,
+     pub atlas: &'a HudAtlas,
+     pub cit_glints: Option<&'a horizon_client::hud::cit_glint::GlintTextures>,
+     pub panorama: &'a horizon_client::gfx::panorama::Faces,
+@@ -23007,6 +23008,7 @@ impl CafeGameSession {
+ 
+         horizon_client_platform::cafe_span!(artwork, StageArtwork);
+         backend.prepare_game_artwork(CafeGameArtwork {
++            gamma: self.game.settings.gamma,
+             atlas: &self.game.gui.atlas,
+             cit_glints: self
+                 .game
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index d84f4353841493b44c3fe5d15a5cc67c0b4cb9f3..18a1a0390ef3b60793fb83b42ec9b3320c06a159 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -365,7 +365,11 @@ impl TerrainAtlasLayout {
+         for (&source, dest) in source.iter().zip(output) {
+             let mut vertex = source;
+             self.remap_vertex(&mut vertex)?;
+-            dest.write(gpu_vertex(vertex, [0.0; 3]));
++            let mut vertex_gpu = gpu_vertex(vertex, [0.0; 3]);
++            // W is unused by the affine clip rows. Retain the exact packed light
++            // without growing the native 40-byte vertex or touching the UVs.
++            vertex_gpu.position[3] = f32::from(vertex.light);
++            dest.write(vertex_gpu);
+         }
+         Ok(())
+     }
+@@ -442,6 +446,8 @@ mod indexed_vertex_tests {
+             for (i, &index) in order[..triangles].iter().enumerate() {
+                 // Successful writes initialize every destination supplied above.
+                 let indexed = unsafe { output[index].assume_init() };
++                assert_eq!(indexed.position[3], f32::from(source[index].light));
++                expanded[i].position[3] = f32::from(source[index].light);
+                 assert_eq!(bits(indexed), bits(expanded[i]));
+                 assert_eq!(indexed.cutout, if index < 4 { 0.0 } else { 1.0 });
+             }
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index a3d0c1ecb11d334de84234ac77dd72fe81af930a..6ac6fcd1a1f38185e4495a17d17f3de71b26d5ab 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -22,6 +22,9 @@ struct HorizonGx2Terrain {
+    GX2Texture texture;
+    GX2Sampler sampler;
+    uint32_t sampler_slot;
++   GX2Texture lightmap;
++   GX2Sampler lightmap_sampler;
++   uint32_t lightmap_slot;
+    uint32_t clip_offsets[4];
+    uint32_t section_origin_offset;
+    uint32_t fog_color_offset;
+@@ -41,12 +44,32 @@ static int uniform_offset(const GX2UniformVar *var, uint32_t *offset)
+    return 1;
+ }
+ 
++static int create_texture(GX2Texture *texture, uint32_t width, uint32_t height)
++{
++   GX2Surface *s = &texture->surface;
++   s->use = GX2_SURFACE_USE_TEXTURE;
++   s->dim = GX2_SURFACE_DIM_TEXTURE_2D;
++   s->width = width;
++   s->height = height;
++   s->depth = s->mipLevels = 1;
++   s->format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
++   s->aa = GX2_AA_MODE1X;
++   s->tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
++   texture->viewNumMips = texture->viewNumSlices = 1;
++   texture->compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
++   if (!GX2RCreateSurface(s, texture_flags)) return -2;
++   if (s->pitch < width || (size_t)s->imageSize < (size_t)s->pitch * height * 4) return -3;
++   GX2InitTextureRegs(texture);
++   return 0;
++}
++
+ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain)
+ {
+    if (!terrain) return;
+    GX2DrawDone();
+    terrain_buffer_release(&terrain->quad_indices);
+    if (terrain->texture.surface.image) GX2RDestroySurfaceEx(&terrain->texture.surface, texture_flags);
++   if (terrain->lightmap.surface.image) GX2RDestroySurfaceEx(&terrain->lightmap.surface, texture_flags);
+    if (terrain->shader_loaded) WHBGfxFreeShaderGroup(&terrain->shader);
+    free(terrain);
+ }
+@@ -83,6 +106,14 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+    if (!found) { result = -3; goto fail; }
+    static const char *clip_names[4] = { "uClipX", "uClipY", "uClipZ", "uClipW" };
+    GX2VertexShader *vs = t->shader.vertexShader;
++   found = 0;
++   if (vs->samplerVars) for (uint32_t i = 0; i < vs->samplerVarCount; ++i) {
++      const GX2SamplerVar *v = &vs->samplerVars[i];
++      if (v->name && !strcmp(v->name, "uLightmap") && v->type == GX2_SAMPLER_VAR_TYPE_SAMPLER_2D) {
++         t->lightmap_slot = v->location; found = 1; break;
++      }
++   }
++   if (!found) { result = -3; goto fail; }
+    for (uint32_t row = 0; row < 4; ++row)
+       if (!uniform_offset(GX2GetVertexUniformVar(vs, clip_names[row]), &t->clip_offsets[row])) {
+          result = -3; goto fail;
+@@ -97,31 +128,38 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+        !WHBGfxInitShaderAttribute(&t->shader, "aUv", 0, offsetof(HorizonTerrainVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aCutout", 0, offsetof(HorizonTerrainVertex, cutout), GX2_ATTRIB_FORMAT_FLOAT_32) ||
+        !WHBGfxInitFetchShader(&t->shader)) goto fail;
++   result = create_texture(&t->texture, width, height);
++   if (result) goto fail;
+    GX2Surface *s = &t->texture.surface;
+-   s->use = GX2_SURFACE_USE_TEXTURE; s->dim = GX2_SURFACE_DIM_TEXTURE_2D;
+-   s->width = width; s->height = height; s->depth = 1; s->mipLevels = 1;
+-   s->format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8; s->aa = GX2_AA_MODE1X;
+-   s->tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+-   t->texture.viewNumMips = 1; t->texture.viewNumSlices = 1;
+-   t->texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
+-   if (!GX2RCreateSurface(s, texture_flags)) goto fail;
+-   if (s->pitch < width || (size_t)s->imageSize < (size_t)s->pitch * height * 4) {
+-      result = -3; goto fail;
+-   }
+    uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
+-   if (!pixels) goto fail;
++   if (!pixels) { result = -2; goto fail; }
+    for (uint32_t y = 0; y < height; ++y)
+       memcpy(pixels + (size_t)y * s->pitch * 4, rgba + (size_t)y * width * 4, (size_t)width * 4);
+    GX2RUnlockSurfaceEx(s, 0, texture_flags);
+-   GX2InitTextureRegs(&t->texture);
+    GX2InitSampler(&t->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++   result = create_texture(&t->lightmap, 16, 16);
++   if (result) goto fail;
++   GX2InitSampler(&t->lightmap_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+    result = terrain_index_buffer_create(&t->quad_indices, &t->quad_index_allocation_bytes);
+    if (result) goto fail;
+-   OSReport("Horizon memory gx2_terrain texture_bytes=%u\n", s->imageSize);
++   OSReport("Horizon memory gx2_terrain texture_bytes=%u lightmap_bytes=%u\n",
++            s->imageSize, t->lightmap.surface.imageSize);
+    *out = t; return 0;
+ fail:
+    horizon_gx2_terrain_destroy(t); return result;
+ }
++int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *t, const uint8_t rgba[16 * 16 * 4])
++{
++   if (!t || !rgba) return -1;
++   GX2Surface *s = &t->lightmap.surface;
++   uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
++   if (!pixels) return -2;
++   for (size_t row = 0; row < 16; ++row)
++      memcpy(pixels + row * s->pitch * 4, rgba + row * 16 * 4, 16 * 4);
++   GX2RUnlockSurfaceEx(s, 0, texture_flags);
++   return 0;
++}
++
+ void horizon_gx2_terrain_wait_idle(void) { GX2DrawDone(); }
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                             uint32_t target_width, uint32_t target_height,
+@@ -146,6 +184,8 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color));
+    GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
+    GX2RSetAttributeBuffer(&s->buffer, 3, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, cutout));
++   GX2SetVertexTexture(&t->lightmap, t->lightmap_slot);
++   GX2SetVertexSampler(&t->lightmap_sampler, t->lightmap_slot);
+    GX2SetPixelTexture(&t->texture, t->sampler_slot); GX2SetPixelSampler(&t->sampler, t->sampler_slot);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+    GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO,
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index b5e6a2797ffe2a07a92dd85aaec7273e31777f55..bc8b7bd2712620fbe0db69758520810e465d8154 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -25,6 +25,8 @@ uint32_t horizon_gx2_terrain_index_allocation_bytes(const HorizonGx2Terrain *ter
+ int horizon_gx2_terrain_section_create(HorizonGx2TerrainSection **out,
+                                       uint32_t count, HorizonTerrainFillVertices fill,
+                                       void *context, uint32_t *allocation_bytes);
++/* Upload before drawing a new frame, after the preceding WHB finish. */
++int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_wait_idle(void);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *terrain,
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index d1fa9a121354583afc082060e35901af4ed3d282..9a272f1f0c5bdd9059dab17fae5bf130d08a007d 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -3,6 +3,7 @@ layout(location = 0) in vec4 aPosition;
+ layout(location = 1) in vec3 aColor;
+ layout(location = 2) in vec2 aUv;
+ layout(location = 3) in float aCutout;
++uniform sampler2D uLightmap;
+ uniform vec4 uClipX;
+ uniform vec4 uClipY;
+ uniform vec4 uClipZ;
+@@ -18,7 +19,10 @@ void main() {
+                        dot(uClipY.xyz, local) + uClipY.w,
+                        dot(uClipZ.xyz, local) + uClipZ.w,
+                        dot(uClipW.xyz, local) + uClipW.w);
+-    vColor = aColor;
++    float packedLight = aPosition.w;
++    vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
++    vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
++    vColor = aColor * textureLod(uLightmap, lightUv, 0.0).rgb;
+     vUv = aUv;
+     vCutout = aCutout;
+     vec3 relative = local + uSectionOrigin.xyz;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index d1286ad59216d6c4a85143a35d92c1c6dee271cc..d6509664d05fd2baa5742e23e8205f772a425bca 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -209,6 +209,7 @@ extern "C" {
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
++    fn horizon_gx2_terrain_lightmap(terrain: *mut c_void, rgba: *const u8) -> i32;
+     fn horizon_gx2_terrain_wait_idle();
+     fn horizon_gx2_terrain_section_destroy(section: *mut c_void);
+     fn horizon_gx2_terrain_draw(
+@@ -507,6 +508,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     screenshot_result: Option<Result<CafeScreenshot, String>>,
+     unsupported_logged: u32,
+     profile: Gx2ProfileWindow,
++    gamma: f32,
++    lightmap: Option<[u8; 16 * 16 * 4]>,
+     _thread: PhantomData<*mut ()>,
+ }
+ 
+@@ -554,6 +557,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             screenshot_result: None,
+             unsupported_logged: 0,
+             profile: Gx2ProfileWindow::default(),
++            gamma: 0.0,
++            lightmap: None,
+             _thread: PhantomData,
+         })
+     }
+@@ -1098,7 +1103,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+             "world primitives",
+         ),
+         (!frame.shadow_only.is_empty(), 1 << 13, "shadow pass"),
+-        (true, 1 << 14, "terrain lighting (flat fullbright terrain)"),
+         (!frame.lightning.bolts.is_empty(), 1 << 17, "lightning"),
+         (
+             !frame.dynamic_lights.is_empty()
+@@ -1203,6 +1207,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn prepare_game_artwork(&mut self, artwork: CafeGameArtwork<'_>) -> horizon_client::Result<()> {
++        self.gamma = artwork.gamma;
+         self.prepare(CafeLoadingArtwork {
+             atlas: artwork.atlas,
+             panorama: Some(artwork.panorama),
+@@ -1241,6 +1246,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         }
+         if self.terrain_generation != Some(artwork.terrain_generation) || self.terrain.is_none() {
+             let _upload = Span::new(Stage::TextureUpload);
++            self.lightmap = None;
+             let source = artwork.terrain_pixels.get();
+             let TerrainAtlas { pixels, layout } = TerrainAtlas::from_layers(
+                 &source,
+@@ -1408,7 +1414,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         Ok(())
+     }
+     fn set_present_mode(&mut self, _vsync: bool, _mode: PresentMode) {}
+-    fn set_gamma(&mut self, _gamma: f32) {}
++    fn set_gamma(&mut self, gamma: f32) {
++        self.gamma = gamma;
++    }
+ 
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         self.last_frame_partial = false;
+@@ -1625,6 +1633,31 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+             0
+         }
++        if let Some(terrain) = self
++            .terrain
++            .as_ref()
++            .filter(|_| !frame.title && !self.sections.is_empty())
++        {
++            let pixels = horizon_client::gfx::stock_lightmap_pixels(
++                &frame.sky,
++                frame.darkness.1,
++                (self.gamma - frame.darkness.0).max(0.0),
++                frame.night_vision,
++                frame.block_flicker,
++                frame.boss_darken,
++            );
++            if self.lightmap.as_ref() != Some(&pixels) {
++                let _upload = Span::new(Stage::TextureUpload);
++                // WHB FinishRender waited for all consumers of the preceding frame.
++                let result = unsafe {
++                    horizon_gx2_terrain_lightmap(terrain.native.as_ptr(), pixels.as_ptr())
++                };
++                if result != 0 {
++                    return Err(format!("GX2 terrain lightmap upload failed ({result})").into());
++                }
++                self.lightmap = Some(pixels);
++            }
++        }
+         let clear = frame.base_clear_color();
+         let targets = self.target_viewports();
+         let terrain_min_y = self.terrain_min_y;

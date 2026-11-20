@@ -1,0 +1,126 @@
+diff --git a/crates/horizon-client/src/control.rs b/crates/horizon-client/src/control.rs
+index 70a60a5d087b78d8deeb58cc32c7a5ae1eaaa55e..0e37f22c60b0f1cfb60d0a62da9b1cf5b0015766 100644
+--- a/crates/horizon-client/src/control.rs
++++ b/crates/horizon-client/src/control.rs
+@@ -138,6 +138,27 @@ pub struct Request {
+     pub reply: mpsc::Sender<String>,
+ }
+ 
++#[cfg(target_os = "cafe")]
++type HostedMcpPoll = fn(no_ai: bool, ready: bool) -> (Option<Request>, bool);
++#[cfg(target_os = "cafe")]
++static HOSTED_MCP: std::sync::OnceLock<(HostedMcpPoll, fn() -> bool)> = std::sync::OnceLock::new();
++
++/// Only the embedded launcher installs this hook. It contains no game pointer.
++#[cfg(target_os = "cafe")]
++pub fn install_hosted_mcp(poll: HostedMcpPoll, no_ai: fn() -> bool) {
++    let _ = HOSTED_MCP.set((poll, no_ai));
++}
++
++#[cfg(target_os = "cafe")]
++pub fn poll_hosted_mcp(no_ai: bool, ready: bool) -> (Option<Request>, bool) {
++    HOSTED_MCP.get().map_or((None, false), |(poll, _)| poll(no_ai, ready))
++}
++
++#[cfg(target_os = "cafe")]
++pub fn hosted_mcp_no_ai() -> bool {
++    HOSTED_MCP.get().is_some_and(|(_, no_ai)| no_ai())
++}
++
+ pub struct Server {
+     path: PathBuf,
+     /// The ordinary server owns its endpoint file; an external launcher may own it instead.
+diff --git a/crates/horizon-client/src/game/agent_settings.rs b/crates/horizon-client/src/game/agent_settings.rs
+index 3f4fc228b4dbaeffc67061b116359dcfa59812da..dfc21744db37b2160012b92e849a6c23f03f7723 100644
+--- a/crates/horizon-client/src/game/agent_settings.rs
++++ b/crates/horizon-client/src/game/agent_settings.rs
+@@ -26,7 +26,7 @@ impl Game<'_> {
+         if self.options.benchmark.is_some() && self.options.control.is_none() {
+             return Ok(());
+         }
+-        if self.settings.extras.no_ai {
++        if self.agent_control_forbidden() {
+             if self.options.control.is_some() {
+                 log::warn!(
+                     "Horizon: control socket not opened: {}",
+@@ -97,10 +97,19 @@ impl Game<'_> {
+         }
+     }
+ 
++    fn agent_control_forbidden(&self) -> bool {
++        #[cfg(target_os = "cafe")]
++        if control::hosted_mcp_no_ai() {
++            return true;
++        }
++        self.settings.extras.no_ai
++    }
++
+     /// After a settings change: No AI closes the socket; Agent Control turned on or off opens or
+     /// closes it.
+     pub(super) fn sync_agent_control(&mut self) {
+-        if Self::uses_native_agent_lan() && self.settings.extras.no_ai {
++        let forbidden = self.agent_control_forbidden();
++        if Self::uses_native_agent_lan() && forbidden {
+             self.settings.extras.agent_control = false;
+         }
+         let wanted = self.settings.extras.agent_control;
+@@ -110,7 +119,7 @@ impl Game<'_> {
+             .control
+             .as_ref()
+             .is_some_and(|c| !c.path().as_os_str().is_empty() || c.lan_address().is_some());
+-        if self.settings.extras.no_ai || (changed && !wanted) {
++        if forbidden || (changed && !wanted) {
+             if open {
+                 let lan = self
+                     .control
+diff --git a/crates/horizon-client/src/game/control.rs b/crates/horizon-client/src/game/control.rs
+index 651d5434f105e8c583de548034559d214db208f1..73120b6657645f170ebbe57968836a88321f0ece 100644
+--- a/crates/horizon-client/src/game/control.rs
++++ b/crates/horizon-client/src/game/control.rs
+@@ -195,6 +195,21 @@ impl Game<'_> {
+         horizon_client::widgets::end_frame(self.frames);
+         self.narrate_screen();
+         self.poll_repro(event_loop);
++        #[cfg(target_os = "cafe")]
++        if self.cafe_hosted {
++            let (request, revoked) = horizon_client::control::poll_hosted_mcp(
++                self.settings.extras.no_ai,
++                self.pending_save.is_none(),
++            );
++            if revoked {
++                self.revoke_lan_agent_work();
++            }
++            if let Some(request) = request {
++                self.note_socket_line(&request.line);
++                self.agent_command_seen();
++                self.answer(request, event_loop);
++            }
++        }
+         self.advance_agent();
+         for request in self.ui_wait.ready() {
+             self.answer(request, event_loop);
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index 8006a2667cfa6a2d466a5c7f75c9d7a35f3abef5..a9c0872da0d49fee6852240e4d0f75e2486c7f1f 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -8,6 +8,8 @@ publish = false
+ crate-type = ["staticlib"]
+ 
+ [dependencies]
++horizon-wiiu-mcp = { path = "../mcp" }
++zeroize = "1"
+ horizon-wiiu-microsoft = { path = "../microsoft" }
+ horizon-wiiu-security = { path = "../security" }
+ horizon-client = { path = "../../crates/horizon-client", default-features = false }
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index e10199f8d2d666aea1eda28add281c9b1aa6f9b1..b83ceee214778321aa76ee20ecd1c429ea689256 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -1543,6 +1543,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             if let Some(game) = game_session.as_mut()
+                 .filter(|game| self.hosted && (hosted_fault_close || game.hosted_save_pending()))
+             {
++                hosted::mcp::withdraw();
+                 if !hosted_save_failed || (retry_save && !native_input_this_frame) {
+                     let save = if game.hosted_save_pending() {
+                         game.poll_hosted_save()

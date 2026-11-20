@@ -2,11 +2,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::local_wire::*;
+use super::night_online::{self, Online};
 use super::night_store::{self as store, Preferences, Profile, Server, Store};
+use horizon_wiiu_microsoft::{Identity, Provider};
 
 const MANIFEST: &str = "horizon-resources.json";
 const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_- .:[]";
 const LIST_ROWS: usize = 3;
+// Public client ID verified by the existing UWP port.
+const MICROSOFT_CLIENT_ID: &str = "331e08f8-172d-43b9-835a-3108c2fcdbf3";
+const ACCOUNT_FIXTURE: bool = option_env!("HORIZON_NIGHT_ACCOUNT_FIXTURE").is_some();
 
 pub struct ResourcePin<'a> {
     pub version: &'a str,
@@ -33,7 +38,7 @@ pub struct World {
 }
 
 pub trait GameFiles {
-    fn world(&self, path: &Path, identity: &str) -> Option<World>;
+    fn world(&self, path: &Path, identity: &str, online_uuid: Option<u128>) -> Option<World>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,6 +136,7 @@ pub struct Launch {
     pub server: Option<String>,
     pub swap_ab: bool,
     pub swap_xy: bool,
+    pub identity: Option<Identity>,
 }
 
 #[derive(Clone, Copy)]
@@ -178,6 +184,7 @@ impl Edit {
 #[derive(Clone)]
 enum Page {
     Home,
+    Online,
     Library,
     Settings,
     Versions,
@@ -210,6 +217,7 @@ impl Item {
 
 enum Command {
     Back,
+    Online,
     Show(Page),
     Profile(usize),
     Server(usize),
@@ -240,6 +248,7 @@ pub struct LocalService<G> {
     edited: String,
     character: usize,
     keyboard: bool,
+    online: Online,
 }
 
 impl<G: GameFiles> LocalService<G> {
@@ -255,6 +264,10 @@ impl<G: GameFiles> LocalService<G> {
             .server
             .map(|i| Target::Server(preferences.servers[i].address.clone()))
             .unwrap_or(Target::Menu);
+        let online = Online::new(
+            &base.join("private"),
+            Provider::for_night(Some(MICROSOFT_CLIENT_ID), ACCOUNT_FIXTURE),
+        );
         Self {
             base,
             pin,
@@ -270,6 +283,7 @@ impl<G: GameFiles> LocalService<G> {
             edited: String::new(),
             character: 0,
             keyboard: false,
+            online,
         }
     }
 
@@ -317,15 +331,25 @@ impl<G: GameFiles> LocalService<G> {
                 unavailable: Some("Open recovery in the game menu"),
             });
         }
-        self.game.world(
-            &path,
-            &self.preferences.profiles[self.preferences.profile].identity,
-        )
+        if self.online.selected().is_some() {
+            let account = self.online.active()?;
+            self.game.world(&path, &account.name, Some(account.id.0))
+        } else {
+            self.game.world(
+                &path,
+                &self.preferences.profiles[self.preferences.profile].identity,
+                None,
+            )
+        }
     }
 
     pub fn launch(&self) -> Result<Launch, u8> {
         if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
             return Err(2);
+        }
+        let identity = self.online.active();
+        if self.online.selected().is_some() && (identity.is_none() || ACCOUNT_FIXTURE) {
+            return Err(5);
         }
         let game = self.game_dir(&self.preferences.instance);
         let (world, server) = match &self.target {
@@ -342,13 +366,19 @@ impl<G: GameFiles> LocalService<G> {
         Ok(Launch {
             resources: self.resource_dir(&game),
             game,
-            player: self.preferences.profiles[self.preferences.profile]
-                .identity
-                .clone(),
+            player: identity.map_or_else(
+                || {
+                    self.preferences.profiles[self.preferences.profile]
+                        .identity
+                        .clone()
+                },
+                |a| a.name.clone(),
+            ),
             world,
             server,
             swap_ab: self.preferences.settings.swap_ab,
             swap_xy: self.preferences.settings.swap_xy,
+            identity: identity.map(Identity::duplicate),
         })
     }
 
@@ -502,6 +532,14 @@ impl<G: GameFiles> LocalService<G> {
 
     pub fn command(&mut self, action: u8, argument: u8, input: &str) {
         self.message = "";
+        if matches!(self.page, Page::Online) {
+            let selected = self.online.selected();
+            if self.online.command(action, argument, input) {
+                self.show(Page::Items(List::Profiles, 0));
+            }
+            self.account_changed(selected);
+            return;
+        }
         match action {
             OPEN_PROFILES => self.show(Page::Items(List::Profiles, 0)),
             OPEN_LIBRARY => self.show(Page::Library),
@@ -532,6 +570,23 @@ impl<G: GameFiles> LocalService<G> {
         }
     }
 
+    pub fn tick(&mut self) -> bool {
+        let selected = self.online.selected();
+        let changed = self.online.tick();
+        self.account_changed(selected);
+        changed
+    }
+
+    pub fn shutdown(&mut self) {
+        self.online.shutdown();
+    }
+
+    fn account_changed(&mut self, previous: Option<horizon_wiiu_microsoft::ProfileId>) {
+        if self.online.selected() != previous && matches!(self.target, Target::World(_)) {
+            self.target = Target::Menu;
+        }
+    }
+
     fn back(&mut self) {
         let page = match &self.page {
             Page::Items(List::Worlds | List::Servers, _) => Page::Library,
@@ -557,8 +612,18 @@ impl<G: GameFiles> LocalService<G> {
         let mut next = self.preferences.clone();
         match command {
             Command::Back => self.back(),
+            Command::Online => {
+                self.online.open();
+                self.show(Page::Online);
+            }
             Command::Show(page) => self.show(page),
             Command::Profile(index) => {
+                let selected = self.online.selected();
+                if let Err(error) = self.online.offline() {
+                    self.message = night_online::error_label(error);
+                    return;
+                }
+                self.account_changed(selected);
                 next.profile = index;
                 if self.save(next) {
                     self.show(Page::Items(List::Profiles, 0));
@@ -745,6 +810,8 @@ impl<G: GameFiles> LocalService<G> {
     pub fn model(&mut self) -> LocalMenu {
         self.commands.clear();
         let status = self.installed(&self.preferences.instance);
+        let online = self.online.selected_label();
+        let requires_account = online.is_some() && self.online.active().is_none();
         let report = match self.page {
             Page::Report(index, _) => self
                 .items
@@ -753,9 +820,14 @@ impl<G: GameFiles> LocalService<G> {
             _ => None,
         };
         let mut menu = LocalMenu {
-            profile: Text::new(&self.preferences.profiles[self.preferences.profile].name),
+            profile: Text::new(online.map_or(
+                &self.preferences.profiles[self.preferences.profile].name,
+                |(name, _)| name,
+            )),
             play_detail: Text::new(if status != ResourceStatus::Ready {
                 status.text()
+            } else if requires_account {
+                online.map_or("", |(_, status)| status)
             } else {
                 match &self.target {
                     Target::Menu => "Native game menu",
@@ -763,7 +835,11 @@ impl<G: GameFiles> LocalService<G> {
                     Target::Server(address) => address,
                 }
             }),
-            ready: u8::from(status == ResourceStatus::Ready),
+            ready: u8::from(
+                status == ResourceStatus::Ready
+                    && !requires_account
+                    && (!ACCOUNT_FIXTURE || online.is_none()),
+            ),
             settings: (if self.preferences.settings.swap_ab {
                 SWAP_AB
             } else {
@@ -779,6 +855,10 @@ impl<G: GameFiles> LocalService<G> {
             }),
             ..LocalMenu::default()
         };
+        if matches!(self.page, Page::Online) {
+            self.online.model(&mut menu);
+            return menu;
+        }
         let mut row = |label: &str, detail: &str, state, command| {
             if let Some(dest) = menu.rows.get_mut(self.commands.len()) {
                 *dest = LocalRow {
@@ -790,7 +870,15 @@ impl<G: GameFiles> LocalService<G> {
             }
         };
         let (title, description) = match self.page.clone() {
-            Page::Home => ("", ""),
+            Page::Home => (
+                "",
+                if requires_account {
+                    self.online.status_message()
+                } else {
+                    ""
+                },
+            ),
+            Page::Online => unreachable!(),
             Page::Library => {
                 row(
                     "Local worlds",
@@ -888,8 +976,16 @@ impl<G: GameFiles> LocalService<G> {
                 ("About Horizon Wii U", "CafeOS / PowerPC")
             }
             Page::Items(kind, page) => {
-                let start = page * LIST_ROWS;
-                for (index, item) in self.items.iter().enumerate().skip(start).take(LIST_ROWS) {
+                let limit = if matches!(kind, List::Profiles) {
+                    2
+                } else {
+                    LIST_ROWS
+                };
+                let start = page * limit;
+                if matches!(kind, List::Profiles) && page == 0 {
+                    row(night_online::tr("accounts"), "", ACTIVE, Command::Online);
+                }
+                for (index, item) in self.items.iter().enumerate().skip(start).take(limit) {
                     let action = match kind {
                         List::Profiles => Command::Show(Page::Profile(index)),
                         List::Servers => Command::Show(Page::Server(index)),
@@ -913,7 +1009,7 @@ impl<G: GameFiles> LocalService<G> {
                 if let Some((label, edit)) = add {
                     row(label, "", ACTIVE, Command::Edit(edit, String::new()));
                 }
-                if self.items.len() > start + LIST_ROWS {
+                if self.items.len() > start + limit {
                     row(
                         "Next page",
                         "",
@@ -934,7 +1030,7 @@ impl<G: GameFiles> LocalService<G> {
                 match kind {
                     List::Profiles => (
                         "Offline profiles",
-                        "Select an offline identity. Microsoft sign-in is unavailable.",
+                        "Choose an offline identity or manage Microsoft accounts.",
                     ),
                     List::Instances => (
                         "Installed resources",
@@ -945,7 +1041,7 @@ impl<G: GameFiles> LocalService<G> {
                         if self.items.is_empty() {
                             "No saved worlds in this installation."
                         } else {
-                            "Only compatible worlds for the selected offline identity can start here."
+                            "Only compatible worlds for the selected identity can start here."
                         },
                     ),
                     List::Servers => (
@@ -1031,10 +1127,7 @@ impl<G: GameFiles> LocalService<G> {
                     }),
                 );
                 row("Back", "", ACTIVE, Command::Back);
-                (
-                    "Saved server",
-                    "Connections use the original game client and your offline identity.",
-                )
+                ("Saved server", "Connections use the selected profile.")
             }
             Page::Confirm { profile, index } => {
                 row("Cancel", "Keep this entry", ACTIVE, Command::Back);
@@ -1168,3 +1261,6 @@ fn entries(directory: &Path, directory_entries: bool) -> Vec<String> {
 fn directories(path: &Path) -> Vec<String> {
     entries(path, true)
 }
+
+#[path = "night_tools.rs"]
+mod night_tools;

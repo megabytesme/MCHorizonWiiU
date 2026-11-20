@@ -1,0 +1,138 @@
+{
+  "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "builder": "0.6.0",
+  "files": {
+    "docs/mcp/pinned-tools.json": "5459bd1aa89720fbeab500df0dfc9df2d67d1bf82d2ee3d83ba4c47d0b538b66",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0001-cafe-hosted-session.patch": "8cc9d575a85d27d9ddd13133d923a8741c50752da84226435a7119e976a0a565",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0002-night-launch-options.patch": "afd71820521a8f46477a7f4e71cb943f5513f8405a756be6f14a9cf3518df938",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0003-microsoft-accounts.patch": "d2a566fc9f8db2928ed4676a56cdaeb813913810b91da5eee85f5d9181df30fe",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0004-native-mcp.patch": "ef30fa35bb528e05e14588eb678e10a4009b72c2f82ae7cc187a3ae40cb7d483",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0005-gx2-frame-capture.patch": "5098457bf90123337474117d83dd8098929897c5dc0ab9369a4693eff7f66fe8",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0006-gx2-camera-pose.patch": "0d0dee9dd7164b207e40e4562d7d4ec525348c592c0a655ad0cc9a2cd6365ad9",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0007-gx2-stock-lightmap.patch": "da3526072692540af17acee0bf9e42469377bfe8f49e44ce11fcab2fd4f713c2",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0008-gx2-whb-pacing.patch": "329228ad4782d507a827187d3ddd63f810011d8eb54172884ac81842c043e657",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0009-gx2-shader-relink.patch": "757031147a10f63e7ecfdaa4a4989b7090e175dd70bd093da0bae6d4e1966ca8",
+    "wiiu/game-bridge/hosted.patch": "79228b034e0943a4867d6d835952609b75295465ff1bfeed94c7d70576b6ccf9",
+    "wiiu/game-bridge/night-platform.patch": "d79fa80b5ea9b0cbdf66b6751c0d1498db19b14c3c7812a1195d9d0e1c995c0d",
+    "wiiu/game-bridge/night_hosted.rs": "1042afa06deea0b09cc97542ad0023382d9a96d4fb0d407de0ea401d3e99adbb",
+    "wiiu/game-bridge/night_mcp.rs": "1e81872dbda15cb7b6bedbd192ca5d7577c5b0f52692fffaa3337b9875f2aeed",
+    "wiiu/game-bridge/night_mcp_menu.rs": "c5f4e06237c5811ccc3d91d5c73a49ce1fcb4e72766cc6a716a1b593d956a6db",
+    "wiiu/game-bridge/night_menu.rs": "a9f05b0429a550400b4fe492aacaefb1d84be11680792442e298870b3dd2c10a",
+    "wiiu/game-bridge/night_online.rs": "44c4bece13a977eb9bf2234e37e54b9d8794b508003b81faf1368c091cf14909",
+    "wiiu/game-bridge/night_store.rs": "288d0590c97f5c64f185d14a6c274765aa41d9e70e4c3889f0e14713ce5bec98",
+    "wiiu/game-bridge/night_tools.rs": "0f0106c31f26333e6b6611103be0f585d1fefcc21a789dc450caf0a43531a9a8",
+    "wiiu/game-bridge/offline/unified.Cargo.lock": "60d6722564b0d4218a364f1b9442c4853da6640e9c7726b2b44b2e13b8a89f96",
+    "wiiu/mcp/Cargo.toml": "28292fff77e14f004231d6192fcf85ab8d55f8106bb2bf27cdfabdb330dd0faf",
+    "wiiu/mcp/src/http.rs": "b2db5f0e77377afa07148c3d4fb9fd6d5709cf27e5c92456d272643656752c21",
+    "wiiu/mcp/src/lib.rs": "bd61c65172967407a6b0b015aae015f15f6ca593e060a0c31915d20cbd0b2478",
+    "wiiu/mcp/src/oauth.rs": "3b5250baef394791a49493466f2e186ec3be43296cc1f084e55c457ece1a475c",
+    "wiiu/mcp/src/protocol.rs": "6f29331b281102db42359208350e9ceb97ae36794c89724e38e84b5e7aff079f",
+    "wiiu/mcp/src/router.rs": "ccc04dab9945a7116ab3dd1fe148ed95669d85c6ef5d8aa158e53999a6deb58e",
+    "wiiu/mcp/src/service.rs": "45a81663d1d6cd618550c104bb1a69688b09e36267a93a2dc56c2ace8bb27c3c",
+    "wiiu/mcp/src/session.rs": "4b3cc7352b7656c91c38ef9e45d66fabacb71cb294681f72f8f298fb356c7f14",
+    "wiiu/mcp/src/tls.rs": "6fa8e71857a71ce6b0e153a03c61d43b5b49c32a55dbb91b48c32f04a84eb619",
+    "wiiu/microsoft/Cargo.toml": "86c756ff4109d26bce3f054bf68061acd55f5c42a4d22aba47c5879c5fa337da",
+    "wiiu/microsoft/src/fixture.rs": "7935e7cad26995b106f889be9a0b05794a18c0d2d1e7b7c3ca19c8e29098854e",
+    "wiiu/microsoft/src/lib.rs": "e8dab239e3631bf45160312bcec8aad868b2f4504d820dd703578de3d2995f46",
+    "wiiu/microsoft/src/profiles.rs": "7bed84e21288bf027d85ca8abce6650ebc793e0a7551992e293b71a986770095",
+    "wiiu/microsoft/src/protocol.rs": "eab80623ac8cb12d87a4dd009393f1e1e1621a701e6ccb669cd00245c8cb2714",
+    "wiiu/microsoft/src/tests.rs": "86a964c5498f76c3788abd37b94c5aa1296572d4d10b5f191706799b2b2a4769",
+    "wiiu/microsoft/src/worker.rs": "53f853f305b4e9199721aa01d20d4803bf8a77cf5428ca372a367b1fff884289",
+    "wiiu/pregame/src/local_wire.rs": "c3f04e665445e73e3f6bbb557a5608309dfe82e50a2cb6a4036f7fba6c19c2bd",
+    "wiiu/security/Cargo.toml": "fea7e53ad0e48326e85a5c471a1ec94e23cfd6fe537f6ad0263619a4a17b0a4b",
+    "wiiu/security/src/format.rs": "9ec2c00677d8e894c9091c90d1412ab31bd3e2375b17d50c55f265a594677991",
+    "wiiu/security/src/lib.rs": "aef988930ce6b0fe17437b7b691b392b25fe40016e8f1417a03d513a98fd26d0",
+    "wiiu/security/src/vault.rs": "a400e8395815e28d23d130934d8400a1ea35ae5bdef2e17d55185cf85f9dde0c",
+    "wiiu/security/src/vault/tests.rs": "f92b2401db6349771df346b6f0a979cd249b30c9bac709df2e047cee7810f4b6"
+  },
+  "hosted_client": "0.7.0",
+  "hosted_patch": "0.4.0",
+  "input_tree": "ad3cd393662eb481e80cb63f488435c1480085b9",
+  "output_tree": "5c0991fe6a80dfab5584eb6f643bf8bdbe1b5e97",
+  "overlay": {
+    "docs/mcp/pinned-tools.json": "wiiu/loading_app/src/pinned_tools.json",
+    "wiiu/game-bridge/night_hosted.rs": "wiiu/loading_app/src/hosted.rs",
+    "wiiu/game-bridge/night_mcp.rs": "wiiu/loading_app/src/night_mcp.rs",
+    "wiiu/game-bridge/night_mcp_menu.rs": "wiiu/loading_app/src/night_mcp_menu.rs",
+    "wiiu/game-bridge/night_menu.rs": "wiiu/loading_app/src/night_menu.rs",
+    "wiiu/game-bridge/night_online.rs": "wiiu/loading_app/src/night_online.rs",
+    "wiiu/game-bridge/night_store.rs": "wiiu/loading_app/src/night_store.rs",
+    "wiiu/game-bridge/night_tools.rs": "wiiu/loading_app/src/night_tools.rs",
+    "wiiu/mcp/Cargo.toml": "wiiu/mcp/Cargo.toml",
+    "wiiu/mcp/src/http.rs": "wiiu/mcp/src/http.rs",
+    "wiiu/mcp/src/lib.rs": "wiiu/mcp/src/lib.rs",
+    "wiiu/mcp/src/oauth.rs": "wiiu/mcp/src/oauth.rs",
+    "wiiu/mcp/src/protocol.rs": "wiiu/mcp/src/protocol.rs",
+    "wiiu/mcp/src/router.rs": "wiiu/mcp/src/router.rs",
+    "wiiu/mcp/src/service.rs": "wiiu/mcp/src/service.rs",
+    "wiiu/mcp/src/session.rs": "wiiu/mcp/src/session.rs",
+    "wiiu/mcp/src/tls.rs": "wiiu/mcp/src/tls.rs",
+    "wiiu/microsoft/Cargo.toml": "wiiu/microsoft/Cargo.toml",
+    "wiiu/microsoft/src/fixture.rs": "wiiu/microsoft/src/fixture.rs",
+    "wiiu/microsoft/src/lib.rs": "wiiu/microsoft/src/lib.rs",
+    "wiiu/microsoft/src/profiles.rs": "wiiu/microsoft/src/profiles.rs",
+    "wiiu/microsoft/src/protocol.rs": "wiiu/microsoft/src/protocol.rs",
+    "wiiu/microsoft/src/tests.rs": "wiiu/microsoft/src/tests.rs",
+    "wiiu/microsoft/src/worker.rs": "wiiu/microsoft/src/worker.rs",
+    "wiiu/pregame/src/local_wire.rs": "wiiu/loading_app/src/local_wire.rs",
+    "wiiu/security/Cargo.toml": "wiiu/security/Cargo.toml",
+    "wiiu/security/src/format.rs": "wiiu/security/src/format.rs",
+    "wiiu/security/src/lib.rs": "wiiu/security/src/lib.rs",
+    "wiiu/security/src/vault.rs": "wiiu/security/src/vault.rs",
+    "wiiu/security/src/vault/tests.rs": "wiiu/security/src/vault/tests.rs"
+  },
+  "resource_pin": {
+    "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
+    "exporter_sha256": "145c943637ed177cc4ef8a85f2484da8afd164868e84a8463882feec1653a860",
+    "minecraft": "26.3",
+    "schema": 7,
+    "server_sha256": "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6"
+  },
+  "schema": 3,
+  "series": [
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0001-cafe-hosted-session.patch",
+      "tree": "dc636eec3d71718ac314783e45a138afc0e66069"
+    },
+    {
+      "file": "wiiu/game-bridge/hosted.patch",
+      "tree": "667620c33b3a76a5e34f8eac83653de55b765c5d"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0002-night-launch-options.patch",
+      "tree": "9d11c27bb2d849d4856980224b55077f216eb06a"
+    },
+    {
+      "file": "wiiu/game-bridge/night-platform.patch",
+      "tree": "2211a894454a1cdefa6acf6afb2859ca252d650a"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0003-microsoft-accounts.patch",
+      "tree": "4407fd703dc78b1a57712a8cf4f9280d17f8f92c"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0004-native-mcp.patch",
+      "tree": "4040be6e2d19ea6363039f6d2d316248b5262296"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0005-gx2-frame-capture.patch",
+      "tree": "be3649af7b76281c6da89eae82d67565a4eb871c"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0006-gx2-camera-pose.patch",
+      "tree": "b84ad35d1638f1532f2924a05790a4f88419a18b"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0007-gx2-stock-lightmap.patch",
+      "tree": "e4edc1a5e7b906bdc9febc4cd8644317330876ed"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0008-gx2-whb-pacing.patch",
+      "tree": "49888547742e7822cf048f0f52465a6b9fafc160"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0009-gx2-shader-relink.patch",
+      "tree": "df4c524108afe2fa7330a875264d6a73aacafe52"
+    }
+  ]
+}

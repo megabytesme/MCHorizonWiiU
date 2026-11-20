@@ -1,0 +1,168 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index d5e512095c7abd5dc4ba0a20c70b70427d452f07..d84f4353841493b44c3fe5d15a5cc67c0b4cb9f3 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -34,6 +34,41 @@ impl TerrainClipRows {
+     }
+ }
+ 
++/// Project an affine, camera-relative view using Cafe's existing forward-Z
++/// depth convention. Rows include the upstream bob/damage/spin translation.
++pub fn terrain_view_rows(
++    view: [[f32; 4]; 4],
++    focal: f32,
++    aspect: f32,
++    depth_scale: f32,
++    depth_offset: f32,
++) -> TerrainClipRows {
++    let [x, y, z, w] = view;
++    TerrainClipRows {
++        rows: [
++            x.map(|value| value * (focal / aspect)),
++            y.map(|value| value * focal),
++            core::array::from_fn(|i| z[i] * depth_scale + w[i] * depth_offset),
++            z.map(|value| -value),
++        ],
++    }
++}
++
++impl TerrainClipRows {
++    /// Apply a section origin after subtracting the camera in world precision.
++    pub fn with_origin(self, [x, y, z]: [f64; 3]) -> Self {
++        Self {
++            rows: self.rows.map(|[a, b, c, d]| {
++                let offset = f64::from(a) * x
++                    + f64::from(b) * y
++                    + f64::from(c) * z
++                    + f64::from(d);
++                [a, b, c, offset as f32]
++            }),
++        }
++    }
++}
++
+ pub fn terrain_clip_rows(
+     camera_relative_origin: [f64; 3],
+     yaw_sin: f32,
+@@ -73,6 +108,23 @@ pub fn terrain_clip_rows(
+ mod clip_rows_tests {
+     use super::{terrain_clip_rows, TerrainClipRows};
+ 
++    #[test]
++    fn posed_view_projects_the_local_position_and_section_origin() {
++        let view = [
++            [0.0, -1.0, 0.0, 0.5],
++            [1.0, 0.0, 0.0, -0.25],
++            [0.0, 0.0, -1.0, 0.125],
++            [0.0, 0.0, 0.0, 1.0],
++        ];
++        let origin = [2.0, 3.0, 7.0];
++        let rows = super::terrain_view_rows(view, 2.0, 2.0, -1.25, -0.25)
++            .with_origin(origin);
++        let clip = rows.transform([1.0, 0.0, 1.0]);
++        // Relative position (3, 3, 8) becomes (-2.5, 2.75, -7.875)
++        // after the shared pose, then uses the native depth projection.
++        assert_eq!(clip, [-2.5, 5.5, 9.59375, 7.875]);
++    }
++
+     #[test]
+     fn affine_clip_rows_preserve_projection_offsets_and_w_sign() {
+         let rows = TerrainClipRows {
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index e98e8a28af7d97851ecab4161f707d04cc814bee..d1286ad59216d6c4a85143a35d92c1c6dee271cc 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -26,7 +26,7 @@ use horizon_client::{
+     presentation::{HudBackend, PresentationBackend, TerrainBackend},
+ };
+ use horizon_wiiu_gx2_terrain::{
+-    TerrainAtlas, TerrainAtlasLayout, TerrainClipRows, TerrainGpuVertex, terrain_clip_rows,
++    TerrainAtlas, TerrainAtlasLayout, TerrainClipRows, TerrainGpuVertex, terrain_view_rows,
+ };
+ use horizon_wiiu_platform::hud::{CitSlot, horizon::HorizonPresenter};
+ use std::{
+@@ -1022,35 +1022,25 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+ struct TerrainProjection {
+     camera: [f64; 3],
+     min_y: i32,
+-    yaw_sin: f32,
+-    yaw_cos: f32,
+-    pitch_sin: f32,
+-    pitch_cos: f32,
+-    focal: f32,
+-    aspect: f32,
+-    depth_scale: f32,
+-    depth_offset: f32,
++    clip: TerrainClipRows,
+ }
+ 
+ impl TerrainProjection {
+     fn new(frame: &Frame<'_>, min_y: i32, aspect: f32) -> Self {
+-        let yaw = (frame.yaw - 180.0).to_radians();
+-        let (yaw_sin, yaw_cos) = yaw.sin_cos();
+-        let pitch = frame.pitch.to_radians();
+-        let (pitch_sin, pitch_cos) = pitch.sin_cos();
+         let near = 0.05f32;
+         let far = frame.depth_far.max(near + 1.0);
++        let view = frame.bob * frame.spin
++            * horizon_client::camera::view_matrix(frame.yaw, frame.pitch);
+         Self {
+             camera: frame.camera.to_array(),
+             min_y,
+-            yaw_sin,
+-            yaw_cos,
+-            pitch_sin,
+-            pitch_cos,
+-            focal: 1.0 / (frame.fov_degrees.to_radians() * 0.5).tan(),
+-            aspect,
+-            depth_scale: far / (near - far),
+-            depth_offset: far * near / (near - far),
++            clip: terrain_view_rows(
++                view.transpose().to_cols_array_2d(),
++                1.0 / (frame.fov_degrees.to_radians() * 0.5).tan(),
++                aspect,
++                far / (near - far),
++                far * near / (near - far),
++            ),
+         }
+     }
+ 
+@@ -1065,17 +1055,7 @@ impl TerrainProjection {
+     }
+ 
+     fn clip_rows(&self, origin: [f64; 3]) -> TerrainClipRows {
+-        terrain_clip_rows(
+-            origin,
+-            self.yaw_sin,
+-            self.yaw_cos,
+-            self.pitch_sin,
+-            self.pitch_cos,
+-            self.focal,
+-            self.aspect,
+-            self.depth_scale,
+-            self.depth_offset,
+-        )
++        self.clip.with_origin(origin)
+     }
+ }
+ 
+@@ -1127,19 +1107,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+             1 << 18,
+             "dynamic and emissive lighting",
+         ),
+-        (
+-            frame.bob.to_cols_array()
+-                != [
+-                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+-                ]
+-                || frame.spin.to_cols_array()
+-                    != [
+-                        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+-                        1.0,
+-                    ],
+-            1 << 19,
+-            "camera distortion",
+-        ),
+         (
+             !frame.post_effects.effects.is_empty() || frame.menu_blur.unwrap_or(0.0) > 0.0,
+             1 << 15,

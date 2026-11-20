@@ -1,0 +1,31 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index fb7b3f1771d18c4ffcab169e7a5069db4cdc0595..ca30893ea60a60242541a3503a67e0c420fa7a77 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -21,7 +21,7 @@ add_custom_command(
+       "${CMAKE_CURRENT_BINARY_DIR}/gx2_hud/hud.gsh" hud.gsh
+    COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
+       -I binary -O elf32-powerpc -B powerpc:common hud.gsh hud_gfd.o
+-   DEPENDS horizon_gx2_hud_shader
++   DEPENDS horizon_gx2_hud_shader "${CMAKE_CURRENT_BINARY_DIR}/gx2_hud/hud.gsh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
+ add_custom_command(
+@@ -30,7 +30,7 @@ add_custom_command(
+       "${CMAKE_CURRENT_BINARY_DIR}/gx2_terrain/terrain.gsh" terrain.gsh
+    COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
+       -I binary -O elf32-powerpc -B powerpc:common terrain.gsh terrain_gfd.o
+-   DEPENDS horizon_gx2_terrain_shader
++   DEPENDS horizon_gx2_terrain_shader "${CMAKE_CURRENT_BINARY_DIR}/gx2_terrain/terrain.gsh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+@@ -42,7 +42,7 @@ add_custom_command(
+       "${CMAKE_CURRENT_BINARY_DIR}/gx2_panorama/panorama.gsh" panorama.gsh
+    COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
+       -I binary -O elf32-powerpc -B powerpc:common panorama.gsh panorama_gfd.o
+-   DEPENDS horizon_gx2_panorama_shader
++   DEPENDS horizon_gx2_panorama_shader "${CMAKE_CURRENT_BINARY_DIR}/gx2_panorama/panorama.gsh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"

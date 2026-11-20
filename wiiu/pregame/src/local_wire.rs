@@ -5,6 +5,8 @@ pub const ACTIVE: u8 = 0;
 pub const SELECTED: u8 = 1;
 pub const DISABLED: u8 = 2;
 pub const EDITOR: u8 = 1;
+pub const PRIVATE_INPUT: u8 = 2;
+pub const NO_UPDATE: u8 = 4;
 pub const SWAP_AB: u8 = 1;
 pub const SWAP_XY: u8 = 2;
 pub const TOUCH: u8 = 4;
@@ -20,6 +22,9 @@ pub const ACTIVATE: u8 = 8;
 pub const TEXT_ACCEPTED: u8 = 9;
 pub const TEXT_CANCELLED: u8 = 10;
 pub const TEXT_UNAVAILABLE: u8 = 11;
+pub const TICK: u8 = 12;
+pub const SHUTDOWN: u8 = 13;
+pub const OPEN_AGENT: u8 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -59,7 +64,7 @@ pub struct LocalRow {
     pub state: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct LocalMenu {
     pub title: Text<30>,
@@ -73,4 +78,14 @@ pub struct LocalMenu {
     pub settings: u8,
     pub input: Text<253>,
     pub input_limit: u16,
+}
+
+impl core::fmt::Debug for LocalMenu {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LocalMenu")
+            .field("rows", &self.count)
+            .field("mode", &self.mode)
+            .field("ready", &self.ready)
+            .finish_non_exhaustive()
+    }
 }

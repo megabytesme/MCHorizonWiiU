@@ -10,8 +10,10 @@ publish = false
 path = "src/lib.rs"
 
 [dev-dependencies]
+horizon-wiiu-microsoft = { path = "../microsoft", features = ["fixture"] }
+horizon-wiiu-security = { path = "../security" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(horizon_wiiu_cafe)', 'cfg(horizon_wiiu_pregame_fixture)', 'cfg(horizon_wiiu_hosted)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(horizon_wiiu_cafe)', 'cfg(horizon_wiiu_pregame_fixture)', 'cfg(horizon_wiiu_hosted)', 'cfg(horizon_wiiu_native_mcp)'] }
