@@ -9,6 +9,16 @@
       "target": "powerpc-nintendo-cafe",
       "toolchain": "1.0.0",
       "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+    },
+    {
+      "bridge_abi": 1,
+      "builder": "0.6.0",
+      "channel": "development",
+      "client": "0.7.0",
+      "patch": "0.4.0",
+      "target": "powerpc-nintendo-cafe",
+      "toolchain": "1.0.0",
+      "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
     }
   ],
   "expires": "2027-05-20T00:00:00Z",
@@ -26,6 +36,19 @@
         "channel": "development",
         "description": "Windows desktop and Linux/WSL CLI for asset-free Cafe packaging.",
         "notes": "docs/releases/builder-v0.5.0.md",
+        "status": "deprecated"
+      },
+      "0.6.0": {
+        "artifacts": {
+          "sources": {
+            "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
+            "path": "catalog/builder-source-v0.6.0.json",
+            "sha256": "948742d79be8f7c2ac17c967b9adbff55dfbdc8d8b22270f408b458479ff0d06"
+          }
+        },
+        "channel": "development",
+        "description": "Canonical hosted Cafe source reconstruction, dependency and package verification.",
+        "notes": "docs/releases/builder-v0.6.0.md",
         "status": "active"
       }
     },
@@ -61,6 +84,34 @@
           }
         },
         "notes": "docs/releases/client-v0.6.0.md",
+        "status": "deprecated"
+      },
+      "0.7.0": {
+        "artifacts": {
+          "sources": {
+            "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
+            "path": "catalog/client-source-v0.7.0.json",
+            "sha256": "33ecb6b7985302f2b6d98da5fb0470637ddf78d8cdcb18b61854204634c4ec09"
+          }
+        },
+        "bridge_abi": 1,
+        "channel": "development",
+        "description": "Horizon Night with Microsoft accounts, native HTTPS Agent Control and GX2 rendering.",
+        "evidence": {
+          "build": {
+            "record": "docs/releases/client-v0.7.0.md",
+            "status": "pending"
+          },
+          "cemu": {
+            "record": "docs/releases/client-v0.7.0.md",
+            "status": "pending"
+          },
+          "hardware": {
+            "record": "docs/releases/client-v0.7.0.md",
+            "status": "pending"
+          }
+        },
+        "notes": "docs/releases/client-v0.7.0.md",
         "status": "active"
       }
     },
@@ -92,6 +143,36 @@
         "channel": "development",
         "description": "Public source reconstruction for the combined Night and native game.",
         "notes": "docs/releases/patch-v0.3.1.md",
+        "status": "deprecated",
+        "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+      },
+      "0.4.0": {
+        "artifacts": {
+          "base-recipe": {
+            "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
+            "path": "catalog/compatibility-v1.json",
+            "sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2"
+          },
+          "hosted-recipe": {
+            "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
+            "path": "catalog/hosted-v3.json",
+            "sha256": "840b0629adf152e942f808e2f774b6720adcd94e4316ad33ee0c6085bd84c50a"
+          },
+          "native-inventory": {
+            "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
+            "path": "catalog/native-files-v1.json",
+            "sha256": "3dcb0281fc6c05e25fb36dad2aade88b17033a709247e17cd18382799cb05178"
+          },
+          "workspace-overlay": {
+            "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
+            "path": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/workspace.patch",
+            "sha256": "69cfb7175eb948fdffb460fcaad8ccb88e350ee0a89950a25c38766ceff87b50"
+          }
+        },
+        "bridge_abi": 1,
+        "channel": "development",
+        "description": "Ordered Microsoft, native MCP and GX2 patches for the pinned Horizon source.",
+        "notes": "docs/releases/patch-v0.4.0.md",
         "status": "active",
         "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
       }
@@ -123,6 +204,6 @@
     }
   },
   "schema": 2,
-  "sequence": 1,
+  "sequence": 2,
   "signing": "unsigned-development"
 }
