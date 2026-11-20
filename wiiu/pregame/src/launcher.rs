@@ -3,6 +3,7 @@
 
 use crate::accounts::{OfflineName, Profile};
 use crate::config::{Instance, LaunchConfig, Resources, Settings};
+use crate::local_wire::{self, LocalMenu};
 use crate::session::{
     HostedSession, ReturnTo, SaveError, SessionFactory, SessionStatus, StartError, StartMode,
 };
@@ -15,6 +16,7 @@ pub enum Page {
     Versions,
     Settings,
     AgentControl,
+    Local,
     Loading,
     Session,
     Error,
@@ -25,6 +27,7 @@ pub enum Page {
 pub enum Action {
     Play,
     Profiles,
+    Library,
     Versions,
     Settings,
     AgentControl,
@@ -42,6 +45,7 @@ pub enum Action {
     CancelLoading,
     SaveAndQuit,
     DismissError,
+    Local(u8),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,10 +56,10 @@ pub enum ActionState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Row {
+pub struct Row<'a> {
     pub action: Action,
-    pub label: &'static str,
-    pub detail: &'static str,
+    pub label: &'a str,
+    pub detail: &'a str,
     pub state: ActionState,
 }
 
@@ -123,16 +127,18 @@ pub struct View {
     pub agent_status: AgentStatus,
     pub error: Option<StartError>,
     pub session: Option<SessionStatus>,
+    pub local: Option<LocalMenu>,
 }
 
 impl View {
-    pub fn title(self) -> &'static str {
+    pub fn title(&self) -> &str {
         match self.page {
             Page::Home => "Play",
             Page::Profiles => "Profiles",
             Page::Versions => "Version & resources",
             Page::Settings => "Settings",
             Page::AgentControl => "Agent Control",
+            Page::Local => self.local.as_ref().map_or("", |menu| menu.title.as_str()),
             Page::Loading if matches!(self.session, Some(SessionStatus::Stopping(_))) => {
                 "Releasing session"
             }
@@ -149,8 +155,20 @@ impl View {
         }
     }
 
-    pub fn description(self) -> &'static str {
+    pub fn description(&self) -> &str {
         match self.page {
+            Page::Local => self
+                .local
+                .as_ref()
+                .map_or("", |menu| menu.description.as_str()),
+            Page::Home
+                if self
+                    .local
+                    .as_ref()
+                    .is_some_and(|m| !m.description.as_str().is_empty()) =>
+            {
+                self.local.as_ref().unwrap().description.as_str()
+            }
             Page::Home
                 if self.resources == ResourceSelection::Unavailable
                     && cfg!(horizon_wiiu_hosted) =>
@@ -203,6 +221,7 @@ impl View {
                 Some(StartError::OutOfMemory) => "Session memory is unavailable.",
                 Some(StartError::Resources) => "The prepared resources failed verification.",
                 Some(StartError::Engine) => "Horizon could not prepare the selected instance.",
+                Some(StartError::Target) => "The world or server selection is no longer available.",
                 _ => "The profile or launch target is unavailable.",
             },
             Page::Exiting => "Releasing launcher resources.",
@@ -224,17 +243,37 @@ impl View {
         }
     }
 
-    pub fn rows(self) -> impl ExactSizeIterator<Item = Row> {
+    pub fn rows(&self) -> impl ExactSizeIterator<Item = Row<'_>> {
         self.actions(self.page)
             .iter()
             .copied()
             .map(move |action| self.row(action))
     }
 
-    fn row(self, action: Action) -> Row {
+    fn row(&self, action: Action) -> Row<'_> {
         use Action::*;
         use ActionState::*;
         let (label, detail, state) = match action {
+            Local(index) => {
+                let row = &self.local.as_ref().unwrap().rows[usize::from(index)];
+                (
+                    row.label.as_str(),
+                    row.detail.as_str(),
+                    match row.state {
+                        local_wire::ACTIVE => Available,
+                        local_wire::SELECTED => Selected,
+                        _ => Disabled,
+                    },
+                )
+            }
+            Play if self.local.is_some() => {
+                let menu = self.local.as_ref().unwrap();
+                (
+                    "Start Game",
+                    menu.play_detail.as_str(),
+                    if menu.ready != 0 { Available } else { Disabled },
+                )
+            }
             Play if self.resources == ResourceSelection::BuiltInDemo => {
                 ("Start demo", "Built-in fixture", Available)
             }
@@ -242,7 +281,14 @@ impl View {
                 ("Start Game", "Unavailable", Disabled)
             }
             Play => ("Start Game", self.resources.label(), Available),
-            Profiles => ("Profiles", self.profile.name(), Available),
+            Profiles => (
+                "Profiles",
+                self.local
+                    .as_ref()
+                    .map_or(self.profile.name(), |m| m.profile.as_str()),
+                Available,
+            ),
+            Library => ("Worlds & servers", "Select a launch target", Available),
             Versions => ("Version & resources", env!("CARGO_PKG_VERSION"), Available),
             Settings => ("Settings", "Controller and touch", Available),
             AgentControl => ("Agent Control", "Unavailable", Available),
@@ -303,10 +349,27 @@ impl View {
         }
     }
 
-    fn actions(self, page: Page) -> &'static [Action] {
+    fn actions(&self, page: Page) -> &'static [Action] {
         use Action::*;
         match page {
+            Page::Home if self.local.is_some() => &[
+                Play,
+                Profiles,
+                Library,
+                Versions,
+                Settings,
+                AgentControl,
+                Quit,
+            ],
             Page::Home => &[Play, Profiles, Versions, Settings, AgentControl, Quit],
+            Page::Local => {
+                const ACTIONS: [Action; local_wire::ROWS] =
+                    [Local(0), Local(1), Local(2), Local(3), Local(4), Local(5)];
+                &ACTIONS[..self
+                    .local
+                    .as_ref()
+                    .map_or(0, |m| usize::from(m.count).min(ACTIONS.len()))]
+            }
             Page::Profiles => &[Player, Guest, MicrosoftSignIn, Back],
             Page::Versions if self.resources == ResourceSelection::BuiltInDemo => {
                 &[DemoResources, GameResources, Back]
@@ -361,6 +424,8 @@ pub struct Launcher<'a, F: SessionFactory> {
     touch_ready: bool,
     touch_held: bool,
     touch_action: Option<Action>,
+    local_intent: Option<(u8, u8)>,
+    local_return: Option<Action>,
 }
 
 impl<'a, F: SessionFactory> Launcher<'a, F> {
@@ -388,6 +453,7 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
                 agent_status: AgentStatus::Unavailable,
                 error: None,
                 session: None,
+                local: None,
             },
             pending: None,
             foreground: true,
@@ -395,11 +461,41 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
             touch_ready: false,
             touch_held: false,
             touch_action: None,
+            local_intent: None,
+            local_return: None,
         }
     }
 
     pub fn view(&self) -> View {
         self.view
+    }
+
+    pub fn install_local_menu(&mut self, local: LocalMenu) {
+        let first = self.view.local.is_none();
+        let previous = self.view.local.map(|menu| menu.title);
+        self.view.local = Some(local);
+        self.view.settings.swap_buttons = local.settings & local_wire::SWAP_AB != 0;
+        self.view.settings.touch_navigation = local.settings & local_wire::TOUCH != 0;
+        self.view.resources = if local.ready != 0 {
+            ResourceSelection::Prepared
+        } else {
+            ResourceSelection::Unavailable
+        };
+        if local.title.as_str().is_empty() {
+            if self.view.page == Page::Local || first {
+                let focus = self.local_return.take();
+                self.show(Page::Home, focus);
+            }
+        } else if self.view.page != Page::Local
+            || previous != Some(local.title)
+            || !self.view.focused.is_some_and(|action| self.enabled(action))
+        {
+            self.show(Page::Local, None);
+        }
+    }
+
+    pub fn take_local_intent(&mut self) -> Option<(u8, u8)> {
+        self.local_intent.take()
     }
 
     /// The host lends a foreground frame and gameplay input to this driver.
@@ -494,9 +590,22 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
                 Page::Loading => self.dispatch(Action::CancelLoading),
                 Page::Session => self.dispatch(Action::SaveAndQuit),
                 Page::Error => self.dispatch(Action::DismissError),
+                Page::Local => self.local_intent = Some((local_wire::BACK, 0)),
                 _ => self.dispatch(Action::Back),
             }
             return;
+        }
+        if self.view.page == Page::Local
+            && self
+                .view
+                .local
+                .is_some_and(|menu| menu.mode == local_wire::EDITOR)
+        {
+            match pressed & (crate::LEFT | crate::RIGHT) {
+                crate::LEFT => self.local_intent = Some((local_wire::LEFT, 0)),
+                crate::RIGHT => self.local_intent = Some((local_wire::RIGHT, 0)),
+                _ => {}
+            }
         }
         match pressed & (UP | DOWN) {
             UP => self.move_focus(false),
@@ -568,6 +677,17 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
         }
         use Action::*;
         match action {
+            Profiles | Library | Versions | Settings if self.view.local.is_some() => {
+                self.local_return = Some(action);
+                let kind = match action {
+                    Profiles => local_wire::OPEN_PROFILES,
+                    Library => local_wire::OPEN_LIBRARY,
+                    Versions => local_wire::OPEN_VERSIONS,
+                    _ => local_wire::OPEN_SETTINGS,
+                };
+                self.local_intent = Some((kind, 0));
+            }
+            Local(index) => self.local_intent = Some((local_wire::ACTIVATE, index)),
             Play | TestStartupError => {
                 let mode = if action == Play {
                     StartMode::Normal
@@ -623,7 +743,7 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
                 }
             }
             DismissError => self.show(Page::Home, None),
-            DemoResources | GameResources | PairAgent | MicrosoftSignIn => {}
+            Library | DemoResources | GameResources | PairAgent | MicrosoftSignIn => {}
         }
     }
 

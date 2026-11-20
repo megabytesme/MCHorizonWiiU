@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod config;
 pub mod launcher;
+pub mod local_wire;
 pub mod session;
 
 #[cfg(horizon_wiiu_cafe)]
@@ -18,3 +19,5 @@ pub const UP: u32 = 1;
 pub const DOWN: u32 = 2;
 pub const ACCEPT: u32 = 4;
 pub const BACK: u32 = 8;
+pub const LEFT: u32 = 16;
+pub const RIGHT: u32 = 32;

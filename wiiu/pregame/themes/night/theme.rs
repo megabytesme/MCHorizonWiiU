@@ -173,7 +173,7 @@ impl Layout {
             }
             Page::Home => {
                 let group = self.home_rows();
-                let step = group.h / 5.0;
+                let step = group.h / (view.rows().len() - 1) as f32;
                 Rect::new(
                     group.x + 10.0,
                     group.y + (index.saturating_sub(1) as f32) * step + 5.0,
@@ -189,6 +189,24 @@ impl Layout {
                     (Display::GamePad, _) => 243.0,
                 };
                 Rect::new(self.inset, y, 355.0, 74.0)
+            }
+            Page::Local => {
+                let y = if self.display == Display::Tv {
+                    266.0
+                } else {
+                    233.0
+                };
+                let step = if self.display == Display::Tv {
+                    62.0
+                } else {
+                    67.0
+                };
+                Rect::new(
+                    self.inset + 10.0,
+                    y + index as f32 * step + 4.0,
+                    self.width() - 20.0,
+                    step - 8.0,
+                )
             }
             _ => {
                 let count = view.rows().len().max(1);
@@ -270,7 +288,7 @@ fn header(canvas: &mut Canvas<'_>, view: View, layout: Layout) {
         _ => Font::Display,
     };
     font.draw(canvas, [title_x, baseline], size, INK, view.title());
-    let desc_px = if layout.display == Display::Tv {
+    let desc_px: f32 = if layout.display == Display::Tv {
         28.0
     } else {
         27.0
@@ -278,7 +296,7 @@ fn header(canvas: &mut Canvas<'_>, view: View, layout: Layout) {
     Font::Ui.draw(
         canvas,
         [x, baseline + 40.0],
-        desc_px,
+        desc_px.min(layout.width() / Font::Ui.advance(view.description(), 1.0).max(1.0)),
         SOFT,
         view.description(),
     );
@@ -301,7 +319,7 @@ fn header(canvas: &mut Canvas<'_>, view: View, layout: Layout) {
     }
 }
 
-fn button(canvas: &mut Canvas<'_>, rect: Rect, row: Row, focused: bool) {
+fn button(canvas: &mut Canvas<'_>, rect: Rect, row: Row<'_>, focused: bool) {
     let enabled = row.state != ActionState::Disabled;
     let primary = enabled && matches!(row.action, Action::Play | Action::SaveAndQuit);
     let fill = if primary { ACCENT } else { RAISED };
@@ -348,7 +366,7 @@ fn icon_triangle(canvas: &mut Canvas<'_>, x: f32, y: f32) {
     }
 }
 
-fn list_row(canvas: &mut Canvas<'_>, rect: Rect, row: Row, focused: bool) {
+fn list_row(canvas: &mut Canvas<'_>, rect: Rect, row: Row<'_>, focused: bool) {
     let selected = row.state == ActionState::Selected;
     if focused {
         rounded(canvas, rect, 11.0, FOCUS);
@@ -366,7 +384,16 @@ fn list_row(canvas: &mut Canvas<'_>, rect: Rect, row: Row, focused: bool) {
     let label = if disabled { MUTED } else { INK };
     let baseline = rect.y + rect.h / 2.0 + 10.0;
     let marker_x = rect.x + rect.w - 32.0;
-    Font::Ui.draw(canvas, [rect.x + 17.0, baseline], 31.0, label, row.label);
+    let detail_width = Font::Mono.advance(row.detail, 21.0).min(rect.w * 0.57);
+    let label_width = rect.w - detail_width - 72.0;
+    let label_size = (label_width / Font::Ui.advance(row.label, 1.0).max(1.0)).min(29.0);
+    Font::Ui.draw(
+        canvas,
+        [rect.x + 17.0, baseline],
+        label_size,
+        label,
+        row.label,
+    );
 
     let detail_right = if selected {
         marker_x - 9.0
@@ -376,7 +403,7 @@ fn list_row(canvas: &mut Canvas<'_>, rect: Rect, row: Row, focused: bool) {
     Font::Mono.right(
         canvas,
         [detail_right, baseline - 2.0],
-        21.0,
+        (detail_width / Font::Mono.advance(row.detail, 1.0).max(1.0)).clamp(1.0, 21.0),
         SOFT,
         row.detail,
     );
@@ -443,6 +470,16 @@ pub fn paint(canvas: &mut Canvas<'_>, view: View, display: Display, frame: u32) 
         Page::Home => Some(layout.home_rows()),
         Page::Profiles | Page::Versions | Page::Settings | Page::AgentControl => {
             Some(layout.inner_rows(count))
+        }
+        Page::Local if count > 0 => {
+            let first = layout.row_rect(view, 0);
+            let last = layout.row_rect(view, count - 1);
+            Some(Rect::new(
+                first.x - 10.0,
+                first.y - 4.0,
+                first.w + 20.0,
+                last.y + last.h - first.y + 8.0,
+            ))
         }
         _ => None,
     };

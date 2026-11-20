@@ -23,6 +23,9 @@ static bool app_exiting;
 extern void horizon_wiiu_app_entropy_first(void);
 extern void horizon_wiiu_memory_init(void);
 extern void horizon_wiiu_memory_report_display_surfaces(void);
+extern int32_t horizon_swkbd_is_open(void);
+extern int32_t horizon_swkbd_calc(const void *status);
+extern int32_t horizon_swkbd_draw(uint32_t target);
 #endif
 extern const unsigned char _binary_pregame_gsh_start[];
 extern int32_t horizon_pregame_run(void);
@@ -109,7 +112,9 @@ static uint32_t map_buttons(uint32_t buttons)
    return (buttons & VPAD_BUTTON_UP ? 1 : 0) |
           (buttons & VPAD_BUTTON_DOWN ? 2 : 0) |
           (buttons & VPAD_BUTTON_A ? 4 : 0) |
-          (buttons & VPAD_BUTTON_B ? 8 : 0);
+          (buttons & VPAD_BUTTON_B ? 8 : 0) |
+          (buttons & VPAD_BUTTON_LEFT ? 16 : 0) |
+          (buttons & VPAD_BUTTON_RIGHT ? 32 : 0);
 }
 
 int32_t shell_poll_input(LauncherSample *samples)
@@ -117,6 +122,12 @@ int32_t shell_poll_input(LauncherSample *samples)
    VPADStatus batch[VPAD_CAPACITY];
    VPADReadError error = VPAD_READ_SUCCESS;
    const int32_t count = VPADRead(VPAD_CHAN_0, batch, VPAD_CAPACITY, &error);
+#ifdef HORIZON_WIIU_HOSTED
+   if (horizon_swkbd_is_open()) {
+      horizon_swkbd_calc(error == VPAD_READ_SUCCESS && count > 0 ? &batch[0] : NULL);
+      return 0;
+   }
+#endif
    if (error == VPAD_READ_NO_SAMPLES || error == VPAD_READ_BUSY)
       return 0;
    if (error != VPAD_READ_SUCCESS || count < 0 || count > VPAD_CAPACITY)
@@ -180,9 +191,15 @@ bool shell_present(const HorizonHudVertex *tv_vertices, uint32_t tv_count, uint3
    WHBGfxBeginRender();
    WHBGfxBeginRenderTV();
    const bool tv_ok = draw(tv_vertices, tv_count, tv_color, tv, 0);
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_swkbd_draw(0);
+#endif
    WHBGfxFinishRenderTV();
    WHBGfxBeginRenderDRC();
    const bool drc_ok = draw(drc_vertices, drc_count, drc_color, drc, 1);
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_swkbd_draw(1);
+#endif
    WHBGfxFinishRenderDRC();
    WHBGfxFinishRender();
    return tv_ok && drc_ok;

@@ -1,0 +1,50 @@
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index a5379a0..8af6a7a 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -15,6 +15,8 @@ horizon-wiiu-platform = { path = "../platform", default-features = false, featur
+ horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+ horizon-telemetry = { path = "../../crates/horizon-telemetry", default-features = false, features = ["live"] }
+ log = "0.4"
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
+ 
+ [workspace]
+ 
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index bfa02c7..e10199f 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -443,6 +443,7 @@ struct LoadingHost<'a> {
+     local_world_start_failed: bool,
+     remote_server_start_failed: bool,
+     hosted: bool,
++    hosted_swap_ab: bool,
+     hosted_saved: bool,
+     hosted_exit_save_failed: bool,
+ }
+@@ -477,6 +478,7 @@ impl<'a> LoadingHost<'a> {
+             local_world_start_failed: false,
+             remote_server_start_failed: false,
+             hosted: false,
++            hosted_swap_ab: false,
+             hosted_saved: false,
+             hosted_exit_save_failed: false,
+         }
+@@ -1201,8 +1203,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             }
+ 
+             let fresh_buttons = fresh_sample.is_some() && !terminal_error;
+-            let confirm_held = pad.held(horizon_client::gamepad::Button::East); // Wii U A
+-            let cancel_held = pad.held(horizon_client::gamepad::Button::South); // Wii U B
++            use horizon_client::gamepad::Button;
++            let (confirm, cancel) = if self.hosted_swap_ab {
++                (Button::South, Button::East)
++            } else {
++                (Button::East, Button::South)
++            };
++            let confirm_held = pad.held(confirm);
++            let cancel_held = pad.held(cancel);
+             let retry_save = fresh_buttons && confirm_held && !hosted_confirm_held;
+             let cancel_startup = fresh_buttons && cancel_held && !hosted_cancel_held;
+             if fresh_buttons {

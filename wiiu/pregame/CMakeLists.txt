@@ -40,7 +40,7 @@ add_custom_command(OUTPUT "${shell_object}"
       --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe ${fixture_cfg} ${hosted_cfg}
       -C opt-level=s -C panic=abort -C codegen-units=1 -D warnings
       -o "${shell_object}" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
-   DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs src/hosted.rs "${CAFE_RUSTC}" ${theme_inputs}
+   DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs src/hosted.rs src/local_wire.rs "${CAFE_RUSTC}" ${theme_inputs}
    VERBATIM)
 
 set(shader_object "${CMAKE_CURRENT_BINARY_DIR}/pregame_gsh.o")

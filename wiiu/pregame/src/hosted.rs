@@ -1,7 +1,6 @@
 //! Launcher side of the in-process Cafe game handoff.
-use core::ffi::c_char;
-
 use crate::config::{Instance, LaunchConfig, PreparedResources, Resources, WorldOrServer};
+use crate::local_wire::LocalMenu;
 use crate::session::{
     ExitWork, LiveEvent, PreparePoll, ReturnTo, SaveError, SavePoll, SessionDriver, SessionFactory,
     StartError, StartMode,
@@ -11,12 +10,18 @@ const ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
 const RESOURCE_DIR: &str = "/vol/external01/wiiu/apps/HorizonWiiU/.local/horizon-client/26.3";
 
 extern "C" {
-    fn horizon_hosted_resources_ready() -> bool;
-    fn horizon_hosted_game_run(player: *const c_char) -> i32;
+    fn horizon_night_local(
+        output: *mut LocalMenu,
+        command: u8,
+        index: u8,
+        input: *const u8,
+        len: usize,
+    );
+    fn horizon_hosted_game_run() -> i32;
 }
 
-pub(crate) fn available_instance() -> Option<Instance<'static>> {
-    unsafe { horizon_hosted_resources_ready() }.then_some(Instance {
+pub(crate) fn hosted_instance() -> Instance<'static> {
+    Instance {
         game_directory: ROOT,
         target: WorldOrServer::GameMenu,
         resources: Resources::Prepared(PreparedResources {
@@ -26,35 +31,26 @@ pub(crate) fn available_instance() -> Option<Instance<'static>> {
             // The game validates the installed preparation manifest on startup.
             manifest_sha256: None,
         }),
-    })
+    }
+}
+
+pub(crate) fn local_menu(command: u8, index: u8, input: &str) -> LocalMenu {
+    let mut output = LocalMenu::default();
+    unsafe { horizon_night_local(&mut output, command, index, input.as_ptr(), input.len()) };
+    output
 }
 
 pub(crate) struct CafeFactory;
 
 pub(crate) struct CafeDriver {
-    player: &'static core::ffi::CStr,
     outcome: Option<ReturnTo>,
 }
 
 impl SessionFactory for CafeFactory {
     type Driver = CafeDriver;
 
-    fn start(&mut self, config: LaunchConfig<'_>, _: StartMode) -> Result<CafeDriver, StartError> {
-        if !unsafe { horizon_hosted_resources_ready() } {
-            return Err(StartError::Resources);
-        }
-        let crate::accounts::Profile::Offline(name) = config.profile else {
-            return Err(StartError::Unavailable);
-        };
-        let player = match name.as_str() {
-            "Player" => c"Player",
-            "Guest" => c"Guest",
-            _ => return Err(StartError::Unavailable),
-        };
-        Ok(CafeDriver {
-            player,
-            outcome: None,
-        })
+    fn start(&mut self, _: LaunchConfig<'_>, _: StartMode) -> Result<CafeDriver, StartError> {
+        Ok(CafeDriver { outcome: None })
     }
 }
 
@@ -62,11 +58,12 @@ impl CafeDriver {
     // The caller has released the shell GPU and CPU buffers. The borrowed
     // foreground loop runs until the game acknowledges save and teardown.
     pub(crate) fn run(&mut self) -> bool {
-        let code = unsafe { horizon_hosted_game_run(self.player.as_ptr()) };
+        let code = unsafe { horizon_hosted_game_run() };
         self.outcome = Some(match code {
             0 => ReturnTo::Cancelled,
             1 => ReturnTo::Saved,
             2 => ReturnTo::StartError(StartError::Resources),
+            5 => ReturnTo::StartError(StartError::Target),
             _ => ReturnTo::StartError(StartError::Engine),
         });
         code == 4

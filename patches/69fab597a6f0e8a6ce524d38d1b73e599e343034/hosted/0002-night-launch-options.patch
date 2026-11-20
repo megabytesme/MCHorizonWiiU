@@ -1,0 +1,197 @@
+diff --git a/crates/horizon-client-input/src/gamepad.rs b/crates/horizon-client-input/src/gamepad.rs
+index 8897497..35a11c1 100644
+--- a/crates/horizon-client-input/src/gamepad.rs
++++ b/crates/horizon-client-input/src/gamepad.rs
+@@ -556,6 +556,9 @@ pub struct PadSettings {
+     /// Switch's own menus and keyboard) instead of their places (B, at the bottom, does): on
+     /// by default on the Switch only.
+     pub nintendo_letters: bool,
++    /// Session-only Wii U face mapping. The launcher owns persistence.
++    #[cfg(target_os = "cafe")]
++    pub cafe_face_swap: Option<[bool; 2]>,
+     pub keyboard: TextKeyboard,
+     /// Menu pointer multiplier, scroll lines/second, and repeat times in seconds.
+     pub pointer_speed: f32,
+@@ -581,6 +584,8 @@ impl Default for PadSettings {
+             toggle_sneak: true,
+             glyphs: GlyphStyle::Auto,
+             nintendo_letters: cfg!(target_os = "horizon"),
++            #[cfg(target_os = "cafe")]
++            cafe_face_swap: None,
+             keyboard: TextKeyboard::Auto,
+             pointer_speed: 1.0,
+             scroll_speed: 12.0,
+@@ -590,6 +595,30 @@ impl Default for PadSettings {
+         }
+     }
+ }
++impl PadSettings {
++    pub fn map_face_buttons(&self, input: PadState, style: GlyphStyle) -> PadState {
++        #[cfg(target_os = "cafe")]
++        if let Some(swap) = self.cafe_face_swap {
++            let mut mapped = input;
++            for (enabled, pair) in swap
++                .into_iter()
++                .zip([[Button::South, Button::East], [Button::West, Button::North]])
++            {
++                if enabled {
++                    mapped.set(pair[0], input.held(pair[1]));
++                    mapped.set(pair[1], input.held(pair[0]));
++                }
++            }
++            return mapped;
++        }
++        if style == GlyphStyle::Nintendo && self.nintendo_letters {
++            input.by_letter()
++        } else {
++            input
++        }
++    }
++}
++
+ fn bool_text(v: bool) -> &'static str {
+     if v { "true" } else { "false" }
+ }
+diff --git a/crates/horizon-client/src/entry.rs b/crates/horizon-client/src/entry.rs
+index 69056ae..7d7beb2 100644
+--- a/crates/horizon-client/src/entry.rs
++++ b/crates/horizon-client/src/entry.rs
+@@ -38,12 +38,14 @@ pub fn main_with_cafe_host(
+ #[cfg(target_os = "cafe")]
+ pub fn run_hosted_cafe(
+     host: &mut dyn game::CafeLoadingHost,
+-    resources: &std::path::Path,
+-    player: &str,
++    arguments: Vec<String>,
++    face_swap: [bool; 2],
+ ) -> crate::Result<game::CafeRunOutcome> {
+     static INIT: std::sync::Once = std::sync::Once::new();
+-    INIT.call_once(|| { initialize(Default::default()); });
+-    let result = game::run_hosted_cafe(host, resources, player);
++    INIT.call_once(|| {
++        initialize(Default::default());
++    });
++    let result = game::run_hosted_cafe(host, arguments, face_swap);
+     logging::flush();
+     result
+ }
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index b9b807c..4b1b3b1 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -589,6 +589,8 @@ struct Options {
+     session_file: Option<String>,
+     /// `--session-stdin`: the session file's JSON comes on standard input instead.
+     session_stdin: bool,
++    #[cfg(target_os = "cafe")]
++    cafe_face_swap: Option<[bool; 2]>,
+ }
+ impl Options {
+     /// The name to join servers with: the one given, else the offline name kept
+@@ -734,6 +736,8 @@ impl Options {
+             quick_play: None,
+             session_file: std::env::var("HORIZON_SESSION_FILE").ok(),
+             session_stdin: false,
++            #[cfg(target_os = "cafe")]
++            cafe_face_swap: None,
+         };
+         while let Some(arg) = args.next() {
+             match arg.as_str() {
+@@ -23468,16 +23472,7 @@ impl Loading {
+             cafe_game_stage!("first pad dispatch begin");
+         }
+ 
+-        if self
+-            .settings
+-            .controller
+-            .glyphs
+-            .resolve(GlyphStyle::Nintendo)
+-            == GlyphStyle::Nintendo
+-            && self.settings.controller.nintendo_letters
+-        {
+-            state = state.by_letter();
+-        }
++        state = self.settings.controller.map_face_buttons(state, self.settings.controller.glyphs.resolve(GlyphStyle::Nintendo));
+         if trace_first_dispatch {
+             cafe_game_stage!("first pad dispatch glyph remap complete");
+         }
+@@ -23990,22 +23985,38 @@ pub fn run_with_cafe_host(host: &mut dyn CafeLoadingHost) -> Result<CafeRunOutco
+ }
+ 
+ #[cfg(target_os = "cafe")]
+-pub fn hosted_cafe_resources_ready(root: &std::path::Path) -> bool {
+-    std::fs::read(root.join("horizon-resources.json"))
+-        .ok()
+-        .and_then(|manifest| serde_json::from_slice::<serde_json::Value>(&manifest).ok())
+-        .is_some_and(|manifest| manifest["minecraft"].as_str() == Some(horizon_core::VANILLA_VERSION))
++pub fn hosted_world_profile_matches(saved: Option<[i32; 4]>, profile: &str) -> bool {
++    let uuid = horizon_protocol::crypto::offline_uuid(profile).to_be_bytes();
++    saved.is_some_and(|saved| saved.into_iter().zip(uuid.chunks_exact(4))
++        .all(|(word, bytes)| word.to_be_bytes() == bytes))
++}
++
++#[cfg(target_os = "cafe")]
++pub fn hosted_world_version(path: &std::path::Path) -> Option<String> {
++    let root = horizon_client::save::read_dat(&path.join("level.dat"))?;
++    match root.get("Data")?.get("Version")?.get("Name")? {
++        horizon_world::nbt::Tag::String(text) => Some(text.to_string_lossy()),
++        _ => None,
++    }
+ }
+ 
+ #[cfg(target_os = "cafe")]
+ pub fn run_hosted_cafe(
+     host: &mut dyn CafeLoadingHost,
+-    resources: &std::path::Path,
+-    player: &str,
++    arguments: Vec<String>,
++    face_swap: [bool; 2],
+ ) -> Result<CafeRunOutcome> {
+-    let mut options = Options::parse(std::iter::empty())?.ok_or("missing Cafe client options")?;
+-    options.resources = resources.to_owned();
+-    options.player_name = Some(player.to_owned());
++    let mut options = Options::parse(arguments.into_iter())?.ok_or("missing Cafe client options")?;
++    options.cafe_face_swap = Some(face_swap);
++    // Night has no account provider. The hosted launch is always offline.
++    options.session_file = None;
++    options.session_stdin = false;
++    if let Some(world) = options.quick_play.take() {
++        if !std::path::Path::new("saves").join(&world).join("level.dat").is_file() {
++            return Err("the selected world is no longer available".into());
++        }
++        options.world = Some(world);
++    }
+     let result = run_with_mode(Some(host), Some(options));
+     narrator::stop();
+     horizon_client::discord_presence::stop();
+@@ -24125,6 +24136,10 @@ fn run_with_mode(
+     cafe_game_stage!("options path resolution complete");
+     cafe_game_stage!("early settings load begin");
+     let mut early_settings = Settings::load(&options_path);
++    #[cfg(target_os = "cafe")]
++    {
++        early_settings.controller.cafe_face_swap = options.cafe_face_swap;
++    }
+     if cafe_host.is_some() && Game::uses_native_agent_lan() {
+         // Never treat a copied settings file or the previous process's
+         // authorization as permission to expose this session on the LAN.
+diff --git a/crates/horizon-client/src/game/pad.rs b/crates/horizon-client/src/game/pad.rs
+index b7ac229..1f46332 100644
+--- a/crates/horizon-client/src/game/pad.rs
++++ b/crates/horizon-client/src/game/pad.rs
+@@ -279,11 +279,10 @@ impl Game<'_> {
+         };
+         // A Nintendo pad going by its letters is read that way: its own, or the one
+         // splitscreen's router feeds this player.
+-        let hardware = if self.pad.by_letter(&self.settings.controller) {
+-            hardware.by_letter()
+-        } else {
+-            hardware
+-        };
++        let hardware = self
++            .settings
++            .controller
++            .map_face_buttons(hardware, self.pad.style);
+         // A person's pad, for `input-log` and the repro recording; the virtual
+         // pad is an agent's `pad` line and is recorded as that.
+         let hardware_edges = self.pad.hardware_edges(hardware);

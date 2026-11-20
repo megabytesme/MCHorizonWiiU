@@ -10,6 +10,7 @@ pub enum StartError {
     Fixture,
     Resources,
     Engine,
+    Target,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

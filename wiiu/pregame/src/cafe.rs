@@ -8,6 +8,8 @@ use crate::config::Settings;
 #[cfg(horizon_wiiu_hosted)]
 use crate::hosted::CafeFactory;
 use crate::launcher::{Action, Launcher, Page, Touch, View};
+#[cfg(horizon_wiiu_hosted)]
+use crate::local_wire;
 #[cfg(not(horizon_wiiu_hosted))]
 use crate::mock::MockFactory;
 use crate::session::SessionStatus;
@@ -29,6 +31,12 @@ extern "C" {
     fn shell_release();
     #[cfg(horizon_wiiu_hosted)]
     fn shell_destroy_view();
+    #[cfg(horizon_wiiu_hosted)]
+    fn horizon_swkbd_request(initial: *const u16, max: i32) -> i32;
+    #[cfg(horizon_wiiu_hosted)]
+    fn horizon_swkbd_take_result(text: *mut u8, capacity: usize, length: *mut usize) -> i32;
+    #[cfg(horizon_wiiu_hosted)]
+    fn horizon_swkbd_close();
     fn shell_poll_input(samples: *mut Sample) -> i32;
     fn shell_create_view(atlas: *const u8, width: u32, height: u32, capacity: u32) -> bool;
     fn shell_present(
@@ -61,6 +69,7 @@ fn marker(view: View) -> &'static CStr {
     match view.page {
         Page::Home => match view.focused {
             Some(Action::Profiles) => c"frame.home.profiles",
+            Some(Action::Library) => c"frame.home.library",
             Some(Action::Versions) => c"frame.home.versions",
             Some(Action::Settings) => c"frame.home.settings",
             Some(Action::AgentControl) => c"frame.home.agent",
@@ -75,6 +84,21 @@ fn marker(view: View) -> &'static CStr {
         Page::Settings if view.settings.swap_buttons => c"frame.settings.swapped",
         Page::Settings => c"frame.settings",
         Page::AgentControl => c"frame.agent",
+        Page::Local => match view.title() {
+            "Offline profiles" => c"frame.local.profiles",
+            "Offline profile" => c"frame.local.profile",
+            "Settings" if view.settings.swap_buttons => c"frame.local.settings.swapped",
+            "Settings" => c"frame.local.settings",
+            "Worlds & servers" => c"frame.local.library",
+            "Local worlds" => c"frame.local.worlds",
+            "Saved servers" => c"frame.local.servers",
+            "Version & resources" => c"frame.local.versions",
+            "Installed resources" => c"frame.local.instances",
+            "About Horizon Wii U" => c"frame.local.about",
+            "Diagnostic reports" => c"frame.local.reports",
+            "Benchmark report" => c"frame.local.report",
+            _ => c"frame.local.form",
+        },
         Page::Loading if matches!(view.session, Some(SessionStatus::Stopping(_))) => {
             c"frame.loading.stopping"
         }
@@ -133,9 +157,13 @@ extern "C" fn horizon_pregame_run() -> i32 {
     #[cfg(horizon_wiiu_hosted)]
     let mut launcher = Launcher::new(
         CafeFactory,
-        crate::hosted::available_instance(),
+        Some(crate::hosted::hosted_instance()),
         Settings::default(),
     );
+    #[cfg(horizon_wiiu_hosted)]
+    launcher.install_local_menu(crate::hosted::local_menu(0, 0, ""));
+    #[cfg(horizon_wiiu_hosted)]
+    let mut keyboard = false;
     let mut displayed = None;
     let mut frame = 0_u32;
     #[cfg(horizon_wiiu_hosted)]
@@ -147,6 +175,10 @@ extern "C" fn horizon_pregame_run() -> i32 {
             1 => launcher.focus(true),
             2 => break,
             3 => {
+                #[cfg(horizon_wiiu_hosted)]
+                if core::mem::take(&mut keyboard) {
+                    unsafe { horizon_swkbd_close() };
+                }
                 launcher.focus(false);
                 displayed = None;
                 unsafe { shell_release() };
@@ -168,6 +200,7 @@ extern "C" fn horizon_pregame_run() -> i32 {
                 exit_code = 3;
             }
             launcher.advance();
+            launcher.install_local_menu(crate::hosted::local_menu(0, 0, ""));
             launcher.input_lost();
             displayed = None;
             continue;
@@ -187,6 +220,10 @@ extern "C" fn horizon_pregame_run() -> i32 {
             launcher.input_lost();
         } else {
             for sample in samples.into_iter().take(count as usize) {
+                #[cfg(horizon_wiiu_hosted)]
+                if keyboard {
+                    break;
+                }
                 let touch = match sample.touch {
                     0 => Touch::Released,
                     1 => Touch::Pressed(theme::hit_test(
@@ -199,6 +236,58 @@ extern "C" fn horizon_pregame_run() -> i32 {
                     _ => Touch::Invalid,
                 };
                 launcher.sample(sample.buttons, touch);
+                #[cfg(horizon_wiiu_hosted)]
+                if let Some((command, index)) = launcher.take_local_intent() {
+                    let menu = crate::hosted::local_menu(command, index, "");
+                    let input_limit = menu.input_limit;
+                    launcher.install_local_menu(menu);
+                    if input_limit != 0 {
+                        let mut initial = [0_u16; 254];
+                        for (slot, unit) in
+                            initial.iter_mut().zip(menu.input.as_str().encode_utf16())
+                        {
+                            *slot = unit;
+                        }
+                        keyboard = unsafe {
+                            horizon_swkbd_request(initial.as_ptr(), i32::from(input_limit))
+                        } == 0;
+                        launcher.input_lost();
+                        if !keyboard {
+                            unsafe { horizon_swkbd_close() };
+                            launcher.install_local_menu(crate::hosted::local_menu(
+                                local_wire::TEXT_UNAVAILABLE,
+                                0,
+                                "",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(horizon_wiiu_hosted)]
+        if keyboard {
+            let mut text = [0_u8; 1024];
+            let mut len = 0;
+            let result =
+                unsafe { horizon_swkbd_take_result(text.as_mut_ptr(), text.len(), &mut len) };
+            if result != 0 {
+                keyboard = false;
+                unsafe { horizon_swkbd_close() };
+                launcher.input_lost();
+                let input = text
+                    .get(..len)
+                    .and_then(|bytes| core::str::from_utf8(bytes).ok());
+                let action = match (result, input) {
+                    (1, Some(_)) => local_wire::TEXT_ACCEPTED,
+                    (2, _) => local_wire::TEXT_CANCELLED,
+                    _ => local_wire::TEXT_UNAVAILABLE,
+                };
+                launcher.install_local_menu(crate::hosted::local_menu(
+                    action,
+                    0,
+                    input.unwrap_or(""),
+                ));
             }
         }
 
@@ -243,6 +332,10 @@ extern "C" fn horizon_pregame_run() -> i32 {
 }
 
 fn finish(launcher: &mut Launcher<'_, impl crate::session::SessionFactory>, code: i32) -> i32 {
+    #[cfg(horizon_wiiu_hosted)]
+    unsafe {
+        horizon_swkbd_close()
+    };
     let result = launcher.close();
     if result.is_err() {
         trace(c"session.exit_failed");

@@ -1,31 +1,29 @@
-# Horizon Night launcher feature and action matrix
+# Horizon Night launcher actions
 
-D-pad Up/Down selects enabled rows. A confirms and B backs out with the
-default mapping. A GamePad tap activates on release within the same target.
-Dragging away, losing focus, or losing the device cancels the gesture.
-Disabled rows have no controller or touch action. Core ownership and game
-acceptance requirements are in [CORE.md](../wiiu/pregame/CORE.md) and
-[INTEGRATION.md](../wiiu/pregame/INTEGRATION.md).
+D-pad Up and Down move among enabled rows. A selects and B goes back by default.
+The A/B setting swaps those controls immediately. GamePad touch triggers on
+release over the same row. Dragging away, losing focus or losing input cancels
+the gesture. The built-in character picker uses Left and Right when the system
+keyboard is unavailable.
 
-| Control or feature | Service and state | Error, cancellation and input | Verification and status |
-| --- | --- | --- | --- |
-| Fixture / Start demo | Starts the owned mock driver for the current offline profile. State is per session | Cancel drains preparation; startup failure shows an error. Standard A/tap | Host and Cemu pass |
-| Native game launch | The combined package launches the original Cafe loading and game loop with the selected offline profile | Disabled when the prepared resource manifest is missing or incompatible. Startup errors return to Night | Acceptance is recorded against each combined RPX |
-| Profiles / Player, Guest | Selects a validated built-in offline identity in memory and snapshots it at start | B/Back leaves selection intact. Standard A/tap selects | Host verifies request identity; Cemu selects Guest. Working |
-| Microsoft account | Device-code, Xbox/Minecraft identity, entitlement and credential provider contracts | Disabled with provider status. An eventual request can expire, be denied, or be cancelled | Disabled action tested. Protocol integration pending |
-| Saved accounts and sign-out | Future store exposes public profile fields and opaque IDs. A protected vault owns refresh credentials | No account-management rows yet. Sign-out will revoke the local session and erase its refresh record | Interface only. Session-only sign-in is the fallback if a vault is unavailable |
-| Version & resources | Opens the version page and displays the compiled launcher version | B/Back returns to Home | Host navigation and Cemu capture. Working |
-| Fixture / Built-in demo | Displays the active built-in resource option. Selecting the already active row keeps it selected | No writes or downloads. B/Back returns | Host and Cemu. Working |
-| Installed game resources | The builder can check a private prepared-resource inventory. The runtime configuration accepts a directory, version and digest | The combined package checks the installed preparation before enabling Start Game. The original loader checks the prepared content | Installation, selection and updates in the launcher are pending |
-| Local worlds and saved servers | Typed target identifies a resolved local world or server. Future service will list and persist entries under the instance | The original game menus open worlds and servers during a session | Launcher-level world and server selection are pending |
-| Settings / A/B swap | Changes the actual shell accept/back mapping, with updated prompts and a launch snapshot | B/Back follows the current mapping. Standard A/tap toggles | Host and Cemu swap and restore. Working in memory |
-| Settings / GamePad touch | Enables or disables launcher touch actions for the current launch | A/B/D-pad stay active. With touch disabled, use a button to re-enable | Host tests active and disabled touch. Working in memory |
-| Settings persistence / X/Y | Future settings store loads and writes private preferences. X/Y needs a verified game action mapping | No X/Y control yet. Existing controls apply for the present process | Settings handoff snapshot tested. Durable store and X/Y pending |
-| Fixture Settings / Test startup error | Fixture acquires a partial session, fails preparation and drains it | Cancel before failure, or dismiss the resulting error using A/B/tap | Host and Cemu. Diagnostic is visible only in the fixture package |
-| Agent Control / Pair a PC | Launcher listener and generation-scoped tool registration interfaces. The game retains its existing MCP | Pair control is disabled with an unavailable status. B/Back leaves the page | Host and Cemu show the disabled row. Launcher authorization and pairing pending |
-| Benchmarks and reports | Future session targets with a private report destination. Existing Cemu acceptance is a builder fixture | No benchmark or report UI yet | Pending real game sessions and private report handling |
-| Build / About / What's New | Versions shows the compiled version. The builder stores source/recipe provenance and package hashes | About and release-note controls are absent until an exact release source is available | Compiled version and package verification work. About and What's New pending |
-| Fixture Preparing / Cancel | Polls backend progress; unknown progress uses an indeterminate indicator | A/B/tap can cancel. The action locks while workers drain | Host verifies late ready is discarded. Cemu cancels after resources were acquired |
-| Save & Quit in Horizon | Starts the save or disconnect barrier. Returns after confirmed completion and resource drain | Ignore duplicate requests while saving. Retry is available after a failure on the same session | Uses the original game save state machine. Save/reopen acceptance is keyed to the combined RPX |
-| Fixture error / Return to Play | Clears the sanitized startup error after cleanup | A/B/tap dismisses | Host and Cemu pass |
-| Back / Close Horizon | Back restores the previous Home action. Close exits through the app host | Available only on the relevant pages. OS exit settles active work first | Host tests exit by phase. Cemu guest exit passes. Physical return pending |
+| Control | Actual effect | Availability and errors |
+| --- | --- | --- |
+| Start Game | Starts the pinned native client with the selected installation, offline identity, target and face-button mapping. Returns through the existing game save and resource-release barrier. | Requires a compatible preparation. A missing or stale selected target gives a startup error. |
+| Profiles | Create an offline login identity, select it, rename its local display label, or remove the profile after confirmation. | Login identity is immutable and is the input to Horizon's existing offline UUID calculation. At least one profile is required. Saves are never deleted by profile management. |
+| Worlds & servers / Local worlds | Lists save metadata under the selected installation, then resolves a chosen world as a direct launch target. | Night disables saves with missing ownership evidence, a different offline UUID, a lock, corrupt metadata or a compatibility warning. Native game menus handle recovery and upgrades. Direct selection does not edit any world file. |
+| Worlds & servers / Saved servers | Add, edit, select or confirm removal of an endpoint. Start Game uses the client's standard direct multiplayer entry. | Validates names, hostnames, IPv4, IPv6 and ports before saving. Actual connectivity and authentication are handled by the native client. |
+| Worlds & servers / Use game menu | Clears the direct target and lets the game open its usual title menu. | A failed preference write retains the previous target. |
+| Version & resources / Installed resources | Shows the default directory and additional installed instances. Selection changes the exact resource directory and game folder handed to the game. | The hosted recipe pins the prepared version, schema and build input digests. Missing, incompatible and invalid preparations have distinct states. Cache installation and updates are pending. |
+| Version & resources / About | Shows the upstream revision, client, patch and builder versions, application, architecture, preparation version and build identity embedded by the builder. | The build receipt identifies the RPX and WUHB hashes independently. What's New awaits verified release notes. |
+| Settings / Swap A and B | Persists the swap and updates Night's Select and Back controls and the real game's Cafe face input. | A failed write retains the old mapping. |
+| Settings / Swap X and Y | Persists the swap and remaps the real game's Cafe X/Y input for the session. | Night has no normal X/Y navigation actions. |
+| Settings / GamePad touch | Persists whether touch can activate Night navigation. | D-pad and face buttons remain available. The original game owns its touch behaviour. |
+| Settings / Reports | Opens compatible existing benchmark JSON under the current instance `benchmarks/` and displays recorded fields and measurements. | Malformed or unsupported reports give a clear error. Running benchmarks from Night and uploading reports are pending. |
+| Agent Control | Shows that launcher pairing is unavailable. | No new listener or pairing service. Existing in-game authenticated Agent Control stays in the game. |
+| Microsoft accounts | Shows that Microsoft sign-in is unavailable. | Microsoft/Xbox/Minecraft protocols, ownership, account management, sign-out and protected refresh storage are pending. No launcher file contains authentication material. |
+| Close Horizon | Exits via the shared Cafe lifecycle. | Game teardown remains authoritative while a session is running. |
+
+The standalone Night build remains a diagnostic shell with the Start Game
+action unavailable. The emulated demo and startup-error actions exist only in
+the explicit fixture. See [storage and ownership](../wiiu/pregame/INTEGRATION.md)
+and the [hosted recipe](../catalog/hosted-v2.json).

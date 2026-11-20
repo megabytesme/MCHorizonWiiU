@@ -18,25 +18,47 @@ BRIDGE_FILES = {"lock": "wiiu/game-bridge/offline/Cargo.lock",
                 "tv_size": "wiiu/game-bridge/offline/winit_tv_size.c"}
 GAME_PACKAGES = ["HorizonWiiU-Game.rpx", "HorizonWiiU-Game.wuhb"]
 HOSTED_PACKAGES = ["HorizonWiiU.rpx", "HorizonWiiU.wuhb"]
-HOSTED_SPEC = "catalog/hosted-v1.json"
-HOSTED_BRIDGE = "wiiu/game-bridge/hosted.rs"
+HOSTED_SPEC = "catalog/hosted-v2.json"
+HOSTED_LOCAL_FILES = {
+    "wiiu/game-bridge/night_hosted.rs": "hosted.rs",
+    "wiiu/game-bridge/night_store.rs": "night_store.rs",
+    "wiiu/game-bridge/night_menu.rs": "night_menu.rs",
+    "wiiu/pregame/src/local_wire.rs": "local_wire.rs",
+}
+HOSTED_LOCK = "wiiu/game-bridge/offline/night.Cargo.lock"
+
+
+def hosted_patches(recipe):
+    folder = f'patches/{recipe["upstream"]["commit"]}/hosted'
+    return (f"{folder}/0001-cafe-hosted-session.patch", "wiiu/game-bridge/hosted.patch",
+            f"{folder}/0002-night-launch-options.patch", "wiiu/game-bridge/night-platform.patch")
 
 
 def hosted_inputs(recipe, recipe_hash):
     payload = (ROOT / HOSTED_SPEC).read_bytes()
     spec = parse_json(payload)
-    fields(spec, "schema", "hosted_client", "base_recipe_sha256", "input_tree", "output_tree", "files")
-    if type(spec["schema"]) is not int or spec["schema"] != 1 or spec["base_recipe_sha256"] != recipe_hash:
+    fields(spec, "schema", "hosted_client", "hosted_patch", "builder", "base_recipe_sha256", "input_tree",
+           "output_tree", "resource_pin", "files")
+    if type(spec["schema"]) is not int or spec["schema"] != 2 or spec["base_recipe_sha256"] != recipe_hash:
         raise ValueError("hosted recipe does not match the standalone pin")
-    pattern(spec["hosted_client"], r"\d+\.\d+\.\d+", "hosted version")
+    for name in ("hosted_client", "hosted_patch", "builder"):
+        pattern(spec[name], r"\d+\.\d+\.\d+", name)
+    if spec["builder"] != "0.4.0":
+        raise ValueError("incompatible hosted builder version")
+    pin = spec["resource_pin"]
+    fields(pin, "minecraft", "schema", "client_sha256", "server_sha256", "exporter_sha256")
+    pattern(pin["minecraft"], r"\d+\.\d+(?:\.\d+)?", "prepared resource version")
+    if type(pin["schema"]) is not int or not 1 <= pin["schema"] <= 65535:
+        raise ValueError("invalid prepared resource schema")
+    for name in ("client_sha256", "server_sha256", "exporter_sha256"):
+        pattern(pin[name], "[0-9a-f]{64}", name)
     for name in ("input_tree", "output_tree"):
         pattern(spec[name], "[0-9a-f]{40}", name)
-    horizon = f'patches/{recipe["upstream"]["commit"]}/hosted/0001-cafe-hosted-session.patch'
-    files = (horizon, "wiiu/game-bridge/hosted.patch", HOSTED_BRIDGE)
+    files = (*hosted_patches(recipe), *HOSTED_LOCAL_FILES, HOSTED_LOCK)
     fields(spec["files"], *files)
     for name in files:
         pattern(spec["files"][name], "[0-9a-f]{64}", "hosted patch hash")
-    return spec, digest(payload), tuple(checked_bytes(ROOT, name, spec["files"][name]) for name in files)
+    return spec, digest(payload), {name: checked_bytes(ROOT, name, spec["files"][name]) for name in files}
 
 
 
@@ -101,7 +123,7 @@ def verify_resources(root, manifest):
     return digest(payload)
 
 
-def stage_source(directory, workspace, release_tree, patch, hosted=None):
+def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=None):
     source = directory / "source"
     stamp = directory / "stage.json"
     # A changed cache is rejected. Allocate a new build root to reconstruct it.
@@ -130,14 +152,15 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None):
         git(staged, "checkout-index", "--all", "--index")
         apply_patch(staged, patch)
         if hosted is not None:
-            spec, _, (horizon, platform, bridge) = hosted
+            spec, _, files = hosted
             if staged_tree(staged) != spec["input_tree"]:
                 raise ValueError("hosted patch preimage does not match")
-            apply_patch(staged, horizon)
-            apply_patch(staged, platform)
-            destination = "wiiu/loading_app/src/hosted.rs"
-            (staged / destination).write_bytes(bridge)
-            git(staged, "add", "--", destination)
+            for name in hosted_patches(recipe):
+                apply_patch(staged, files[name])
+            for name, destination in HOSTED_LOCAL_FILES.items():
+                path = f"wiiu/loading_app/src/{destination}"
+                (staged / path).write_bytes(files[name])
+                git(staged, "add", "--", path)
         tree = staged_tree(staged)
         if hosted is not None and tree != hosted[0]["output_tree"]:
             raise ValueError("hosted patch result does not match")
@@ -211,7 +234,9 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     try:
         discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
-        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
+        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
+        if hosted:
+            bridge["lock"] = hosted[2][HOSTED_LOCK]
         manifest = write_cargo_inputs(directory, source, inputs, lock, bridge)
         commands = {name: entry["path"] for name, entry in tools["files"].items()}
         jobs = str(os.cpu_count() or 1)
@@ -222,6 +247,23 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
                      "DEVKITPRO", "DEVKITPPC", "SYSTEMROOT"}
         env = {k: v for k, v in os.environ.items() if k in variables}
         env.update(settings)
+        if hosted:
+            spec, hosted_hash, _ = hosted
+            pin = spec["resource_pin"]
+            embedded = {
+                "HORIZON_NIGHT_UPSTREAM": recipe["upstream"]["commit"],
+                "HORIZON_NIGHT_CLIENT": spec["hosted_client"],
+                "HORIZON_NIGHT_PATCH": spec["hosted_patch"],
+                "HORIZON_NIGHT_BUILDER": spec["builder"],
+                "HORIZON_NIGHT_MINECRAFT": pin["minecraft"],
+                "HORIZON_NIGHT_PREP_SCHEMA": str(pin["schema"]),
+                "HORIZON_NIGHT_CLIENT_JAR": pin["client_sha256"],
+                "HORIZON_NIGHT_SERVER_JAR": pin["server_sha256"],
+                "HORIZON_NIGHT_EXPORTER": pin["exporter_sha256"],
+                "HORIZON_NIGHT_BUILD_ID": digest(json.dumps({"hosted": hosted_hash,
+                    "standalone": recipe_hash, "launcher": launcher["files"]}, sort_keys=True).encode()),
+            }
+            env.update(embedded)
         env.update({
             "RUSTC": commands["rustc"], "CARGO_TARGET_DIR": str(target),
             f"CC_{TARGET}": commands["powerpc-eabi-gcc"],
@@ -268,7 +310,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
         pack = [commands["wuhbtool"], str(directory / packages[0]),
                 str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
         run(pack, env)
-        stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
+        stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
         result = {
             "schema": 1, "kind": "wiiu-hosted-game-build" if hosted else "wiiu-native-game-build",
             "recipe_sha256": recipe_hash,
@@ -283,7 +325,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             if client_input(recipe) != launcher or hosted_inputs(recipe, recipe_hash) != hosted:
                 raise ValueError("hosted build inputs changed during compilation")
             result.update(hosted_recipe=hosted[0], hosted_recipe_sha256=hosted[1],
-                          launcher=launcher, build_input_sha256=key)
+                          launcher=launcher, build_input_sha256=key, embedded_build=embedded)
         write_record(record, result)
     finally:
         lockfile.rmdir()

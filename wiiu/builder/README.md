@@ -36,11 +36,16 @@ packages the separate `HorizonLauncher-Night-Fixture` for lifecycle tests.
 
 ## Unified Horizon Night and game
 
-The hosted recipe extends the exact standalone assembly with a pinned
-Horizon-source patch and Cafe bridge delta. Make a clean local Linux checkout
+The hosted builder profile `0.4.0` uses [hosted recipe v2](../../catalog/hosted-v2.json)
+with Wii U client `0.6.0` and hosted patch release `0.3.0`. It extends the
+exact standalone assembly with pinned Horizon-source patches, Cafe bridge
+deltas, hosted Rust sources and a hosted-only offline dependency lock.
+Make a clean local Linux checkout
 of the integration branch before building. Set `inputs` to the verified
 private Cafe input directory. The combined build emits
-`HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and a hash-checked build record.
+`HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and a hash-checked build record. Its
+`embedded_build` fields are the values shown in Night's About page. The
+read-only standalone recipe and earlier hosted release use their own pins.
 
 ```sh
 python3 -B wiiu/builder/build.py build-hosted --assembly "$scratch/stable" \
