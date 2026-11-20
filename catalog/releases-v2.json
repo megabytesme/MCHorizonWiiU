@@ -1,0 +1,123 @@
+{
+  "compatibility": [
+    {
+      "bridge_abi": 1,
+      "builder": "0.5.0",
+      "channel": "development",
+      "client": "0.6.0",
+      "patch": "0.3.1",
+      "target": "powerpc-nintendo-cafe",
+      "toolchain": "1.0.0",
+      "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+    }
+  ],
+  "expires": "2027-05-20T00:00:00Z",
+  "published": "2026-11-20T00:00:00Z",
+  "releases": {
+    "builder": {
+      "0.5.0": {
+        "artifacts": {
+          "sources": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/builder-source-v0.5.0.json",
+            "sha256": "67463382125e13a6c64e75537f7529d352a4c728cf95b5a3ad7909f93b7fbe46"
+          }
+        },
+        "channel": "development",
+        "description": "Windows desktop and Linux/WSL CLI for asset-free Cafe packaging.",
+        "notes": "docs/releases/builder-v0.5.0.md",
+        "status": "active"
+      }
+    },
+    "client": {
+      "0.6.0": {
+        "artifacts": {
+          "sources": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/client-source-v0.6.0.json",
+            "sha256": "52c872aa6959ed9bcb6d0d4fce47af60ece822e9de513e09e294a739c497badf"
+          }
+        },
+        "bridge_abi": 1,
+        "channel": "development",
+        "description": "Horizon Night and the native Cafe host with offline local profiles.",
+        "evidence": {
+          "build": {
+            "record": "docs/releases/client-v0.6.0.md",
+            "status": "pending"
+          },
+          "cemu": {
+            "record": "docs/night-local-validation.md",
+            "status": "partial"
+          },
+          "hardware": {
+            "record": "docs/hosted-validation.md",
+            "status": "pending"
+          }
+        },
+        "notes": "docs/releases/client-v0.6.0.md",
+        "status": "active"
+      }
+    },
+    "patch": {
+      "0.3.1": {
+        "artifacts": {
+          "base-recipe": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/compatibility-v1.json",
+            "sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2"
+          },
+          "hosted-recipe": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/hosted-v2.json",
+            "sha256": "1867e00d353941c04e07cbbce85542de667df88e17a0571cf62c204d9796fd9f"
+          },
+          "native-inventory": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/native-files-v1.json",
+            "sha256": "3dcb0281fc6c05e25fb36dad2aade88b17033a709247e17cd18382799cb05178"
+          },
+          "workspace-overlay": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/workspace.patch",
+            "sha256": "69cfb7175eb948fdffb460fcaad8ccb88e350ee0a89950a25c38766ceff87b50"
+          }
+        },
+        "bridge_abi": 1,
+        "channel": "development",
+        "description": "Public source reconstruction for the combined Night and native game.",
+        "notes": "docs/releases/patch-v0.3.1.md",
+        "status": "active",
+        "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+      }
+    },
+    "toolchain": {
+      "1.0.0": {
+        "artifacts": {
+          "dependencies": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/dependencies-cafe-v1.json",
+            "sha256": "2d4ac3439281909b71b6bd11e1a984e57fe2dfb6123b3fdba72a4d5c25bcef02"
+          },
+          "rust-delta": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "patches/toolchain/cafe-rust-62606b70/source.json",
+            "sha256": "97a05cbe3ee49092516a29801a9f752461c54b80cc0fbecadd537b693265825a"
+          },
+          "toolchain-lock": {
+            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "path": "catalog/toolchain-cafe-v1.json",
+            "sha256": "145da719fe16cc93c64058f03559b0909733a3b111432cd224d260bdaa92f9fb"
+          }
+        },
+        "channel": "development",
+        "description": "Linux x86-64 Cafe toolchain and verified Cargo overlays.",
+        "notes": "docs/releases/toolchain-v1.0.0.md",
+        "status": "active"
+      }
+    }
+  },
+  "schema": 2,
+  "sequence": 1,
+  "signing": "unsigned-development"
+}
