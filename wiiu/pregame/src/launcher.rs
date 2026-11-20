@@ -156,19 +156,14 @@ impl View {
     }
 
     pub fn description(&self) -> &str {
-        match self.page {
-            Page::Local => self
-                .local
-                .as_ref()
-                .map_or("", |menu| menu.description.as_str()),
-            Page::Home
-                if self
-                    .local
-                    .as_ref()
-                    .is_some_and(|m| !m.description.as_str().is_empty()) =>
-            {
-                self.local.as_ref().unwrap().description.as_str()
+        if let Some(menu) = &self.local {
+            let description = menu.description.as_str();
+            if self.page == Page::Local || (self.page == Page::Home && !description.is_empty()) {
+                return description;
             }
+        }
+        match self.page {
+            Page::Local => "",
             Page::Home
                 if self.resources == ResourceSelection::Unavailable
                     && cfg!(horizon_wiiu_hosted) =>
@@ -254,33 +249,35 @@ impl View {
         use Action::*;
         use ActionState::*;
         let (label, detail, state) = match action {
-            Local(index) => {
-                let row = &self.local.as_ref().unwrap().rows[usize::from(index)];
-                (
-                    row.label.as_str(),
-                    row.detail.as_str(),
-                    match row.state {
-                        local_wire::ACTIVE => Available,
-                        local_wire::SELECTED => Selected,
-                        _ => Disabled,
-                    },
-                )
-            }
-            Play if self.local.is_some() => {
-                let menu = self.local.as_ref().unwrap();
-                (
-                    "Start Game",
-                    menu.play_detail.as_str(),
-                    if menu.ready != 0 { Available } else { Disabled },
-                )
-            }
+            Local(index) => self
+                .local
+                .as_ref()
+                .and_then(|menu| menu.rows.get(usize::from(index)))
+                .map_or(("", "", Disabled), |row| {
+                    (
+                        row.label.as_str(),
+                        row.detail.as_str(),
+                        match row.state {
+                            local_wire::ACTIVE => Available,
+                            local_wire::SELECTED => Selected,
+                            _ => Disabled,
+                        },
+                    )
+                }),
             Play if self.resources == ResourceSelection::BuiltInDemo => {
                 ("Start demo", "Built-in fixture", Available)
             }
-            Play if self.resources == ResourceSelection::Unavailable => {
-                ("Start Game", "Unavailable", Disabled)
-            }
-            Play => ("Start Game", self.resources.label(), Available),
+            Play => (
+                "Start Game",
+                self.local
+                    .as_ref()
+                    .map_or(self.resources.label(), |menu| menu.play_detail.as_str()),
+                if self.resources == ResourceSelection::Unavailable {
+                    Disabled
+                } else {
+                    Available
+                },
+            ),
             Profiles => (
                 "Profiles",
                 self.local
@@ -368,10 +365,9 @@ impl View {
             Page::Local => {
                 const ACTIONS: [Action; local_wire::ROWS] =
                     [Local(0), Local(1), Local(2), Local(3), Local(4), Local(5)];
-                &ACTIONS[..self
-                    .local
-                    .as_ref()
-                    .map_or(0, |m| usize::from(m.count).min(ACTIONS.len()))]
+                ACTIONS
+                    .get(..self.local.as_ref().map_or(0, |m| usize::from(m.count)))
+                    .unwrap_or(&[])
             }
             Page::Profiles => &[Player, Guest, MicrosoftSignIn, Back],
             Page::Versions if self.resources == ResourceSelection::BuiltInDemo => {

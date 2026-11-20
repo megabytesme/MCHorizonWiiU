@@ -5,7 +5,7 @@
   "builder": "0.4.0",
   "base_recipe_sha256": "31d859bcfcb6d5401ef83610202731a1421c93e3c738cfe43739cf1946dcc27c",
   "input_tree": "af17b86aef2d1a2d1c2f0f7ef0f391cf579e64ac",
-  "output_tree": "ac67b8a49cfe0f48b522d852369cdffb60b859ae",
+  "output_tree": "14592e87cc28b392b2a19a6f159766352ad46a0c",
   "resource_pin": {
     "minecraft": "26.3",
     "schema": 7,
@@ -20,8 +20,8 @@
     "wiiu/game-bridge/night-platform.patch": "d79fa80b5ea9b0cbdf66b6751c0d1498db19b14c3c7812a1195d9d0e1c995c0d",
     "wiiu/game-bridge/night_hosted.rs": "58fe3b09f92b8f5a9336a4331e24b4b5e247ce6a5a6cf2ad1be3f1f9c77d24aa",
     "wiiu/game-bridge/night_store.rs": "288d0590c97f5c64f185d14a6c274765aa41d9e70e4c3889f0e14713ce5bec98",
-    "wiiu/game-bridge/night_menu.rs": "ba0f1d063ffb4b5fade87b555a120350237f018f46beab3d9433318d2cc7295d",
-    "wiiu/pregame/src/local_wire.rs": "990ca4c186fb4c398e1fed2b82f2c2963187608eef44332d583b1cf39eae3712",
+    "wiiu/game-bridge/night_menu.rs": "fa899054475d78394ae9c724410ba0e984f7d2d82708510bc033c7cf3bf5bf91",
+    "wiiu/pregame/src/local_wire.rs": "9b1b27601f6841e306c2faacddb64e3569fc41326765abcfbf9009bb4ef31ac4",
     "wiiu/game-bridge/offline/night.Cargo.lock": "3614733d52a158bb736b5cd79423479633a2264aab1b9a56b6bf80189ca6832a"
   }
 }

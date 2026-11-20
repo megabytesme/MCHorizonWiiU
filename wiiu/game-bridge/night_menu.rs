@@ -1066,7 +1066,7 @@ impl<G: GameFiles> LocalService<G> {
                     .collect::<String>();
                 row(
                     "Open system keyboard",
-                    "Type or replace the full value",
+                    "Type text. Press Minus to close.",
                     ACTIVE,
                     Command::Keyboard,
                 );

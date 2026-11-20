@@ -216,12 +216,15 @@ extern "C" fn horizon_pregame_run() -> i32 {
         };
         let mut samples = [Sample::default(); 16];
         let count = unsafe { shell_poll_input(samples.as_mut_ptr()) };
+        #[cfg(horizon_wiiu_hosted)]
+        let mut keyboard_cancelled = false;
         if count < 0 {
             launcher.input_lost();
         } else {
             for sample in samples.into_iter().take(count as usize) {
                 #[cfg(horizon_wiiu_hosted)]
                 if keyboard {
+                    keyboard_cancelled = sample.buttons & 64 != 0;
                     break;
                 }
                 let touch = match sample.touch {
@@ -269,8 +272,11 @@ extern "C" fn horizon_pregame_run() -> i32 {
         if keyboard {
             let mut text = [0_u8; 1024];
             let mut len = 0;
-            let result =
-                unsafe { horizon_swkbd_take_result(text.as_mut_ptr(), text.len(), &mut len) };
+            let result = if keyboard_cancelled {
+                2
+            } else {
+                unsafe { horizon_swkbd_take_result(text.as_mut_ptr(), text.len(), &mut len) }
+            };
             if result != 0 {
                 keyboard = false;
                 unsafe { horizon_swkbd_close() };

@@ -124,6 +124,11 @@ int32_t shell_poll_input(LauncherSample *samples)
    const int32_t count = VPADRead(VPAD_CHAN_0, batch, VPAD_CAPACITY, &error);
 #ifdef HORIZON_WIIU_HOSTED
    if (horizon_swkbd_is_open()) {
+      /* Back out even if the system keyboard accepts no input in the emulator. */
+      if (error == VPAD_READ_SUCCESS && count > 0 && (batch[0].trigger & VPAD_BUTTON_MINUS)) {
+         samples[0] = (LauncherSample){.buttons = 64};
+         return 1;
+      }
       horizon_swkbd_calc(error == VPAD_READ_SUCCESS && count > 0 ? &batch[0] : NULL);
       return 0;
    }

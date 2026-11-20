@@ -44,7 +44,10 @@ impl<const N: usize> Text<N> {
 
     pub fn as_str(&self) -> &str {
         let length = self.0.iter().position(|&byte| byte == 0).unwrap_or(N);
-        core::str::from_utf8(&self.0[..length]).unwrap_or("")
+        // These bytes originate in Text::new or the zeroed default, including
+        // the values built by the Rust side of the host ABI. Both the capacity
+        // cut and a NUL cut fall on UTF-8 boundaries.
+        unsafe { core::str::from_utf8_unchecked(self.0.get(..length).unwrap_or(&[])) }
     }
 }
 
