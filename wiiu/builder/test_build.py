@@ -162,7 +162,7 @@ class CargoInputsTests(unittest.TestCase):
                 (client / "Cargo.toml").write_text('[package]\nname = "horizon-client"\n')
                 git_out(staged, "add", "wiiu/loading_app/Cargo.toml", "crates/horizon-client/Cargo.toml")
                 manifest = native.write_cargo_inputs(build, staged, inputs, lock, bridge)
-                self.assertEqual(manifest.parent, build)
+                self.assertTrue(manifest.parent.samefile(build))
                 manifests.append(manifest.read_bytes())
             self.assertEqual(*manifests)
             resolved = tomllib.loads(manifests[0].decode())

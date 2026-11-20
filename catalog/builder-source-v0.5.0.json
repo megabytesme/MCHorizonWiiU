@@ -15,7 +15,7 @@
   "wiiu/builder/native.py": "a6b68bb0292514e3d8007f445fc3d5d3b708a75dead14157a0c941debe638979",
   "wiiu/builder/releases.py": "21e6ea8ea10e82db37403ef605702206891b2beac53727b8c289c614eed4d243",
   "wiiu/builder/source.py": "321850dd8d307b5c43911075fd83e79af0fd5c3c2ccb1dfc64cc9a59335c5f39",
-  "wiiu/builder/test_build.py": "a4aafb612728583a6ab53d93e4429158aa073e25aabb56025ac18255fffce66f",
+  "wiiu/builder/test_build.py": "2931eddd14981efa3108e3a6f2bc5179735d09e723f29b7ade267f01f5eefefa",
   "wiiu/builder/test_workflow.py": "4706e07fc7e85a4615b7a33d578b3bb7810f5a644aeeffcda4630c1d4661b50d",
   "wiiu/builder/workflow.py": "d6f5f0115adf61b9ac4ed3784a633bc26034bffc5ae7e438cd5ac13cf3879611",
   "wiiu/builder/wsl_job.py": "fb1785b8eee92fd152077df79d1c61d7004da446595666bcb3be7847f742172f"
