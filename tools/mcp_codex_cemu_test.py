@@ -189,8 +189,9 @@ def play_and_save(invoke, window, client_name, index, evidence):
           flush=True)
 
     if evidence:
-        # Let the interpreter submit live terrain before requesting both Cemu displays.
-        time.sleep(12)
+        # Leave time for terrain streaming before capturing both displays.
+        # A live player can appear while the first visible sections are queued.
+        time.sleep(45)
         shots = evidence / "portable/screenshots"
         previous = set(shots.glob("*.png"))
         press(window, 123)

@@ -12,6 +12,7 @@
     "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0007-gx2-stock-lightmap.patch": "da3526072692540af17acee0bf9e42469377bfe8f49e44ce11fcab2fd4f713c2",
     "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0008-gx2-whb-pacing.patch": "329228ad4782d507a827187d3ddd63f810011d8eb54172884ac81842c043e657",
     "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0009-gx2-shader-relink.patch": "757031147a10f63e7ecfdaa4a4989b7090e175dd70bd093da0bae6d4e1966ca8",
+    "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0010-gx2-mapped-terrain-atlas.patch": "3446aa7af353eb5422c2bde9c45f7f84a1af7117f2d56bac43137d31d0fcf77f",
     "wiiu/game-bridge/hosted.patch": "79228b034e0943a4867d6d835952609b75295465ff1bfeed94c7d70576b6ccf9",
     "wiiu/game-bridge/night-platform.patch": "d79fa80b5ea9b0cbdf66b6751c0d1498db19b14c3c7812a1195d9d0e1c995c0d",
     "wiiu/game-bridge/night_hosted.rs": "1042afa06deea0b09cc97542ad0023382d9a96d4fb0d407de0ea401d3e99adbb",
@@ -48,7 +49,7 @@
   "hosted_client": "0.7.0",
   "hosted_patch": "0.4.0",
   "input_tree": "ad3cd393662eb481e80cb63f488435c1480085b9",
-  "output_tree": "5c0991fe6a80dfab5584eb6f643bf8bdbe1b5e97",
+  "output_tree": "ec14a2de4bb314b8ad72cfac859767be93c62aff",
   "overlay": {
     "docs/mcp/pinned-tools.json": "wiiu/loading_app/src/pinned_tools.json",
     "wiiu/game-bridge/night_hosted.rs": "wiiu/loading_app/src/hosted.rs",
@@ -133,6 +134,10 @@
     {
       "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0009-gx2-shader-relink.patch",
       "tree": "df4c524108afe2fa7330a875264d6a73aacafe52"
+    },
+    {
+      "file": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0010-gx2-mapped-terrain-atlas.patch",
+      "tree": "c947ef667a537f02a3a433e4f736139660f5dc38"
     }
   ]
 }

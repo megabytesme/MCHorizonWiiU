@@ -1,0 +1,354 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 18a1a0390ef3b60793fb83b42ec9b3320c06a159..d9d9139bd3b701327764e460bd4e53f6989b46bc 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -272,18 +272,20 @@ pub struct TerrainAtlasLayout {
+ #[cfg(feature = "atlas")]
+ impl TerrainAtlas {
+     pub fn from_layers(source: &[u8], sprite_size: u32, layers: u32) -> Result<Self, &'static str> {
++        let layout = TerrainAtlasLayout::for_layers(sprite_size, layers)?;
++        let pitch = layout.width as usize * 4;
++        let mut pixels = alloc::vec![0; pitch * layout.height as usize];
++        layout.write_layers(source, &mut pixels, pitch)?;
++        Ok(Self { pixels, layout })
++    }
++}
++
++#[cfg(feature = "atlas")]
++impl TerrainAtlasLayout {
++    pub fn for_layers(sprite_size: u32, layers: u32) -> Result<Self, &'static str> {
+         if sprite_size == 0 || layers == 0 || layers > 0x7fff {
+             return Err("invalid Horizon sprite atlas dimensions");
+         }
+-        let expected = usize::try_from(layers)
+-            .ok()
+-            .and_then(|n| n.checked_mul(sprite_size as usize))
+-            .and_then(|n| n.checked_mul(sprite_size as usize))
+-            .and_then(|n| n.checked_mul(4))
+-            .ok_or("Horizon sprite byte count overflow")?;
+-        if source.len() != expected {
+-            return Err("Horizon sprite byte count mismatch");
+-        }
+         let cell_size = sprite_size
+             .checked_add(2)
+             .ok_or("Horizon sprite cell overflow")?;
+@@ -316,12 +318,43 @@ impl TerrainAtlas {
+         let Some((_, columns, width, height)) = best else {
+             return Err("Horizon atlas exceeds GX2 texture limit");
+         };
+-        let bytes = usize::try_from(width)
++        Ok(Self {
++            width,
++            height,
++            sprite_size,
++            layers,
++            cell_size,
++            columns,
++        })
++    }
++
++    /// Fill a zeroed surface with the same extruded borders as the CPU atlas.
++    pub fn write_layers(
++        &self,
++        source: &[u8],
++        pixels: &mut [u8],
++        pitch: usize,
++    ) -> Result<(), &'static str> {
++        let Self {
++            width,
++            height,
++            sprite_size,
++            layers,
++            cell_size,
++            columns,
++        } = *self;
++        let expected = usize::try_from(layers)
+             .ok()
+-            .and_then(|w| w.checked_mul(height as usize))
++            .and_then(|n| n.checked_mul(sprite_size as usize))
++            .and_then(|n| n.checked_mul(sprite_size as usize))
+             .and_then(|n| n.checked_mul(4))
+-            .ok_or("Horizon atlas allocation overflow")?;
+-        let mut pixels = alloc::vec![0; bytes];
++            .ok_or("Horizon sprite byte count overflow")?;
++        if source.len() != expected {
++            return Err("Horizon sprite byte count mismatch");
++        }
++        if pitch < width as usize * 4 || pitch.checked_mul(height as usize) != Some(pixels.len()) {
++            return Err("invalid writable GX2 atlas storage");
++        }
+         for layer in 0..layers {
+             let cx = (layer % columns) * cell_size;
+             let cy = (layer / columns) * cell_size;
+@@ -331,27 +364,14 @@ impl TerrainAtlas {
+                 for x in 0..cell_size {
+                     let sx = x.saturating_sub(1).min(sprite_size - 1) as usize;
+                     let from = source_layer + (sy * sprite_size as usize + sx) * 4;
+-                    let to = (((cy + y) as usize * width as usize) + (cx + x) as usize) * 4;
++                    let to = (cy + y) as usize * pitch + (cx + x) as usize * 4;
+                     pixels[to..to + 4].copy_from_slice(&source[from..from + 4]);
+                 }
+             }
+         }
+-        Ok(Self {
+-            pixels,
+-            layout: TerrainAtlasLayout {
+-                width,
+-                height,
+-                sprite_size,
+-                layers,
+-                cell_size,
+-                columns,
+-            },
+-        })
++        Ok(())
+     }
+-}
+ 
+-#[cfg(feature = "atlas")]
+-impl TerrainAtlasLayout {
+     /// Fill mapped native storage from canonical quads, without an intermediate
+     /// copy. The index buffer chooses the same triangles as `expand_quads_into`.
+     pub fn write_quad_vertices(
+@@ -461,6 +481,23 @@ mod indexed_vertex_tests {
+         assert_eq!(next, order.len());
+     }
+ 
++    #[test]
++    fn mapped_atlas_uses_surface_pitch_and_extrudes_sprite_edges() {
++        let layout = TerrainAtlasLayout::for_layers(2, 1).unwrap();
++        let pitch = layout.width as usize * 4 + 16;
++        let mut pixels = alloc::vec![0; pitch * layout.height as usize];
++        let source = [20, 1, 2, 255, 40, 3, 4, 255, 60, 5, 6, 255, 80, 7, 8, 255];
++        layout.write_layers(&source, &mut pixels, pitch).unwrap();
++
++        for (y, expected) in [[20, 20, 40, 40], [20, 20, 40, 40],
++                              [60, 60, 80, 80], [60, 60, 80, 80]].into_iter().enumerate() {
++            let row = &pixels[y * pitch..(y + 1) * pitch];
++            assert_eq!([row[0], row[4], row[8], row[12]], expected);
++            assert!(row[16..].iter().all(|&padding| padding == 0));
++        }
++        assert!(layout.write_layers(&source, &mut pixels, pitch - 1).is_err());
++    }
++
+     #[test]
+     fn mapped_writes_handle_empty_quads_and_reject_invalid_input() {
+         let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 6ac6fcd1a1f38185e4495a17d17f3de71b26d5ab..8a12df434a3794988436037997837a3ccd9fa760 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -77,16 +77,20 @@ uint32_t horizon_gx2_terrain_index_allocation_bytes(const HorizonGx2Terrain *ter
+ {
+    return terrain ? terrain->quad_index_allocation_bytes : 0;
+ }
+-int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+-                               uint32_t width, uint32_t height,
+-                               const uint8_t *rgba, size_t length)
++int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
++                                     uint32_t width, uint32_t height,
++                                     HorizonTerrainFillTexture fill, void *context)
+ {
+    if (!out) return -1;
+    *out = NULL;
+-   if (!gfd || !rgba || !width || !height || width > 8192 || height > 8192 ||
+-       (size_t)width > SIZE_MAX / height / 4 || length < (size_t)width * height * 4) return -1;
++   if (!gfd || !fill || !width || !height || width > 8192 || height > 8192 ||
++       (size_t)width > SIZE_MAX / height / 4) return -1;
++   const char *stage = "terrain shader";
+    HorizonGx2Terrain *t = calloc(1, sizeof(*t));
+-   if (!t) return -2;
++   if (!t) {
++      OSReport("Horizon GX2 terrain initialization failed: context (-2)\n");
++      return -2;
++   }
+    int result = -2;
+    if (!WHBGfxLoadGFDShaderGroup(&t->shader, 0, gfd)) goto fail;
+    t->shader_loaded = 1;
+@@ -128,26 +132,61 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+        !WHBGfxInitShaderAttribute(&t->shader, "aUv", 0, offsetof(HorizonTerrainVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aCutout", 0, offsetof(HorizonTerrainVertex, cutout), GX2_ATTRIB_FORMAT_FLOAT_32) ||
+        !WHBGfxInitFetchShader(&t->shader)) goto fail;
++   stage = "atlas surface";
+    result = create_texture(&t->texture, width, height);
+    if (result) goto fail;
+    GX2Surface *s = &t->texture.surface;
++   stage = "atlas mapping";
+    uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
+    if (!pixels) { result = -2; goto fail; }
+-   for (uint32_t y = 0; y < height; ++y)
+-      memcpy(pixels + (size_t)y * s->pitch * 4, rgba + (size_t)y * width * 4, (size_t)width * 4);
++   stage = "atlas fill";
++   memset(pixels, 0, (size_t)s->pitch * height * 4);
++   result = fill(context, pixels, s->pitch);
+    GX2RUnlockSurfaceEx(s, 0, texture_flags);
++   if (result) goto fail;
+    GX2InitSampler(&t->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++   stage = "lightmap surface";
+    result = create_texture(&t->lightmap, 16, 16);
+    if (result) goto fail;
+    GX2InitSampler(&t->lightmap_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
++   stage = "index buffer";
+    result = terrain_index_buffer_create(&t->quad_indices, &t->quad_index_allocation_bytes);
+    if (result) goto fail;
+    OSReport("Horizon memory gx2_terrain texture_bytes=%u lightmap_bytes=%u\n",
+             s->imageSize, t->lightmap.surface.imageSize);
+    *out = t; return 0;
+ fail:
++   OSReport("Horizon GX2 terrain initialization failed: %s (%d)\n", stage, result);
+    horizon_gx2_terrain_destroy(t); return result;
+ }
++
++typedef struct AtlasRows {
++   const uint8_t *rgba;
++   uint32_t width, height;
++} AtlasRows;
++
++static int fill_atlas_rows(void *context, uint8_t *pixels, uint32_t pitch)
++{
++   const AtlasRows *rows = context;
++   const size_t row_bytes = (size_t)rows->width * 4;
++   for (uint32_t y = 0; y < rows->height; ++y)
++      memcpy(pixels + (size_t)y * pitch * 4, rows->rgba + (size_t)y * row_bytes, row_bytes);
++   return 0;
++}
++
++int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
++                               uint32_t width, uint32_t height,
++                               const uint8_t *rgba, size_t length)
++{
++   if (!rgba || !height || (size_t)width > SIZE_MAX / height / 4 ||
++       length < (size_t)width * height * 4) {
++      if (out) *out = NULL;
++      return -1;
++   }
++   AtlasRows rows = {rgba, width, height};
++   return horizon_gx2_terrain_create_mapped(out, gfd, width, height, fill_atlas_rows, &rows);
++}
++
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *t, const uint8_t rgba[16 * 16 * 4])
+ {
+    if (!t || !rgba) return -1;
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index bc8b7bd2712620fbe0db69758520810e465d8154..4fb6fe0d8fb0399c88fa94c14bf6c9c76bfcdec7 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -15,6 +15,11 @@ typedef struct HorizonGx2TerrainSection HorizonGx2TerrainSection;
+ typedef int (*HorizonTerrainFillVertices)(void *context, HorizonTerrainVertex *vertices,
+                                           uint32_t count);
+ 
++/* The callback is synchronous and receives the surface pitch in pixels. */
++typedef int (*HorizonTerrainFillTexture)(void *context, uint8_t *pixels, uint32_t pitch);
++int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
++                                     uint32_t width, uint32_t height,
++                                     HorizonTerrainFillTexture fill, void *context);
+ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+                                uint32_t width, uint32_t height,
+                                const uint8_t *rgba, size_t length);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index d6509664d05fd2baa5742e23e8205f772a425bca..944eff0d4a8d5a4cf7112d531e02304bdf77ab8a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -26,7 +26,7 @@ use horizon_client::{
+     presentation::{HudBackend, PresentationBackend, TerrainBackend},
+ };
+ use horizon_wiiu_gx2_terrain::{
+-    TerrainAtlas, TerrainAtlasLayout, TerrainClipRows, TerrainGpuVertex, terrain_view_rows,
++    TerrainAtlasLayout, TerrainClipRows, TerrainGpuVertex, terrain_view_rows,
+ };
+ use horizon_wiiu_platform::hud::{CitSlot, horizon::HorizonPresenter};
+ use std::{
+@@ -192,13 +192,13 @@ extern "C" {
+         vertices: *const PanoramaVertex,
+     ) -> i32;
+     fn horizon_gx2_panorama_destroy(panorama: *mut c_void);
+-    fn horizon_gx2_terrain_create(
++    fn horizon_gx2_terrain_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+         width: u32,
+         height: u32,
+-        rgba: *const u8,
+-        length: usize,
++        fill: unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32,
++        context: *mut c_void,
+     ) -> i32;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+@@ -465,6 +465,32 @@ unsafe extern "C" fn fill_terrain_vertices(
+     }
+ }
+ 
++struct TerrainAtlasUpload<'a> {
++    layout: &'a TerrainAtlasLayout,
++    source: &'a [u8],
++}
++
++unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, pitch: u32) -> i32 {
++    // The C adapter calls this synchronously with its validated mapped surface.
++    let upload = unsafe { &*context.cast::<TerrainAtlasUpload<'_>>() };
++    let Some(pitch) = (pitch as usize).checked_mul(4) else {
++        return -1;
++    };
++    let Some(bytes) = pitch.checked_mul(upload.layout.height as usize) else {
++        return -1;
++    };
++    let pixels = unsafe { std::slice::from_raw_parts_mut(pixels, bytes) };
++    if upload
++        .layout
++        .write_layers(upload.source, pixels, pitch)
++        .is_ok()
++    {
++        0
++    } else {
++        -1
++    }
++}
++
+ struct Terrain<'shader> {
+     native: NonNull<c_void>,
+     _shader: PhantomData<&'shader [u8]>,
+@@ -1248,35 +1274,29 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             let _upload = Span::new(Stage::TextureUpload);
+             self.lightmap = None;
+             let source = artwork.terrain_pixels.get();
+-            let TerrainAtlas { pixels, layout } = TerrainAtlas::from_layers(
+-                &source,
++            let layout = TerrainAtlasLayout::for_layers(
+                 artwork.terrain_sprite_size,
+                 artwork.terrain_layers,
+             )?;
++            let mut upload = TerrainAtlasUpload {
++                layout: &layout,
++                source: &source,
++            };
+             let mut native = std::ptr::null_mut();
+             let code = unsafe {
+-                horizon_gx2_terrain_create(
++                horizon_gx2_terrain_create_mapped(
+                     &mut native,
+                     self.terrain_shader.as_ptr().cast(),
+                     layout.width,
+                     layout.height,
+-                    pixels.as_ptr(),
+-                    pixels.len(),
++                    fill_terrain_atlas,
++                    (&mut upload as *mut TerrainAtlasUpload<'_>).cast(),
+                 )
+             };
+             if code != 0 {
+                 return Err(format!("GX2 terrain atlas creation failed ({code})").into());
+             }
+             let native = NonNull::new(native).ok_or("GX2 terrain returned a null resource")?;
+-            // GX2 has copied the pixels. Section uploads only need UV layout.
+-            let staging_bytes = pixels.capacity() as u32;
+-            drop(pixels);
+-            unsafe {
+-                OSReport(
+-                    "Horizon memory gx2_terrain rust_staging_bytes_released=%u\n\0".as_ptr().cast(),
+-                    staging_bytes,
+-                );
+-            }
+             self.terrain = Some(Terrain {
+                 native,
+                 _shader: PhantomData,
