@@ -2,6 +2,7 @@
 """Stage a reviewed asset-free combined client locally, without uploading it."""
 import argparse
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,18 @@ sys.path.insert(0, str(ROOT / "wiiu/builder"))
 import core
 import native
 import source
+from wiiu_recompress_rpx import _parse_rpx, _raw_section
+
+
+HOST_PATH = re.compile(rb"(?i)(?:/(?:home|Users)/[a-z0-9._-]+/|/mnt/[a-z]/(?:dev|Users|temp)/|[a-z]:\\(?:Users|temp|dev)\\)")
+
+
+def verify_rpx_paths(path):
+    image = _parse_rpx(path.read_bytes())
+    for section in image.sections:
+        if HOST_PATH.search(_raw_section(image.data, section)):
+            raise ValueError(f"{path.name} embeds host paths in {section.name}. "
+                             "Rebuild with remapped dependency and sysroot paths before staging.")
 
 
 def main():
@@ -39,6 +52,7 @@ def main():
         rpx, wuhb = native.HOSTED_PACKAGES
         if record["outputs"][rpx]["sha256"] != args.approved_rpx_sha256:
             raise ValueError("RPX hash differs from the approved release candidate")
+        verify_rpx_paths(directory / rpx)
         wuhbtool = core.program("wuhbtool")
         if core.file_digest(wuhbtool) != native.toolchain_spec(recipe)["toolchain"]["files"]["wuhbtool"]:
             raise ValueError("installed wuhbtool differs from the toolchain pin")

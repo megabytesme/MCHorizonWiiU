@@ -184,6 +184,8 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=
 
 
 def write_cargo_inputs(directory, source, inputs, lock, bridge):
+    directory = directory.resolve()
+    source = source.resolve()
     dependency_root = directory / "external"
     dependency_root.mkdir(exist_ok=True)
     for name in OVERLAYS:

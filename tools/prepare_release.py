@@ -15,7 +15,9 @@ from source import SHA1
 
 COMMON = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 DIRECTORIES = {
-    "builder": ("wiiu/builder", "tools/catalog-signer", "catalog", "docs/builder.md", "README.md"),
+    "builder": ("wiiu/builder", "tools/catalog-signer", "tools/build_cafe_game_isolated.sh",
+                "tools/check_release.py", "tools/prepare_release.py", "tools/prepare_prebuilt.py",
+                "tools/wiiu_recompress_rpx.py", "catalog", "docs", "README.md", "CONTRIBUTING.md"),
     "client": tuple(core.CLIENT_PATHS) + ("wiiu/game-bridge",),
     "patch": ("patches", "catalog", "wiiu/game-bridge", "wiiu/pregame/src/local_wire.rs"),
     "toolchain": ("patches/toolchain", "catalog/toolchain-cafe-v1.json", "catalog/dependencies-cafe-v1.json", "docs/inputs.md"),

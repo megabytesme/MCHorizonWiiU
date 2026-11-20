@@ -105,9 +105,10 @@ def check_resource_pin(prepared, pin):
 def prepare_resources(assembly, recipe, recipe_hash, minecraft, client, server, output):
     pin = native.hosted_inputs(recipe, recipe_hash)[0]["resource_pin"]
     minecraft, client, server = (path.resolve(strict=True) for path in (minecraft, client, server))
-    for name, path in (("client", client), ("server", server)):
-        if core.file_digest(path) != pin[f"{name}_sha256"]:
-            raise ValueError(f"the {name} JAR does not match Minecraft {pin['minecraft']}")
+    if core.file_digest(client) != pin["client_sha256"]:
+        raise ValueError(f"the client JAR does not match Minecraft {pin['minecraft']}")
+    # Horizon's importer verifies the official server bundle before extracting
+    # it. The hosted resource pin identifies the nested server game JAR.
     output = core.isolated(output)
     if output.exists():
         raise ValueError("choose a new resource output directory or reuse a verified existing inventory")

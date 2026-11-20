@@ -206,7 +206,7 @@ class OutputTests(unittest.TestCase):
             (prepared / "asset").write_bytes(b"a")
             manifest = core.inspect_resources(prepared, root / "private.json")
             self.assertEqual(native.verify_resources(prepared, manifest), core.file_digest(manifest))
-            self.assertEqual(set(root.iterdir()), {prepared, manifest})
+            self.assertEqual({path.resolve() for path in root.iterdir()}, {prepared.resolve(), manifest})
             (prepared / "asset").write_bytes(b"b")
             with self.assertRaisesRegex(ValueError, "private inventory"):
                 native.verify_resources(prepared, manifest)

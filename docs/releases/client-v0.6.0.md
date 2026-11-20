@@ -10,3 +10,5 @@ Two fresh builds on Ben-Desktop applied patch 0.3.1 to the exact public Horizon 
 | `HorizonWiiU.wuhb` | `7b45a9582516668e98fdce892af29608b494d80378be9b86e037e82cd1a5977b` |
 
 The exact public-candidate RPX reached the Horizon Night Home screen in an isolated Cemu 2.6 portable profile. The [original Night record](../night-local-validation.md) covers the broader local-profile and save-cycle tests for earlier package hashes. Physical acceptance of this candidate remains pending, including saved-world reopening.
+
+The WUHB repack matched using only the RPX and package metadata. The RPX still contains compiler host paths in its decoded data sections. Prebuilt staging rejects it until a remapped build passes the same checks.

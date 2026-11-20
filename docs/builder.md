@@ -11,7 +11,7 @@ pythonw.exe wiiu/builder/desktop.py --allow-unsigned
 1. Select the release combination. The display includes the client, patch, toolchain and upstream revision.
 2. Enter the WSL distribution, absolute port checkout and output paths. Supply the devkitPro root, verified Cafe Rust compiler and shader tools directory or configure them in the WSL login environment.
 3. Run **Check toolchain**. The reported hashes must match the recipe. Run **Prepare / repair dependencies** to reconstruct the overlays and fill the locked Cargo cache.
-4. Set the Minecraft installation and client/server JAR paths and run **Prepare resources**. Keep the resulting preparation and its inventory private. An existing preparation can be reused from the CLI.
+4. Set the Minecraft installation and client/server JAR paths and run **Prepare resources**. Supply the original Mojang server bundle. Horizon verifies the bundle before unpacking the game JAR, and the builder checks the finished resource manifest. Keep the preparation and inventory private. An existing preparation can be reused from the CLI.
 5. Run **Build RPX / WUHB**. The activity log streams output from Cargo and CMake. Cancel interrupts the process group. Launch the same operation again to reuse verified inputs.
 
 Use **Offline** after the upstream object, source assembly, crate archives and Cargo cache are populated. A checksum failure identifies the artifact that needs repair. For a corrupt staged source or overlay, move the named directory aside while the builder is idle and re-run preparation. Interrupted downloads and dependency extraction are staged before promotion. Builds check available space on the destination and cache volumes. An incomplete build has no verified output receipt.
