@@ -46,7 +46,7 @@ record=$(
             awk "{ if (NR > 1) print previous > \"/dev/stderr\"; previous=\$0 } END { print previous }"
     ' -- "$destination" "$workspace" "$project/wiiu/builder/build.py" "$target" "$@"
 )
-if [[ "$record" != "$workspace/"*/build-record.json ]]; then
+if [[ "$record" != "$workspace/build-record.json" && "$record" != "$workspace/"*/build-record.json ]]; then
     echo "The builder did not emit a verified record." >&2
     exit 1
 fi
