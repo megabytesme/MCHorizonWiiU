@@ -154,9 +154,9 @@
             "sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2"
           },
           "hosted-recipe": {
-            "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
+            "commit": "8d333a089d2418a36a62fcdf3648a148bc59fcbe",
             "path": "catalog/hosted-v3.json",
-            "sha256": "840b0629adf152e942f808e2f774b6720adcd94e4316ad33ee0c6085bd84c50a"
+            "sha256": "71466e379a552efe55b4f4184ad7a44868dd6ffb4c3727bab7efb8ed5449bd12"
           },
           "native-inventory": {
             "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
