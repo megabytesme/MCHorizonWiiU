@@ -1,0 +1,7 @@
+# Fixed synthetic loopback-token parser fixtures in the imported platform patch.
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62734
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62739
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62740
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62742
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62743
+3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62744

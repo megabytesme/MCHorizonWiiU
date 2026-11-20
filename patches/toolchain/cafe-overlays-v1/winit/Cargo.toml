@@ -1,0 +1,9 @@
+[package]
+name = "winit"
+version = "0.30.13"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+dpi = "0.1.2"
+raw-window-handle = "0.6.2"

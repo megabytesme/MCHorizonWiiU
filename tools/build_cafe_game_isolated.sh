@@ -39,12 +39,14 @@ record=$(
         set -euo pipefail
         mount --bind -- "$1" "$2"
         workspace=$2
-        builder=$3
+        mkdir -p -- "$workspace/.port-source"
+        mount --bind -- "$3" "$workspace/.port-source"
+        builder="$workspace/.port-source/wiiu/builder/build.py"
         target=$4
         shift 4
         python3 -B "$builder" "$target" --output "$workspace" "$@" |
             awk "{ if (NR > 1) print previous > \"/dev/stderr\"; previous=\$0 } END { print previous }"
-    ' -- "$destination" "$workspace" "$project/wiiu/builder/build.py" "$target" "$@"
+    ' -- "$destination" "$workspace" "$project" "$target" "$@"
 )
 if [[ "$record" != "$workspace/build-record.json" && "$record" != "$workspace/"*/build-record.json ]]; then
     echo "The builder did not emit a verified record." >&2

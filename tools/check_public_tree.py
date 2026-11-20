@@ -7,10 +7,15 @@ import subprocess
 import sys
 
 PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
-PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
+PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java", ".mca", ".mcr", ".rpx",
+                      ".wuhb", ".rpl", ".elf", ".exe", ".dll", ".so", ".a", ".rlib",
+                      ".pfx", ".p12", ".key", ".dpapi", ".crate", ".zip", ".7z"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
-PRIVATE_NAMES = {"horizon-data.bin"}
+PRIVATE_NAMES = {"horizon-data.bin", "horizon-resources.json", "level.dat", "level.dat_old",
+                 "launcher_accounts.json", "accounts.json", "access_token", "refresh_token",
+                 "agent-token", "id_ed25519", "id_rsa", ".env"}
+PRIVATE_FOLDERS = {".local", "saves", "playerdata", "datagen", "decompiled", ".minecraft"}
 
 
 def prohibited(path):
@@ -23,8 +28,9 @@ def prohibited(path):
         return not ("/dev/horizonlab/" in path)
     return (
         bool(parsed.parts and parsed.parts[0] in PRIVATE_ROOTS)
+        or bool(set(parsed.parts[:-1]) & PRIVATE_FOLDERS)
         or parsed.suffix.lower() in PRIVATE_EXTENSIONS
-        or parsed.name in PRIVATE_NAMES
+        or parsed.name.lower() in PRIVATE_NAMES
     )
 
 
@@ -60,9 +66,11 @@ def main():
     mode.add_argument("--pre-push", action="store_true", help="Inspect history reachable from Git's ref updates on stdin")
     # CI's pull requests: only the commits a merge would add, not every ref's whole history.
     mode.add_argument("--range", metavar="BASE..HEAD", help="Inspect the commits of a revision range")
+    mode.add_argument("--ref", metavar="REVISION", help="Inspect all history reachable from this revision")
     args = parser.parse_args()
-    revisions = pushed_revisions(sys.stdin) if args.pre_push else [args.range] if args.range else None
-    history = args.history or args.pre_push or bool(args.range)
+    selected = args.ref or args.range
+    revisions = pushed_revisions(sys.stdin) if args.pre_push else [selected] if selected else None
+    history = args.history or args.pre_push or bool(selected)
     rejected = sorted({path for path in paths_in_repository(history, revisions)
                        if path and prohibited(path)})
     if rejected:

@@ -428,7 +428,7 @@
     "source": "wiiu/cemu/README.md",
     "destination": "wiiu/cemu/README.md",
     "mode": "100644",
-    "sha256": "9bb08a5d37beef8e5cd1504e75b4135be7a7c9571640fac1d5f5fbf63bb1121a"
+    "sha256": "9c349c35b6dbe2bf935e7e5488161b8912ceb4f6803b8f05da25609ac8818363"
   },
   {
     "source": "wiiu/cemu/controller0.xml",
@@ -530,7 +530,7 @@
     "source": "wiiu/entropy/README.md",
     "destination": "wiiu/entropy/README.md",
     "mode": "100644",
-    "sha256": "cb5beae5b9912e742c843acff3cbdd23494cda9328bd211cc0af1ca7ae09202b"
+    "sha256": "aaa6c203a9b6effb22273ae28b8ba1f6fc2df33dc253bcc45b3d4965be21674e"
   },
   {
     "source": "wiiu/entropy/probe/Cargo.lock",
@@ -584,7 +584,7 @@
     "source": "wiiu/entropy_probe/README.md",
     "destination": "wiiu/entropy_probe/README.md",
     "mode": "100644",
-    "sha256": "938109bf1b63e128a4364046eeb683084bb34e5405ec20f7dc8c9527ff1bbc37"
+    "sha256": "d8f9f0a6646df6583a14ce59a1aaf588ac7ba4c95799970b70d42800419c7b9d"
   },
   {
     "source": "wiiu/entropy_probe/build.sh",
@@ -674,7 +674,7 @@
     "source": "wiiu/gx2_hud/diagnostic/README.md",
     "destination": "wiiu/gx2_hud/diagnostic/README.md",
     "mode": "100644",
-    "sha256": "9f9b184268509d913f62033f52f10e8a9c5bd8b52b151647cc783b9fce1b64e7"
+    "sha256": "24920d51bbb22a98f187c2023cb5fb70b5efc2f1bbc5a991d00d125dae35910c"
   },
   {
     "source": "wiiu/gx2_hud/diagnostic/build.sh",
@@ -1154,7 +1154,7 @@
     "source": "wiiu/rust-std-socket/README.md",
     "destination": "wiiu/rust-std-socket/README.md",
     "mode": "100644",
-    "sha256": "221ce1051cc87f5374f54e6f74fc910d3557e7dcac466259602aa52ef16894f2"
+    "sha256": "4892a869d5eeff28b26e97e40b680283bd2acc532fce5ae2ba3ca4da7e8263bf"
   },
   {
     "source": "wiiu/rust-std-socket/build_probe.sh",
@@ -1208,7 +1208,7 @@
     "source": "wiiu/rust-std-timeout/README.md",
     "destination": "wiiu/rust-std-timeout/README.md",
     "mode": "100644",
-    "sha256": "bed6245b7f804c02341d4464caa9ccf290df18fa047358a79ed8934eca1d76fb"
+    "sha256": "ee744c4149349cf369566592904eb09b970b3f19989c3f2b19a68e3b8a256b4c"
   },
   {
     "source": "wiiu/rust-std-timeout/build_probe.sh",
@@ -1262,7 +1262,7 @@
     "source": "wiiu/rust-std-tls/README.md",
     "destination": "wiiu/rust-std-tls/README.md",
     "mode": "100644",
-    "sha256": "1f4e50d72dd6967ff6ff24ff7acd84df159ab5fdfc44870a14f8dc098d6701eb"
+    "sha256": "1c15f2ff21b128056aaaa61688c732956a36522986c88a3081a6b7fc6d107d52"
   },
   {
     "source": "wiiu/rust-std-tls/build_probe.sh",

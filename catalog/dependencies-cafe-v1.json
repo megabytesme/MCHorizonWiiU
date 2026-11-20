@@ -1,0 +1,70 @@
+{
+  "devkitpro_archives": {
+    "devkitPPC-r51-1-any.pkg.tar.zst": "9e0767dbde557728f7ef57e9baec7314f1f71110f4b35d0dd15c34aa56b11307",
+    "devkitppc-binutils-2.47-2-x86_64.pkg.tar.zst": "b2f7096da00e56be9752ada2453c8d4b538dbb0bad2315fb4a1416f01187ab77",
+    "devkitppc-cmake-1.1.4-1-any.pkg.tar.zst": "81a82e03a9bf7415c883bea006bfb460dd9d72b5b881c8ce65c59f6ebdbec0be",
+    "devkitppc-crtls-2.1.0-1-any.pkg.tar.zst": "5a1144d515579eee73bb936ca36a8ea739b00d8cf32af3fa4dda21a039881bcd",
+    "devkitppc-gcc-16.2.0-1-x86_64.pkg.tar.zst": "d27ec75b8e309608495712f95357b68792cad9868aa2abe53e957c5538722549",
+    "devkitppc-mn10200-binutils-2.24-3-x86_64.pkg.tar.zst": "4c2242325db033b250479e0377dd3cc8309877853fa1e347e64cfdbe38f481d6",
+    "devkitppc-newlib-4.6.0.20260123-4-any.pkg.tar.zst": "2c5277c6b07a5558c9fd8e631d958c6d7784860aa55f5c320cb51371bc07e21b",
+    "devkitppc-rules-1.2.1-1-any.pkg.tar.zst": "0c3394da451c9dfb3b428d9d61b044eb1eafb947b2b5090ff88525f55c785278",
+    "general-tools-1.4.4-1-x86_64.pkg.tar.zst": "b6b59bd3d22d4f83a7f0668f749df7cf97b1f05083031e629d43ca4f4377c7b5",
+    "ppc-pkg-config-0.28-5-any.pkg.tar.xz": "224ad933a342f2b94c01397e208c8e65194c3b8a7d3fa96026906fab7a043e9f",
+    "wiiu-cmake-1.3.2-1-any.pkg.tar.zst": "055dc3a7103f44d313173d45f1eca9641ac245620d77b571fe637e4125d093bc",
+    "wut-1.9.2-1-any.pkg.tar.zst": "b746f1a693c58b38dafbe7f54cfe6b29bb31010f54e51d7b0c8c5c6aa43f1ca1",
+    "wut-tools-1.3.5-1-x86_64.pkg.tar.zst": "78e86d8e4f294c965708639108482504d6f9e53f7223465bea8d76aa9692fe6a"
+  },
+  "overlays": {
+    "png": {
+      "archive": {
+        "name": "png-0.18.1.crate",
+        "sha256": "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61",
+        "url": "https://static.crates.io/crates/png/png-0.18.1.crate"
+      },
+      "inventory_sha256": "d7face47a19af8ab81d021f0503b34fbdaec0623a71509ad81aa03895ace6af3",
+      "remove": [],
+      "replace": {
+        ".cargo-ok": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+        "Cargo.toml": "e8b1202871f1f116bb1762bd14d929e14194876be188ac787ae9e492ba7ffcd4",
+        "src/decoder/mod.rs": "d2726c0ad23db7fad29f3d2584b82a19adbfb18275cbde3435f0ea9691923a70",
+        "src/decoder/unfiltering_buffer.rs": "39aaa9a3093fd1e4333b5c1ab74277856b53c67fd440efb785ba478fa481d190"
+      }
+    },
+    "ring": {
+      "archive": {
+        "name": "ring-0.17.14.crate",
+        "sha256": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7",
+        "url": "https://static.crates.io/crates/ring/ring-0.17.14.crate"
+      },
+      "inventory_sha256": "fea33af874432485cd2373b9a965f21a5ccd2cca0619608baf98fb0cdc33d2b2",
+      "remove": [],
+      "replace": {
+        "src/rand.rs": "a707f2332f44f7d26c5b165b75f82c2be6dd2b407d2f436d4015dc03efa9b623"
+      }
+    },
+    "ureq": {
+      "archive": {
+        "name": "ureq-2.12.1.crate",
+        "sha256": "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d",
+        "url": "https://static.crates.io/crates/ureq/ureq-2.12.1.crate"
+      },
+      "inventory_sha256": "cce63d4f41c2f4c7672dc71129dd5837e3569c360d1603928bd2cbf203e0b2dd",
+      "remove": [],
+      "replace": {
+        ".cargo-ok": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+        "src/rtls.rs": "e2aeef91a24188687844d6dc504c3c69562dd242f81aedc7fc066a10e682006c"
+      }
+    },
+    "winit": {
+      "archive": null,
+      "inventory_sha256": "e5438c16df823ee20509c71ed12386dcf2fb7e9fcd50d897ee5ee31c62966948",
+      "remove": [],
+      "replace": {
+        "Cargo.toml": "0e426fd3ebf8064a4cb75ec568bc5243c6cb0575c8498c4e1ffabd4003f4f44c",
+        "src/lib.rs": "1bb2bfd066acdac71936301d78f728ec5017790c0b9294031b1f3b6f4ac21887"
+      }
+    }
+  },
+  "schema": 1,
+  "version": "1.0.0"
+}

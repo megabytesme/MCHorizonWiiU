@@ -1,0 +1,1794 @@
+diff --git a/crates/horizon-client-hud/src/hud.rs b/crates/horizon-client-hud/src/hud.rs
+index c8f208cbef7..6add54df57c 100644
+--- a/crates/horizon-client-hud/src/hud.rs
++++ b/crates/horizon-client-hud/src/hud.rs
+@@ -107,6 +107,40 @@ use horizon_client_font::image::decode_path_with_trace;
+ use horizon_client_font::image::within_budget;
+ use horizon_client_font::image::{budgeted, png_bytes_size, png_size, walk_with_trace};
+ pub use horizon_client_font::image::{decode, decode_bytes, decode_bytes_with_trace};
++
++/// Cafe balances texture decoding across its existing workers, then restores
++/// source order before atlas packing so equal-size sprites keep their layout.
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_ordered_atlas_decode<T: Send>(
++    count: usize,
++    workers: usize,
++    decode: impl Fn(usize) -> Option<T> + Sync,
++) -> Vec<T> {
++    if count == 0 {
++        return Vec::new();
++    }
++    let workers = workers.max(1).min(count);
++    std::thread::scope(|scope| {
++        let handles: Vec<_> = (0..workers)
++            .map(|worker| {
++                let decode = &decode;
++                scope.spawn(move || {
++                    (worker..count)
++                        .step_by(workers)
++                        .map(decode)
++                        .collect::<Vec<_>>()
++                })
++            })
++            .collect();
++        let mut streams: Vec<_> = handles
++            .into_iter()
++            .map(|handle| handle.join().unwrap_or_default().into_iter())
++            .collect();
++        (0..count)
++            .filter_map(|index| streams[index % workers].next().flatten())
++            .collect()
++    })
++}
+ /// The image formats [`decode_image_bytes`] reads, told apart by their own
+ /// leading bytes rather than by a file name: what a server sends has no name,
+ /// and a name would not be trustworthy anyway.
+@@ -1288,6 +1322,21 @@ impl HudAtlas {
+         #[cfg(target_os = "cafe")]
+         let decode_progress = trace.then(std::sync::atomic::AtomicUsize::default);
+         atlas_stage!("Horizon atlas: texture decode begin files={decode_total} workers={threads}");
++        #[cfg(target_os = "cafe")]
++        let decoded: Vec<_> =
++            cafe_ordered_atlas_decode(files.len(), files.chunks(chunk).len(), |index| {
++                let image = decode_one(&files[index]);
++                if let Some(progress) = decode_progress.as_ref() {
++                    let done = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++                    if done % 256 == 0 || done == decode_total {
++                        atlas_stage!(
++                            "Horizon atlas: texture decode progress {done}/{decode_total}"
++                        );
++                    }
++                }
++                image
++            });
++        #[cfg(not(target_os = "cafe"))]
+         let decoded: Vec<_> = std::thread::scope(|scope| {
+             let handles: Vec<_> = files
+                 .chunks(chunk)
+@@ -2348,6 +2397,38 @@ fn inline_profile_name(profile: &serde_json::Value) -> Option<&str> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn cafe_atlas_workers_keep_source_order_and_skip_failed_decodes() {
++        use std::sync::atomic::{AtomicUsize, Ordering};
++
++        for (count, workers) in [(0, 0), (2, 4), (31, 1), (31, 3), (31, 4)] {
++            let visited: Vec<_> = (0..count).map(|_| AtomicUsize::new(0)).collect();
++            let decoded = cafe_ordered_atlas_decode(count, workers, |index| {
++                visited[index].fetch_add(1, Ordering::Relaxed);
++                (index % 5 != 0).then_some((index, index * 7))
++            });
++            let expected: Vec<_> = (0..count)
++                .filter(|index| index % 5 != 0)
++                .map(|index| (index, index * 7))
++                .collect();
++            assert_eq!(decoded, expected);
++            assert!(
++                visited
++                    .iter()
++                    .all(|count| count.load(Ordering::Relaxed) == 1)
++            );
++        }
++    }
++
++    #[test]
++    fn cafe_atlas_worker_panic_drops_only_that_workers_results() {
++        let decoded = cafe_ordered_atlas_decode(10, 3, |index| {
++            assert_ne!(index, 4, "a worker failed to decode");
++            Some(index)
++        });
++        assert_eq!(decoded, [0, 2, 3, 5, 6, 8, 9]);
++    }
++
+     /// The mod image slot is paid only by a game with a native mod loaded.
+     #[test]
+     fn the_mod_image_slot_exists_only_when_a_mod_is_loaded() {
+diff --git a/crates/horizon-client-platform/src/logging.rs b/crates/horizon-client-platform/src/logging.rs
+index 914fb016f14..54566886c0f 100644
+--- a/crates/horizon-client-platform/src/logging.rs
++++ b/crates/horizon-client-platform/src/logging.rs
+@@ -62,6 +62,17 @@ const RECENT: usize = 50;
+ /// below it the log is vanilla's, line for line.
+ const FLOOD_LINES: u32 = 100;
+ const FLOOD_WINDOW: Duration = Duration::from_secs(60);
++const STARTUP_SPANS_LOG_TARGET: &str = "horizon_terrain_mesh::spans::startup";
++#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
++const QUIET_CAFE_SERIAL: bool = match option_env!("HORIZON_WIIU_QUIET_SERIAL") {
++    Some(value) => {
++        let bytes = value.as_bytes();
++        bytes.len() == 1 && bytes[0] == b'1'
++    }
++    None => false,
++};
++#[cfg(not(all(feature = "cafe", target_arch = "powerpc")))]
++const QUIET_CAFE_SERIAL: bool = false;
+ 
+ /// The platform data folder (what the `dirs` crate's data_dir gives).
+ pub fn data_dir() -> PathBuf {
+@@ -453,10 +464,21 @@ fn ours(target: &str) -> bool {
+     target.starts_with("horizon")
+ }
+ 
++fn enabled_policy(level: log::Level, target: &str, quiet_cafe_serial: bool) -> bool {
++    if level > log::Level::Info {
++        return false;
++    }
++    if quiet_cafe_serial {
++        level <= log::Level::Warn
++            || (level == log::Level::Info && target == STARTUP_SPANS_LOG_TARGET)
++    } else {
++        ours(target) || level <= log::Level::Error
++    }
++}
++
+ impl log::Log for Logger {
+     fn enabled(&self, meta: &log::Metadata) -> bool {
+-        meta.level() <= log::Level::Info
+-            && (ours(meta.target()) || meta.level() <= log::Level::Error)
++        enabled_policy(meta.level(), meta.target(), QUIET_CAFE_SERIAL)
+     }
+ 
+     fn log(&self, record: &log::Record) {
+@@ -688,6 +710,33 @@ pub fn newest_crash_report(home: &Path) -> Option<PathBuf> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn quiet_cafe_serial_policy_keeps_warnings_errors_and_startup_spans() {
++        assert!(enabled_policy(
++            log::Level::Info,
++            "horizon_terrain_mesh::spans::startup",
++            true
++        ));
++        assert!(!enabled_policy(
++            log::Level::Info,
++            "horizon_client::title",
++            true
++        ));
++        assert!(!enabled_policy(
++            log::Level::Info,
++            "horizon_terrain_mesh::spans",
++            true
++        ));
++        assert!(enabled_policy(log::Level::Warn, "external_crate", true));
++        assert!(enabled_policy(log::Level::Error, "external_crate", true));
++        assert!(!enabled_policy(log::Level::Debug, STARTUP_SPANS_LOG_TARGET, true));
++
++        // The default preserves the existing desktop and ordinary Cafe filter.
++        assert!(enabled_policy(log::Level::Info, "horizon_client::title", false));
++        assert!(!enabled_policy(log::Level::Info, "external_crate", false));
++        assert!(enabled_policy(log::Level::Error, "external_crate", false));
++    }
++
+     #[test]
+     fn a_player_dir_keeps_the_shared_files_in_the_game_folder() {
+         let (game, player) = (Path::new("/games/shared"), Path::new("/games/players/alex"));
+diff --git a/crates/horizon-client/src/lan/io_pool.rs b/crates/horizon-client/src/lan/io_pool.rs
+index 1b193ca7ebd..4e6a920b203 100644
+--- a/crates/horizon-client/src/lan/io_pool.rs
++++ b/crates/horizon-client/src/lan/io_pool.rs
+@@ -14,6 +14,8 @@ use mio::{Events, Interest, Poll, Registry, Token, Waker};
+ type Registry = ();
+ #[cfg(any(target_os = "cafe", test))]
+ use std::sync::Condvar;
++#[cfg(test)]
++use std::sync::atomic::AtomicBool;
+ use std::{
+     io::{ErrorKind, Read, Write},
+     sync::{
+@@ -35,6 +37,23 @@ const SWEEP: Duration = Duration::from_millis(100);
+ const AHEAD: usize = 256 << 10;
+ /// How long a disconnect's last bytes are given before the socket closes.
+ const LINGER: Duration = Duration::from_millis(50);
++/// Cafe has no mio poller, so its Condvar worker checks nonblocking TCP at
++/// this interval. In-memory pipes still wake it immediately.
++#[cfg(any(target_os = "cafe", test))]
++const TCP_POLL: Duration = Duration::from_millis(10);
++#[cfg(any(target_os = "cafe", test))]
++fn tcp_poll_interval() -> Duration {
++    TCP_POLL
++}
++#[cfg(test)]
++static TEST_CONDVAR_POLLER: AtomicBool = AtomicBool::new(false);
++
++/// Select the Cafe-style backend for a fresh unit-test process. `POOL` is a
++/// process singleton, so the integration test that uses this must run alone.
++#[cfg(test)]
++pub(super) fn use_condvar_poller_for_test() {
++    TEST_CONDVAR_POLLER.store(true, Ordering::Relaxed);
++}
+ #[cfg(not(target_os = "cafe"))]
+ const WAKER: Token = Token(usize::MAX);
+ 
+@@ -219,6 +238,8 @@ impl Worker {
+ 
+ struct Pool {
+     workers: Vec<Arc<Worker>>,
++    #[cfg(test)]
++    condvar_poller: bool,
+ }
+ 
+ /// The pool, started the first time: one thread per two cores.
+@@ -232,19 +253,34 @@ fn pool() -> Result<&'static Pool, String> {
+ 
+ fn start(threads: usize) -> std::io::Result<Pool> {
+     let mut workers = Vec::new();
++    #[cfg(test)]
++    let condvar_poller = TEST_CONDVAR_POLLER.load(Ordering::Relaxed);
+     for n in 0..threads {
+         #[cfg(not(target_os = "cafe"))]
+-        let poll = Poll::new()?;
++        #[cfg(test)]
++        let poll = if condvar_poller {
++            None
++        } else {
++            Some(Poll::new()?)
++        };
++        #[cfg(all(not(target_os = "cafe"), not(test)))]
++        let poll = Some(Poll::new()?);
+         let worker = Arc::new(Worker {
+             #[cfg(not(target_os = "cafe"))]
+-            waker: Some(Waker::new(poll.registry(), WAKER)?),
++            waker: poll
++                .as_ref()
++                .map(|poll| Waker::new(poll.registry(), WAKER))
++                .transpose()?,
+             #[cfg(any(target_os = "cafe", test))]
+             ready: Condvar::new(),
+             inbox: Mutex::default(),
+             load: AtomicUsize::new(0),
+         });
+         #[cfg(not(target_os = "cafe"))]
+-        let poll = Poller::Socket(poll);
++        #[cfg(test)]
++        let poll = poll.map_or(Poller::Memory, Poller::Socket);
++        #[cfg(all(not(target_os = "cafe"), not(test)))]
++        let poll = Poller::Socket(poll.expect("desktop socket poller"));
+         #[cfg(target_os = "cafe")]
+         let poll = Poller::Memory;
+         let mine = worker.clone();
+@@ -253,7 +289,16 @@ fn start(threads: usize) -> std::io::Result<Pool> {
+             .spawn(move || run(poll, &mine))?;
+         workers.push(worker);
+     }
+-    Ok(Pool { workers })
++    Ok(Pool {
++        workers,
++        #[cfg(test)]
++        condvar_poller,
++    })
++}
++
++#[cfg(test)]
++pub(super) fn condvar_poller_for_test() -> Result<bool, String> {
++    pool().map(|pool| pool.condvar_poller)
+ }
+ 
+ enum Poller {
+@@ -329,6 +374,11 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+             }
+             #[cfg(any(target_os = "cafe", test))]
+             Poller::Memory => {
++                let wait = if conns.iter().flatten().any(|c| c.io.is_tcp_std()) {
++                    wait.min(tcp_poll_interval())
++                } else {
++                    wait
++                };
+                 let inbox = worker.inbox.lock().unwrap_or_else(PoisonError::into_inner);
+                 let _guard = worker
+                     .ready
+@@ -385,6 +435,16 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+                 touched.push(i);
+             }
+         }
++        #[cfg(any(target_os = "cafe", test))]
++        if matches!(poll, Poller::Memory) {
++            for (i, slot) in conns.iter_mut().enumerate() {
++                if let Some(c) = slot.as_mut().filter(|c| c.io.is_tcp_std()) {
++                    c.read(now);
++                    c.serve(now);
++                    touched.push(i);
++                }
++            }
++        }
+         if now >= sweep_at {
+             sweep_at = now + SWEEP;
+             touched.clear();
+@@ -408,14 +468,24 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+ /// A connection's stream, polled.
+ enum Io {
+     #[cfg(not(target_os = "cafe"))]
+-    Tcp(mio::net::TcpStream),
++    TcpMio(mio::net::TcpStream),
++    #[cfg(any(target_os = "cafe", test))]
++    TcpStd(std::net::TcpStream),
+     Memory(Pipe),
+ }
++impl Io {
++    #[cfg(any(target_os = "cafe", test))]
++    fn is_tcp_std(&self) -> bool {
++        matches!(self, Self::TcpStd(_))
++    }
++}
+ impl Read for Io {
+     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+         match self {
+             #[cfg(not(target_os = "cafe"))]
+-            Self::Tcp(s) => s.read(out),
++            Self::TcpMio(s) => s.read(out),
++            #[cfg(any(target_os = "cafe", test))]
++            Self::TcpStd(s) => s.read(out),
+             Self::Memory(p) => p.read(out),
+         }
+     }
+@@ -424,7 +494,9 @@ impl Write for Io {
+     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+         match self {
+             #[cfg(not(target_os = "cafe"))]
+-            Self::Tcp(s) => s.write(data),
++            Self::TcpMio(s) => s.write(data),
++            #[cfg(any(target_os = "cafe", test))]
++            Self::TcpStd(s) => s.write(data),
+             Self::Memory(p) => p.write(data),
+         }
+     }
+@@ -475,30 +547,30 @@ impl Conn {
+         let io = match a.socket {
+             Socket::Tcp(stream) => {
+                 #[cfg(not(target_os = "cafe"))]
+-                let registered = stream.set_nonblocking(true).and_then(|()| {
+-                    let registry = registry.ok_or_else(|| {
+-                        std::io::Error::new(
++                let registered = if let Some(registry) = registry {
++                    stream.set_nonblocking(true).and_then(|()| {
++                        let mut stream = mio::net::TcpStream::from_std(stream);
++                        let interest = Interest::READABLE | Interest::WRITABLE;
++                        registry.register(&mut stream, Token(i), interest)?;
++                        Ok(Io::TcpMio(stream))
++                    })
++                } else {
++                    #[cfg(test)]
++                    {
++                        stream.set_nonblocking(true).map(|()| Io::TcpStd(stream))
++                    }
++                    #[cfg(not(test))]
++                    {
++                        Err(std::io::Error::new(
+                             ErrorKind::Unsupported,
+                             "TCP is unavailable in the memory poller",
+-                        )
+-                    })?;
+-                    let mut stream = mio::net::TcpStream::from_std(stream);
+-                    let interest = Interest::READABLE | Interest::WRITABLE;
+-                    registry.register(&mut stream, Token(i), interest)?;
+-                    Ok(stream)
+-                });
+-                #[cfg(target_os = "cafe")]
+-                let registered: std::io::Result<Io> = {
+-                    drop(stream);
+-                    Err(std::io::Error::new(
+-                        ErrorKind::Unsupported,
+-                        "TCP is unavailable on Cafe",
+-                    ))
++                        ))
++                    }
+                 };
++                #[cfg(target_os = "cafe")]
++                let registered: std::io::Result<Io> =
++                    stream.set_nonblocking(true).map(|()| Io::TcpStd(stream));
+                 match registered {
+-                    #[cfg(not(target_os = "cafe"))]
+-                    Ok(stream) => Io::Tcp(stream),
+-                    #[cfg(target_os = "cafe")]
+                     Ok(io) => io,
+                     Err(e) => {
+                         let mut session = a.session;
+@@ -704,12 +776,16 @@ impl Conn {
+     fn close(mut self, registry: Option<&Registry>, worker: &Worker) {
+         match &mut self.io {
+             #[cfg(not(target_os = "cafe"))]
+-            Io::Tcp(stream) => {
++            Io::TcpMio(stream) => {
+                 let _ = registry
+                     .expect("TCP requires a socket poller")
+                     .deregister(stream);
+                 let _ = stream.shutdown(std::net::Shutdown::Both);
+             }
++            #[cfg(any(target_os = "cafe", test))]
++            Io::TcpStd(stream) => {
++                let _ = stream.shutdown(std::net::Shutdown::Both);
++            }
+             Io::Memory(pipe) => {
+                 pipe.on_ready(|| {});
+                 pipe.shutdown();
+@@ -811,19 +887,22 @@ mod tests {
+         }
+     }
+     /// Exercise the same condition-variable poller used by Cafe on the host.
+-    fn serve_memory(
+-        server: Connection,
+-        probe: impl FnOnce(Sender<Seen>) -> Probe,
+-        timeout: Duration,
+-    ) -> Served {
+-        let pending = Arc::new(AtomicUsize::new(0));
+-        let worker = Arc::new(Worker {
++    fn memory_worker() -> Arc<Worker> {
++        Arc::new(Worker {
+             #[cfg(not(target_os = "cafe"))]
+             waker: None,
+             ready: Condvar::new(),
+             inbox: Mutex::default(),
+             load: AtomicUsize::new(0),
+-        });
++        })
++    }
++    fn serve_memory_on(
++        server: Connection,
++        probe: impl FnOnce(Sender<Seen>) -> Probe,
++        timeout: Duration,
++        worker: &Arc<Worker>,
++    ) -> Served {
++        let pending = Arc::new(AtomicUsize::new(0));
+         let outbox = Arc::new(Outbox {
+             queue: Mutex::default(),
+             pending: pending.clone(),
+@@ -839,13 +918,22 @@ mod tests {
+             Box::new(probe(tx)),
+             timeout,
+         );
+-        std::thread::spawn(move || run(Poller::Memory, &worker));
+         Served {
+             outbox,
+             pending,
+             seen,
+         }
+     }
++    fn serve_memory(
++        server: Connection,
++        probe: impl FnOnce(Sender<Seen>) -> Probe,
++        timeout: Duration,
++    ) -> Served {
++        let worker = memory_worker();
++        let served = serve_memory_on(server, probe, timeout, &worker);
++        std::thread::spawn(move || run(Poller::Memory, &worker));
++        served
++    }
+     fn quiet(seen: Sender<Seen>) -> Probe {
+         Probe {
+             seen,
+@@ -902,16 +990,83 @@ mod tests {
+         assert_eq!(served.next(), Seen::Left("Timed out".into()));
+         assert_eq!(served.next(), Seen::Closed);
+         assert!(client.recv().unwrap_err().is_end_of_stream());
++    }
+ 
+-        #[cfg(not(target_os = "cafe"))]
+-        {
+-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+-            let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+-            let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+-            let served = serve_memory(server, quiet, Duration::from_secs(30));
+-            assert!(matches!(served.next(), Seen::Left(reason) if reason.contains("unavailable")));
+-            assert_eq!(served.next(), Seen::Closed);
++    /// The Cafe-style Condvar worker scans nonblocking TCP while Pipe readiness
++    /// still wakes it immediately. Split framing across writes to exercise the
++    /// same codec path as desktop mio without depending on network multicast.
++    #[test]
++    fn condvar_poller_scans_tcp_and_keeps_pipe_wakeups() {
++        let worker = memory_worker();
++        let (pipe_client, pipe_server) = Pipe::pair();
++        let pipe_connection = Connection::local(pipe_server);
++        let pipe_served = serve_memory_on(pipe_connection, quiet, Duration::from_secs(30), &worker);
++
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
++        client
++            .set_read_timeout(Some(Duration::from_secs(5)))
++            .unwrap();
++        let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
++        let tcp_served = serve_memory_on(server, quiet, Duration::from_secs(30), &worker);
++        std::thread::spawn(move || run(Poller::Memory, &worker));
++
++        // A silent TCP connection must not keep the worker from servicing a
++        // pipe, whose callback remains an immediate Condvar wake.
++        let mut pipe_client = Connection::local(pipe_client);
++        pipe_client.send(&body(4, 7)).unwrap();
++        assert_eq!(
++            pipe_served.next(),
++            Seen::Packet(4, body(4, 7)[1..].to_vec())
++        );
++
++        // Write a small packet frame in pieces; the scanner must retain the
++        // partial frame across its WouldBlock returns.
++        let mut client = client;
++        let payload = body(7, 11);
++        client.write_all(&[payload.len() as u8]).unwrap();
++        std::thread::sleep(tcp_poll_interval() * 2);
++        client.write_all(&payload[..3]).unwrap();
++        std::thread::sleep(tcp_poll_interval() * 2);
++        client.write_all(&payload[3..]).unwrap();
++        assert_eq!(tcp_served.next(), Seen::Packet(7, payload[1..].to_vec()));
++
++        let response = body(8, 13);
++        tcp_served.send(vec![response.clone()], None);
++        let mut received = vec![0; response.len() + 1];
++        client.read_exact(&mut received).unwrap();
++        assert_eq!(received, [&[response.len() as u8][..], &response].concat());
++
++        drop(client);
++        assert_eq!(tcp_served.next(), Seen::Left("Disconnected".into()));
++        assert_eq!(tcp_served.next(), Seen::Closed);
++        assert_eq!(tcp_served.pending.load(Ordering::Relaxed), 0);
++    }
++
++    /// A peer that stops reading eventually fills its socket. The Cafe-style
++    /// worker must retain bounded output and close it on an explicit outbox
++    /// close.
++    #[test]
++    fn condvar_tcp_poller_handles_backpressure_and_close() {
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
++        let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
++        let served = serve_memory(server, quiet, Duration::from_secs(30));
++        let full = || {
++            std::thread::sleep(tcp_poll_interval() * 2);
++            served.pending.load(Ordering::Relaxed) > 0
++        };
++        for i in 0..=u8::MAX {
++            if full() && full() && full() {
++                break;
++            }
++            assert!(i < u8::MAX, "the socket took everything");
++            served.send(vec![body(i, 1 << 20)], None);
+         }
++        served.send(Vec::new(), Some(End::Close));
++        assert_eq!(served.next(), Seen::Left("Disconnected".into()));
++        assert_eq!(served.next(), Seen::Closed);
++        drop(client);
+     }
+ 
+     #[cfg(not(target_os = "cafe"))]
+diff --git a/crates/horizon-client/src/lan/mod.rs b/crates/horizon-client/src/lan/mod.rs
+index f42c4662b7d..bf3ea527202 100644
+--- a/crates/horizon-client/src/lan/mod.rs
++++ b/crates/horizon-client/src/lan/mod.rs
+@@ -645,7 +645,6 @@ impl Lan {
+     }
+     /// The socket [`Lan::listen`] accepts on, bound ahead so that a failure
+     /// can be reported before the hub is at hand.
+-    #[cfg(not(target_os = "cafe"))]
+     pub fn bind(address: Option<std::net::IpAddr>, port: u16) -> io::Result<TcpListener> {
+         let bind = address.unwrap_or_else(|| {
+             if test_loopback() {
+@@ -658,16 +657,7 @@ impl Lan {
+         listener.set_nonblocking(true)?;
+         Ok(listener)
+     }
+-    /// Cafe currently supports the in-process connection, not TCP listeners.
+-    #[cfg(target_os = "cafe")]
+-    pub fn bind(_address: Option<std::net::IpAddr>, _port: u16) -> io::Result<TcpListener> {
+-        Err(io::Error::new(
+-            io::ErrorKind::Unsupported,
+-            "LAN TCP is unavailable on Cafe",
+-        ))
+-    }
+     /// [`Lan::listen`] on a socket already bound.
+-    #[cfg(not(target_os = "cafe"))]
+     pub fn listen_on(&mut self, listener: TcpListener, announce: bool) -> io::Result<u16> {
+         if self.listener.is_some() {
+             return Err(io::Error::new(
+@@ -675,6 +665,10 @@ impl Lan {
+                 "already listening",
+             ));
+         }
++        // `listen_on` also accepts a caller-provided listener. Keep accept
++        // interruptible by `stop_listening` even when that socket was created
++        // in blocking mode.
++        listener.set_nonblocking(true)?;
+         let port = listener.local_addr()?.port();
+         let stop = Arc::new(AtomicBool::new(false));
+         let (accept_shared, accept_stop) = (self.shared.clone(), stop.clone());
+@@ -691,14 +685,6 @@ impl Lan {
+         self.port = port;
+         Ok(port)
+     }
+-    /// Do not advertise a listener whose TCP connections cannot be served.
+-    #[cfg(target_os = "cafe")]
+-    pub fn listen_on(&mut self, _listener: TcpListener, _announce: bool) -> io::Result<u16> {
+-        Err(io::Error::new(
+-            io::ErrorKind::Unsupported,
+-            "LAN TCP is unavailable on Cafe",
+-        ))
+-    }
+     /// Stop accepting connections and announcing; connections already in
+     /// (the local one included) stay.
+     pub fn stop_listening(&mut self) {
+@@ -1001,6 +987,189 @@ mod tests {
+         );
+         drop(local);
+     }
++
++    #[test]
++    fn stopping_a_listener_created_in_blocking_mode_does_not_stall() {
++        let config = NetConfig {
++            announce: false,
++            listen: false,
++            ..NetConfig::loopback(0, "Stop test".into(), 1)
++        };
++        let mut lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
++        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
++        lan.listen_on(listener, false).unwrap();
++        assert!(lan.listening());
++
++        let started = Instant::now();
++        lan.stop_listening();
++        assert!(started.elapsed() < Duration::from_secs(1));
++        assert!(!lan.listening());
++    }
++
++    /// End-to-end host-side proof of the Cafe network worker: the real LAN
++    /// listener accepts a TCP client, completes the offline login and
++    /// configuration phases, then the Condvar worker forwards a play packet.
++    /// This is ignored because the worker pool is process-global; run this
++    /// test alone so its backend is selected before the pool's first start.
++    #[test]
++    #[ignore = "uses the process-global network pool; run alone to select the Condvar backend"]
++    fn a_tcp_login_reaches_play_through_condvar_worker() {
++        use horizon_protocol::{
++            PROTOCOL_VERSION,
++            connection::Connection,
++            crypto::offline_uuid,
++            packets::{
++                Empty,
++                configuration::{self as cfg, ClientInformation},
++                handshake, login, play,
++            },
++        };
++
++        super::io_pool::use_condvar_poller_for_test();
++        assert!(
++            super::io_pool::condvar_poller_for_test().unwrap(),
++            "network pool was already initialized without the Condvar backend"
++        );
++        let mut lan = Lan::start_with(
++            Arc::new(data::SyncData::empty()),
++            NetConfig::loopback(0, "Condvar listener".into(), 4),
++        )
++        .unwrap();
++        let mut client =
++            Connection::connect("127.0.0.1", lan.port, Duration::from_secs(5)).unwrap();
++        client
++            .reader
++            .set_read_timeout(Some(Duration::from_secs(5)))
++            .unwrap();
++        client
++            .send(
++                &handshake::Serverbound::Intention(handshake::Intention {
++                    protocol: PROTOCOL_VERSION,
++                    host: "127.0.0.1".into(),
++                    port: lan.port,
++                    intent: handshake::LOGIN,
++                })
++                .encode(),
++            )
++            .unwrap();
++        client
++            .send(
++                &login::Serverbound::Hello(login::ServerHello {
++                    name: "CondvarBot".into(),
++                    uuid: offline_uuid("CondvarBot"),
++                })
++                .encode(),
++            )
++            .unwrap();
++        loop {
++            let (id, payload) = client.recv().unwrap();
++            match login::Clientbound::decode(id, &payload).unwrap() {
++                login::Clientbound::Compression(compression) => {
++                    client.set_compression(compression.threshold)
++                }
++                login::Clientbound::LoginFinished(profile) => {
++                    assert_eq!(profile.profile.name, "CondvarBot");
++                    client
++                        .send(&login::Serverbound::LoginAcknowledged(Empty).encode())
++                        .unwrap();
++                    break;
++                }
++                other => panic!("unexpected login packet {other:?}"),
++            }
++        }
++
++        client
++            .send(&cfg::Serverbound::ClientInformation(ClientInformation::new(10)).encode())
++            .unwrap();
++        let mut brand = horizon_protocol::buf::Writer::new();
++        brand.string("vanilla");
++        client
++            .send(
++                &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
++                    channel: "minecraft:brand".into(),
++                    data: brand.data,
++                })
++                .encode(),
++            )
++            .unwrap();
++        loop {
++            let (id, payload) = client.recv().unwrap();
++            match cfg::Clientbound::decode(id, &payload).unwrap() {
++                cfg::Clientbound::SelectKnownPacks(packs) => client
++                    .send(
++                        &cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks {
++                            packs: packs.packs,
++                        })
++                        .encode(),
++                    )
++                    .unwrap(),
++                cfg::Clientbound::FinishConfiguration(_) => {
++                    client
++                        .send(&cfg::Serverbound::FinishConfiguration(Empty).encode())
++                        .unwrap();
++                    break;
++                }
++                _ => {}
++            }
++        }
++
++        // Keep the Joined sender alive, as the game thread does, and wait for
++        // conn::play to install the connection in the network pool.
++        let deadline = Instant::now() + Duration::from_secs(5);
++        let joined = loop {
++            let mut found = None;
++            for event in lan.poll() {
++                if let NetEvent::Joined(joined) = event {
++                    assert_eq!(joined.name, "CondvarBot");
++                    found = Some(joined);
++                    break;
++                }
++            }
++            if let Some(joined) = found {
++                break joined;
++            }
++            assert!(Instant::now() < deadline, "login never reached play");
++            std::thread::sleep(Duration::from_millis(10));
++        };
++
++        let play_payload = vec![0x51, 0x27, 0x03];
++        client
++            .send(
++                &play::Serverbound::CustomPayload(cfg::CustomPayload {
++                    channel: "minecraft:test".into(),
++                    data: play_payload.clone(),
++                })
++                .encode(),
++            )
++            .unwrap();
++        let packet_deadline = Instant::now() + Duration::from_secs(5);
++        let mut saw_play_payload = false;
++        while Instant::now() < packet_deadline && !saw_play_payload {
++            for event in lan.poll() {
++                if let NetEvent::Packet(_, packet, _) = event
++                    && matches!(
++                        *packet,
++                        play::Serverbound::CustomPayload(ref p)
++                            if p.channel == "minecraft:test" && p.data == play_payload
++                    )
++                {
++                    saw_play_payload = true;
++                    break;
++                }
++            }
++            if !saw_play_payload {
++                std::thread::sleep(Duration::from_millis(10));
++            }
++        }
++        assert!(
++            saw_play_payload,
++            "Cafe-style TCP worker did not forward play packet"
++        );
++        drop(joined);
++        drop(client);
++        lan.stop();
++    }
++
+     use super::conn::MEMORY_ADDRESS;
+     use super::*;
+     use std::{io::Read, time::Instant};
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index e2eb97a0fe9..442a3d306dc 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -51,6 +51,73 @@ const VERSION: u32 = 2;
+ const HEADER: usize = 40;
+ const ENTRY: usize = 24;
+ 
++/* Cafe has no canonicalize implementation or filesystem symlinks. Resolve a
++ * normalized relative root against the current directory, but reject other
++ * spellings rather than borrowing another root's resources. */
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_cache_root(path: &Path, current: Option<&Path>) -> io::Result<PathBuf> {
++    let text = path
++        .to_str()
++        .filter(|text| !text.is_empty())
++        .ok_or_else(|| {
++            io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "cache root is empty or not UTF-8",
++            )
++        })?;
++    let absolute = if text.starts_with('/') {
++        text.to_owned()
++    } else {
++        let base = current.and_then(Path::to_str).ok_or_else(|| {
++            io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "cache root has no current directory",
++            )
++        })?;
++        format!("{}/{text}", base.trim_end_matches('/'))
++    };
++    let text = absolute.as_str();
++    if !text.starts_with('/') || text.len() <= 1 {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "cache root is not absolute",
++        ));
++    }
++    if text[1..]
++        .split('/')
++        .any(|part| part.is_empty() || part == "." || part == "..")
++    {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "cache root is not normalized",
++        ));
++    }
++    Ok(PathBuf::from(text))
++}
++
++fn cache_root(path: &Path) -> io::Result<PathBuf> {
++    #[cfg(target_os = "cafe")]
++    {
++        let current = if path.to_str().is_some_and(|text| text.starts_with('/')) {
++            None
++        } else {
++            Some(std::env::current_dir()?)
++        };
++        let root = cafe_cache_root(path, current.as_deref())?;
++        if !fs::metadata(&root)?.is_dir() {
++            return Err(io::Error::new(
++                io::ErrorKind::NotADirectory,
++                "cache root is not a directory",
++            ));
++        }
++        Ok(root)
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        fs::canonicalize(path)
++    }
++}
++
+ /// Whether `name` (from the root) is a file this holds: under its folders,
+ /// and not a sound (hundreds of MB, read one at a time while playing).
+ fn holds_file(name: &str) -> bool {
+@@ -160,8 +227,8 @@ impl PreparedFiles {
+         let (source, rest) = rest.split_at(pad(source_len) as usize);
+         let (raw_entries, pool) = rest.split_at(index_len as usize);
+         prepared_trace!("Horizon prepared files: root validation begin");
+-        let root_matches = written_root[..root_len as usize]
+-            == *fs::canonicalize(root)?.as_os_str().as_encoded_bytes();
++        let root_matches =
++            written_root[..root_len as usize] == *cache_root(root)?.as_os_str().as_encoded_bytes();
+         prepared_trace!("Horizon prepared files: root validation complete matches={root_matches}");
+         if !root_matches {
+             return Ok(None);
+@@ -455,7 +522,7 @@ pub fn read_to_string(path: &Path) -> io::Result<String> {
+ /// written for a root without `horizon-resources.json`.
+ pub fn write(root: &Path) -> io::Result<()> {
+     let source = fs::read(root.join(SOURCE))?;
+-    let canonical = fs::canonicalize(root)?;
++    let canonical = cache_root(root)?;
+     let root_bytes = canonical.as_os_str().as_encoded_bytes();
+     let mut files = Vec::new();
+     for folder in FOLDERS {
+@@ -587,6 +654,43 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn cafe_cache_identity_requires_an_unambiguous_absolute_root() {
++        let root = "/vol/external01/wiiu/apps/HorizonWiiU/.local/horizon-client/26.3";
++        assert_eq!(
++            cafe_cache_root(Path::new(root), None).unwrap().to_str(),
++            Some(root)
++        );
++        assert_eq!(
++            cafe_cache_root(
++                Path::new(".local/horizon-client/26.3"),
++                Some(Path::new("/vol/external01/wiiu/apps/HorizonWiiU")),
++            )
++            .unwrap()
++            .to_str(),
++            Some(root)
++        );
++        for path in [
++            "",
++            "/",
++            "relative/root",
++            "/one/../two",
++            "/one/./two",
++            "/one//two",
++            "/one/",
++        ] {
++            assert!(
++                cafe_cache_root(Path::new(path), None).is_err(),
++                "accepted {path:?}"
++            );
++        }
++        assert_ne!(
++            cafe_cache_root(Path::new("/one/resources"), None).unwrap(),
++            cafe_cache_root(Path::new("/two/resources"), None).unwrap()
++        );
++        assert!(cafe_cache_root(Path::new("../outside"), Some(Path::new("/app"))).is_err());
++    }
++
+     /// A prepared root with a few files, as `horizon-prepare` leaves it.
+     fn root(tag: &str) -> PathBuf {
+         let root = std::env::temp_dir().join(format!("hz-prepared-{tag}-{}", std::process::id()));
+diff --git a/crates/horizon-threads/src/jobs.rs b/crates/horizon-threads/src/jobs.rs
+index 5a2e75040bc..5620c255190 100644
+--- a/crates/horizon-threads/src/jobs.rs
++++ b/crates/horizon-threads/src/jobs.rs
+@@ -25,6 +25,141 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
+ use std::time::{Duration, Instant};
+ 
++#[cfg(target_os = "cafe")]
++const PROFILE_CAFE_WORKERS: bool = match option_env!("HORIZON_WIIU_PROFILE_CORES") {
++    Some(value) => {
++        let bytes = value.as_bytes();
++        bytes.len() == 1 && bytes[0] == b'1'
++    }
++    None => false,
++};
++
++#[cfg(target_os = "cafe")]
++mod cafe_worker_profile {
++    use super::*;
++    use std::ffi::c_char;
++
++    const CORE_COUNT: usize = 3;
++    // Bucket 3 records any unexpected OSGetCoreId value instead of dropping it.
++    const OTHER_CORE_BUCKET: usize = CORE_COUNT;
++    const CORE_BUCKET_COUNT: usize = CORE_COUNT + 1;
++    const REPORT_INTERVAL: Duration = Duration::from_secs(5);
++
++    unsafe extern "C" {
++        fn OSGetCurrentThread() -> *mut core::ffi::c_void;
++        fn OSGetThreadAffinity(thread: *mut core::ffi::c_void) -> u32;
++        fn OSGetCoreId() -> u32;
++        fn OSReport(format: *const c_char, ...);
++    }
++
++    #[derive(Clone, Copy, Default)]
++    struct CoreStats {
++        starts: u64,
++        claimed: u64,
++        empty: u64,
++        panicked: u64,
++        end_core_changed: u64,
++        wall_ns: u64,
++    }
++
++    pub(super) struct WorkerProfile {
++        worker: usize,
++        affinity: u32,
++        last_report: Instant,
++        by_start_core: [CoreStats; CORE_BUCKET_COUNT],
++    }
++
++    impl WorkerProfile {
++        pub(super) fn start(worker: usize) -> Self {
++            let thread = unsafe { OSGetCurrentThread() };
++            let start_core = unsafe { OSGetCoreId() };
++            let affinity = unsafe { OSGetThreadAffinity(thread) };
++            unsafe {
++                OSReport(
++                    c"Horizon Cafe job profile: worker=%u thread=%p start_core=%u allowed_affinity=0x%08x\n"
++                        .as_ptr(),
++                    worker as u32,
++                    thread,
++                    start_core,
++                    affinity,
++                );
++            }
++            Self {
++                worker,
++                affinity,
++                last_report: Instant::now(),
++                by_start_core: [CoreStats::default(); CORE_BUCKET_COUNT],
++            }
++        }
++
++        pub(super) fn begin_job(&self) -> (u32, Instant) {
++            (unsafe { OSGetCoreId() }, Instant::now())
++        }
++
++        pub(super) fn finish_job(
++            &mut self,
++            start_core: u32,
++            started: Instant,
++            result: &Result<bool, Box<dyn std::any::Any + Send>>,
++        ) {
++            let end_core = unsafe { OSGetCoreId() };
++            // Attribute the whole wall interval to its observed start core;
++            // this is not a claim that the job stayed on that core.
++            let start_bucket = if (start_core as usize) < CORE_COUNT {
++                start_core as usize
++            } else {
++                OTHER_CORE_BUCKET
++            };
++            let stats = &mut self.by_start_core[start_bucket];
++            stats.starts = stats.starts.saturating_add(1);
++            stats.wall_ns = stats
++                .wall_ns
++                .saturating_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
++            if end_core != start_core {
++                // Only the endpoints are sampled, so this is not a migration count.
++                stats.end_core_changed = stats.end_core_changed.saturating_add(1);
++            }
++            match result {
++                Ok(true) => stats.claimed = stats.claimed.saturating_add(1),
++                Ok(false) => stats.empty = stats.empty.saturating_add(1),
++                Err(_) => stats.panicked = stats.panicked.saturating_add(1),
++            }
++            self.report_if_due();
++        }
++
++        fn report_if_due(&mut self) {
++            // Reports are emitted only after a run boundary; a stuck job is
++            // intentionally not interrupted and cannot report until it returns.
++            let now = Instant::now();
++            if now.duration_since(self.last_report) < REPORT_INTERVAL {
++                return;
++            }
++            self.last_report = now;
++            for (core, stats) in self.by_start_core.iter_mut().enumerate() {
++                if stats.starts == 0 {
++                    continue;
++                }
++                unsafe {
++                    OSReport(
++                        c"Horizon worker=%u start_core_bucket=%u runs=%u claimed=%u empty=%u panic=%u end_core_changed=%u wall_ms=%u affinity=0x%08x\n"
++                            .as_ptr(),
++                        self.worker as u32,
++                        core as u32,
++                        stats.starts.min(u32::MAX as u64) as u32,
++                        stats.claimed.min(u32::MAX as u64) as u32,
++                        stats.empty.min(u32::MAX as u64) as u32,
++                        stats.panicked.min(u32::MAX as u64) as u32,
++                        stats.end_core_changed.min(u32::MAX as u64) as u32,
++                        (stats.wall_ns / 1_000_000).min(u32::MAX as u64) as u32,
++                        self.affinity,
++                    );
++                }
++                *stats = CoreStats::default();
++            }
++    }
++    }
++}
++
+ #[cfg(not(target_has_atomic = "64"))]
+ use portable_atomic::AtomicU64;
+ #[cfg(target_has_atomic = "64")]
+@@ -423,6 +558,9 @@ fn take_far_place(inner: &Inner, cap: usize) -> bool {
+ }
+ 
+ fn work(inner: &Inner, worker: usize) {
++    #[cfg(target_os = "cafe")]
++    let mut profile = PROFILE_CAFE_WORKERS
++        .then(|| cafe_worker_profile::WorkerProfile::start(worker));
+     let mut released = false;
+     // When this worker last ran a job. A wake that finds no job for it (another
+     // worker took it, or a source woke the pool for nothing) doesn't restart its
+@@ -438,12 +576,26 @@ fn work(inner: &Inner, worker: usize) {
+             }
+             // A panicking job loses its own work, not the worker: the panic
+             // hook has already reported it.
+-            let _ = catch_unwind(AssertUnwindSafe(|| {
++            #[cfg(target_os = "cafe")]
++            let profile_started = profile
++                .as_ref()
++                .map(cafe_worker_profile::WorkerProfile::begin_job);
++            let job_result = catch_unwind(AssertUnwindSafe(|| {
+                 #[cfg(feature = "mimalloc")]
+                 let _tag =
+                     crate::HEAP_CENSUS.then(|| crate::heap_census::tag(entry.source.label()));
+                 entry.source.run(worker)
+             }));
++            #[cfg(not(target_os = "cafe"))]
++            let _ = job_result;
++            #[cfg(target_os = "cafe")]
++            if let (Some(profile), Some((start_core, started))) =
++                (profile.as_mut(), profile_started)
++            {
++                profile.finish_job(start_core, started, &job_result);
++            }
++            #[cfg(target_os = "cafe")]
++            drop(job_result);
+             if far {
+                 inner.far.fetch_sub(1, Ordering::SeqCst);
+             }
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 3c55d23bbe4..a69e00af5f4 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -13,10 +13,10 @@ use horizon_client_platform::{
+ };
+ use horizon_wiiu_loading_host::Gx2LoadingPresenter;
+ use horizon_wiiu_platform::{
++    ButtonHistory, VpadState,
+     keyboard::KeyboardAdapter,
+     mouse::{MouseAdapter, MouseOutput},
+     touch::TouchMapper,
+-    ButtonHistory, VpadState,
+ };
+ use std::cell::Cell;
+ use std::ffi::CString;
+@@ -25,6 +25,10 @@ use std::time::{Duration, Instant};
+ 
+ unsafe extern "C" {
+     fn OSReport(format: *const std::ffi::c_char, ...);
++    fn OSGetCoreCount() -> u32;
++    fn OSGetCoreId() -> u32;
++    fn OSGetCurrentThread() -> *mut std::ffi::c_void;
++    fn OSGetThreadAffinity(thread: *mut std::ffi::c_void) -> u32;
+     fn horizon_wiiu_app_is_running() -> i32;
+     fn horizon_wiiu_app_is_focused() -> i32;
+     fn horizon_wiiu_swkbd_input_occupied() -> i32;
+@@ -55,6 +59,22 @@ static CAFE_ALLOCATOR: horizon_client_platform::cafe_memory::MeasuredSystem =
+     horizon_client_platform::cafe_memory::MeasuredSystem;
+ 
+ const CAFE_APP_ROOT: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
++// Set at compile time only for diagnosing host-loop stalls or input delays.
++const VERBOSE_HOST_TRACE: bool = match option_env!("HORIZON_WIIU_VERBOSE_HOST_TRACE") {
++    Some(value) => {
++        let bytes = value.as_bytes();
++        bytes.len() == 1 && bytes[0] == b'1'
++    }
++    None => false,
++};
++// Set at compile time only to log a one-shot CPU topology snapshot.
++const PROFILE_CORES: bool = match option_env!("HORIZON_WIIU_PROFILE_CORES") {
++    Some(value) => {
++        let bytes = value.as_bytes();
++        bytes.len() == 1 && bytes[0] == b'1'
++    }
++    None => false,
++};
+ 
+ fn game_start_failure_status(entry_kind: CafeGameEntryKind) -> CafeLoadingStatus {
+     match entry_kind {
+@@ -78,6 +98,68 @@ macro_rules! startup_report {
+     }};
+ }
+ 
++/// Log the system and Rust parallelism view once, without changing scheduling
++/// or thread affinity. The core ID and affinity are for this calling thread.
++fn report_core_topology_once() {
++    if !PROFILE_CORES {
++        return;
++    }
++
++    let core_count = unsafe { OSGetCoreCount() };
++    let current_core = unsafe { OSGetCoreId() };
++    let current_thread = unsafe { OSGetCurrentThread() };
++    let available_parallelism = std::thread::available_parallelism()
++        .map(|available| available.get().min(u32::MAX as usize) as u32);
++    if current_thread.is_null() {
++        match available_parallelism {
++            Ok(available) => unsafe {
++                OSReport(
++                    "Horizon Wii U core profile: system_core_count=%u calling_thread_current_core=%u calling_thread_affinity=unavailable rust_available_parallelism=%u\n\0"
++                        .as_ptr()
++                        .cast(),
++                    core_count,
++                    current_core,
++                    available,
++                );
++            },
++            Err(_) => unsafe {
++                OSReport(
++                    "Horizon Wii U core profile: system_core_count=%u calling_thread_current_core=%u calling_thread_affinity=unavailable rust_available_parallelism=error\n\0"
++                        .as_ptr()
++                        .cast(),
++                    core_count,
++                    current_core,
++                );
++            },
++        }
++    } else {
++        let affinity = unsafe { OSGetThreadAffinity(current_thread) };
++        match available_parallelism {
++            Ok(available) => unsafe {
++                OSReport(
++                    "Horizon Wii U core profile: system_core_count=%u calling_thread_current_core=%u calling_thread_affinity_mask=0x%08x rust_available_parallelism=%u\n\0"
++                        .as_ptr()
++                        .cast(),
++                    core_count,
++                    current_core,
++                    affinity,
++                    available,
++                );
++            },
++            Err(_) => unsafe {
++                OSReport(
++                    "Horizon Wii U core profile: system_core_count=%u calling_thread_current_core=%u calling_thread_affinity_mask=0x%08x rust_available_parallelism=error\n\0"
++                        .as_ptr()
++                        .cast(),
++                    core_count,
++                    current_core,
++                    affinity,
++                );
++            },
++        }
++    }
++}
++
+ /// Called by C before WHB/GX2 initialization so all getrandom versions are
+ /// anchored and the Cafe system RNG is checked before platform startup.
+ #[no_mangle]
+@@ -89,6 +171,7 @@ pub extern "C" fn horizon_wiiu_app_entropy_first() {
+ #[no_mangle]
+ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
+     startup_report!("Rust app entry reached");
++    report_core_topology_once();
+     cafe_socket_setup_trace();
+     // Cafe std's FS backend mounts the SD card at /vol/external01 when its
+     // first filesystem operation initializes the FS client. Set a known app
+@@ -808,8 +891,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         let mut host_loop_iteration = 0u32;
+         let mut periodic_trace_windows = 0u16;
+         let mut last_loading_status = session.status();
+-        // Trace one iteration every two seconds for up to ten minutes after
+-        // startup, plus short input windows and a bounded post-keyboard window.
++        // The verbose trace is opt-in because it writes many phase records to
++        // the Cafe serial logger and can perturb the loop being measured.
+         let mut trace_next_iteration = false;
+         let mut post_input_trace_frames = 0u16;
+         let mut post_input_trace_bursts = 3u8;
+@@ -822,7 +905,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         loop {
+             host_loop_iteration = host_loop_iteration.saturating_add(1);
+             let now = Instant::now();
+-            let periodic_trace_due = periodic_trace_windows < 300 && now >= periodic_trace_at;
++            let periodic_trace_due =
++                VERBOSE_HOST_TRACE && periodic_trace_windows < 300 && now >= periodic_trace_at;
+             if periodic_trace_due {
+                 periodic_trace_windows += 1;
+                 periodic_trace_at = now + Duration::from_secs(2);
+@@ -831,11 +915,13 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             // 416 while loader workers kept progressing. Trace a bounded
+             // window around that transition so the last begin/complete phase
+             // identifies a blocked host call without logging every frame.
+-            let host_stall_trace_window = (400..=450).contains(&host_loop_iteration);
+-            let mut trace_this_iteration = post_input_trace_frames > 0
+-                || periodic_trace_due
+-                || trace_next_iteration
+-                || host_stall_trace_window;
++            let host_stall_trace_window =
++                VERBOSE_HOST_TRACE && (400..=450).contains(&host_loop_iteration);
++            let mut trace_this_iteration = VERBOSE_HOST_TRACE
++                && (post_input_trace_frames > 0
++                    || periodic_trace_due
++                    || trace_next_iteration
++                    || host_stall_trace_window);
+             if trace_this_iteration {
+                 if post_input_trace_frames > 0 {
+                     post_input_trace_frames -= 1;
+@@ -1045,7 +1131,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     startup_report!("Cafe VPAD sample is neutral");
+                 }
+             }
+-            if (controller_button_active || touch_contact_active)
++            if VERBOSE_HOST_TRACE
++                && (controller_button_active || touch_contact_active)
+                 && post_input_trace_frames == 0
+                 && post_input_trace_bursts > 0
+             {
+@@ -1121,13 +1208,15 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 // CafeOS keyboard completion is the boundary where text
+                 // returns to the original form. Keep tracing the following
+                 // host-loop iterations long enough to catch a delayed stall.
+-                post_input_trace_frames = 480;
++                post_input_trace_frames = if VERBOSE_HOST_TRACE { 480 } else { 0 };
+                 post_input_trace_bursts = 0;
+-                trace_this_iteration = true;
+-                log::info!(
+-                    "Horizon Cafe host loop trace iteration={} phase=keyboard_result.received",
+-                    host_loop_iteration
+-                );
++                trace_this_iteration = VERBOSE_HOST_TRACE;
++                if VERBOSE_HOST_TRACE {
++                    log::info!(
++                        "Horizon Cafe host loop trace iteration={} phase=keyboard_result.received",
++                        host_loop_iteration
++                    );
++                }
+             }
+             if native_input_this_frame && !self.native_keyboard_active {
+                 if trace_this_iteration {
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index ed7248362f1..9858ef52ce5 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -34,8 +34,117 @@ use std::{
+     marker::PhantomData,
+     mem::MaybeUninit,
+     ptr::NonNull,
++    time::Instant,
+ };
+ 
++// Set HORIZON_WIIU_PROFILE_GX2=1 in the build environment to enable the
++// five-second aggregate report. The default binary does no profiling work.
++const GX2_PROFILE_ENABLED: bool = match option_env!("HORIZON_WIIU_PROFILE_GX2") {
++    Some(value) => {
++        let bytes = value.as_bytes();
++        bytes.len() == 1 && bytes[0] == b'1'
++    }
++    None => false,
++};
++
++#[derive(Clone, Copy, Default)]
++struct Gx2ProfileDelta {
++    // Counts callbacks that reached the successful return; failed callbacks are omitted.
++    target_frames: [u32; 2],
++    target_ns: [u64; 2],
++    // Draw operations completed successfully, summed across TV and DRC callbacks.
++    section_draws: u32,
++    vertex_draws: u32,
++    terrain_wait_ns: u64,
++    projection_ns: u64,
++    buffer_update_ns: u64,
++    draw_submit_ns: u64,
++    hud_draw_ns: u64,
++}
++
++#[derive(Default)]
++struct Gx2ProfileWindow {
++    start: Option<Instant>,
++    present_calls: u32,
++    delta: Gx2ProfileDelta,
++    present_ns: u64,
++    // HUD presenter creation/recreation time, not the per-frame prepare callback.
++    hud_create_ns: u64,
++}
++
++impl Gx2ProfileWindow {
++    fn add_present(&mut self, delta: Gx2ProfileDelta, elapsed_ns: u64) {
++        for i in 0..2 {
++            self.delta.target_frames[i] =
++                self.delta.target_frames[i].saturating_add(delta.target_frames[i]);
++            self.delta.target_ns[i] = self.delta.target_ns[i].saturating_add(delta.target_ns[i]);
++        }
++        self.delta.section_draws = self.delta.section_draws.saturating_add(delta.section_draws);
++        self.delta.vertex_draws = self.delta.vertex_draws.saturating_add(delta.vertex_draws);
++        self.delta.terrain_wait_ns = self
++            .delta
++            .terrain_wait_ns
++            .saturating_add(delta.terrain_wait_ns);
++        self.delta.projection_ns = self.delta.projection_ns.saturating_add(delta.projection_ns);
++        self.delta.buffer_update_ns = self
++            .delta
++            .buffer_update_ns
++            .saturating_add(delta.buffer_update_ns);
++        self.delta.draw_submit_ns = self
++            .delta
++            .draw_submit_ns
++            .saturating_add(delta.draw_submit_ns);
++        self.delta.hud_draw_ns = self.delta.hud_draw_ns.saturating_add(delta.hud_draw_ns);
++        self.present_calls = self.present_calls.saturating_add(1);
++        self.present_ns = self.present_ns.saturating_add(elapsed_ns);
++    }
++
++    fn report_if_due(&mut self) {
++        let now = Instant::now();
++        let Some(start) = self.start else {
++            self.start = Some(now);
++            return;
++        };
++        let elapsed = now.duration_since(start);
++        if elapsed.as_secs() < 5 || self.present_calls == 0 {
++            return;
++        }
++        let d = self.delta;
++        let ms = |ns: u64| (ns / 1_000_000).min(u64::from(u32::MAX)) as u32;
++        unsafe {
++            OSReport(
++                "Horizon GX2 profile: window_ms=%u present_calls=%u tv_ok_callbacks=%u tv_ok_ms=%u drc_ok_callbacks=%u drc_ok_ms=%u section_draws=%u vertex_draws=%u wait_ms=%u project_ms=%u update_ms=%u submit_ms=%u hud_create_ms=%u hud_draw_ms=%u successful_target_ms=%u present_call_ms=%u\n\0"
++                    .as_ptr().cast(),
++                elapsed.as_millis().min(u128::from(u32::MAX)) as u32,
++                self.present_calls,
++                d.target_frames[0],
++                ms(d.target_ns[0]),
++                d.target_frames[1],
++                ms(d.target_ns[1]),
++                d.section_draws,
++                d.vertex_draws,
++                ms(d.terrain_wait_ns),
++                ms(d.projection_ns),
++                ms(d.buffer_update_ns),
++                ms(d.draw_submit_ns),
++                ms(self.hud_create_ns),
++                ms(d.hud_draw_ns),
++                ms(d.target_ns[0].saturating_add(d.target_ns[1])),
++                ms(self.present_ns),
++            );
++        }
++        self.start = Some(now);
++        self.present_calls = 0;
++        self.delta = Gx2ProfileDelta::default();
++        self.present_ns = 0;
++        self.hud_create_ns = 0;
++    }
++}
++
++fn elapsed_ns(start: Instant) -> u64 {
++    start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
++}
++
+ #[repr(C)]
+ #[derive(Clone, Copy, Default)]
+ struct PanoramaVertex {
+@@ -99,7 +208,6 @@ extern "C" {
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
+-
+     fn horizon_gx2_terrain_wait_idle();
+     fn horizon_gx2_terrain_section_destroy(section: *mut c_void);
+     fn horizon_gx2_terrain_draw(
+@@ -397,6 +505,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     screenshot_requested: Option<CafeScreenshotOutput>,
+     screenshot_result: Option<Result<CafeScreenshot, String>>,
+     unsupported_logged: u32,
++    profile: Gx2ProfileWindow,
+     _thread: PhantomData<*mut ()>,
+ }
+ 
+@@ -443,6 +552,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             screenshot_requested: None,
+             screenshot_result: None,
+             unsupported_logged: 0,
++            profile: Gx2ProfileWindow::default(),
+             _thread: PhantomData,
+         })
+     }
+@@ -510,10 +620,15 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             // SAFETY: constructor's GX2 and shader lifetime requirements are upheld.
+             self.hud = None;
+             self.cit_generation = None;
++            let profile_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             self.hud = Some(
+                 unsafe { HorizonPresenter::new(self.hud_shader, atlas, self.capacity) }
+                     .map_err(|_| "GX2 HUD presenter creation failed")?,
+             );
++            if let Some(start) = profile_start {
++                self.profile.hud_create_ns =
++                    self.profile.hud_create_ns.saturating_add(elapsed_ns(start));
++            }
+             self.generation = Some(artwork.generation);
+             self.atlas_revision = Some(atlas.revision);
+         }
+@@ -1342,6 +1457,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             terrain_min_y: Option<i32>,
+             targets: [[u32; 4]; 2],
+             result: Result<(), &'static str>,
++            profile: Gx2ProfileDelta,
+         }
+         unsafe extern "C" fn draw_target(
+             context: *mut c_void,
+@@ -1356,6 +1472,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+             let index = target as usize;
+             let rect = draw.targets[index];
++            let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             if draw.frame.title {
+                 if let Some(panorama) = draw.presenter.panorama.as_mut() {
+                     if let Err(error) = unsafe {
+@@ -1368,21 +1485,39 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             } else if let Some(terrain) = draw.presenter.terrain.as_ref() {
+                 let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+                 // Wait once before drawing all retained section buffers;
+-                // projection uniforms vary per draw, but geometry buffers do not.
++                // projection uniforms change per draw, geometry buffers do not.
++                let wait_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                 unsafe { horizon_gx2_terrain_wait_idle() };
++                if let Some(start) = wait_start {
++                    draw.profile.terrain_wait_ns = draw
++                        .profile
++                        .terrain_wait_ns
++                        .saturating_add(elapsed_ns(start));
++                }
++                let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                 let projection = draw
+                     .terrain_min_y
+                     .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
+                 let (fog_color, fog_ranges) = draw.frame.fog_uniforms();
++                if let Some(start) = projection_start {
++                    draw.profile.projection_ns =
++                        draw.profile.projection_ns.saturating_add(elapsed_ns(start));
++                }
+                 for (&key, section) in &draw.presenter.sections {
+                     let Some(projection) = projection.as_ref() else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+                     };
++                    let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     let origin = projection.section_origin(key);
+                     let clip_rows = projection.clip_rows(origin);
+                     let [x, y, z] = origin.map(|value| value as f32);
+                     let section_origin = [x, y, z, 0.0];
++                    if let Some(start) = projection_start {
++                        draw.profile.projection_ns =
++                            draw.profile.projection_ns.saturating_add(elapsed_ns(start));
++                    }
++                    let submit_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     if unsafe {
+                         horizon_gx2_terrain_draw(
+                             terrain.native.as_ptr(),
+@@ -1403,13 +1538,27 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.result = Err("GX2 terrain draw failed");
+                         return -1;
+                     }
++                    if let Some(start) = submit_start {
++                        draw.profile.draw_submit_ns = draw
++                            .profile
++                            .draw_submit_ns
++                            .saturating_add(elapsed_ns(start));
++                    }
++                    if GX2_PROFILE_ENABLED {
++                        draw.profile.section_draws = draw.profile.section_draws.saturating_add(1);
++                        draw.profile.vertex_draws = draw
++                            .profile
++                            .vertex_draws
++                            .saturating_add(section.vertex_count / 4 * 6);
++                    }
+                 }
+             }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;
+             };
+-            if unsafe {
++            let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
++            if let Err(error) = unsafe {
+                 hud.draw_batch_to(
+                     draw.frame.hud,
+                     draw.presenter.layout,
+@@ -1418,12 +1567,43 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.frame.ticks,
+                     true,
+                 )
+-            }
+-            .is_err()
+-            {
+-                draw.result = Err("Horizon HUD draw failed");
++            } {
++                let code = match error {
++                    horizon_wiiu_platform::hud::Error::Invalid => -1,
++                    horizon_wiiu_platform::hud::Error::Unsupported => -2,
++                    horizon_wiiu_platform::hud::Error::AllocationFailed => -3,
++                    horizon_wiiu_platform::hud::Error::Backend(code) => code,
++                };
++                let cit = u32::from(
++                    draw.frame
++                        .hud
++                        .runs()
++                        .iter()
++                        .any(|(_, b)| matches!(b, horizon_client::hud::Blend::CitGlint(_))),
++                );
++                let glint = u32::from(draw.frame.hud.vertices.iter().any(|v| v.uv[0] >= 2.0));
++                unsafe {
++                    OSReport(
++                        "Horizon Cafe HUD rejected: code=%d vertices=%u capacity=%u patches=%u cit=%u glint=%u layout=%ux%u target=%ux%u\n\0".as_ptr().cast(),
++                        code,
++                        draw.frame.hud.vertices.len() as u32,
++                        draw.presenter.capacity,
++                        draw.frame.hud.patches.len() as u32,
++                        cit,
++                        glint,
++                        draw.presenter.layout[0],
++                        draw.presenter.layout[1],
++                        rect[2],
++                        rect[3],
++                    );
++                }
++                draw.result = Err(hud_error_message(error));
+                 return -1;
+             }
++            if let Some(start) = hud_start {
++                draw.profile.hud_draw_ns =
++                    draw.profile.hud_draw_ns.saturating_add(elapsed_ns(start));
++            }
+             let output = match target {
+                 0 => CafeScreenshotOutput::Tv,
+                 _ => CafeScreenshotOutput::GamePad,
+@@ -1452,6 +1632,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     _ => Err("unsupported Cafe screenshot dimensions".into()),
+                 });
+             }
++            if let Some(start) = target_start {
++                draw.profile.target_frames[index] = 1;
++                draw.profile.target_ns[index] = elapsed_ns(start);
++            }
+             0
+         }
+         let clear = frame.base_clear_color();
+@@ -1463,7 +1647,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             terrain_min_y,
+             targets,
+             result: Ok(()),
++            profile: Gx2ProfileDelta::default(),
+         };
++        let present_start = GX2_PROFILE_ENABLED.then(Instant::now);
+         let host = unsafe {
+             horizon_loading_host_present_with_clear(
+                 draw_target,
+@@ -1471,22 +1657,29 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 clear.as_ptr(),
+             )
+         };
+-        if let Err(error) = draw.result {
+-            draw.presenter.screenshot_result = None;
++        let profile = draw.profile;
++        let draw_result = draw.result;
++        drop(draw);
++        if let Some(start) = present_start {
++            self.profile.add_present(profile, elapsed_ns(start));
++            self.profile.report_if_due();
++        }
++        if let Err(error) = draw_result {
++            self.screenshot_result = None;
+             return Err(error.into());
+         }
+         if host != 0 {
+-            draw.presenter.screenshot_result = None;
++            self.screenshot_result = None;
+             return Err("WHB did not accept both GX2 game frames".into());
+         }
+         if !unsupported.is_empty() {
+             for (flag, name) in &unsupported {
+-                if draw.presenter.unsupported_logged & *flag == 0 {
++                if self.unsupported_logged & *flag == 0 {
+                     log_unsupported_world_pass(name);
+-                    draw.presenter.unsupported_logged |= *flag;
++                    self.unsupported_logged |= *flag;
+                 }
+             }
+-            draw.presenter.last_frame_partial = true;
++            self.last_frame_partial = true;
+             Ok(false)
+         } else {
+             Ok(true)
+@@ -1503,3 +1696,55 @@ impl HudBackend for Gx2LoadingPresenter<'_> {
+         8192
+     }
+ }
++
++#[cfg(test)]
++mod gx2_profile_tests {
++    use super::{Gx2ProfileDelta, Gx2ProfileWindow};
++
++    #[test]
++    fn profile_window_accumulates_targets_and_stage_costs() {
++        let mut window = Gx2ProfileWindow::default();
++        window.add_present(
++            Gx2ProfileDelta {
++                target_frames: [1, 1],
++                target_ns: [10, 20],
++                section_draws: 2,
++                vertex_draws: 72,
++                terrain_wait_ns: 3,
++                projection_ns: 4,
++                buffer_update_ns: 5,
++                draw_submit_ns: 6,
++                hud_draw_ns: 7,
++                ..Default::default()
++            },
++            50,
++        );
++        window.add_present(
++            Gx2ProfileDelta {
++                target_frames: [1, 0],
++                target_ns: [30, 0],
++                section_draws: 1,
++                vertex_draws: 36,
++                terrain_wait_ns: 8,
++                projection_ns: 9,
++                buffer_update_ns: 10,
++                draw_submit_ns: 11,
++                hud_draw_ns: 12,
++                ..Default::default()
++            },
++            60,
++        );
++
++        assert_eq!(window.present_calls, 2);
++        assert_eq!(window.delta.target_frames, [2, 1]);
++        assert_eq!(window.delta.target_ns, [40, 20]);
++        assert_eq!(window.delta.section_draws, 3);
++        assert_eq!(window.delta.vertex_draws, 108);
++        assert_eq!(window.delta.terrain_wait_ns, 11);
++        assert_eq!(window.delta.projection_ns, 13);
++        assert_eq!(window.delta.buffer_update_ns, 15);
++        assert_eq!(window.delta.draw_submit_ns, 17);
++        assert_eq!(window.delta.hud_draw_ns, 19);
++        assert_eq!(window.present_ns, 110);
++    }
++}
+diff --git a/wiiu/platform/Cargo.lock b/wiiu/platform/Cargo.lock
+index 7957223da52..a75199eec1e 100644
+--- a/wiiu/platform/Cargo.lock
++++ b/wiiu/platform/Cargo.lock
+@@ -361,6 +361,7 @@ version = "0.1.0"
+ dependencies = [
+  "horizon-core",
+  "log",
++ "png",
+  "serde",
+  "serde_json",
+ ]
+@@ -381,6 +382,7 @@ name = "horizon-client-font"
+ version = "0.1.0"
+ dependencies = [
+  "ab_glyph",
++ "horizon-assets",
+  "horizon-client-core",
+  "horizon-client-input",
+  "horizon-core",
+@@ -400,6 +402,7 @@ dependencies = [
+  "horizon-assets",
+  "horizon-client-core",
+  "horizon-client-font",
++ "horizon-client-platform",
+  "horizon-core",
+  "horizon-hud-data",
+  "horizon-items",
+@@ -437,6 +440,7 @@ name = "horizon-core"
+ version = "0.1.0"
+ dependencies = [
+  "libm",
++ "log",
+ ]
+ 
+ [[package]]
+@@ -503,6 +507,7 @@ dependencies = [
+  "glam",
+  "horizon-assets",
+  "horizon-client-core",
++ "horizon-client-platform",
+  "horizon-core",
+  "horizon-items",
+  "horizon-optifine",

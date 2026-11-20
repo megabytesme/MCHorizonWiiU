@@ -220,3 +220,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+
+## Cafe dependency overlays
+
+`patches/toolchain/cafe-overlays-v1` stages selected replacements over the exact Cargo source
+archives. The pinned archives retain upstream notices. Modified png 0.18.1 decoder files
+remain under MIT or Apache-2.0. Modified ring 0.17.14 randomness code retains its ISC notice.
+Modified ureq 2.12.1 TLS code remains under MIT or Apache-2.0. The Cafe Winit facade supplies
+the small API used by this port and delegates display and input ownership to the native host.
+See the [pinned archive and overlay inventory](catalog/dependencies-cafe-v1.json).
+
+WUT, devkitPPC, wut-tools, Rust, LLVM and Cafe GLSL are external build inputs. The toolchain
+lock records their installed fingerprints. No tool binaries are included. Review their
+separate terms and corresponding-source obligations before redistributing any tool or linked
+client package. The Cemu diagnostics depend on a separately built emulator.

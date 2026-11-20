@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 
 from core import (ROOT, TARGET, artifacts, digest, directory_inventory, file_digest,
                   client_input, fields, git, inspect_toolchain, isolated, parse_json, pattern, program, run,
@@ -28,6 +29,25 @@ HOSTED_LOCAL_FILES = {
 HOSTED_LOCK = "wiiu/game-bridge/offline/night.Cargo.lock"
 
 
+def toolchain_spec(recipe):
+    data = checked_bytes(ROOT, INPUTS_FILE, recipe["inputs_sha256"])
+    lock = parse_json(data)
+    if lock.get("schema") != 1 or lock.get("version") != recipe["toolchain"]:
+        raise ValueError("incompatible native input specification")
+    return lock
+
+
+def public_workspace_patch(recipe):
+    name = f'patches/{recipe["upstream"]["commit"]}/hosted/workspace.patch'
+    return decode_workspace_patch(checked_bytes(ROOT, name, toolchain_spec(recipe)["workspace_patch_sha256"]))
+
+
+def decode_workspace_patch(patch):
+    if b"GIT binary patch" in patch or patch.count(b"\r\n") != patch.count(b"\n"):
+        raise ValueError("workspace overlay must be the archived CRLF text patch")
+    return patch.replace(b"\r\n", b"\n")
+
+
 def hosted_patches(recipe):
     folder = f'patches/{recipe["upstream"]["commit"]}/hosted'
     return (f"{folder}/0001-cafe-hosted-session.patch", "wiiu/game-bridge/hosted.patch",
@@ -43,7 +63,7 @@ def hosted_inputs(recipe, recipe_hash):
         raise ValueError("hosted recipe does not match the standalone pin")
     for name in ("hosted_client", "hosted_patch", "builder"):
         pattern(spec[name], r"\d+\.\d+\.\d+", name)
-    if spec["builder"] != "0.4.0":
+    if spec["builder"] != "0.5.0":
         raise ValueError("incompatible hosted builder version")
     pin = spec["resource_pin"]
     fields(pin, "minecraft", "schema", "client_sha256", "server_sha256", "exporter_sha256")
@@ -91,19 +111,11 @@ def native_toolchain():
 
 
 def read_native_inputs(recipe, inputs):
-    data = checked_bytes(ROOT, INPUTS_FILE, recipe["inputs_sha256"])
-    lock = parse_json(data)
-    if lock.get("schema") != 1 or lock.get("version") != recipe["toolchain"]:
-        raise ValueError("incompatible native input specification")
+    lock = toolchain_spec(recipe)
     for name in OVERLAYS:
         if inventory_digest(inputs / name) != lock["overlay_sha256"][name]:
             raise ValueError(f"external dependency overlay differs: {name}")
-    patch = checked_bytes(inputs, "workspace.patch", lock["workspace_patch_sha256"])
-    # This archived PowerShell text patch has uniform CRLF transport endings.
-    # Its raw bytes are pinned above. Git's upstream patch series stays binary-safe.
-    if b"GIT binary patch" in patch or patch.count(b"\r\n") != patch.count(b"\n"):
-        raise ValueError("workspace overlay must be the archived CRLF text patch")
-    patch = patch.replace(b"\r\n", b"\n")
+    patch = public_workspace_patch(recipe)
     bridge = {name: checked_bytes(ROOT, path, lock["bridge_inputs"][name])
               for name, path in BRIDGE_FILES.items()}
     tools, sysroot, observed = native_toolchain()
@@ -128,6 +140,8 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=
     stamp = directory / "stage.json"
     # A changed cache is rejected. Allocate a new build root to reconstruct it.
     if source.exists():
+        if (source / ".git/wiiu-stage.json").is_file():
+            stamp = source / ".git/wiiu-stage.json"
         if not stamp.is_file():
             raise ValueError("incomplete staged game source")
         tree = parse_json(stamp.read_bytes())["tree"]
@@ -164,8 +178,8 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=
         tree = staged_tree(staged)
         if hosted is not None and tree != hosted[0]["output_tree"]:
             raise ValueError("hosted patch result does not match")
+        write_record(staged / ".git/wiiu-stage.json", {"tree": tree})
         staged.rename(source)
-    write_record(stamp, {"tree": tree})
     return source, tree
 
 
@@ -175,7 +189,12 @@ def write_cargo_inputs(directory, source, inputs, lock, bridge):
     for name in OVERLAYS:
         target = dependency_root / name
         if not target.exists():
-            shutil.copytree(inputs / name, target)
+            with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=dependency_root) as scratch:
+                candidate = Path(scratch) / name
+                shutil.copytree(inputs / name, candidate)
+                if inventory_digest(candidate) != lock["overlay_sha256"][name]:
+                    raise ValueError(f"staged dependency overlay differs: {name}")
+                candidate.rename(target)
         if inventory_digest(target) != lock["overlay_sha256"][name]:
             raise ValueError(f"staged dependency overlay differs: {name}")
     loading_app = source / "wiiu/loading_app"
@@ -207,6 +226,18 @@ def write_cargo_inputs(directory, source, inputs, lock, bridge):
     return manifest
 
 
+@contextmanager
+def build_lock(directory):
+    import fcntl
+
+    with (directory / ".native-build.lock").open("a") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("another job is using this native build output") from error
+        yield
+
+
 def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash=None, integrated=False):
     workspace = verify_assembly(assembly, recipe, recipe_hash)
     lock, patch, bridge, tools, sysroot = read_native_inputs(recipe, inputs)
@@ -228,10 +259,8 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     # per-build receipt still pins both source inventories.
     directory = output_root if hosted else output_root / key
     directory.mkdir(parents=True, exist_ok=True)
-    lockfile = directory / ".building"
-    lockfile.mkdir()
     record = directory / "build-record.json"
-    try:
+    with build_lock(directory):
         discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
         source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
@@ -327,6 +356,4 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             result.update(hosted_recipe=hosted[0], hosted_recipe_sha256=hosted[1],
                           launcher=launcher, build_input_sha256=key, embedded_build=embedded)
         write_record(record, result)
-    finally:
-        lockfile.rmdir()
     return record

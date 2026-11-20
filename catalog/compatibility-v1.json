@@ -13,15 +13,15 @@
   },
   "native": {
     "commit": "1a0a2948c33d11744eb403247cb566b0aa3ee858",
-    "tree": "e64ecd1968c0057168c2148eef46caf4d79d675c",
-    "inventory_sha256": "148f057846235920dbbdaa5ec43027f4c2a430f39664fe2f4e51481e44449fc2"
+    "tree": "490ed0fd414fb7fc5360adbc6aba8efcb67c5226",
+    "inventory_sha256": "3dcb0281fc6c05e25fb36dad2aade88b17033a709247e17cd18382799cb05178"
   },
   "series": [
     {
       "file": "0001-cafe-platform.patch",
       "from": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
       "to": "e1e2a43c2bbffc6a7bf738786d1d6cdb50926ced",
-      "sha256": "36ea939138158a085db3a6b39540dac421ab17c2eac4696148121b2a662d5fa8"
+      "sha256": "ce7495b0b7e26d81ca8288006afaf9b2023bfa2ecbea061ac905a4654ccff0d3"
     },
     {
       "file": "0002-runtime-and-save.patch",
@@ -34,7 +34,7 @@
     "file": "diagnostics/0001-trace-world-reopen.patch",
     "from": "1a0a2948c33d11744eb403247cb566b0aa3ee858",
     "to": "7c8ad024b49c5d813862c826931b91ff20fc6d83",
-    "tree": "251c45490e910f3f3be7cf5738abd65275ea99a3",
+    "tree": "e5725dac7a009d7d3c7affc3d2f9baa1644beabd",
     "sha256": "f1a0340b8be51d3f89316097d8621ddd9ec0f8396064f182b610ee8352c3a8fd"
   },
   "inputs_sha256": "145da719fe16cc93c64058f03559b0909733a3b111432cd224d260bdaa92f9fb"

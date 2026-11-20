@@ -3,3 +3,5 @@ __pycache__/
 /target/
 /build/
 .local/
+tools/catalog-signer/bin/
+tools/catalog-signer/obj/

@@ -203,9 +203,7 @@ def assemble(source, revision, recipe, recipe_hash, output, diagnostic=False, ro
             "diagnostic": diagnostic,
         }
         write_record(staging / "assembly.json", record)
-        output.mkdir()
-        for name in ("source", "assembly.json"):
-            (staging / name).rename(output / name)
+        staging.rename(output)
     return output / "assembly.json"
 
 

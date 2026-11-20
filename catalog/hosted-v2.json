@@ -1,27 +1,27 @@
 {
   "schema": 2,
   "hosted_client": "0.6.0",
-  "hosted_patch": "0.3.0",
-  "builder": "0.4.0",
-  "base_recipe_sha256": "31d859bcfcb6d5401ef83610202731a1421c93e3c738cfe43739cf1946dcc27c",
-  "input_tree": "af17b86aef2d1a2d1c2f0f7ef0f391cf579e64ac",
-  "output_tree": "14592e87cc28b392b2a19a6f159766352ad46a0c",
+  "hosted_patch": "0.3.1",
+  "builder": "0.5.0",
+  "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "input_tree": "ad3cd393662eb481e80cb63f488435c1480085b9",
+  "output_tree": "0cb22ff941b58273f994d99d8b8577f1fe21ecf9",
   "resource_pin": {
+    "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
+    "exporter_sha256": "145c943637ed177cc4ef8a85f2484da8afd164868e84a8463882feec1653a860",
     "minecraft": "26.3",
     "schema": 7,
-    "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
-    "server_sha256": "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6",
-    "exporter_sha256": "145c943637ed177cc4ef8a85f2484da8afd164868e84a8463882feec1653a860"
+    "server_sha256": "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6"
   },
   "files": {
     "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0001-cafe-hosted-session.patch": "8cc9d575a85d27d9ddd13133d923a8741c50752da84226435a7119e976a0a565",
-    "wiiu/game-bridge/hosted.patch": "79228b034e0943a4867d6d835952609b75295465ff1bfeed94c7d70576b6ccf9",
     "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/0002-night-launch-options.patch": "afd71820521a8f46477a7f4e71cb943f5513f8405a756be6f14a9cf3518df938",
+    "wiiu/game-bridge/hosted.patch": "79228b034e0943a4867d6d835952609b75295465ff1bfeed94c7d70576b6ccf9",
     "wiiu/game-bridge/night-platform.patch": "d79fa80b5ea9b0cbdf66b6751c0d1498db19b14c3c7812a1195d9d0e1c995c0d",
     "wiiu/game-bridge/night_hosted.rs": "58fe3b09f92b8f5a9336a4331e24b4b5e247ce6a5a6cf2ad1be3f1f9c77d24aa",
-    "wiiu/game-bridge/night_store.rs": "288d0590c97f5c64f185d14a6c274765aa41d9e70e4c3889f0e14713ce5bec98",
     "wiiu/game-bridge/night_menu.rs": "fa899054475d78394ae9c724410ba0e984f7d2d82708510bc033c7cf3bf5bf91",
-    "wiiu/pregame/src/local_wire.rs": "9b1b27601f6841e306c2faacddb64e3569fc41326765abcfbf9009bb4ef31ac4",
-    "wiiu/game-bridge/offline/night.Cargo.lock": "3614733d52a158bb736b5cd79423479633a2264aab1b9a56b6bf80189ca6832a"
+    "wiiu/game-bridge/night_store.rs": "288d0590c97f5c64f185d14a6c274765aa41d9e70e4c3889f0e14713ce5bec98",
+    "wiiu/game-bridge/offline/night.Cargo.lock": "3614733d52a158bb736b5cd79423479633a2264aab1b9a56b6bf80189ca6832a",
+    "wiiu/pregame/src/local_wire.rs": "9b1b27601f6841e306c2faacddb64e3569fc41326765abcfbf9009bb4ef31ac4"
   }
 }

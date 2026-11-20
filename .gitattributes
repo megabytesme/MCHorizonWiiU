@@ -11,3 +11,4 @@ wiiu/builder/** text=auto eol=lf
 wiiu/host/** text=auto eol=lf
 wiiu/pregame/** text=auto eol=lf
 wiiu/pregame/themes/night/notices/** -whitespace
+patches/toolchain/cafe-overlays-v1/** -text whitespace=cr-at-eol
