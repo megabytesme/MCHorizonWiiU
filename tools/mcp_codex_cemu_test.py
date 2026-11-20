@@ -197,7 +197,13 @@ def play_and_save(invoke, window, client_name, index, evidence):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             captures = sorted(set(shots.glob("*.png")) - previous)
-            if len(captures) == 2 and all(p.read_bytes().endswith(b"IEND\xaeB\x60\x82") for p in captures):
+            try:
+                complete = len(captures) == 2 and all(
+                    p.read_bytes().endswith(b"IEND\xaeB\x60\x82") for p in captures
+                )
+            except OSError:
+                complete = False
+            if complete:
                 for capture in captures:
                     display = "gamepad" if capture.stem.endswith("_GamePad") else "tv"
                     shutil.copyfile(capture, evidence / f"session-{index}-{display}.png")
@@ -220,6 +226,18 @@ def play_and_save(invoke, window, client_name, index, evidence):
         raise RuntimeError("A fresh client could still call game_state after hosted quit.")
     print(f"{client_name} requested the original hosted quit for session {index} and called Night again.",
           flush=True)
+    if evidence:
+        log = evidence / "portable/log.txt"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            trace = log.read_text(encoding="utf-8", errors="replace")
+            if (trace.count("hosted save barrier completed") >= index
+                    and trace.count("frame.home.play") >= index + 1):
+                print(f"Session {index} completed its save barrier and returned to Night.", flush=True)
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError(f"Hosted game {index} never completed its save and return.")
 
 
 if __name__ == "__main__":
