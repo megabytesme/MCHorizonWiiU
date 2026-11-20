@@ -106,9 +106,9 @@ pub fn endpoint(raw: &str) -> Option<String> {
         return Some(format!("[{ip}]:25565"));
     }
     let (host, port) = if let Some((host, port)) = raw.split_once(':') {
-        (host, valid_port(port)?)
+        (host, Some(valid_port(port)?))
     } else {
-        (raw, 25565)
+        (raw, None)
     };
     let dns = host.strip_suffix('.').unwrap_or(host);
     let valid_dns = !dns.is_empty()
@@ -124,10 +124,9 @@ pub fn endpoint(raw: &str) -> Option<String> {
     }
     // Keep a host supplied without a port in the original game's usual form.
     let host = host.to_ascii_lowercase();
-    Some(if port == 25565 {
-        host
-    } else {
-        format!("{host}:{port}")
+    Some(match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
     })
 }
 

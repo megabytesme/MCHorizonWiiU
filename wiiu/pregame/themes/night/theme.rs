@@ -69,27 +69,44 @@ impl Font {
 
     fn advance(self, text: &str, px: f32) -> f32 {
         let scale = px / self.source_px();
-        text.bytes()
-            .filter_map(|byte| self.glyph(byte))
+        text.chars()
+            .filter_map(|character| self.glyph(ascii_or_replacement(character)))
             .map(|glyph| glyph.advance)
             .sum::<f32>()
             * scale
     }
 
     fn draw(self, canvas: &mut Canvas<'_>, position: [f32; 2], px: f32, color: Color, text: &str) {
-        self.draw_bytes(canvas, position, px, color, text.as_bytes());
+        self.draw_glyphs(
+            canvas,
+            position,
+            px,
+            color,
+            text.chars().map(ascii_or_replacement),
+        );
     }
 
     fn draw_bytes(
         self,
         canvas: &mut Canvas<'_>,
-        [mut x, baseline]: [f32; 2],
+        position: [f32; 2],
         px: f32,
         color: Color,
         text: &[u8],
     ) {
+        self.draw_glyphs(canvas, position, px, color, text.iter().copied());
+    }
+
+    fn draw_glyphs(
+        self,
+        canvas: &mut Canvas<'_>,
+        [mut x, baseline]: [f32; 2],
+        px: f32,
+        color: Color,
+        text: impl Iterator<Item = u8>,
+    ) {
         let scale = px / self.source_px();
-        for glyph in text.iter().filter_map(|&byte| self.glyph(byte)) {
+        for glyph in text.filter_map(|byte| self.glyph(byte)) {
             if glyph.w > 0.0 && glyph.h > 0.0 {
                 canvas.texture(
                     Rect::new(
@@ -108,6 +125,14 @@ impl Font {
 
     fn right(self, canvas: &mut Canvas<'_>, [x, y]: [f32; 2], px: f32, color: Color, text: &str) {
         self.draw(canvas, [x - self.advance(text, px), y], px, color, text);
+    }
+}
+
+fn ascii_or_replacement(character: char) -> u8 {
+    if character.is_ascii() {
+        character as u8
+    } else {
+        b'?'
     }
 }
 
@@ -282,6 +307,7 @@ fn header(canvas: &mut Canvas<'_>, view: View, layout: Layout) {
         64.0
     };
     let font = match view.session {
+        _ if view.page == Page::Local => Font::Ui,
         Some(SessionStatus::Saving | SessionStatus::SaveFailed(_) | SessionStatus::Stopping(_)) => {
             Font::Ui
         }

@@ -289,6 +289,9 @@ impl View {
                 Available,
             ),
             Library => ("Worlds & servers", "Select a launch target", Available),
+            Versions if self.local.is_some() => {
+                ("Version & resources", "Installations and About", Available)
+            }
             Versions => ("Version & resources", env!("CARGO_PKG_VERSION"), Available),
             Settings => ("Settings", "Controller and touch", Available),
             AgentControl => ("Agent Control", "Unavailable", Available),
