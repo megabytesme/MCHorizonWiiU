@@ -18,9 +18,9 @@
       "0.5.0": {
         "artifacts": {
           "sources": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/builder-source-v0.5.0.json",
-            "sha256": "67463382125e13a6c64e75537f7529d352a4c728cf95b5a3ad7909f93b7fbe46"
+            "sha256": "c229e2c61691bcf3aa045635bd2668e22fb4a6c8fc957ddc04483e9238772006"
           }
         },
         "channel": "development",
@@ -32,8 +32,13 @@
     "client": {
       "0.6.0": {
         "artifacts": {
+          "build-evidence": {
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
+            "path": "catalog/evidence/client-v0.6.0-patch-v0.3.1.json",
+            "sha256": "52585fe63ef23df16a95912b6f449fa8c69ca28f31141ec9b05b36600830941e"
+          },
           "sources": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/client-source-v0.6.0.json",
             "sha256": "52c872aa6959ed9bcb6d0d4fce47af60ece822e9de513e09e294a739c497badf"
           }
@@ -44,10 +49,10 @@
         "evidence": {
           "build": {
             "record": "docs/releases/client-v0.6.0.md",
-            "status": "pending"
+            "status": "passed"
           },
           "cemu": {
-            "record": "docs/night-local-validation.md",
+            "record": "docs/releases/client-v0.6.0.md",
             "status": "partial"
           },
           "hardware": {
@@ -63,22 +68,22 @@
       "0.3.1": {
         "artifacts": {
           "base-recipe": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/compatibility-v1.json",
             "sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2"
           },
           "hosted-recipe": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/hosted-v2.json",
             "sha256": "1867e00d353941c04e07cbbce85542de667df88e17a0571cf62c204d9796fd9f"
           },
           "native-inventory": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/native-files-v1.json",
             "sha256": "3dcb0281fc6c05e25fb36dad2aade88b17033a709247e17cd18382799cb05178"
           },
           "workspace-overlay": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/hosted/workspace.patch",
             "sha256": "69cfb7175eb948fdffb460fcaad8ccb88e350ee0a89950a25c38766ceff87b50"
           }
@@ -95,17 +100,17 @@
       "1.0.0": {
         "artifacts": {
           "dependencies": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/dependencies-cafe-v1.json",
             "sha256": "2d4ac3439281909b71b6bd11e1a984e57fe2dfb6123b3fdba72a4d5c25bcef02"
           },
           "rust-delta": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "patches/toolchain/cafe-rust-62606b70/source.json",
             "sha256": "97a05cbe3ee49092516a29801a9f752461c54b80cc0fbecadd537b693265825a"
           },
           "toolchain-lock": {
-            "commit": "4daf17e576a77caf81ae7a762ca12bc07559ddc9",
+            "commit": "4abaf46cd6e821a4074def3fce0abad313bd40ae",
             "path": "catalog/toolchain-cafe-v1.json",
             "sha256": "145da719fe16cc93c64058f03559b0909733a3b111432cd224d260bdaa92f9fb"
           }
