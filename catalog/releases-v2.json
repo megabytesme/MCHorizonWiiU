@@ -41,9 +41,9 @@
       "0.6.0": {
         "artifacts": {
           "sources": {
-            "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
+            "commit": "26c9f8dab4ad2ba64d72b79ff13ae781f40cb416",
             "path": "catalog/builder-source-v0.6.0.json",
-            "sha256": "948742d79be8f7c2ac17c967b9adbff55dfbdc8d8b22270f408b458479ff0d06"
+            "sha256": "a59bb2a4fdfe69596d9c37e2ad7f740d347be6023d117449ec167e9f2ee1329b"
           }
         },
         "channel": "development",
