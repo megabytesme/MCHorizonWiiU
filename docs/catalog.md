@@ -70,7 +70,10 @@ successful compilation, Cemu behavior and physical acceptance are separate
 evidence. Previous hardware tests remain attached to their original RPX.
 The current catalog has no signing trust root.
 
-The [combined recipe](../catalog/hosted-v1.json) adds client version 0.5.0
-on top of the unchanged standalone recipe and pinned workspace overlay.
-It verifies a separate host delta, Horizon patch and final source tree.
-The historical standalone packages keep their own hashes and acceptance.
+The [combined recipe v2](../catalog/hosted-v2.json) adds hosted client 0.6.0,
+hosted patch release 0.3.0 and hosted builder 0.4.0 on top of the unchanged
+standalone recipe. It pins the two Horizon patches, Cafe bridge deltas,
+Night's service sources, the hosted Cargo lock, prepared input digests and
+the exact resulting game tree. The builder records the values it embeds in
+Night's About page. The [previous combined recipe](../catalog/hosted-v1.json)
+and historical standalone packages retain their own hashes and acceptance.

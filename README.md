@@ -9,7 +9,9 @@ structure](docs/catalog.md), the [launcher feature matrix](docs/launcher-feature
 [build and acceptance record](docs/validation.md).
 The [hosted game bridge contract](wiiu/pregame/INTEGRATION.md) covers the first
 combined RPX. The [combined build and Cemu record](docs/hosted-validation.md)
-tracks its acceptance separately from the standalone builds.
+tracks its acceptance separately from the standalone builds. The
+[Night local services record](docs/night-local-validation.md) covers the
+current combined candidate and its Cemu checks.
 
 The combined build starts in Horizon Night and runs the actual Cafe game in
 one RPX. Start Game uses an installed Horizon 26.3 preparation. Standalone
