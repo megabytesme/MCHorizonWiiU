@@ -1,0 +1,76 @@
+{
+  "base_source_tree": "490ed0fd414fb7fc5360adbc6aba8efcb67c5226",
+  "build": {
+    "byte_identical": true,
+    "host": "Linux x86-64 on WSL 2",
+    "independent_clean_builds": 2,
+    "logical_cpus": 32,
+    "offline": true,
+    "private_resource_inputs_during_build": false,
+    "status": "passed"
+  },
+  "builder": "0.5.0",
+  "cemu": {
+    "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+    "rpx_sha256": "58b3ce0dbea4637bc208cbd826f0165ac754a7d9b709a6e11087d215da59104b",
+    "scope": "Horizon Night Home frame in a clean portable Cemu profile",
+    "status": "partial",
+    "version": "2.6"
+  },
+  "client": "0.6.0",
+  "hardware": {
+    "open_blocker": "saved-world reopening",
+    "status": "pending"
+  },
+  "hosted_recipe_sha256": "1867e00d353941c04e07cbbce85542de667df88e17a0571cf62c204d9796fd9f",
+  "hosted_source_tree": "0cb22ff941b58273f994d99d8b8577f1fe21ecf9",
+  "night_build_identity": "98d0b7d8d43b12b68e397c367632629966d4e2d1ed779e46163d581d4afc178e",
+  "outputs": {
+    "HorizonWiiU.rpx": {
+      "bytes": 35664755,
+      "sha256": "58b3ce0dbea4637bc208cbd826f0165ac754a7d9b709a6e11087d215da59104b"
+    },
+    "HorizonWiiU.wuhb": {
+      "bytes": 35665580,
+      "sha256": "7b45a9582516668e98fdce892af29608b494d80378be9b86e037e82cd1a5977b"
+    }
+  },
+  "patch": "0.3.1",
+  "port_revision": "cb0cb44d6b71847f9538f3d52ce010d0e4e5b7f2",
+  "recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "schema": 1,
+  "tool_sha256": {
+    "cargo": "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55",
+    "cargo-wiiu": "c85d29f81b87c5edf3a99522fcad5940a4503332e2c2cb5f2c0ee574085ec9e4",
+    "cmake": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638",
+    "gcc/as": "ebb96eb91005f5b6516a58478efc89416a43a11e9239e9fa5eeac1f0c20e05e7",
+    "gcc/cc1": "12e6a83f96f1acbf0a50b3262844cea2b96bcdeb0560bdc11ca85c0740860e01",
+    "gcc/ld": "1fe878476b61fcb650c988f8f682bdf0afc1435637e5bd9d558d1c61e7b31922",
+    "gcc/libc.a": "cb8c3e33434d60d7767010b24bc8beba899e2eb386dc071da92cc3e54f765b5d",
+    "gcc/libgcc.a": "623b38def2df94e58a3c217e8e9ce4440c9071e12bb945a3ff92bb2f1e30bdaa",
+    "gcc/libm.a": "67cde7a63b8c17c8ce1843fd1158940577e523db3fe92719055c33071614e686",
+    "glslcompiler": "8268622fbaade63707d649c212e990ef871a4d1657450d03dc2ff85f8fa4ec90",
+    "ninja": "5965527e09fe2b3787772aa4f711d6a36b393e7f2fcaa744a7a96c5a4ddf59cb",
+    "powerpc-eabi-ar": "6ec7328f214630b8c5d8986b2b641eb9dee7acfe1bd0043819db662c59b1540c",
+    "powerpc-eabi-cmake": "ee87536e1f4826f2f13008c3b935d5dfaaa901f9e1d64979642570070fd96786",
+    "powerpc-eabi-g++": "e4513a941e3ea6794295ce5758a6333f24c8f289280005bbe0e6279bcb61847e",
+    "powerpc-eabi-gcc": "be3ef2cd21bc7da3f0689c3be2a0c427ad0f0df4b808281c1d4a99064456b302",
+    "powerpc-eabi-nm": "a8e90be3a6619e6236df601f852d23b5f14dcaaf7fa0ce74adaa717102fce990",
+    "powerpc-eabi-objcopy": "1e03326f5947c99de5896a4ed0241959cb3b8fbe8ba4991ef64eabc5ccedb0e7",
+    "readrpl": "b55a458599793596acfd233915f28d635eb4d16c10818cbcb942bd9594b0dc0f",
+    "rust/libLLVM-23-rust-1.101.0-nightly.so": "ccfd1258407eda67c3335f740a9e03e62b28ad830683c11524033d5013334938",
+    "rust/libLLVM.so.23.1-rust-1.101.0-nightly": "df169e71ee3e2cae60f774ebcb1e372964531dd98652b3b8dbf2349866e30b61",
+    "rust/libcore-8c6158bc4796d611.rlib": "fd4711748f4924733de29dc85c764f47bf9a29213bd40aed0c6762664dd757f8",
+    "rust/librustc_driver-dc384dfdf85f9584.so": "46a73ff8cc26ab4039ab3b1bdca321cc24e241674cdd28d9e0ff697923661113",
+    "rustc": "81eedd871c42741e79047e7d74d7d7cfabea095fdd4c11d4cc8d826be8fff583",
+    "wuhbtool": "c7805e61cb714a7c128e3c355bdc13c2a0b441d8e400d6201f9ee0c6b16b367a",
+    "wut/lib/libwut.a": "015007736b886aedcca8c85053a2bdd1c071d34e60a44ab9b1db8d731bba07b6",
+    "wut/share/wut.cmake": "27dad010b1849120bc8a92be426d0eb9091e1cfc41d7af9593f27f4dd3f288db",
+    "wut/share/wut.ld": "f99fdd90d24a92b411b04b5b9e78f8354af949c56b32a1094df5bde905f0c07c",
+    "wut/share/wut.specs": "db4b0f1c0ad0fe8dadddee0c1829b7e9ecfcb2266b69aea4649ed9c15198111c",
+    "wut/share/wut.toolchain.cmake": "79e818897961e2f1469c20dac73454edb67fac267259dc75c7bcd1fed43ee663"
+  },
+  "toolchain": "1.0.0",
+  "toolchain_spec_sha256": "145da719fe16cc93c64058f03559b0909733a3b111432cd224d260bdaa92f9fb",
+  "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+}

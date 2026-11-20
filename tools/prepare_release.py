@@ -51,7 +51,8 @@ def main():
         receipt = output / f"{name}.json"
         if archive.exists() or receipt.exists():
             raise ValueError("choose a new destination for this release candidate")
-        items = (*COMMON, *DIRECTORIES[args.kind], record["notes"])
+        references = [artifact["path"] for artifact in record["artifacts"].values() if "commit" in artifact]
+        items = (*COMMON, *DIRECTORIES[args.kind], record["notes"], *references)
         tree = core.git(ROOT, "ls-tree", "-rz", args.revision, "--", *items).stdout
         if any(not entry.startswith((b"100644 ", b"100755 ")) for entry in tree.split(b"\0") if entry):
             raise ValueError("source archives require ordinary Git blobs")

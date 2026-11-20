@@ -4,7 +4,7 @@
   "tools/catalog-signer/Program.cs": "b900ff63ec65fe779052e30ee1bbfd6d271da6255cffee745c6a0c64f227995f",
   "tools/check_release.py": "ccacb00c299d2235583e8db8f05ce7e0d337454f3d13e568a8866b8b44df1575",
   "tools/prepare_prebuilt.py": "0ba4657739591e5b9b72059cada0d76bbbfca9bcf826a34fe269b628dc4930ea",
-  "tools/prepare_release.py": "b9e79147298673f0ff79527d576135c158caf72a7d0c04c5ccd371be64d1ecce",
+  "tools/prepare_release.py": "b1af280d87ee068c134f72e19f4136efc4ad3e5839203c796ec4d6bd3455c808",
   "wiiu/builder/MIGRATION.md": "cb837278b141c3225668a2f151a5619e4caa50d55d1ce5ffd4ecc5e09792f4c0",
   "wiiu/builder/README.md": "d967d6e7cb4abc081a5507c1c12d5addec27188e194f0b0e8920efa3d008a140",
   "wiiu/builder/build.py": "fd249c358e466b9c0bacb33798669d2e68d0082e68f711346b7b111c9aa63d71",
@@ -16,6 +16,6 @@
   "wiiu/builder/source.py": "321850dd8d307b5c43911075fd83e79af0fd5c3c2ccb1dfc64cc9a59335c5f39",
   "wiiu/builder/test_build.py": "df6d405e2f1bbfac89efcf4216b63a61afa6903ecdae31c7954ade0ba93b8f0b",
   "wiiu/builder/test_workflow.py": "4706e07fc7e85a4615b7a33d578b3bb7810f5a644aeeffcda4630c1d4661b50d",
-  "wiiu/builder/workflow.py": "1b8ebc7547b5e768c6ae42a953546a7cf73c5e355c93a5b907d413a751b47091",
+  "wiiu/builder/workflow.py": "a849dca17e39568703d034c7371400c388c6b2cf549f22e2ce3e57f3af9a8f6f",
   "wiiu/builder/wsl_job.py": "fb1785b8eee92fd152077df79d1c61d7004da446595666bcb3be7847f742172f"
 }

@@ -89,7 +89,10 @@ def prepare_dependencies(assembly, recipe, recipe_hash, inputs, offline):
                    "--manifest-path", str(manifest)]
         if offline:
             command.append("--offline")
-        core.run(command)
+        overrides = {"RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"}
+        env = {key: value for key, value in os.environ.items() if key not in overrides}
+        env["RUSTC"] = tools["files"]["rustc"]["path"]
+        core.run(command, env)
     print("Cafe toolchain, dependency overlays and locked Cargo cache verified.")
 
 
