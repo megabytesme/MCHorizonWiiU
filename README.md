@@ -1,20 +1,25 @@
-# Horizon Wii U port
+# MCHorizonWiiU
 
-This is the CafeOS port repository. It carries Horizon Night, the Wii U host
-and native platform source, a local compatibility catalog and reviewed patch
-artifacts. The builder reconstructs Horizon from an exact upstream Git object.
+MCHorizonWiiU is an unofficial Nintendo Wii U port of [Horizon](https://github.com/horizon-rust/horizon), a Rust client for Minecraft: Java Edition. This repository owns the CafeOS port. The builder recreates the upstream workspace at a pinned Git commit and applies the Wii U patch series.
 
-Start with the [builder](wiiu/builder/README.md), the [source and release
-structure](docs/catalog.md), the [launcher feature matrix](docs/launcher-features.md), and the
-[build and acceptance record](docs/validation.md).
-The [hosted game bridge contract](wiiu/pregame/INTEGRATION.md) covers the first
-combined RPX. The [combined build and Cemu record](docs/hosted-validation.md)
-tracks its acceptance separately from the standalone builds. The
-[Night local services record](docs/night-local-validation.md) covers the
-current combined candidate and its Cemu checks.
+**Current channel: development.** Horizon Night is the on-console launcher. It manages local offline profiles, prepared installations, saved-world selection, server bookmarks, and controller preferences. The combined RPX enters the native game and returns to Night in the same process. Display and input use the Wii U's TV and GamePad support through WUT and native GX2. The renderer is still under development. See the [GX2 checkpoint](wiiu/RENDERER_CHECKPOINT.md) and the [feature matrix](docs/launcher-features.md) for coverage.
 
-The combined build starts in Horizon Night and runs the actual Cafe game in
-one RPX. Start Game uses an installed Horizon 26.3 preparation. Standalone
-Night, standalone game, and the mock test fixture remain diagnostic targets.
-Each package has its own build and acceptance record. The local catalogs
-record hashes and compatibility. Publisher signing is pending.
+The public baseline uses offline identities and retains its existing opt-in LAN Agent Control pairing with a local stdio MCP bridge. Microsoft sign-in, entitlement checks, refresh-token storage and native HTTP MCP pairing belong to separate reviews. Keep the experimental Cemu control endpoint isolated. See the [Agent Control notes](wiiu/game-bridge/agent-control.md).
+
+## Build and install
+
+1. Read the [Windows and WSL builder guide](docs/builder.md) and [Cafe toolchain requirements](docs/inputs.md).
+2. Select a compatible client and patch. Prepare dependencies and supply your own Minecraft: Java Edition 26.3 installation and matching JARs to prepare private resources.
+3. Build the RPX and WUHB. Copy the package and prepared resource directory to a scratch SD as described in the builder guide.
+
+The builder is a desktop packaging tool. Gameplay and local launcher operations run on the console. Night can select installed, compatible resource preparations. The project has no in-console compiler or installer for upstream nightlies.
+
+## Validation
+
+The [Night validation record](docs/night-local-validation.md) describes exact package hashes and Cemu results from the original baseline. The [migration build record](docs/releases/client-v0.6.0.md) tracks the sanitized source candidate separately. **Reopening a saved world on physical Wii U remains a release blocker.** Earlier hardware observations and the Cemu save cycle are documented in the [hosted validation record](docs/hosted-validation.md).
+
+## Development
+
+[Contributing](CONTRIBUTING.md) · [Release catalog and signing](docs/catalog.md) · [GitHub migration](docs/migration.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE)
+
+Minecraft, Nintendo Wii U and their associated content belong to their respective owners. MCHorizonWiiU is a community project.

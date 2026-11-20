@@ -1,79 +1,38 @@
-# Port-only structure and releases
+# Compatibility catalog and release process
 
-The migration follows the MCHorizonUWP port-only checkout at
-`39ab7f19bff3856df0df3d4a05bbb4b9b4ef947b`. Its builder UI and tests are
-separate from selection, catalog verification, source assembly and build
-execution. The UWP bridge also keeps app-local directories separate from
-runtime resources when entering the game. The Wii U port uses a CLI and
-CafeOS-native services for those boundaries.
-[UWP builder](https://github.com/megabytesme/MCHorizonUWP/tree/39ab7f19bff3856df0df3d4a05bbb4b9b4ef947b/uwp/builder),
-[UWP catalog](https://github.com/megabytesme/MCHorizonUWP/blob/39ab7f19bff3856df0df3d4a05bbb4b9b4ef947b/docs/catalog.md),
-[UWP candidate export](https://github.com/megabytesme/MCHorizonUWP/blob/39ab7f19bff3856df0df3d4a05bbb4b9b4ef947b/tools/prepare_candidate.py).
+The [versioned catalog](../catalog/releases-v2.json) has independent builder, client, Horizon patch and toolchain release records. A compatibility row explicitly permits one version tuple on the Cafe target and records the bridge ABI and exact upstream commit. Each source reference identifies an immutable Git commit, path and SHA-256. It can be fetched as `https://raw.githubusercontent.com/megabytesme/MCHorizonWiiU/<commit>/<path>`. The builder verifies bytes against the catalog and Git object before use. Old packages may stay documented after deprecation or revocation. Revoked selections fail resolution.
 
-| Area | Implemented | Later |
-| --- | --- | --- |
-| `catalog/` | Independent builder, client, patch and toolchain pins. SHA-256 manifests and exact Git trees | Publisher signing and verification, update trust |
-| `patches/<revision>/` | Two binary-safe Horizon deltas and a separate diagnostic patch | Smaller reviewed upstream submissions and formal patch releases |
-| `tools/` | Patch regeneration, Cafe input inventory, public-tree and native packaging checks | Publisher candidate automation |
-| `wiiu/builder/` | Reusable Python core, source assembler, native builder, thin CLI and host tests | Desktop front end and toolchain provisioning |
-| `wiiu/pregame/` and `wiiu/host/` | Official Night UI, shared ProcUI/GX2 host and borrowed game renderer | Physical foreground and repeated-world acceptance |
-| `wiiu/game-bridge/` | Original standalone Cafe entry, fallible hosted entry and explicit save barrier | Physical and repeated-session validation |
-| Wii U platform modules | Tracked renderer, input, audio, networking, filesystem, entropy and standard-library adapters | Independently distributed dependency snapshots after review |
-| `.github/workflows/` | Read-only compatibility and host checks | Release and hardware acceptance automation |
+Stable releases require a signed catalog and stable component records. Development permits explicitly selected local unsigned drafts. Nightly rows must be approved individually against exact upstream commits. A GitHub nightly moving to a new revision never changes a pinned row. Build, Cemu and hardware evidence are separate catalog fields. Publishing a new client with runtime changes requires evidence keyed to its RPX SHA-256.
 
-The port worktree starts an independent history. The original full-fork game
-worktree, launcher foundation and both earlier visual candidate branches
-remain available. The port assembly restores paths expected by the full
-Horizon workspace. In particular `wiiu/game-bridge/` installs its pinned
-game files at `wiiu/loading_app/` in the reconstructed source. The official
-Night host remains separately buildable from the port checkout.
+## Prepare release artifacts
 
-## Current release tuple
+From a verified port-only checkout, run the host checks in [Contributing](../CONTRIBUTING.md). Prepare independently versioned source archives from the reviewed commit. For example:
 
-| Component | Version |
-| --- | --- |
-| Builder CLI and core | 0.3.0 |
-| Wii U client source release | 0.4.0 |
-| Night launcher crate | 0.3.0 |
-| Horizon patch series | 0.2.0 |
-| Cafe toolchain and external input spec | 1.0.0 |
+```sh
+python3 -B tools/prepare_release.py builder 0.5.0 --revision "$reviewed_commit" --output "$scratch/releases"
+python3 -B tools/prepare_release.py client 0.6.0 --revision "$reviewed_commit" --output "$scratch/releases"
+python3 -B tools/prepare_release.py patch 0.3.1 --revision "$reviewed_commit" --output "$scratch/releases"
+```
 
-[Compatibility recipe](../catalog/compatibility-v1.json) ties the tuple to
-`powerpc-nintendo-cafe`, upstream `69fab597a6f0e8a6ce524d38d1b73e599e343034`
-and standalone game source `1a0a2948c33d11744eb403247cb566b0aa3ee858`.
-The series first applies the Cafe platform range through
-`e1e2a43c2bbffc6a7bf738786d1d6cdb50926ced`, then the runtime and save range
-through the native pin. Each patch stores its exact original range and
-byte hash. [Native file inventory](../catalog/native-files-v1.json) verifies
-the separately maintained Wii U files before installing them. The resulting
-full Git tree must equal the pinned native commit tree.
+Each archive includes its versioned notes and a separate SHA-256 receipt. Use distinct tags such as `builder-v0.5.0`, `client-v0.6.0`, `patch-v0.3.1` and `toolchain-v1.0.0` only when publication is authorized. Source releases can serve builders who generate private client installations. Optional prebuilt RPX/WUHB packages need complete linked dependency notices, redistribution review, an asset-free packaging audit and matching build and hardware evidence. Use [prepare_prebuilt.py](../tools/prepare_prebuilt.py) to stage an approved build by RPX hash and verify the WUHB by repacking without content files. Publish only the reviewed package files and redacted receipts. The signed catalog can reference the exact GitHub release asset ID, filename, size and SHA-256. Use `tools/check_release.py --client-asset VERSION rpx FILE` with signed trust inputs to verify a downloaded package.
 
-The result preserves authenticated LAN Agent Control, indexed terrain,
-streaming and memory changes, region writes and metadata replacement,
-Cafe session locking, AX audio, UUID/entropy, and existing gameplay.
-`7c8ad024b49c5d813862c826931b91ff20fc6d83` is a diagnostic with a distinct
-patch and tree. Use `assemble --diagnostic` to inspect it. The stable build
-accepts the baseline assembly and keeps that instrumentation out. The
-diagnostic does not establish a save-reopen fix.
+## Final signing with the maintainer certificate
 
-Toolchain and private overlays have an independent
-[hash lock](../catalog/toolchain-cafe-v1.json). It includes the patched
-Cafe compiler/target libraries, Rust source revision and tracked delta
-fingerprint, WUT and devkitPPC tools, pinned Cargo, Winit, ring, PNG, ureq,
-the recorded nine-file workspace overlay, and native link inputs. Tool
-paths resolve from the installed environment and explicit input root.
-The legacy bootstrap's separate target-spec gitlink is pinned and optional
-for the current stage1 build.
+This repository's catalog is explicitly unsigned until a production publisher certificate is selected. The signer uses P-256 ECDSA over SHA-256 with a detached 64-byte IEEE P1363 signature. The verifier needs the publisher's independently authenticated DER SubjectPublicKeyInfo. The raw JSON bytes are signed, so keep LF endings and never reformat after signing.
 
-Build and Cemu records describe exact RPX hashes. Reconstructed source,
-successful compilation, Cemu behavior and physical acceptance are separate
-evidence. Previous hardware tests remain attached to their original RPX.
-The current catalog has no signing trust root.
+1. On the signing PC obtain a maintainer-owned ECDSA P-256 signing certificate. Install it with a protected, preferably non-exportable private key in `Cert:\CurrentUser\My`. Verify the certificate thumbprint with the owner and keep the private key out of Git, CI and release artifacts.
+2. Update the reviewed candidate's `signing` to `p256-sha256-p1363`. Advance `sequence` and set a UTC validity interval. Validate the draft with the builder catalog parser and confirm immutable artifact pins before signing.
+3. Export only its public key, sign, and verify in a clean scratch directory. These commands use .NET 10.
 
-The [combined recipe v2](../catalog/hosted-v2.json) adds hosted client 0.6.0,
-hosted patch release 0.3.0 and hosted builder 0.4.0 on top of the unchanged
-standalone recipe. It pins the two Horizon patches, Cafe bridge deltas,
-Night's service sources, the hosted Cargo lock, prepared input digests and
-the exact resulting game tree. The builder records the values it embeds in
-Night's About page. The [previous combined recipe](../catalog/hosted-v1.json)
-and historical standalone packages retain their own hashes and acceptance.
+```powershell
+$signer = 'tools/catalog-signer'
+python -B tools/check_release.py --prepare-signing
+dotnet run --project $signer -- export-public "$scratch/catalog-public.der" $thumbprint
+Get-FileHash "$scratch/catalog-public.der" -Algorithm SHA256
+dotnet run --project $signer -- sign catalog/releases-v2.json "$scratch/releases-v2.sig" $thumbprint
+python -B tools/check_release.py --signature "$scratch/releases-v2.sig" --public-key "$scratch/catalog-public.der" --trust-state "$scratch/trust.json"
+```
+
+4. Publish the verified signature with the exact signed bytes. Deliver the public key or its SHA-256 fingerprint through an independently authenticated channel. A key supplied by the same untrusted download does not establish publisher identity. Plan a reviewed key rotation and an explicit trust migration before retiring a key.
+
+The desktop remembers the highest valid sequence and its bytes per trusted key in per-user local state. It rejects expired catalogs, older sequences and a different digest at the same sequence. Deleting state or changing the system clock can weaken that protection. A Wii U SD card is replaceable, so it cannot supply a tamper-proof counter. The console currently selects installed versions and does not fetch or install catalog updates.

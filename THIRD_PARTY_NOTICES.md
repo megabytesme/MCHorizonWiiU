@@ -235,3 +235,5 @@ WUT, devkitPPC, wut-tools, Rust, LLVM and Cafe GLSL are external build inputs. T
 lock records their installed fingerprints. No tool binaries are included. Review their
 separate terms and corresponding-source obligations before redistributing any tool or linked
 client package. The Cemu diagnostics depend on a separately built emulator.
+
+The Cemu 2.6 source patches retain Cemu's MPL-2.0 terms. See [Cemu's license](wiiu/cemu/LICENSE-CEMU.txt).

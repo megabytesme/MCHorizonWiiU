@@ -1,52 +1,26 @@
-# Cafe build input inventory
+# Cafe toolchain and private inputs
 
-The compatibility recipe pins the exact
-[toolchain input specification](../catalog/toolchain-cafe-v1.json).
-The builder resolves the installed devkitPro tools and stage1 path from
-the environment and verifies content before compiling. It uses the
-installed Cafe Rust 1.101.0-dev compiler and target library inventory,
-WUT 1.9.2 and devkitPPC r51. Cargo nightly and its release lock are also
-pinned. The release does not redistribute the installed toolchain.
+The [toolchain lock](../catalog/toolchain-cafe-v1.json) pins compiler and linker binaries, WUT headers and library, the Cafe sysroot inventory and Cargo. The [dependency recipe](../catalog/dependencies-cafe-v1.json) adds archive hashes for the official devkitPro packages and reproducible crate overlays. These source inputs can be verified on any host supporting the builder.
 
-Supply a private input root with these exact byte inventories. The paths
-below identify the existing Ben-Desktop snapshots. Copy them once to the
-named input root. The builder verifies hashes, so replacing or relocating
-a snapshot cannot silently change the build.
-
-| Role in input root | Current local source |
+| Input | Provisioning |
 | --- | --- |
-| `winit/` | `$scratch/HorizonWiiU-png-stage-probe-20261111/winit`, Winit 0.30.13 Cafe shim |
-| `ring/` | `$scratch/HorizonWiiU-ring-patched-touchtrace-20261111`, ring 0.17.14 |
-| `png/` | `$scratch/HorizonWiiU-png-stage-probe-20261111/png-0.18.1` |
-| `ureq/` | `$scratch/HorizonWiiU-touchtrace-20261111/ureq-trace`, ureq 2.12.1 |
-| `workspace.patch` | `%TEMP%/HorizonWiiU-region-save-20261119/native-build-overlays.patch`, the recorded nine-file snapshot |
+| Linux x86-64 or WSL 2 | Python 3.11+, Git, CMake 3.28.3, Ninja 1.11.1, Rustup and JDK 25 for preparation. |
+| devkitPPC r51 / WUT 1.9.2 | Use the official devkitPro pacman distribution. Retrieve the exact signed package archives named in the dependency recipe. Review and verify package signatures through pacman. If those revisions have aged out, obtain the signed originals from the publisher or a verified cache. |
+| Cafe Rust 1.101.0-dev | Supply a stage1 compiler and target sysroot matching the lock. The [Cafe Rust delta](../patches/toolchain/cafe-rust-62606b70/source.json) applies over [rust-wiiu/rust at 62606b70](https://github.com/rust-wiiu/rust/tree/62606b70e351edb297db1fdd4b99c8b8ca440d38) and includes recorded target, TLS, socket and unwind changes. The installed stage1 used [backtrace-rs at 148c9de](https://github.com/rust-lang/backtrace-rs/tree/148c9de856542400168883f69437affbbe6f6743) for `library/backtrace`. The exact bootstrap configuration and complete locked source tree still need clean-host verification. |
+| Cargo nightly and shader compiler | Provide the Cargo build named by the lock, `cargo-wiiu` and the verified `glslcompiler` from the Cafe GLSL toolchain. Install them separately and check the hashes. |
+| Crate source overlays | **Prepare dependencies** downloads the pinned ring, png and ureq source archives and reconstructs their exact overlays. The Winit facade and workspace patch are tracked. |
+| Minecraft 26.3 | Use your own legal installation and exact client and server JARs. The upstream preparation step uses its assets and exporters. The builder verifies the JAR and preparation pins. |
 
-The workspace overlay applies after the canonical public source assembly.
-It is a private build input with its own fingerprint. Its raw CRLF archive
-bytes are pinned before the builder normalizes transport endings for Git.
-The nine tracked paths and the earlier game context are listed in the
-[baseline inventory](../wiiu/builder/MIGRATION.md). The release uses the
-exact recorded workspace snapshot. It does not read uncommitted files
-from another worktree.
+Set these variables in the Linux / WSL login environment. Choose the actual paths for the installed tools.
 
-`getrandom 0.4.3` comes from the native source inventory and retains its
-dual license. The reconstructed source already carries the upstream
-`wgpu-hal`, `naga` and `libmimalloc-sys` overrides. The additional offline
-Cargo lock and the Winit TV-size shim are under `wiiu/game-bridge/offline/`.
-The Wii U linker helper, verifier and PowerPC relocation normalization
-remain tracked in the port checkout.
+```sh
+export DEVKITPRO=/opt/devkitpro
+export DEVKITPPC="$DEVKITPRO/devkitPPC"
+export HORIZON_WIIU_STD_RUSTC=/path/to/cafe-stage1/bin/rustc
+export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/portlibs/wiiu/bin:$DEVKITPPC/bin:$HOME/.cargo/bin:/path/to/cafeglsl/bin:$PATH"
+python3 -B wiiu/builder/workflow.py --allow-unsigned inventory-toolchain
+```
 
-The [selected Cafe Rust source patch](../patches/toolchain/cafe-rust-62606b70/source.json)
-comes from the installed Rust checkout over
-`62606b70e351edb297db1fdd4b99c8b8ca440d38`. It includes the target, socket,
-TLS and unwind changes and applies to that exact source in a clean Git
-index. The live setup's local `library/backtrace` substitution is recorded
-in the toolchain delta fingerprint and remains an external provisioning
-step. The source patch is application evidence. The build itself uses
-the separately verified installed compiler and sysroot. Rebuilding that
-compiler from a clean machine requires reconstructing the backtrace and
-stage1 build inputs.
+Add `--package-cache PATH` to check the devkitPro package archive SHA-256 values. This is an inventory command. Install or repair the official packages and custom compiler in your chosen environment before building. Toolchain drift requires a new reviewed recipe, build and evidence.
 
-Use `tools/record_cafe_inputs.py` to emit a candidate lock for review.
-Use `tools/export_patch_series.py` to regenerate the checked-in Horizon
-patches from their exact local history. Neither signs a release.
+Minecraft assets, decompiled source, Nintendo proprietary SDK components and user data must stay private. The project distributes public source and deltas. Tools and installed libraries remain separate from builder and client bundles until their individual licenses, corresponding-source obligations and redistribution provenance have been reviewed. Cemu test patches are source-only. See [third-party notices](../THIRD_PARTY_NOTICES.md).

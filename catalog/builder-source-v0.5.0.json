@@ -1,0 +1,21 @@
+{
+  "tools/build_cafe_game_isolated.sh": "7e3d985567b10248dfd2e2358251616f0c269edd27a8eb26e4fbad1c18a32592",
+  "tools/catalog-signer/CatalogSigner.csproj": "cdd6f0b4e4b9c72196431282fc7f42508e52e0f6a10b88a948a157bbdabd220b",
+  "tools/catalog-signer/Program.cs": "b900ff63ec65fe779052e30ee1bbfd6d271da6255cffee745c6a0c64f227995f",
+  "tools/check_release.py": "ccacb00c299d2235583e8db8f05ce7e0d337454f3d13e568a8866b8b44df1575",
+  "tools/prepare_prebuilt.py": "0ba4657739591e5b9b72059cada0d76bbbfca9bcf826a34fe269b628dc4930ea",
+  "tools/prepare_release.py": "b9e79147298673f0ff79527d576135c158caf72a7d0c04c5ccd371be64d1ecce",
+  "wiiu/builder/MIGRATION.md": "cb837278b141c3225668a2f151a5619e4caa50d55d1ce5ffd4ecc5e09792f4c0",
+  "wiiu/builder/README.md": "d967d6e7cb4abc081a5507c1c12d5addec27188e194f0b0e8920efa3d008a140",
+  "wiiu/builder/build.py": "fd249c358e466b9c0bacb33798669d2e68d0082e68f711346b7b111c9aa63d71",
+  "wiiu/builder/core.py": "cdc40af4f2de4e5d0c30fe5eab480f993dc9b5331298a85a2b1a557ed1ca268c",
+  "wiiu/builder/dependencies.py": "956a62dbcf27d8f3704eef7afc4d6051522ef44f80b0af927252aa348ce22f05",
+  "wiiu/builder/desktop.py": "77bde7b3dc5facba6fcb4b9c1dc445da51bb987df7b4adf31c1c56cf03fcf33a",
+  "wiiu/builder/native.py": "8613505510658b9241f0636d50a61386f7cb693456bcb65fc62ec6a2b7663aeb",
+  "wiiu/builder/releases.py": "21e6ea8ea10e82db37403ef605702206891b2beac53727b8c289c614eed4d243",
+  "wiiu/builder/source.py": "321850dd8d307b5c43911075fd83e79af0fd5c3c2ccb1dfc64cc9a59335c5f39",
+  "wiiu/builder/test_build.py": "df6d405e2f1bbfac89efcf4216b63a61afa6903ecdae31c7954ade0ba93b8f0b",
+  "wiiu/builder/test_workflow.py": "4706e07fc7e85a4615b7a33d578b3bb7810f5a644aeeffcda4630c1d4661b50d",
+  "wiiu/builder/workflow.py": "1b8ebc7547b5e768c6ae42a953546a7cf73c5e355c93a5b907d413a751b47091",
+  "wiiu/builder/wsl_job.py": "fb1785b8eee92fd152077df79d1c61d7004da446595666bcb3be7847f742172f"
+}
