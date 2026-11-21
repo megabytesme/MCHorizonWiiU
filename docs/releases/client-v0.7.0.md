@@ -57,14 +57,27 @@ literals.
 
 | Combined acceptance | Result |
 | --- | --- |
-| 1–3. Night, offline persistence and account initialization | Passed on NSS-patched Cemu. The real Night backend displayed the Microsoft account service. |
-| 4–5. Protected and automatic credential restore | Microsoft account storage passed host fixtures for all three modes. The combined Cemu MCP vault passed protected cold restart and automatic restore. |
+| 1â€“3. Night, offline persistence and account initialization | Passed on NSS-patched Cemu. The real Night backend displayed the Microsoft account service. |
+| 4â€“5. Protected and automatic credential restore | Microsoft account storage passed host fixtures for all three modes. The combined Cemu MCP vault passed protected cold restart and automatic restore. |
 | 6. Microsoft identity handoff | The verified identity is wired into the hosted game and save owner checks. The protocol fixture passed. A real signed-in Microsoft session and online multiplayer handoff remain untested on this RPX. |
-| 7–9. Persistent HTTPS identity, direct Gemini OAuth and real launcher tools | Passed with the guest's exported CA and GamePad approval. Gemini used the legacy protocol and the direct wire fixture passed modern stateless requests. |
-| 10–11. Reconnect, scoped refresh, revocation and No AI | Passed in the Cemu restart suite. Local PIN unlock preserved the trusted grant. |
-| 12–16. Real game launch, gameplay tools, Save & Quit, withdrawal and a fresh session | Both copied-world launches passed within one application process. The copy's level data changed, both save barriers completed, the same HTTPS origin served launcher tools, and the game catalog withdrew at each shutdown. Host tests also rejected stale generations. |
-| 17–18. GX2 and profiler captures | Terrain and HUD appeared on TV and GamePad. The controlled lightmap and the profile decoder passed. Full visual parity and physical performance remain open. |
-| 19–20. Source and output verification | Catalog-selected offline builds verified the pinned patch trees, dependency overlays, toolchain, Cargo lock, private resource inventory and output hashes. Clean builds matched. Public tree, secret scan and catalog checks passed. The separate prebuilt publication gate remains blocked. |
+| 7â€“9. Persistent HTTPS identity, direct Gemini OAuth and real launcher tools | Passed with the guest's exported CA and GamePad approval. Gemini used the legacy protocol and the direct wire fixture passed modern stateless requests. |
+| 10â€“11. Reconnect, scoped refresh, revocation and No AI | Passed in the Cemu restart suite. Local PIN unlock preserved the trusted grant. |
+| 12â€“16. Real game launch, gameplay tools, Save & Quit, withdrawal and a fresh session | Both copied-world launches passed within one application process. The copy's level data changed, both save barriers completed, the same HTTPS origin served launcher tools, and the game catalog withdrew at each shutdown. Host tests also rejected stale generations. |
+| 17â€“18. GX2 and profiler captures | Terrain and HUD appeared on TV and GamePad. The controlled lightmap and the profile decoder passed. Full visual parity and physical performance remain open. |
+| 19â€“20. Source and output verification | Catalog-selected offline builds verified the pinned patch trees, dependency overlays, toolchain, Cargo lock, private resource inventory and output hashes. Clean builds matched. Public tree, secret scan and catalog checks passed. The separate prebuilt publication gate remains blocked. |
+
+## Repeat the Cemu acceptance
+
+Use the cold-start and gameplay suites in
+`wiiu/pregame/tests/cemu.ps1`. Both take `-Production -NativeMcp`,
+the final RPX, the NSS-patched Cemu executable, a fresh output directory
+and the installed Gemini CLI bundle via `-GeminiBundle`. Use
+`-RestartMcp` for the launcher-only restart suite. For the game suite,
+supply a private prepared-resource copy, an existing disposable save and
+its options with `-PreparedResources -IsolatedSaves -IsolatedOptions`.
+Set `MCHORIZON_CEMU_ROUND_TRIPS=2` and
+`MCHORIZON_CEMU_GAME_EVIDENCE` to the same fresh output directory. Add
+`-CaptureProfile` to enable the bounded GX2 recording.
 
 ## GX2 captures on the mapped-atlas build
 
