@@ -2,7 +2,21 @@
 
 The Windows desktop builder uses Python 3.11+ with Tk and an x86-64 Linux environment under WSL 2. The same CLI runs directly in Linux. The [Cafe toolchain guide](inputs.md) lists the host prerequisites, package hashes and components that need maintainer provision.
 
-Clone [MCHorizonWiiU](https://github.com/megabytesme/MCHorizonWiiU) inside the Linux filesystem of your WSL distribution. Its default branch, `main`, contains the CafeOS port and builder. Keep the build cache there. Windows package destinations can use WSL paths such as `/mnt/c/Builds/HorizonWiiU`, although builds on the Linux filesystem are faster. Start the desktop window from a Windows checkout of the same revision.
+Clone [MCHorizonWiiU](https://github.com/megabytesme/MCHorizonWiiU) inside the Linux filesystem of your WSL distribution. Keep the build cache there. Windows package destinations can use WSL paths such as `/mnt/c/Builds/HorizonWiiU`. The November 20 candidate uses the [hosted Nightly CLI below](#build-the-november-20-hosted-candidate) from `main`.
+
+## Build the verified 0.7.0 release
+
+The desktop and direct workflows for Builder 0.6.0 verify that their local
+source matches the release inventory. Apply the commands in this section
+from the rollback tag in Linux or WSL.
+
+```sh
+git fetch origin tag rollback/client-0.7.0-unified-main
+git worktree add --detach "$rollback_checkout" rollback/client-0.7.0-unified-main
+cd "$rollback_checkout"
+```
+
+Start the desktop window from a Windows checkout of the same rollback tag.
 
 ```powershell
 pythonw.exe wiiu/builder/desktop.py --allow-unsigned
@@ -16,7 +30,7 @@ pythonw.exe wiiu/builder/desktop.py --allow-unsigned
 
 Use **Offline** after the upstream object, source assembly, crate archives and Cargo cache are populated. A checksum failure identifies the artifact that needs repair. For a corrupt staged source or overlay, move the named directory aside while the builder is idle and re-run preparation. Interrupted downloads and dependency extraction are staged before promotion. Builds check available space on the destination and cache volumes. An incomplete build has no verified output receipt.
 
-## Direct CLI
+### Direct CLI
 
 ```sh
 python3 -B wiiu/builder/workflow.py --allow-unsigned inventory-toolchain

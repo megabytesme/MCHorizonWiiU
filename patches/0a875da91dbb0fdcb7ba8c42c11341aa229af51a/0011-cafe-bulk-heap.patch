@@ -1,0 +1,164 @@
+diff --git a/crates/horizon-client-platform/src/cafe_memory.rs b/crates/horizon-client-platform/src/cafe_memory.rs
+index d80a5a202ee551a9ef7150872e9654dd4f5e6b95..3e51aef1d3fd154c590b511f64f9ef31d4439c5a 100644
+--- a/crates/horizon-client-platform/src/cafe_memory.rs
++++ b/crates/horizon-client-platform/src/cafe_memory.rs
+@@ -6,12 +6,16 @@ use std::{
+     sync::atomic::{AtomicUsize, Ordering::Relaxed},
+ };
+ 
++const BULK_THRESHOLD: usize = 8 * 1024 * 1024;
++
+ static LIVE: AtomicUsize = AtomicUsize::new(0);
+ static BLOCKS: AtomicUsize = AtomicUsize::new(0);
+ static PEAK: AtomicUsize = AtomicUsize::new(0);
+ static FAILURES: AtomicUsize = AtomicUsize::new(0);
+ 
+ unsafe extern "C" {
++    fn horizon_wiiu_memory_alloc_bulk(bytes: usize, align: usize) -> *mut u8;
++    fn horizon_wiiu_memory_free_bulk(block: *mut u8) -> std::ffi::c_int;
+     fn horizon_wiiu_memory_report(
+         label: *const u8,
+         len: usize,
+@@ -76,22 +80,33 @@ impl MeasuredSystem {
+     }
+ }
+ 
+-// SAFETY: blocks and their layouts pass through unchanged to System. The
+-// default realloc allocates, copies, then frees, as Cafe System does. Count
+-// both blocks during the copy so this transient contributes to the peak.
++// SAFETY: the bulk heap honors Layout and frees only pointers in its own
++// reserved backing. Other allocations and layouts pass unchanged to System.
++// Reallocation uses the trait's allocate-copy-free path through both heaps.
+ unsafe impl GlobalAlloc for MeasuredSystem {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        if layout.size() >= BULK_THRESHOLD {
++            let block = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align()) };
++            if !block.is_null() {
++                return Self::record(block, layout);
++            }
++        }
+         Self::record(unsafe { System.alloc(layout) }, layout)
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+-        Self::record(unsafe { System.alloc_zeroed(layout) }, layout)
++        let block = unsafe { self.alloc(layout) };
++        if !block.is_null() {
++            unsafe { block.write_bytes(0, layout.size()) };
++        }
++        block
+     }
+ 
+     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+         LIVE.fetch_sub(layout.size(), Relaxed);
+         BLOCKS.fetch_sub(1, Relaxed);
+-        // SAFETY: ptr and layout are unchanged from allocation by System.
+-        unsafe { System.dealloc(ptr, layout) };
++        if layout.size() < BULK_THRESHOLD || unsafe { horizon_wiiu_memory_free_bulk(ptr) } == 0 {
++            unsafe { System.dealloc(ptr, layout) };
++        }
+     }
+ }
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 6342131ae241523d153e7ee0681d81633d87e24e..1e461a4454899a19483938b32a27d180f46cc6fc 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -614,7 +614,11 @@ pub(super) fn load_resources(
+     let mut can_rollback = true;
+     let (core, loaded_gui, resolved) = loop {
+         let (ui, core) = std::thread::scope(|scope| {
+-            let core = Step::spawn(scope, parallel, "core", || {
++            // Cafe keeps the large initial HUD raster and core tables from
++            // reaching their allocation peaks together. Core still uses its
++            // configured workers, and the server only builds a font atlas.
++            let overlap_ui_and_core = parallel && (!cfg!(target_os = "cafe") || headless);
++            let core = Step::spawn(scope, overlap_ui_and_core, "core", || {
+                 // A failed pack starts core again from the game's own
+                 // resources, which the world's preload must read: with packs
+                 // it waits for the core that loaded.
+diff --git a/wiiu/loading_app/memory.c b/wiiu/loading_app/memory.c
+index faec2b778d52d86e716ba678ab519cbce0442154..1bab9e023eac65951941e0be264870313d069485 100644
+--- a/wiiu/loading_app/memory.c
++++ b/wiiu/loading_app/memory.c
+@@ -4,12 +4,53 @@
+ #include <coreinit/memheap.h>
+ #include <gx2/surface.h>
+ #include <stdint.h>
++#include <string.h>
+ #include <whb/gfx.h>
+ 
+ static MEMHeapHandle default_heap;
+ 
++// Keep large transient Rust blocks together in process-owned backing.
++// Small persistent allocations in the default heap can't split these blocks.
++enum { BULK_HEAP_BYTES = 256 * 1024 * 1024 };
++static MEMHeapHandle bulk_heap;
++static uintptr_t bulk_start;
++
++static void init_bulk_heap(void)
++{
++   if (bulk_heap) return;
++   void *buffer = MEMAllocFromDefaultHeapEx(BULK_HEAP_BYTES, 64);
++   if (!buffer) {
++      OSReport("Horizon memory bulk_heap unavailable\n");
++      return;
++   }
++   bulk_heap = MEMCreateExpHeapEx(buffer, BULK_HEAP_BYTES, MEM_HEAP_FLAG_USE_LOCK);
++   if (!bulk_heap) {
++      MEMFreeToDefaultHeap(buffer);
++      OSReport("Horizon memory bulk_heap initialization failed\n");
++      return;
++   }
++   bulk_start = (uintptr_t)buffer;
++   OSReport("Horizon memory bulk_heap capacity=%u\n", BULK_HEAP_BYTES);
++}
++
++void *horizon_wiiu_memory_alloc_bulk(uint32_t bytes, uint32_t align)
++{
++   if (!bulk_heap || align > INT32_MAX) return NULL;
++   return MEMAllocFromExpHeapEx(bulk_heap, bytes, (int32_t)(align < 4 ? 4 : align));
++}
++
++int horizon_wiiu_memory_free_bulk(void *data)
++{
++   uintptr_t address = (uintptr_t)data;
++   if (!bulk_heap || address < bulk_start || address - bulk_start >= BULK_HEAP_BYTES)
++      return 0;
++   MEMFreeToExpHeap(bulk_heap, data);
++   return 1;
++}
++
+ void horizon_wiiu_memory_init(void)
+ {
++   init_bulk_heap();
+    /* MEM2's base heap can have zero free bytes while a child heap serves
+     * default allocations. Accept the containing heap only after a known
+     * allocation changes its free count. Do this before workers are started. */
+@@ -47,14 +88,23 @@ void horizon_wiiu_memory_init(void)
+ void horizon_wiiu_memory_report(const char *label, uint32_t len, uint32_t live,
+                                uint32_t peak, uint32_t blocks)
+ {
++   char name[96];
++   if (len >= sizeof(name)) len = sizeof(name) - 1;
++   memcpy(name, label, len);
++   name[len] = 0;
+    if (default_heap) {
+-      OSReport("Horizon memory %.*s rust_live=%u rust_peak=%u rust_blocks=%u heap_free=%u largest_4=%u largest_64=%u\n",
+-               (int)len, label, live, peak, blocks, MEMGetTotalFreeSizeForExpHeap(default_heap),
++      OSReport("Horizon memory %s rust_live=%u rust_peak=%u rust_blocks=%u heap_free=%u largest_4=%u largest_64=%u\n",
++               name, live, peak, blocks, MEMGetTotalFreeSizeForExpHeap(default_heap),
+                MEMGetAllocatableSizeForExpHeapEx(default_heap, 4),
+                MEMGetAllocatableSizeForExpHeapEx(default_heap, 64));
+    } else {
+-      OSReport("Horizon memory %.*s rust_live=%u rust_peak=%u rust_blocks=%u heap_free=unverified\n",
+-               (int)len, label, live, peak, blocks);
++      OSReport("Horizon memory %s rust_live=%u rust_peak=%u rust_blocks=%u heap_free=unverified\n",
++               name, live, peak, blocks);
++   }
++   if (bulk_heap) {
++      OSReport("Horizon memory %s bulk_free=%u bulk_largest=%u\n", name,
++               MEMGetTotalFreeSizeForExpHeap(bulk_heap),
++               MEMGetAllocatableSizeForExpHeapEx(bulk_heap, 64));
+    }
+ }
+ 

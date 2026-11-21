@@ -16,7 +16,7 @@ The builder is a desktop packaging tool. Gameplay and local launcher operations 
 
 ## Validation
 
-The [unified candidate validation](docs/releases/client-v0.7.0.md) tracks the combined application. The [Night validation record](docs/night-local-validation.md) describes exact package hashes and Cemu results from the original baseline. The [migration build record](docs/releases/client-v0.6.0.md) tracks the sanitized source candidate separately. **Reopening a saved world on physical Wii U remains a release blocker.** Earlier hardware observations and the Cemu save cycle are documented in the [hosted validation record](docs/hosted-validation.md).
+The [November 20 Nightly migration](docs/nightly-2026-11-20.md) records the pinned source, candidate hashes and current validation. The [0.7.0 unified validation](docs/releases/client-v0.7.0.md) records the rollback build. The [Night validation record](docs/night-local-validation.md) describes exact package hashes and Cemu results from the original baseline. The [migration build record](docs/releases/client-v0.6.0.md) tracks the sanitized source candidate separately. **Reopening a saved world on physical Wii U remains a release blocker.** Earlier hardware observations and the Cemu save cycle are documented in the [hosted validation record](docs/hosted-validation.md).
 
 ## Development
 
