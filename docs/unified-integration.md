@@ -43,12 +43,20 @@ The earlier standalone feature builds are documented in
 The GX2 timing comparison covered loading. Hardware and full renderer parity
 remain open.
 
+The repeated-launch replay exposed a terrain initialization error in the
+first combined package. The hosted follow-up packs sprites into the mapped
+GX2 texture and keeps the same gutters and texture dimensions. It removes
+the additional 64 MiB CPU buffer for the replay's atlas. The source series
+also records more precise GX2 initialization failures for future diagnosis.
+The standalone Night build links its verified Cafe Rust archives with a
+local panic handler so it can resolve Rust formatting independently.
+
 ## GitHub review and release
 
 1. Have the maintainer approve pushing the local candidate. Run
    `git push -u origin codex/wiiu-unified-candidate` from this worktree, then
    open a draft review against the sanitized branch with
-   `gh pr create --repo megabytesme/MCHorizonWiiU --draft --base codex/wiiu-canonical-release --head codex/wiiu-unified-candidate --body-file "$pr_body"`.
+   `gh pr create --repo megabytesme/MCHorizonWiiU --draft --base codex/wiiu-canonical-release --head codex/wiiu-unified-candidate --title "Unify Horizon Night accounts, native MCP and GX2" --body-file "$pr_body"`.
    Use the authenticated account's agent attribution and include exact RPX
    hashes and the validation matrix. Review this branch against
    `60ab798f3f53dc859420480c9bfb38bada46a8a8`. [GitHub PR command](https://cli.github.com/manual/gh_pr_create)
@@ -69,7 +77,7 @@ remain open.
    Verify `git ls-remote --symref origin HEAD refs/heads/main refs/heads/archive/legacy-full-horizon`,
    update rulesets and release automation, and preserve both legacy refs.
    Rollback is switching the default setting back to `main`.
-   [Existing migration record](migration.md) · [GitHub branch settings](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch)
+   [Existing migration record](migration.md) Ã‚Â· [GitHub branch settings](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch)
 
 
 ## Exact feature file inventory
