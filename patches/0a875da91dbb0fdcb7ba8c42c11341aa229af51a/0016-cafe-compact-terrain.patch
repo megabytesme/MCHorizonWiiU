@@ -1,0 +1,137 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 08c992de41bf1595c6184a465674b0f5a760ce70..db0289ccaf998e7b9c21efff931e45721d306bd7 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -15,7 +15,7 @@ pub struct CafeGameArtwork<'a> {
+     pub gamma: f32,
+     pub atlas: &'a HudAtlas,
+     pub cit_glints: Option<&'a horizon_client::hud::cit_glint::GlintTextures>,
+-    pub panorama: &'a horizon_client::gfx::panorama::Faces,
++    pub panorama: Option<&'a horizon_client::gfx::panorama::Faces>,
+     pub terrain_pixels: &'a horizon_client::assets::SpritePixels,
+     pub terrain_sprite_size: u32,
+     pub terrain_layers: u32,
+@@ -678,7 +678,7 @@ impl CafeGameSession<'_> {
+                 .cit
+                 .as_ref()
+                 .map(|cit| &cit.glint_textures),
+-            panorama: &self.game.gui.panorama,
++            panorama: self.game.title.as_ref().map(|_| self.game.gui.panorama.as_ref()),
+             terrain_pixels: &self.game.pack.render.pixels,
+             terrain_sprite_size: self.game.pack.render.sprite_size,
+             terrain_layers: self.game.pack.render.texture_layers,
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index e9d0b3de991854e12a4bfcc2522c146b1814e264..453990ab5e22eaa556cebd2d5bac90034a5411ee 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -289,33 +289,27 @@ impl TerrainAtlasLayout {
+         let cell_size = sprite_size
+             .checked_add(2)
+             .ok_or("Horizon sprite cell overflow")?;
+-        let mut columns = 1u32;
+-        let mut best = None::<(u64, u32, u32, u32)>;
+-        while columns
+-            <= layers
+-                .checked_next_power_of_two()
+-                .ok_or("Horizon layer count overflow")?
+-        {
++        const MAX_TEXTURE_SIZE: u32 = 8192;
++        // GX2 linear RGBA8 surfaces can have non-power-of-two extents.
++        // Account for pitch padding when choosing how many cells share a row.
++        const LINEAR_PITCH_ALIGNMENT: u32 = 64;
++        let max_cells = MAX_TEXTURE_SIZE / cell_size;
++        let mut best = None;
++        for columns in 1..=layers.min(max_cells) {
+             let rows = layers.div_ceil(columns);
+-            let width = columns
+-                .checked_mul(cell_size)
+-                .and_then(u32::checked_next_power_of_two);
+-            let height = rows
+-                .checked_mul(cell_size)
+-                .and_then(u32::checked_next_power_of_two);
+-            if let (Some(width), Some(height)) = (width, height) {
+-                if width <= 8192 && height <= 8192 {
+-                    let area = u64::from(width) * u64::from(height);
+-                    if best.is_none_or(|(old, _, _, _)| area < old) {
+-                        best = Some((area, columns, width, height));
+-                    }
+-                }
++            if rows > max_cells {
++                continue;
++            }
++            let width = columns * cell_size;
++            let height = rows * cell_size;
++            let pitch = width.next_multiple_of(LINEAR_PITCH_ALIGNMENT);
++            let area = u64::from(pitch) * u64::from(height);
++            let candidate = (area, pitch.abs_diff(height), columns, width, height);
++            if best.is_none_or(|old| candidate < old) {
++                best = Some(candidate);
+             }
+-            columns = columns
+-                .checked_mul(2)
+-                .ok_or("Horizon atlas column overflow")?;
+         }
+-        let Some((_, columns, width, height)) = best else {
++        let Some((_, _, columns, width, height)) = best else {
+             return Err("Horizon atlas exceeds GX2 texture limit");
+         };
+         Ok(Self {
+@@ -495,6 +489,15 @@ mod indexed_vertex_tests {
+         assert_eq!(next, order.len());
+     }
+ 
++    #[test]
++    fn linear_atlas_fits_every_layer_without_power_of_two_padding() {
++        let layout = TerrainAtlasLayout::for_layers(64, 1800).unwrap();
++        assert_eq!(layout.width, layout.columns * 66);
++        assert_eq!(layout.height, 1800_u32.div_ceil(layout.columns) * 66);
++        assert!(layout.width.next_multiple_of(64) * layout.height * 4 <= 32 * 1024 * 1024);
++        assert!(TerrainAtlasLayout::for_layers(8191, 1).is_err());
++    }
++
+     #[test]
+     fn mapped_atlas_uses_surface_pitch_and_extrudes_sprite_edges() {
+         let layout = TerrainAtlasLayout::for_layers(2, 1).unwrap();
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 172006690679531291cea8cbba072ca2cda6d6ed..76c4c051f24af98c5fe4be9ecb3e4a7c5afcb2c2 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -64,11 +64,15 @@ static int create_texture(GX2Texture *texture, uint32_t width, uint32_t height,
+       GX2CalcSurfaceSizeAndAlignment(s);
+       if (!s->imageSize || !s->alignment || s->mipmapSize) return -3;
+       uint8_t *backing = MEMAllocFromDefaultHeapEx(s->imageSize, s->alignment);
+-      if (!backing) return -2;
++      if (!backing) {
++         OSReport("Horizon GX2 terrain backing unavailable: width=%u height=%u bytes=%u alignment=%u\n",
++                  width, height, s->imageSize, s->alignment);
++         return -2;
++      }
+       if (!GX2RCreateSurfaceUserMemory(s, backing, NULL, texture_flags)) {
+          MEMFreeToDefaultHeap(backing);
+          memset(texture, 0, sizeof(*texture));
+-         return -2;
++         return -3;
+       }
+       *storage = backing;
+    } else if (!GX2RCreateSurface(s, texture_flags)) return -2;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index edcc535c8b5c4b392f6d9f3a7d6347e3f92879db..e35659ce454995c3cf56276af9e6dae318b0d4ea 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1243,7 +1243,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         self.gamma = artwork.gamma;
+         self.prepare(CafeLoadingArtwork {
+             atlas: artwork.atlas,
+-            panorama: Some(artwork.panorama),
++            panorama: artwork.panorama,
+             generation: artwork.hud_generation,
+         })?;
+         if self.cit_generation != Some(artwork.hud_generation) {
+@@ -1289,6 +1289,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 return Err("GX2 terrain atlas source length differs from the layer layout".into());
+             }
+             artwork.terrain_pixels.pack();
++            horizon_client_platform::cafe_memory::report("terrain.before_atlas");
+             let mut upload = TerrainAtlasUpload {
+                 layout: &layout,
+                 source: artwork.terrain_pixels,
