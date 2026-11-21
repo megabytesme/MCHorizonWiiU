@@ -37,3 +37,23 @@ Pass `--upstream PATH` before the subcommand to use a local object store. The fi
 Copy `HorizonWiiU.wuhb` for Aroma or `HorizonWiiU.rpx` for an RPX-capable homebrew launcher to `wiiu/apps/HorizonWiiU/`. Place the prepared 26.3 directory under `.local/horizon-client/26.3/` inside that app directory. To test with Cemu, use a portable profile with its own scratch SD. Back up existing worlds before testing on hardware. Resource packs and native mods require separate compatibility evidence. The current desktop builder applies the catalogued port patches.
 
 The native build record lists output hashes, exact source trees, input hashes and tool versions. It can include local paths, so share a redacted evidence summary. Do not share the private resource inventory.
+
+
+## Assemble the November 20 hosted candidate
+
+The candidate source recipe uses the exact Horizon Nightly commit
+`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`. Check out that commit in a
+disposable upstream checkout and use the verified external Cafe dependency
+inputs from the stable builder. Run this command in WSL from the port checkout.
+
+```sh
+python3 wiiu/builder/build.py assemble-hosted-nightly \
+  --source "$nightly_checkout" \
+  --inputs "$cafe_inputs" \
+  --output "$candidate_output"
+```
+
+The output contains the staged source, Cargo manifest, lockfile and
+`nightly-source-record.json` with the exact trees and SHA-256 values.
+Cafe Winit comes from the Nightly patch series. The active `build-hosted`
+command uses the existing 0.7.0 release recipe.

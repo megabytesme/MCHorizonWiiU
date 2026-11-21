@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "kind": "wiiu-hosted-nightly-source",
+  "target": "powerpc-nintendo-cafe",
+  "upstream": {
+    "commit": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
+    "tree": "84463ab1b850d9ac382fb0b94d247f0c06d690fc",
+    "inventory_sha256": "a959d259ed1d49f69e53a9fa3355c19fa3bbf4be9ce7235fc44dbbb41016f8d8"
+  },
+  "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "cargo_lock_sha256": "5e0aa81035fc0d61dc446f936aaef945da5cd4c6a3ab1a489bc0e8b29c3f3e5a",
+  "output_tree": "21a4e742e765d678b52682e1764084d1e037c2fa",
+  "series": [
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
+      "sha256": "c51e664a3bd5c24e615fdfb8df08424ea079ee9ec60efd991ba271eb7afab163",
+      "input_tree": "84463ab1b850d9ac382fb0b94d247f0c06d690fc",
+      "output_tree": "2f3fa5fbb01226b6526d9369ddbefc088f72c144"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0002-cafe-hmod-foundation.patch",
+      "sha256": "9f5972b560409c2fd93b2e0a8af87d25ddbd37d845603581ca3fd706692af741",
+      "input_tree": "2f3fa5fbb01226b6526d9369ddbefc088f72c144",
+      "output_tree": "6b0fd974b9099c65ee2c3f783d13c53b8c46a9d4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0003-cafe-engine-primitives.patch",
+      "sha256": "7ceb1edc99f155e20e36a44bff186e62124b3b44276b608aee3d92a1963dcd9e",
+      "input_tree": "6b0fd974b9099c65ee2c3f783d13c53b8c46a9d4",
+      "output_tree": "6c272f62538bbbaa5fddb3f7363869a5b5bf5038"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0004-share-cafe-frame-data.patch",
+      "sha256": "709e5216fb9584b1be6018674bfdbd573687b30ce294ca260042ece6b4c4645b",
+      "input_tree": "6c272f62538bbbaa5fddb3f7363869a5b5bf5038",
+      "output_tree": "dea32d7c1dfd4877f4ddc6c176a689fc64fd79a7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0005-cafe-hosted-client.patch",
+      "sha256": "012809562c49ef285435e13ce12b84e339dc57f455b8c77fb28c5bd343210747",
+      "input_tree": "dea32d7c1dfd4877f4ddc6c176a689fc64fd79a7",
+      "output_tree": "21a4e742e765d678b52682e1764084d1e037c2fa"
+    }
+  ]
+}

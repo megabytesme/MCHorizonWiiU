@@ -7,6 +7,7 @@ import unittest
 
 import core
 import native
+import nightly
 import source
 
 
@@ -32,6 +33,18 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(all(files))
         with self.assertRaisesRegex(ValueError, "standalone pin"):
             native.hosted_inputs(self.recipe, "0" * 64)
+
+    def test_nightly_pins_all_patches_and_keeps_its_own_tree_chain(self):
+        spec, fingerprint, patches = nightly.read_recipe(self.fingerprint)
+        self.assertEqual(core.file_digest(nightly.MANIFEST), fingerprint)
+        for patch in spec["series"]:
+            self.assertEqual(core.digest(patches[patch["file"]]), patch["sha256"])
+        with self.assertRaisesRegex(ValueError, "toolchain recipe"):
+            nightly.read_recipe("0" * 64)
+        broken = copy.deepcopy(spec)
+        broken["series"][1]["input_tree"] = "f" * 40
+        with self.assertRaisesRegex(ValueError, "noncontiguous"):
+            nightly.validate(broken)
 
     def test_reject_duplicate_fields_broken_chain_and_wrong_versions(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):

@@ -164,7 +164,8 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None):
         staged.mkdir()
         git(staged, "init", "--quiet", "--template=")
         alternates = staged / ".git/objects/info/alternates"
-        alternates.write_text(str(workspace.resolve() / ".git/objects") + "\n", newline="\n")
+        objects = git(workspace, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+        alternates.write_text(objects.stdout.decode().strip() + "\n", newline="\n")
         upstream = git(workspace, "rev-parse", "HEAD").stdout.decode().strip()
         git(staged, "update-ref", "HEAD", upstream)
         git(staged, "read-tree", release_tree)
@@ -191,12 +192,12 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None):
     return source, tree
 
 
-def write_cargo_inputs(directory, source, inputs, lock, bridge):
+def write_cargo_inputs(directory, source, inputs, lock, bridge, *, overlays=OVERLAYS):
     directory = directory.resolve()
     source = source.resolve()
     dependency_root = directory / "external"
     dependency_root.mkdir(exist_ok=True)
-    for name in OVERLAYS:
+    for name in overlays:
         target = dependency_root / name
         if not target.exists():
             with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=dependency_root) as scratch:
@@ -219,13 +220,13 @@ def write_cargo_inputs(directory, source, inputs, lock, bridge):
     # package metadata and avoid adding our patched dependencies as members.
     excluded = sorted({Path("source") / Path(os.fsdecode(name)).parent
                        for name in git(source, "ls-files", "-z", "*Cargo.toml").stdout.split(b"\0")
-                       if name} | {Path("external") / name for name in OVERLAYS})
+                       if name} | {Path("external") / name for name in overlays})
     base = base.replace("[workspace]\n", "[workspace]\nexclude = " + json.dumps(
         [path.as_posix() for path in excluded]) + "\n")
     add = {
         "wgpu-hal": source / "third_party/wgpu-hal", "naga": source / "third_party/naga",
         "libmimalloc-sys": source / "third_party/libmimalloc-sys",
-        **{name: dependency_root / name for name in OVERLAYS},
+        **{name: dependency_root / name for name in overlays},
     }
     manifest = directory / "Cargo.toml"
     manifest.write_text(base.rstrip() + "\n" + "".join(

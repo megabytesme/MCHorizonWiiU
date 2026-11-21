@@ -7,6 +7,7 @@ import sys
 
 import core
 import native
+import nightly
 import source
 
 
@@ -32,6 +33,10 @@ def main(argv=None):
         game.add_argument("--output", type=Path, required=True)
         game.add_argument("--resources", type=Path)
         game.add_argument("--resource-manifest", type=Path)
+    candidate = commands.add_parser("assemble-hosted-nightly")
+    candidate.add_argument("--source", type=Path, required=True)
+    candidate.add_argument("--inputs", type=Path, required=True)
+    candidate.add_argument("--output", type=Path, required=True)
     resources = commands.add_parser("inventory-resources")
     resources.add_argument("root", type=Path)
     resources.add_argument("--output", type=Path, required=True)
@@ -55,6 +60,9 @@ def main(argv=None):
                 print(native.build_game(recipe, fingerprint, args.assembly.resolve(),
                                         args.inputs.resolve(), args.output, asset_hash,
                                         integrated=args.command == "build-hosted"))
+            elif args.command == "assemble-hosted-nightly":
+                print(nightly.assemble(args.source.resolve(), args.inputs.resolve(),
+                                       args.output, recipe, fingerprint))
             elif args.command == "assemble":
                 print(source.assemble(args.source, args.revision, recipe, fingerprint,
                                       args.output, args.diagnostic))
