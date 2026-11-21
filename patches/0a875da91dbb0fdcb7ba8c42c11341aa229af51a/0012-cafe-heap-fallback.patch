@@ -1,0 +1,91 @@
+diff --git a/crates/horizon-client-platform/src/cafe_memory.rs b/crates/horizon-client-platform/src/cafe_memory.rs
+index 3e51aef1d3fd154c590b511f64f9ef31d4439c5a..f8b1468ad94bf50ca03e7939aa9afe6310485e44 100644
+--- a/crates/horizon-client-platform/src/cafe_memory.rs
++++ b/crates/horizon-client-platform/src/cafe_memory.rs
+@@ -14,7 +14,11 @@ static PEAK: AtomicUsize = AtomicUsize::new(0);
+ static FAILURES: AtomicUsize = AtomicUsize::new(0);
+ 
+ unsafe extern "C" {
+-    fn horizon_wiiu_memory_alloc_bulk(bytes: usize, align: usize) -> *mut u8;
++    fn horizon_wiiu_memory_alloc_bulk(
++        bytes: usize,
++        align: usize,
++        from_tail: std::ffi::c_int,
++    ) -> *mut u8;
+     fn horizon_wiiu_memory_free_bulk(block: *mut u8) -> std::ffi::c_int;
+     fn horizon_wiiu_memory_report(
+         label: *const u8,
+@@ -85,13 +89,20 @@ impl MeasuredSystem {
+ // Reallocation uses the trait's allocate-copy-free path through both heaps.
+ unsafe impl GlobalAlloc for MeasuredSystem {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+-        if layout.size() >= BULK_THRESHOLD {
+-            let block = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align()) };
+-            if !block.is_null() {
+-                return Self::record(block, layout);
++        let large = layout.size() >= BULK_THRESHOLD;
++        if large {
++            let bulk = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align(), 0) };
++            if !bulk.is_null() {
++                return Self::record(bulk, layout);
+             }
+         }
+-        Self::record(unsafe { System.alloc(layout) }, layout)
++        let mut block = unsafe { System.alloc(layout) };
++        if block.is_null() && !large {
++            // Borrow space from the tail when the default heap is under
++            // pressure. Large blocks still have the head to themselves.
++            block = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align(), 1) };
++        }
++        Self::record(block, layout)
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+@@ -105,7 +116,7 @@ unsafe impl GlobalAlloc for MeasuredSystem {
+     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+         LIVE.fetch_sub(layout.size(), Relaxed);
+         BLOCKS.fetch_sub(1, Relaxed);
+-        if layout.size() < BULK_THRESHOLD || unsafe { horizon_wiiu_memory_free_bulk(ptr) } == 0 {
++        if unsafe { horizon_wiiu_memory_free_bulk(ptr) } == 0 {
+             unsafe { System.dealloc(ptr, layout) };
+         }
+     }
+diff --git a/wiiu/loading_app/memory.c b/wiiu/loading_app/memory.c
+index 1bab9e023eac65951941e0be264870313d069485..8bcae69dbe4c2c0a285de82ca259fb0b51ba945f 100644
+--- a/wiiu/loading_app/memory.c
++++ b/wiiu/loading_app/memory.c
+@@ -11,7 +11,7 @@ static MEMHeapHandle default_heap;
+ 
+ // Keep large transient Rust blocks together in process-owned backing.
+ // Small persistent allocations in the default heap can't split these blocks.
+-enum { BULK_HEAP_BYTES = 256 * 1024 * 1024 };
++enum { BULK_HEAP_BYTES = 192 * 1024 * 1024 };
+ static MEMHeapHandle bulk_heap;
+ static uintptr_t bulk_start;
+ 
+@@ -33,10 +33,11 @@ static void init_bulk_heap(void)
+    OSReport("Horizon memory bulk_heap capacity=%u\n", BULK_HEAP_BYTES);
+ }
+ 
+-void *horizon_wiiu_memory_alloc_bulk(uint32_t bytes, uint32_t align)
++void *horizon_wiiu_memory_alloc_bulk(uint32_t bytes, uint32_t align, int from_tail)
+ {
+    if (!bulk_heap || align > INT32_MAX) return NULL;
+-   return MEMAllocFromExpHeapEx(bulk_heap, bytes, (int32_t)(align < 4 ? 4 : align));
++   int32_t direction = (int32_t)(align < 4 ? 4 : align);
++   return MEMAllocFromExpHeapEx(bulk_heap, bytes, from_tail ? -direction : direction);
+ }
+ 
+ int horizon_wiiu_memory_free_bulk(void *data)
+@@ -120,6 +121,11 @@ void horizon_wiiu_memory_alloc_failure(uint32_t bytes, uint32_t align, uint32_t
+       OSReport("Horizon memory alloc_failed bytes=%u align=%u rust_live=%u rust_peak=%u rust_blocks=%u heap_free=unverified\n",
+                bytes, align, live, peak, blocks);
+    }
++   if (bulk_heap) {
++      OSReport("Horizon memory alloc_failed bulk_free=%u bulk_largest=%u\n",
++               MEMGetTotalFreeSizeForExpHeap(bulk_heap),
++               MEMGetAllocatableSizeForExpHeapEx(bulk_heap, 64));
++   }
+ }
+ 
+ void horizon_wiiu_memory_report_display_surfaces(void)
