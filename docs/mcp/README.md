@@ -40,18 +40,20 @@ Trust the CA you copied from the console and compare its fingerprint before impo
 
 The tested Codex build rejects OAuth discovery when the authorization server
 uses a private IPv4 literal. The same error occurred against the Cemu HTTPS
-endpoint after both discovery documents passed certificate validation. Use
-Gemini for the IP endpoint. Codex with a configured LAN hostname needs its
-own interoperability test. [Codex issue 55163](https://github.com/openai/codex/issues/55163)
+endpoint after both discovery documents passed certificate validation.
+The combined RPX passed direct Codex OAuth and launcher calls in NSS-patched
+Cemu 2.6 using a resolvable `.local` hostname and the exported CA.
+[Codex issue 55163](https://github.com/openai/codex/issues/55163)
 
-Use the displayed HTTPS URL, including its port and **/mcp**. To request
+Configure a [LAN hostname](#lan-identity) before
+pairing. Use the displayed HTTPS URL, including its port and **/mcp**. To request
 a read-only grant initially, start manually with
 **codex mcp login horizon-wiiu --scopes launcher.read** after adding the
 server, or choose scopes during your client's supported login setup.
 
 ~~~powershell
 $env:CODEX_CA_CERTIFICATE = 'C:\path\to\agent-control-ca.pem'
-codex mcp add horizon-wiiu --url https://192.168.1.25:8443/mcp
+codex mcp add horizon-wiiu --url https://horizon-wiiu.home.arpa:8443/mcp
 ~~~
 
 The launcher scopes are **launcher.read** and **launcher.manage**. Game

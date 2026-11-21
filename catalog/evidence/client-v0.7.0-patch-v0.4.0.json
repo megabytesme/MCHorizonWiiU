@@ -15,7 +15,17 @@
   },
   "builder": "0.6.0",
   "cemu": {
-    "direct_codex_oauth": "pending",
+    "direct_codex_oauth": {
+      "certificate_validation": "exported CA and LAN hostname",
+      "codex_cli": "0.169.0-alpha.11.1",
+      "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+      "gamepad_approved": true,
+      "independent_clients_calling_real_night_versions": 2,
+      "launcher_closed": true,
+      "private_ipv4_discovery": "blocked by the tested client",
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47",
+      "status": "passed for the launcher over a resolvable .local hostname"
+    },
     "nss_patched_gameplay": {
       "completed_save_barriers": 2,
       "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",

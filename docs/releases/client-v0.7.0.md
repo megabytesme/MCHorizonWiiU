@@ -52,7 +52,7 @@ literals.
 | --- | --- |
 | Host fixtures | Credential domain isolation, protected restart and wrong-PIN refusal, automatic unlock, session-only storage, migration recovery, Microsoft token-refresh and entitlement behavior, world ownership and Night persistence. Also covers TLS IP and DNS certificate validation, PKCE, consent, refresh replay, scopes and session-generation cancellation. |
 | Stock Cemu 2.6 interpreter | The exact RPX stopped at the Cafe system RNG startup check. |
-| NSS-patched Cemu 2.6 interpreter | The exact RPX booted with the real Night backend, displayed the Microsoft service and persisted a scratch offline profile and controller setting across a cold restart. Gemini completed direct OAuth and called the real Night versions tool with the validated CA. The modern stateless protocol checks passed as well. Gemini completed two saved-world sessions through the same HTTPS endpoint. Both saves returned to Night and withdrew game tools. Independent cold restarts verified automatic unlock, local PIN unlock, refresh rotation, per-client revocation and No AI. |
+| NSS-patched Cemu 2.6 interpreter | The exact RPX booted with the real Night backend, displayed the Microsoft service and persisted a scratch offline profile and controller setting across a cold restart. Gemini and Codex completed direct OAuth and called the real Night versions tool with the validated CA. Codex used a resolvable LAN hostname. The modern stateless protocol checks passed as well. Gemini completed two saved-world sessions through the same HTTPS endpoint. Both saves returned to Night and withdrew game tools. Independent cold restarts verified automatic unlock, local PIN unlock, refresh rotation, per-client revocation and No AI. |
 | Physical Wii U | Pending. Instance A's saved-world reopening investigation remains separate. |
 
 | Combined acceptance | Result |
@@ -78,6 +78,13 @@ its options with `-PreparedResources -IsolatedSaves -IsolatedOptions`.
 Set `MCHORIZON_CEMU_ROUND_TRIPS=2` and
 `MCHORIZON_CEMU_GAME_EVIDENCE` to the same fresh output directory. Add
 `-CaptureProfile` to enable the bounded GX2 recording.
+
+For the direct Codex launcher replay, supply `-Production -NativeMcp
+-CodexInterop` and pass the same resolvable LAN hostname as both
+`-EndpointAddress` and `-AgentHostname`. Use a fresh output directory and
+the installed Codex CLI. The replay trusts the exported CA, approves the
+OAuth request on the emulated GamePad, and calls **versions** from two
+independent Codex processes.
 
 ## GX2 captures on the mapped-atlas build
 
@@ -120,9 +127,12 @@ These are interpreter results for world entry and a controlled visual
 diagnostic. Steady gameplay timing and physical GPU performance remain open.
 [GX2 coverage matrix](../gx2/coverage.md)
 
-The tested Codex CLI rejected OAuth discovery for the private IPv4 origin.
-A LAN hostname resolved locally and served OAuth metadata over validated
-TLS. Direct Codex authorization did not complete in that test window.
+Codex CLI `0.169.0-alpha.11.1` rejected OAuth discovery for the private IPv4
+origin. With a resolvable `.local` hostname and the exported CA, the exact
+final RPX completed OAuth with DCR, PKCE and GamePad approval on NSS-patched
+Cemu. Two independent Codex processes listed and called the real Night
+**versions** tool, and Night closed cleanly. The Codex replay covered the
+launcher. The saved-world replay used Gemini.
 [Codex issue 55163](https://github.com/openai/codex/issues/55163)
 
 Live Microsoft account authorization, online multiplayer identity, physical

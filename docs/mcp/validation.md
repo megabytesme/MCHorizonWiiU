@@ -77,8 +77,10 @@ records this run next to the package. The earlier **cemu-game-scoped** run
 also passed the round trip against compatibility build **73f1d0b77a8**.
 
 Installed Codex rejected the same-origin private IPv4 authorization
-server during discovery. This matches an open upstream issue. A trusted
-DNS hostname remains a separate Codex interoperability test.
+server during discovery. This matches an open upstream issue. The combined
+canonical RPX subsequently passed direct Codex OAuth and launcher calls in
+NSS-patched Cemu over a resolvable `.local` hostname with the exported CA.
+[Combined acceptance](../releases/client-v0.7.0.md)
 [Codex issue 55163](https://github.com/openai/codex/issues/55163)
 
 Gemini and Codex exercised the legacy transport in their respective runs.

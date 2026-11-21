@@ -30,9 +30,12 @@ class Process:
         threading.Thread(target=self.read, daemon=True).start()
 
     def read(self):
-        for line in self.proc.stdout:
-            self.lines.put(line)
-        self.lines.put(None)
+        try:
+            with self.proc.stdout as stream:
+                for line in stream:
+                    self.lines.put(line)
+        finally:
+            self.lines.put(None)
 
     def until(self, condition, seconds=45):
         deadline = time.monotonic() + seconds
@@ -60,7 +63,8 @@ class Process:
         if self.proc.poll() is None:
             self.proc.terminate()
             self.proc.wait(timeout=20)
-        self.proc.stdout.close()
+        # Windows helpers can inherit stdout and keep the reader blocked after exit.
+        # Let the reader close that pipe when it reaches EOF.
         with contextlib.suppress(OSError):
             self.proc.stdin.close()
 
