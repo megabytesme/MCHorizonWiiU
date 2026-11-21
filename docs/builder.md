@@ -82,6 +82,28 @@ The local directory contains `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and
 `build-record.json`. The recipe records its own candidate versions.
 The active `build-hosted` command still uses the 0.7.0 release recipe.
 
+### Prepare Minecraft 26.3 for November 20
+
+Use the November 20 preparer with a disposable copy of the staged source.
+Provide the existing 26.3 client and server JARs and the player's asset
+directory with `indexes/34.json` and `objects/`. The Nightly core needs the
+new fluid-state definitions in `block-behaviours.json`. The earlier
+0.7.0 preparation predates them.
+
+```sh
+cargo +nightly run --offline --locked \
+  --manifest-path "$prepared_source/Cargo.toml" -p horizon-prepare -- \
+  --prepare --root "$prepared_source" --client-jar "$client_jar" \
+  --server-jar "$server_jar" --assets-dir "$minecraft_assets" \
+  --output "$private_preparation"
+```
+
+The verification run built `horizon-data.bin` with
+`horizon_core::prepared_files::write_with_readers` from this same tree.
+It then rebound the private archive to the isolated CafeOS game path.
+The resulting preparation includes the asset index, fluid-state
+definitions and the data-fix tables for older saves.
+
 ### Prepare a copied archive for an isolated game path
 
 The prepared archive includes the absolute resource path it is bound to.

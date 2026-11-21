@@ -1,0 +1,30 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index 68a40a2f8b5ecbc40c972d4c6e14a13d63cf1a07..10a223753ad4c4d575cb3833c0263718dfb906dc 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -240,6 +240,10 @@ fn prefix_inside(prefix: &str) -> bool {
+ }
+ 
+ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, active: &mut BTreeSet<PathBuf>) {
++    // Cafe exposes a directory tree without symbolic links or canonicalize.
++    #[cfg(target_os = "cafe")]
++    let canonical = dir.to_owned();
++    #[cfg(not(target_os = "cafe"))]
+     let Ok(canonical) = fs::canonicalize(dir) else {
+         return;
+     };
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 540f81fb965f4daa6b76ca17f1df82dc14aed6cf..3bbe12f362b844f2332369b3de87321d05775d92 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -964,6 +964,10 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+             status: session.status(),
+             failure: session.failure_message(),
+         });
++        drop(session);
++        log::info!("Horizon Cafe hosted loading state released");
++        drop(resources);
++        log::info!("Horizon Cafe hosted resources released");
+         driven.and(drained)
+     });
+     narrator::stop();

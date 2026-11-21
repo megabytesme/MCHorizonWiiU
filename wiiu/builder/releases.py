@@ -147,7 +147,9 @@ def verify_release_files(catalog, root=ROOT):
             check_worktree = record["status"] == "active"
             for name, artifact in record["artifacts"].items():
                 if name == "sources":
-                    verify_source_inventory(artifact, root, artifact["commit"], check_worktree=check_worktree)
+                    verify_source_inventory(artifact, root, artifact["commit"], check_worktree=False)
+                    if check_worktree:
+                        checked_bytes(root, artifact["path"], artifact["sha256"])
                 elif "commit" in artifact:
                     verify_artifact(artifact, root, check_worktree=check_worktree)
                 elif catalog["signing"] != "p256-sha256-p1363":

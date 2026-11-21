@@ -159,7 +159,7 @@ def play_and_save(invoke, window, client_name, index, evidence):
         raise RuntimeError("Night never made the disposable save available for launch.")
     print(f"{client_name} requested hosted launch {index} through the Night HTTPS endpoint.", flush=True)
 
-    deadline = time.monotonic() + 1200
+    deadline = time.monotonic() + int(os.environ.get("MCHORIZON_CEMU_READY_TIMEOUT", "1200"))
     launcher_probe = 0
     while time.monotonic() < deadline:
         try:
@@ -229,7 +229,7 @@ def play_and_save(invoke, window, client_name, index, evidence):
           flush=True)
     if evidence:
         log = evidence / "portable/log.txt"
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + int(os.environ.get("MCHORIZON_CEMU_SAVE_RETURN_TIMEOUT", "120"))
         while time.monotonic() < deadline:
             trace = log.read_text(encoding="utf-8", errors="replace")
             if (trace.count("hosted save barrier completed") >= index
