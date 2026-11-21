@@ -1,0 +1,230 @@
+diff --git a/crates/horizon-client-render/src/gfx/panorama.rs b/crates/horizon-client-render/src/gfx/panorama.rs
+index a2e13a06d92dd6ae80988384182cb9016af040eb..d505e13373b4418d64cccfc275430b6c687a5f00 100644
+--- a/crates/horizon-client-render/src/gfx/panorama.rs
++++ b/crates/horizon-client-render/src/gfx/panorama.rs
+@@ -53,6 +53,7 @@ impl Faces {
+     fn try_load(root: &ResourceSource, defaults: &ResourceSource) -> Result<Self> {
+         let mut size = 0;
+         let mut files = Vec::with_capacity(FACE_ORDER.len());
++        #[cfg(not(target_os = "cafe"))]
+         let mut texels = Vec::new();
+         for face in FACE_ORDER {
+             let (path, file, (w, h, data)) = load_face(root, defaults, face)?;
+@@ -62,21 +63,49 @@ impl Faces {
+                 );
+             }
+             size = w;
+-            // CubeMapTexture copies each original image with flipY=true. Keep every texel.
++            // Cafe retains the PNG faces and decodes one face into its mapped surface.
++            #[cfg(target_os = "cafe")]
++            drop(data);
++            #[cfg(not(target_os = "cafe"))]
+             for row in data.chunks_exact((w * 4) as usize).rev() {
+                 texels.extend_from_slice(row);
+             }
+             files.push(file);
+         }
+-        // Decoded once here to check them, and kept for the first cube.
++        // Desktop keeps the validated texels for its first cube. Cafe streams the PNGs.
++        #[cfg(target_os = "cafe")]
++        let decoded = None;
++        #[cfg(not(target_os = "cafe"))]
++        let decoded = Some(texels);
+         Ok(Self {
+             size,
+             files,
+             colour: [0; 4],
+-            decoded: Mutex::new(Some(texels)),
++            decoded: Mutex::new(decoded),
+         })
+     }
+ 
++    /// Visit a face at a time in cube order, flipping each face vertically.
++    #[cfg(any(test, target_os = "cafe"))]
++    pub fn visit_rows(&self, mut visit: impl FnMut(&[u8]) -> Option<()>) -> Option<()> {
++        if self.files.is_empty() {
++            for _ in FACE_ORDER {
++                visit(&self.colour)?;
++            }
++            return Some(());
++        }
++        for file in &self.files {
++            let (width, height, data) = decode_bytes(file).ok()?;
++            if width != self.size || height != self.size {
++                return None;
++            }
++            for row in data.chunks_exact((width * 4) as usize).rev() {
++                visit(row)?;
++            }
++        }
++        Some(())
++    }
++
+     /// The cube's texels, layer after layer.
+     pub fn texels(&self) -> Vec<u8> {
+         if self.files.is_empty() {
+@@ -475,6 +504,14 @@ mod tests {
+         // The texels decoded while loading, then decoded again for the next cube.
+         let (loaded, again) = (faces.texels(), faces.texels());
+         assert_eq!(loaded, again);
++        let mut rows = Vec::new();
++        faces
++            .visit_rows(|row| {
++                rows.extend_from_slice(row);
++                Some(())
++            })
++            .unwrap();
++        assert_eq!(rows, again);
+         assert_eq!(again.len(), 6 * 1024 * 1024 * 4);
+         // CubeMapTexture's actual layer suffixes, with each source row flipped vertically.
+         for (layer, source_face) in [1, 3, 5, 4, 0, 2].into_iter().enumerate() {
+diff --git a/wiiu/gx2_panorama/panorama.c b/wiiu/gx2_panorama/panorama.c
+index 42ea957fc509cf1ce88f2599af6379bb1ae5567a..e5cf6e444e5613199275a615190382128aaa1d36 100644
+--- a/wiiu/gx2_panorama/panorama.c
++++ b/wiiu/gx2_panorama/panorama.c
+@@ -42,13 +42,14 @@ void horizon_gx2_panorama_destroy(HorizonGx2Panorama *p)
+    free(p);
+ }
+ 
+-int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+-                                uint32_t size, const uint8_t *rgba, size_t length)
++int horizon_gx2_panorama_create_mapped(HorizonGx2Panorama **out, const void *gfd,
++                                      uint32_t size, HorizonPanoramaFillTexture fill,
++                                      const void *context)
+ {
+    if (!out) return -1;
+    *out = NULL;
+-   if (!gfd || !rgba || !size || size > 4096 ||
+-       (size_t)size > SIZE_MAX / size / 24 || length < (size_t)size * size * 24) return -1;
++   if (!gfd || !fill || !size || size > 4096 ||
++       (size_t)size > SIZE_MAX / size / 24) return -1;
+    HorizonGx2Panorama *p = calloc(1, sizeof(*p));
+    if (!p) return -2;
+    int result = -2;
+@@ -106,12 +107,11 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+    stage = "texture mapping";
+    uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
+    if (!pixels) goto fail;
+-   const size_t slice = (size_t)s->pitch * size * 4;
+-   for (uint32_t face = 0; face < 6; ++face)
+-      for (uint32_t y = 0; y < size; ++y)
+-         memcpy(pixels + face * slice + (size_t)y * s->pitch * 4,
+-                rgba + ((size_t)face * size + y) * size * 4, (size_t)size * 4);
++   stage = "texture fill";
++   memset(pixels, 0, s->imageSize);
++   result = fill(context, pixels, s->pitch);
+    GX2RUnlockSurfaceEx(s, 0, texture_flags);
++   if (result) goto fail;
+    GX2InitTextureRegs(&p->cube);
+    GX2InitSampler(&p->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+    OSReport("Horizon memory gx2_panorama texture_bytes=%u vertex_payload_bytes=%u\n",
+diff --git a/wiiu/gx2_panorama/panorama.h b/wiiu/gx2_panorama/panorama.h
+index 8869094f03c50ac263ed7f29b53a621693d7f519..e8779e04380b63f896a1fcf1986f42b1ddb5a81d 100644
+--- a/wiiu/gx2_panorama/panorama.h
++++ b/wiiu/gx2_panorama/panorama.h
+@@ -9,11 +9,13 @@ typedef struct HorizonPanoramaVertex {
+ 
+ typedef struct HorizonGx2Panorama HorizonGx2Panorama;
+ 
++typedef int (*HorizonPanoramaFillTexture)(const void *context, uint8_t *pixels, uint32_t pitch);
+ /* GX2 must be initialized; create, draw and destroy belong on the render thread.
+- * GFD stays alive until destroy. Six RGBA faces are copied in cube order.
++ * GFD stays alive until destroy. Fill writes six faces synchronously in cube order.
+  * Supported face sizes also depend on device texture and memory limits. */
+-int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+-                                uint32_t size, const uint8_t *rgba, size_t length);
++int horizon_gx2_panorama_create_mapped(HorizonGx2Panorama **out, const void *gfd,
++                                      uint32_t size, HorizonPanoramaFillTexture fill,
++                                      const void *context);
+ /* Uses the caller's GX2 colour target; vertices contain Horizon's projection. */
+ int horizon_gx2_panorama_draw(HorizonGx2Panorama *panorama, uint32_t width, uint32_t height,
+                               const HorizonPanoramaVertex vertices[36]);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index e35659ce454995c3cf56276af9e6dae318b0d4ea..e9021589666395353f0dedf5b88c04bbef2abb56 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -175,12 +175,12 @@ extern "C" {
+         context: *mut c_void,
+         rgba: *const f32,
+     ) -> i32;
+-    fn horizon_gx2_panorama_create(
++    fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+         size: u32,
+-        rgba: *const u8,
+-        length: usize,
++        fill: unsafe extern "C" fn(*const c_void, *mut u8, u32) -> i32,
++        context: *const c_void,
+     ) -> i32;
+     fn horizon_gx2_panorama_draw_to(
+         panorama: *mut c_void,
+@@ -317,26 +317,55 @@ impl Drop for Panorama<'_> {
+     }
+ }
+ 
++unsafe extern "C" fn fill_panorama(context: *const c_void, pixels: *mut u8, pitch: u32) -> i32 {
++    if context.is_null() || pixels.is_null() {
++        return -1;
++    }
++    let faces = unsafe { &*context.cast::<panorama::Faces>() };
++    let (row_bytes, stride, rows) = (
++        faces.size as usize * 4,
++        pitch as usize * 4,
++        faces.size as usize * 6,
++    );
++    if row_bytes > stride
++        || !stride
++            .checked_mul(rows)
++            .is_some_and(|bytes| bytes <= isize::MAX as usize)
++    {
++        return -1;
++    }
++    let mut next_row = 0;
++    let filled = faces.visit_rows(|row| {
++        if next_row >= rows || row.len() != row_bytes {
++            return None;
++        }
++        // SAFETY: the native constructor owns the mapped surface for this callback.
++        unsafe {
++            std::ptr::copy_nonoverlapping(row.as_ptr(), pixels.add(next_row * stride), row_bytes)
++        };
++        next_row += 1;
++        Some(())
++    });
++    if filled.is_some() && next_row == rows {
++        0
++    } else {
++        -1
++    }
++}
++
+ impl<'shader> Panorama<'shader> {
+     unsafe fn new(gfd: &'shader [u8], faces: &panorama::Faces) -> Result<Self, &'static str> {
+-        let rgba = faces.texels();
+-        let expected = (faces.size as usize)
+-            .checked_mul(faces.size as usize)
+-            .and_then(|n| n.checked_mul(24))
+-            .ok_or("Horizon panorama dimensions overflow")?;
+-        if rgba.len() != expected {
+-            return Err("Horizon panorama texel length does not match its face size");
+-        }
+         let mut out = std::ptr::null_mut();
+-        // SAFETY: C copies all face pixels before this call returns. The GFD
+-        // borrow is retained by `Self` until the native shader is destroyed.
++        horizon_client_platform::cafe_memory::report("panorama.before_texture");
++        // SAFETY: the native constructor fills the texture before returning.
++        // Self keeps the GFD borrow alive until the native shader is destroyed.
+         let code = unsafe {
+-            horizon_gx2_panorama_create(
++            horizon_gx2_panorama_create_mapped(
+                 &mut out,
+                 gfd.as_ptr().cast(),
+                 faces.size,
+-                rgba.as_ptr(),
+-                rgba.len(),
++                fill_panorama,
++                (faces as *const panorama::Faces).cast(),
+             )
+         };
+         if code != 0 {

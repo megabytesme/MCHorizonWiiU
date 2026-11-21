@@ -1,0 +1,80 @@
+diff --git a/wiiu/gx2_panorama/panorama.c b/wiiu/gx2_panorama/panorama.c
+index 8775cf1b28003b5fae4dd9f8ae4c41ec39d526c1..42ea957fc509cf1ce88f2599af6379bb1ae5567a 100644
+--- a/wiiu/gx2_panorama/panorama.c
++++ b/wiiu/gx2_panorama/panorama.c
+@@ -2,6 +2,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <coreinit/debug.h>
++#include <coreinit/memdefaultheap.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
+ #include <gx2/registers.h>
+@@ -21,6 +22,7 @@ struct HorizonGx2Panorama {
+    WHBGfxShaderGroup shader;
+    GX2RBuffer buffer;
+    GX2Texture cube;
++   uint8_t *texture_storage;
+    GX2Sampler sampler;
+    uint32_t slot;
+    int shader_loaded;
+@@ -35,6 +37,7 @@ void horizon_gx2_panorama_destroy(HorizonGx2Panorama *p)
+    GX2DrawDone();
+    if (GX2RBufferExists(&p->buffer)) GX2RDestroyBufferEx(&p->buffer, 0);
+    if (p->cube.surface.image) GX2RDestroySurfaceEx(&p->cube.surface, texture_flags);
++   if (p->texture_storage) MEMFreeToDefaultHeap(p->texture_storage);
+    if (p->shader_loaded) WHBGfxFreeShaderGroup(&p->shader);
+    free(p);
+ }
+@@ -49,6 +52,7 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+    HorizonGx2Panorama *p = calloc(1, sizeof(*p));
+    if (!p) return -2;
+    int result = -2;
++   const char *stage = "shader";
+    if (!WHBGfxLoadGFDShaderGroup(&p->shader, 0, gfd)) goto fail;
+    p->shader_loaded = 1;
+    int found = 0;
+@@ -70,6 +74,7 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+    p->buffer.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+    p->buffer.elemSize = sizeof(HorizonPanoramaVertex);
+    p->buffer.elemCount = 36;
++   stage = "vertex buffer";
+    if (!GX2RCreateBuffer(&p->buffer)) goto fail;
+    GX2Surface *s = &p->cube.surface;
+    s->use = GX2_SURFACE_USE_TEXTURE;
+@@ -80,11 +85,25 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+    s->tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    p->cube.viewNumMips = 1; p->cube.viewNumSlices = 1;
+    p->cube.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
+-   if (!GX2RCreateSurface(s, texture_flags)) goto fail;
+-   if ((size_t)s->imageSize < (size_t)s->pitch * size * 6 * 4) {
++   stage = "texture layout";
++   GX2CalcSurfaceSizeAndAlignment(s);
++   if (!s->imageSize || !s->alignment || s->mipmapSize || s->pitch < size ||
++       (size_t)s->imageSize < (size_t)s->pitch * s->height * 4) {
+       result = -3;
+       goto fail;
+    }
++   stage = "texture backing";
++   uint8_t *storage = MEMAllocFromDefaultHeapEx(s->imageSize, s->alignment);
++   if (!storage) goto fail;
++   stage = "user surface";
++   if (!GX2RCreateSurfaceUserMemory(s, storage, NULL, texture_flags)) {
++      MEMFreeToDefaultHeap(storage);
++      memset(s, 0, sizeof(*s));
++      result = -3;
++      goto fail;
++   }
++   p->texture_storage = storage;
++   stage = "texture mapping";
+    uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
+    if (!pixels) goto fail;
+    const size_t slice = (size_t)s->pitch * size * 4;
+@@ -100,6 +119,7 @@ int horizon_gx2_panorama_create(HorizonGx2Panorama **out, const void *gfd,
+    *out = p;
+    return 0;
+ fail:
++   OSReport("Horizon GX2 panorama initialization failed: %s (%d)\n", stage, result);
+    horizon_gx2_panorama_destroy(p);
+    return result;
+ }
