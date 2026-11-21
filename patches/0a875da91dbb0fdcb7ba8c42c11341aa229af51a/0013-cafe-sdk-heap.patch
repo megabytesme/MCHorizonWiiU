@@ -1,0 +1,141 @@
+diff --git a/crates/horizon-client-platform/src/cafe_memory.rs b/crates/horizon-client-platform/src/cafe_memory.rs
+index f8b1468ad94bf50ca03e7939aa9afe6310485e44..d80a5a202ee551a9ef7150872e9654dd4f5e6b95 100644
+--- a/crates/horizon-client-platform/src/cafe_memory.rs
++++ b/crates/horizon-client-platform/src/cafe_memory.rs
+@@ -6,20 +6,12 @@ use std::{
+     sync::atomic::{AtomicUsize, Ordering::Relaxed},
+ };
+ 
+-const BULK_THRESHOLD: usize = 8 * 1024 * 1024;
+-
+ static LIVE: AtomicUsize = AtomicUsize::new(0);
+ static BLOCKS: AtomicUsize = AtomicUsize::new(0);
+ static PEAK: AtomicUsize = AtomicUsize::new(0);
+ static FAILURES: AtomicUsize = AtomicUsize::new(0);
+ 
+ unsafe extern "C" {
+-    fn horizon_wiiu_memory_alloc_bulk(
+-        bytes: usize,
+-        align: usize,
+-        from_tail: std::ffi::c_int,
+-    ) -> *mut u8;
+-    fn horizon_wiiu_memory_free_bulk(block: *mut u8) -> std::ffi::c_int;
+     fn horizon_wiiu_memory_report(
+         label: *const u8,
+         len: usize,
+@@ -84,40 +76,22 @@ impl MeasuredSystem {
+     }
+ }
+ 
+-// SAFETY: the bulk heap honors Layout and frees only pointers in its own
+-// reserved backing. Other allocations and layouts pass unchanged to System.
+-// Reallocation uses the trait's allocate-copy-free path through both heaps.
++// SAFETY: blocks and their layouts pass through unchanged to System. The
++// default realloc allocates, copies, then frees, as Cafe System does. Count
++// both blocks during the copy so this transient contributes to the peak.
+ unsafe impl GlobalAlloc for MeasuredSystem {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+-        let large = layout.size() >= BULK_THRESHOLD;
+-        if large {
+-            let bulk = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align(), 0) };
+-            if !bulk.is_null() {
+-                return Self::record(bulk, layout);
+-            }
+-        }
+-        let mut block = unsafe { System.alloc(layout) };
+-        if block.is_null() && !large {
+-            // Borrow space from the tail when the default heap is under
+-            // pressure. Large blocks still have the head to themselves.
+-            block = unsafe { horizon_wiiu_memory_alloc_bulk(layout.size(), layout.align(), 1) };
+-        }
+-        Self::record(block, layout)
++        Self::record(unsafe { System.alloc(layout) }, layout)
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+-        let block = unsafe { self.alloc(layout) };
+-        if !block.is_null() {
+-            unsafe { block.write_bytes(0, layout.size()) };
+-        }
+-        block
++        Self::record(unsafe { System.alloc_zeroed(layout) }, layout)
+     }
+ 
+     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+         LIVE.fetch_sub(layout.size(), Relaxed);
+         BLOCKS.fetch_sub(1, Relaxed);
+-        if unsafe { horizon_wiiu_memory_free_bulk(ptr) } == 0 {
+-            unsafe { System.dealloc(ptr, layout) };
+-        }
++        // SAFETY: ptr and layout are unchanged from allocation by System.
++        unsafe { System.dealloc(ptr, layout) };
+     }
+ }
+diff --git a/wiiu/loading_app/memory.c b/wiiu/loading_app/memory.c
+index 8bcae69dbe4c2c0a285de82ca259fb0b51ba945f..2d0f01d0edcb0ec854d8ffd23f57b3aea2ceb74a 100644
+--- a/wiiu/loading_app/memory.c
++++ b/wiiu/loading_app/memory.c
+@@ -14,6 +14,31 @@ static MEMHeapHandle default_heap;
+ enum { BULK_HEAP_BYTES = 192 * 1024 * 1024 };
+ static MEMHeapHandle bulk_heap;
+ static uintptr_t bulk_start;
++static MEMAllocFromDefaultHeapExFn original_alloc;
++static MEMFreeToDefaultHeapFn original_free;
++
++static void *alloc_for_default_heap(uint32_t bytes, int32_t alignment)
++{
++   if (alignment <= 0) return original_alloc(bytes, alignment);
++   const int32_t bulk_alignment = alignment < 4 ? 4 : alignment;
++   const int large = bytes >= 8 * 1024 * 1024;
++   if (large) {
++      void *bulk = MEMAllocFromExpHeapEx(bulk_heap, bytes, bulk_alignment);
++      if (bulk) return bulk;
++   }
++   void *data = original_alloc(bytes, alignment);
++   if (data || large) return data;
++   return MEMAllocFromExpHeapEx(bulk_heap, bytes, -bulk_alignment);
++}
++
++static void free_to_default_heap(void *data)
++{
++   const uintptr_t address = (uintptr_t)data;
++   if (address >= bulk_start && address - bulk_start < BULK_HEAP_BYTES)
++      MEMFreeToExpHeap(bulk_heap, data);
++   else
++      original_free(data);
++}
+ 
+ static void init_bulk_heap(void)
+ {
+@@ -30,25 +55,15 @@ static void init_bulk_heap(void)
+       return;
+    }
+    bulk_start = (uintptr_t)buffer;
++   // WUT initializes these pointers before main. Replace the aligned pair
++   // before creating workers so Cafe std's raw stack allocations see it too.
++   original_alloc = MEMAllocFromDefaultHeapEx;
++   original_free = MEMFreeToDefaultHeap;
++   MEMFreeToDefaultHeap = free_to_default_heap;
++   MEMAllocFromDefaultHeapEx = alloc_for_default_heap;
+    OSReport("Horizon memory bulk_heap capacity=%u\n", BULK_HEAP_BYTES);
+ }
+ 
+-void *horizon_wiiu_memory_alloc_bulk(uint32_t bytes, uint32_t align, int from_tail)
+-{
+-   if (!bulk_heap || align > INT32_MAX) return NULL;
+-   int32_t direction = (int32_t)(align < 4 ? 4 : align);
+-   return MEMAllocFromExpHeapEx(bulk_heap, bytes, from_tail ? -direction : direction);
+-}
+-
+-int horizon_wiiu_memory_free_bulk(void *data)
+-{
+-   uintptr_t address = (uintptr_t)data;
+-   if (!bulk_heap || address < bulk_start || address - bulk_start >= BULK_HEAP_BYTES)
+-      return 0;
+-   MEMFreeToExpHeap(bulk_heap, data);
+-   return 1;
+-}
+-
+ void horizon_wiiu_memory_init(void)
+ {
+    init_bulk_heap();
