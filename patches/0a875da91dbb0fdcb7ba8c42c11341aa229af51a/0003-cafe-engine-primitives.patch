@@ -1,0 +1,679 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 863800012d6db9ea8a9fac310590ae3a8fc033e8..cbd987ef3bf320ce1f94f19f0548443426f384d0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1777,6 +1777,7 @@ dependencies = [
+  "log",
+  "miniz_oxide 0.8.9",
+  "png",
++ "portable-atomic",
+  "serde",
+  "serde_json",
+  "zip",
+@@ -2616,6 +2617,7 @@ name = "horizon-perf-format"
+ version = "0.1.0"
+ dependencies = [
+  "flate2",
++ "portable-atomic",
+  "prost",
+  "prost-build",
+  "prost-types",
+@@ -2718,6 +2720,7 @@ dependencies = [
+  "idna_adapter",
+  "ipconfig",
+  "log",
++ "portable-atomic",
+  "serde_json",
+  "sha1",
+  "sha2",
+@@ -2860,6 +2863,7 @@ dependencies = [
+  "memmap2",
+  "mimalloc",
+  "object 0.39.1",
++ "portable-atomic",
+  "rustc-demangle",
+  "windows-sys 0.61.2",
+ ]
+@@ -2878,6 +2882,7 @@ dependencies = [
+  "libm",
+  "log",
+  "lz4_flex",
++ "portable-atomic",
+  "postcard",
+  "rustix 1.1.5",
+  "serde",
+diff --git a/crates/horizon-assets/Cargo.toml b/crates/horizon-assets/Cargo.toml
+index e0717d87bb278a032d0f46c26d5c5965436864ff..ee82eafa3a137922d07304ae3e8cf2a873f82e5a 100644
+--- a/crates/horizon-assets/Cargo.toml
++++ b/crates/horizon-assets/Cargo.toml
+@@ -16,6 +16,9 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
+ [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+ 
++[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
++portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
++
+ [lints]
+ workspace = true
+ 
+diff --git a/crates/horizon-assets/src/lib.rs b/crates/horizon-assets/src/lib.rs
+index 07de5c2d688133715ae90314628abf9d1e3c0bc8..82b082cd14883ed3cb24ffddc31bdab3885cc36b 100644
+--- a/crates/horizon-assets/src/lib.rs
++++ b/crates/horizon-assets/src/lib.rs
+@@ -1,6 +1,11 @@
+ //! Resource decoding for the pinned Java Edition client.
+ #![forbid(unsafe_code)]
+ 
++#[cfg(not(target_has_atomic = "64"))]
++use portable_atomic::AtomicU64;
++#[cfg(target_has_atomic = "64")]
++use std::sync::atomic::AtomicU64;
++
+ pub mod animation;
+ pub mod bake;
+ pub mod blockstate;
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index 7c05a4b5209d0b6cf292a2067463cbcc1964ea0d..68a40a2f8b5ecbc40c972d4c6e14a13d63cf1a07 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -39,7 +39,7 @@ pub(crate) fn metadata_fingerprint(metadata: &fs::Metadata) -> io::Result<u64> {
+ fn copy_resource_bytes(
+     bytes: &[u8],
+     out: &mut impl io::Write,
+-    budget: &std::sync::atomic::AtomicU64,
++    budget: &crate::AtomicU64,
+ ) -> io::Result<()> {
+     use std::sync::atomic::Ordering;
+     let mut left = budget.load(Ordering::Relaxed);
+@@ -412,7 +412,7 @@ impl ResourceSource {
+         &self,
+         name: &str,
+         out: &mut impl io::Write,
+-        budget: &std::sync::atomic::AtomicU64,
++        budget: &crate::AtomicU64,
+     ) -> io::Result<()> {
+         if !stays_inside(name) {
+             return Err(io::Error::new(
+@@ -669,10 +669,8 @@ impl ResourceSource {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use std::{
+-        io::Write,
+-        sync::atomic::{AtomicU64, Ordering},
+-    };
++    use crate::AtomicU64;
++    use std::{io::Write, sync::atomic::Ordering};
+ 
+     struct Fixture(PathBuf);
+ 
+diff --git a/crates/horizon-assets/src/zip.rs b/crates/horizon-assets/src/zip.rs
+index 363e9a42c8f92060dc17a45943e67f26cc30da17..df0febdc79a8f807d34512de4ff3d52e7a7aa15d 100644
+--- a/crates/horizon-assets/src/zip.rs
++++ b/crates/horizon-assets/src/zip.rs
+@@ -2,16 +2,14 @@
+ //! archive), on the `zip` crate. Like Java's `ZipFile` (what vanilla's
+ //! `FilePackResources` reads with), the file stays open and only what is asked
+ //! for is read, and entries aren't CRC-checked.
++use crate::AtomicU64;
+ use std::{
+     collections::BTreeMap,
+     fs,
+     hash::{DefaultHasher, Hash, Hasher},
+     io::{self, Read, Seek, SeekFrom},
+     path::Path,
+-    sync::{
+-        Arc,
+-        atomic::{AtomicU64, Ordering},
+-    },
++    sync::{Arc, atomic::Ordering},
+ };
+ use zip::{CompressionMethod, ZipArchive};
+ 
+diff --git a/crates/horizon-perf-format/Cargo.toml b/crates/horizon-perf-format/Cargo.toml
+index ba5b917ce993bcba636aa2cc7982ffb0c1d7fc62..9f55f674b97f11bb74b03e2f5380ea231b970ce3 100644
+--- a/crates/horizon-perf-format/Cargo.toml
++++ b/crates/horizon-perf-format/Cargo.toml
+@@ -18,5 +18,8 @@ protox = "0.9"
+ prost-types = "0.14"
+ protox = "0.9"
+ 
++[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
++portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
++
+ [lints]
+ workspace = true
+diff --git a/crates/horizon-perf-format/src/counters.rs b/crates/horizon-perf-format/src/counters.rs
+index 6955fbf81ba0d30560de2b2a8fac2f559a2c45e9..4084a07e1bbf6b27bcb53d3cbbd72b0c5937f0a4 100644
+--- a/crates/horizon-perf-format/src/counters.rs
++++ b/crates/horizon-perf-format/src/counters.rs
+@@ -1,5 +1,6 @@
++use crate::AtomicU64;
+ use std::collections::HashMap;
+-use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::atomic::Ordering;
+ use std::sync::{Arc, Mutex, OnceLock};
+ 
+ use crate::strings::Interner;
+diff --git a/crates/horizon-perf-format/src/lib.rs b/crates/horizon-perf-format/src/lib.rs
+index 96b8c577e5a75d59079c54ba4bed62a274fa1a70..d6745f309713f9055489934efdfa2b0da906a469 100644
+--- a/crates/horizon-perf-format/src/lib.rs
++++ b/crates/horizon-perf-format/src/lib.rs
+@@ -1,6 +1,11 @@
+ //! The `.hzperf` capture contract (docs/perf-platform.md §3): the generated types, the gzip writer, the health recorder and the counter registry.
+ 
+ /// Types generated from `proto/horizon/perf/v1/capture.proto`.
++#[cfg(not(target_has_atomic = "64"))]
++use portable_atomic::AtomicU64;
++#[cfg(target_has_atomic = "64")]
++use std::sync::atomic::AtomicU64;
++
+ #[allow(clippy::all)]
+ pub mod v1 {
+     include!(concat!(env!("OUT_DIR"), "/horizon.perf.v1.rs"));
+diff --git a/crates/horizon-perf-format/src/writer.rs b/crates/horizon-perf-format/src/writer.rs
+index 91b0d6541c50d6bcf58fcd1c9fb6befc8711c569..c9b3c3dad945da1600d0c5db26d560ac78535413 100644
+--- a/crates/horizon-perf-format/src/writer.rs
++++ b/crates/horizon-perf-format/src/writer.rs
+@@ -1,6 +1,7 @@
++use crate::AtomicU64;
+ use std::io::{self, Write};
+ use std::sync::Arc;
+-use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::atomic::Ordering;
+ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+ use std::thread::{self, JoinHandle};
+ 
+diff --git a/crates/horizon-protocol/Cargo.toml b/crates/horizon-protocol/Cargo.toml
+index 654bfe11238e2f55ff77552525ccfeb98fa8e991..df2a0d0fd993f932c83fe217f5587d417ded7717 100644
+--- a/crates/horizon-protocol/Cargo.toml
++++ b/crates/horizon-protocol/Cargo.toml
+@@ -22,9 +22,14 @@ sha1 = "0.10"
+ sha2 = "0.10"
+ # AES-NI at run time on x86 for the connection cipher (crypto/blocks.rs).
+ aes = "0.8.4"
+-socket2 = { version = "0.5", features = ["all"] }
+ 
+ # The name servers of Windows' network adapters, for Minecraft SRV redirects.
++[target.'cfg(not(target_os = "cafe"))'.dependencies]
++socket2 = { version = "0.5", features = ["all"] }
++
++[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
++portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
++
+ [target.'cfg(windows)'.dependencies]
+ ipconfig = "0.3.4"
+ 
+diff --git a/crates/horizon-protocol/src/connection.rs b/crates/horizon-protocol/src/connection.rs
+index 518112877b6e6bcfbbb8266e8ac46bb1b424174b..401c35953bb54bb8da74bf8a86976758a092b125 100644
+--- a/crates/horizon-protocol/src/connection.rs
++++ b/crates/horizon-protocol/src/connection.rs
+@@ -7,13 +7,14 @@
+ //! runs over TCP, or over an in-memory pipe between two threads of one process
+ //! (vanilla's `LocalChannel`, which an integrated server's player uses).
+ use crate::{Error, Result, buf::Reader, crypto::Cfb8, frame};
++#[cfg(not(target_has_atomic = "64"))]
++use portable_atomic::AtomicI64;
++#[cfg(target_has_atomic = "64")]
++use std::sync::atomic::AtomicI64;
+ use std::{
+     io::{Read, Write},
+     net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
+-    sync::{
+-        Arc,
+-        atomic::{AtomicI64, Ordering},
+-    },
++    sync::{Arc, atomic::Ordering},
+     time::{Duration, Instant},
+ };
+ 
+@@ -152,16 +153,22 @@ pub struct Connection {
+ }
+ fn configure_stream(stream: &TcpStream) -> Result<()> {
+     stream.set_nodelay(true)?;
+-    let sock = socket2::SockRef::from(stream);
+-    let keepalive = socket2::TcpKeepalive::new()
+-        .with_time(Duration::from_secs(10))
+-        .with_interval(Duration::from_secs(3));
+-    #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
+-    let keepalive = keepalive.with_retries(3);
+-    let _ = sock.set_tcp_keepalive(&keepalive);
+-    #[cfg(target_os = "linux")]
++    // Cafe exposes the OS keepalive switch through its standard library.
++    #[cfg(target_os = "cafe")]
++    let _ = stream.set_keepalive(true);
++    #[cfg(not(target_os = "cafe"))]
+     {
+-        let _ = sock.set_quickack(true);
++        let sock = socket2::SockRef::from(stream);
++        let keepalive = socket2::TcpKeepalive::new()
++            .with_time(Duration::from_secs(10))
++            .with_interval(Duration::from_secs(3));
++        #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
++        let keepalive = keepalive.with_retries(3);
++        let _ = sock.set_tcp_keepalive(&keepalive);
++        #[cfg(target_os = "linux")]
++        {
++            let _ = sock.set_quickack(true);
++        }
+     }
+     Ok(())
+ }
+diff --git a/crates/horizon-protocol/src/lib.rs b/crates/horizon-protocol/src/lib.rs
+index 9eadd43383238355bb96cc64b9258f99cd45c463..6de9eae6e0f32c5c70adf28ba5e1892aa04b9fbd 100644
+--- a/crates/horizon-protocol/src/lib.rs
++++ b/crates/horizon-protocol/src/lib.rs
+@@ -3,6 +3,7 @@
+ //! every connection state, shared by the Horizon client and (later) server.
+ // `deny`, not `forbid`: crypto/blocks.rs allows the ARMv8 AES intrinsics, nothing else.
+ #![deny(unsafe_code)]
++#![cfg_attr(target_os = "cafe", feature(tcp_keepalive))]
+ pub mod adapter;
+ pub mod anvil_cost;
+ pub mod attachment_sync;
+diff --git a/crates/horizon-threads/Cargo.toml b/crates/horizon-threads/Cargo.toml
+index 6d86d1f23e77f58051d8bac8ee9cbfa530856963..0b82f70cbb68011a8067f91b25b494a0419d9c15 100644
+--- a/crates/horizon-threads/Cargo.toml
++++ b/crates/horizon-threads/Cargo.toml
+@@ -8,6 +8,8 @@ description = "Scheduling hints for the game's threads and its allocator, and th
+ 
+ [dependencies]
+ horizon-guest-stack = { path = "../horizon-guest-stack" }
++
++[target.'cfg(not(target_os = "cafe"))'.dependencies]
+ mimalloc = { version = "0.1.52", default-features = false }
+ libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
+ 
+@@ -24,6 +26,9 @@ rustc-demangle = "0.1"
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_IO", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+ 
++[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
++portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
++
+ [features]
+ # Raw CPU timer calibration for Linux sampling tests in dependent crates.
+ sampling-test-support = []
+diff --git a/crates/horizon-threads/src/alloc_count.rs b/crates/horizon-threads/src/alloc_count.rs
+index 5e2e8b6b46509fcd5535f115ea59ec79d15d8ca5..7964da5b08e79efb49da1bf07667990426795dd5 100644
+--- a/crates/horizon-threads/src/alloc_count.rs
++++ b/crates/horizon-threads/src/alloc_count.rs
+@@ -1,8 +1,9 @@
+ //! Per-thread allocation counts (feature `alloc-count`); each thread writes only its own slot, so counting needs no atomic read-modify-write.
++use crate::AtomicU64;
+ use std::{
+     alloc::{GlobalAlloc, Layout},
+     cell::Cell,
+-    sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
++    sync::atomic::{AtomicUsize, Ordering::Relaxed},
+ };
+ 
+ /// Blocks and bytes allocated and freed.
+@@ -130,15 +131,20 @@ pub fn process() -> Counts {
+     total
+ }
+ 
+-/// mimalloc that counts every block; a `realloc` counts as a free plus an allocation.
++#[cfg(not(target_os = "cafe"))]
++use mimalloc::MiMalloc as BACKING;
++#[cfg(target_os = "cafe")]
++use std::alloc::System as BACKING;
++
++/// The platform allocator that counts every block; a `realloc` counts as a free plus an allocation.
+ pub struct CountingAllocator;
+ 
+-// SAFETY: forwards every call to mimalloc; counting never allocates.
++// SAFETY: forwards every call to the platform allocator; counting never allocates.
+ unsafe impl GlobalAlloc for CountingAllocator {
+     #[inline]
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+         // SAFETY: the caller's contract.
+-        let block = unsafe { mimalloc::MiMalloc.alloc(layout) };
++        let block = unsafe { BACKING.alloc(layout) };
+         if !block.is_null() {
+             on_alloc(layout.size());
+         }
+@@ -147,7 +153,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
+     #[inline]
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+         // SAFETY: the caller's contract.
+-        let block = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
++        let block = unsafe { BACKING.alloc_zeroed(layout) };
+         if !block.is_null() {
+             on_alloc(layout.size());
+         }
+@@ -157,12 +163,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
+     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+         on_free(layout.size());
+         // SAFETY: the caller's contract.
+-        unsafe { mimalloc::MiMalloc.dealloc(block, layout) }
++        unsafe { BACKING.dealloc(block, layout) }
+     }
+     #[inline]
+     unsafe fn realloc(&self, block: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+         // SAFETY: the caller's contract.
+-        let moved = unsafe { mimalloc::MiMalloc.realloc(block, layout, new_size) };
++        let moved = unsafe { BACKING.realloc(block, layout, new_size) };
+         if !moved.is_null() {
+             on_free(layout.size());
+             on_alloc(new_size);
+diff --git a/crates/horizon-threads/src/allocation_count.rs b/crates/horizon-threads/src/allocation_count.rs
+index 58dca4576feabc0774172b470a5206a6d0b87e77..1ad6ec07800b963bea71c2a4830367aaacccd535 100644
+--- a/crates/horizon-threads/src/allocation_count.rs
++++ b/crates/horizon-threads/src/allocation_count.rs
+@@ -1,4 +1,8 @@
+ //! Thread-local allocation counts for tests of allocation-free paths.
++#[cfg(not(target_os = "cafe"))]
++use mimalloc::MiMalloc as BACKING;
++#[cfg(target_os = "cafe")]
++use std::alloc::System as BACKING;
+ use std::alloc::{GlobalAlloc, Layout};
+ use std::cell::Cell;
+ 
+@@ -19,25 +23,25 @@ pub struct Allocator;
+ /// The allocator installed by the game while allocation counting is enabled.
+ pub const ALLOCATOR: Allocator = Allocator;
+ 
+-// SAFETY: every operation delegates the unchanged arguments to mimalloc.
++// SAFETY: every operation delegates the unchanged arguments to the platform allocator.
+ unsafe impl GlobalAlloc for Allocator {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+         record();
+-        unsafe { mimalloc::MiMalloc.alloc(layout) }
++        unsafe { BACKING.alloc(layout) }
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+         record();
+-        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
++        unsafe { BACKING.alloc_zeroed(layout) }
+     }
+ 
+     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+-        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
++        unsafe { BACKING.dealloc(ptr, layout) }
+     }
+ 
+     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+         record();
+-        unsafe { mimalloc::MiMalloc.realloc(ptr, layout, size) }
++        unsafe { BACKING.realloc(ptr, layout, size) }
+     }
+ }
+ 
+diff --git a/crates/horizon-threads/src/allocator_stats.rs b/crates/horizon-threads/src/allocator_stats.rs
+index 7705feae4b8e9a6312748e36924b8a51ab74e365..9fa929a3594a8ffc24594f44f5d2f6b4d6c6a259 100644
+--- a/crates/horizon-threads/src/allocator_stats.rs
++++ b/crates/horizon-threads/src/allocator_stats.rs
+@@ -1,6 +1,7 @@
+ //! The heap the program has in use in mimalloc, from its statistics.
+ 
+ /// The number after `"key":` on a line of mimalloc's JSON.
++#[cfg(any(not(target_os = "cafe"), test))]
+ fn field(line: &str, key: &str) -> Option<usize> {
+     let from = line.find(&format!("\"{key}\":"))? + key.len() + 3;
+     let digits: String = line[from..]
+@@ -12,6 +13,7 @@ fn field(line: &str, key: &str) -> Option<usize> {
+ }
+ 
+ /// Bytes of the pages `malloc_bins` has in use, plus the huge blocks `malloc_huge` counts by size.
++#[cfg(any(not(target_os = "cafe"), test))]
+ fn in_use(json: &str) -> Option<usize> {
+     let huge = json.lines().find(|l| l.contains("\"malloc_huge\":"))?;
+     let bins = json.split("\"malloc_bins\"").nth(1)?;
+@@ -23,6 +25,7 @@ fn in_use(json: &str) -> Option<usize> {
+     Some(total)
+ }
+ 
++#[cfg(not(target_os = "cafe"))]
+ fn stats_json() -> Option<String> {
+     // SAFETY: a null buffer asks mimalloc for one of its own, freed below with its `mi_free`.
+     let raw = unsafe { libmimalloc_sys::mi_stats_get_json(0, std::ptr::null_mut()) };
+@@ -40,7 +43,10 @@ fn stats_json() -> Option<String> {
+ 
+ /// The bytes of the pages holding allocations now: the heap in use, counting each page whole.
+ pub fn live_bytes() -> Option<usize> {
+-    in_use(&stats_json()?)
++    #[cfg(not(target_os = "cafe"))]
++    return in_use(&stats_json()?);
++    #[cfg(target_os = "cafe")]
++    None
+ }
+ 
+ #[cfg(test)]
+@@ -63,6 +69,7 @@ mod tests {
+         assert_eq!(in_use(json), Some(1000 + 3 * 65536));
+     }
+ 
++    #[cfg(not(target_os = "cafe"))]
+     #[test]
+     fn live_bytes_follow_a_large_allocation() {
+         let before = live_bytes().unwrap();
+diff --git a/crates/horizon-threads/src/heap_census.rs b/crates/horizon-threads/src/heap_census.rs
+index b3a4222b3a4b7c4ba5b872da930026ee18ee6bcb..21e2e5c3a295b3b97f1a77f7c84f607904128824 100644
+--- a/crates/horizon-threads/src/heap_census.rs
++++ b/crates/horizon-threads/src/heap_census.rs
+@@ -183,12 +183,12 @@ pub fn census() -> Vec<(&'static str, isize)> {
+     by_name
+ }
+ 
+-#[cfg(not(miri))]
++#[cfg(not(any(miri, target_os = "cafe")))]
+ use mimalloc::MiMalloc as BackingAlloc;
+-#[cfg(miri)]
++#[cfg(any(miri, target_os = "cafe"))]
+ use std::alloc::System as BackingAlloc;
+ 
+-/// mimalloc with a tag in front of each block (see the module).
++/// The platform allocator with a tag in front of each block (see the module).
+ pub struct CensusAllocator;
+ 
+ /// The header in front of a block of `layout`: 16 bytes, or its alignment.
+diff --git a/crates/horizon-threads/src/jobs.rs b/crates/horizon-threads/src/jobs.rs
+index 7bbc3dbf202295f1e7b1d76c334fee34ac96be60..d2f2d7deab537fd6570f2b2cc1f027dd26630ffc 100644
+--- a/crates/horizon-threads/src/jobs.rs
++++ b/crates/horizon-threads/src/jobs.rs
+@@ -20,8 +20,9 @@
+ //! A worker asks the sources for their next rank under the pool's read lock
+ //! of its sources and nothing else, so a source may call [`Pool::notify`]
+ //! anywhere, its queue's lock held or not; a notify never waits for a worker.
++use crate::AtomicU64;
+ use std::panic::{AssertUnwindSafe, catch_unwind};
+-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
+ use std::time::{Duration, Instant};
+ 
+diff --git a/crates/horizon-threads/src/lib.rs b/crates/horizon-threads/src/lib.rs
+index edd411a09ccce86d921f02787b4d0748c0f6e945..a4d674e62469f7783381221c94856bb2f6ec45f2 100644
+--- a/crates/horizon-threads/src/lib.rs
++++ b/crates/horizon-threads/src/lib.rs
+@@ -26,6 +26,10 @@ pub mod system_menu;
+ pub mod unwind;
+ pub mod work;
+ 
++#[cfg(not(target_has_atomic = "64"))]
++use portable_atomic::AtomicU64;
++#[cfg(target_has_atomic = "64")]
++use std::sync::atomic::AtomicU64;
+ use std::sync::{
+     OnceLock,
+     atomic::{AtomicBool, Ordering},
+@@ -574,9 +578,16 @@ pub fn catch_stop_signals() {}
+ /// On Linux it samples allocations while a capture runs (`heap_sample`).
+ #[cfg(all(target_os = "linux", not(feature = "test-allocation-count")))]
+ pub type Allocator = heap_sample::SamplingAllocator;
+-#[cfg(all(not(target_os = "linux"), not(feature = "test-allocation-count")))]
++#[cfg(all(
++    not(any(target_os = "linux", target_os = "cafe")),
++    not(feature = "test-allocation-count")
++))]
+ pub type Allocator = mimalloc::MiMalloc;
+-/// The game's mimalloc allocator.
++/// The Cafe system allocator maintained by the host.
++#[cfg(all(target_os = "cafe", not(feature = "test-allocation-count")))]
++pub type Allocator = std::alloc::System;
++
++/// The game's platform allocator.
+ #[cfg(not(feature = "test-allocation-count"))]
+ pub const ALLOCATOR: Allocator = Allocator {};
+ 
+@@ -609,6 +620,7 @@ pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
+ 
+ /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
+ /// don't name it.
++#[cfg(not(target_os = "cafe"))]
+ const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+ /// `mi_option_allow_thp` in mimalloc.h (index 43 in v3); unnamed in the bindings too.
+ #[cfg(target_os = "linux")]
+@@ -624,6 +636,7 @@ const ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
+ /// give them too), and a 2 MiB huge page stays resident whole while one
+ /// 64 KiB mimalloc page in it is used: in a world at render distance 12 the
+ /// game held 200 MiB more that way, at the same load time and frame rate.
++#[cfg(not(target_os = "cafe"))]
+ pub fn configure_allocator() {
+     // SAFETY: sets one integer option, which mimalloc reads at each purge.
+     unsafe {
+@@ -639,8 +652,13 @@ pub fn configure_allocator() {
+     }
+ }
+ 
++/// The Cafe system allocator needs no mimalloc policy.
++#[cfg(target_os = "cafe")]
++pub fn configure_allocator() {}
++
+ /// The bytes the allocator has committed now and at its peak (mimalloc's
+ /// process info), for `horizon-ctl memory`.
++#[cfg(not(target_os = "cafe"))]
+ pub fn allocator_commit() -> (usize, usize) {
+     let mut info = [0usize; 8];
+     let [
+@@ -669,13 +687,19 @@ pub fn allocator_commit() -> (usize, usize) {
+     (info[5], info[6])
+ }
+ 
++/// The Cafe heap does not report process commit or peak commit.
++#[cfg(target_os = "cafe")]
++pub fn allocator_commit() -> (usize, usize) {
++    (0, 0)
++}
++
+ /// Bumped by [`release_everywhere`]: each pool thread compares it with the
+ /// value it saw last ([`release_asked`]).
+ /// The names of the threads that called [`release_free_memory`], for tests.
+ #[cfg(test)]
+ static RELEASED_BY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+ 
+-static RELEASE_ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static RELEASE_ASKED: AtomicU64 = AtomicU64::new(0);
+ 
+ /// How often a pool thread with nothing to do looks at [`release_asked`].
+ pub const RELEASE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+@@ -715,6 +739,7 @@ pub fn release_free_memory() {
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+         .push(std::thread::current().name().unwrap_or_default().to_owned());
++    #[cfg(not(target_os = "cafe"))]
+     // SAFETY: frees only pages no allocation uses (this thread's heap, shared arenas).
+     unsafe {
+         libmimalloc_sys::mi_collect(true);
+diff --git a/crates/horizon-threads/src/work.rs b/crates/horizon-threads/src/work.rs
+index 2092422b39206d3932533cc13ffca9d29994f730..9c749021dec140c149594e2ea88c324d18c252d6 100644
+--- a/crates/horizon-threads/src/work.rs
++++ b/crates/horizon-threads/src/work.rs
+@@ -94,7 +94,12 @@ fn id_of(space: Space, name: &str, verify: bool) -> u16 {
+         return 0;
+     }
+     let (names, key) = (&NAMES[space as usize], name.as_ptr() as usize);
+-    let slot = (key >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - 10);
++    let golden = if usize::BITS == 32 {
++        0x9E37_79B9
++    } else {
++        0x9E37_79B9_7F4A_7C15u64 as usize
++    };
++    let slot = (key >> 3).wrapping_mul(golden) >> (usize::BITS - 10);
+     let hit = CACHE.with(|c| c[space as usize][slot].get());
+     if hit.0 == key && hit.1 != 0 && (!verify || names.name(hit.1) == Some(name)) {
+         return hit.1;
+diff --git a/crates/horizon-world/Cargo.toml b/crates/horizon-world/Cargo.toml
+index 16f8c98e8b4859849f5c5473ce0fd851cff4ae77..a6e078f565b0717f5aa963d79a8ce9f4ea9ba3b1 100644
+--- a/crates/horizon-world/Cargo.toml
++++ b/crates/horizon-world/Cargo.toml
+@@ -45,5 +45,8 @@ test = false
+ name = "world_probe"
+ path = "examples/probe/main.rs"
+ 
++[target.'cfg(not(target_has_atomic = "64"))'.dependencies]
++portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
++
+ [lints]
+ workspace = true
+diff --git a/crates/horizon-world/src/damage_source/resources/tests.rs b/crates/horizon-world/src/damage_source/resources/tests.rs
+index 59cfd5ef769d52d5387c8ae6f6ed349ac660a44d..233bca30bbcae39ec9106b2ace1e1967dc15ba3b 100644
+--- a/crates/horizon-world/src/damage_source/resources/tests.rs
++++ b/crates/horizon-world/src/damage_source/resources/tests.rs
+@@ -1,10 +1,8 @@
+ use super::*;
++use crate::AtomicU64;
+ use crate::DATA_VERSION;
+ use serde_json::json;
+-use std::{
+-    path::PathBuf,
+-    sync::atomic::{AtomicU64, Ordering},
+-};
++use std::{path::PathBuf, sync::atomic::Ordering};
+ 
+ struct Fixture(PathBuf);
+ impl Fixture {
+diff --git a/crates/horizon-world/src/item_defaults.rs b/crates/horizon-world/src/item_defaults.rs
+index fa828ba83d17136817fa3aa04ddff6fb0d480118..e4b92e70417d50ceb1cde793633fa5f0c97497f6 100644
+--- a/crates/horizon-world/src/item_defaults.rs
++++ b/crates/horizon-world/src/item_defaults.rs
+@@ -1,16 +1,14 @@
+ //! A shared snapshot of the item defaults loaded after registries freeze.
+ //! Native changes are applied by the owning load, never by metadata readers.
+ 
++use crate::AtomicU64;
+ use crate::native_load_context::LoadContext;
+ use serde_json::{Map, Value};
+ use std::{
+     collections::BTreeMap,
+     fs, io,
+     path::{Path, PathBuf},
+-    sync::{
+-        Arc, Condvar, Mutex, OnceLock, Weak,
+-        atomic::{AtomicU64, Ordering},
+-    },
++    sync::{Arc, Condvar, Mutex, OnceLock, Weak, atomic::Ordering},
+ };
+ 
+ /// An immutable default-component snapshot. Kept only while a resource load
+diff --git a/crates/horizon-world/src/lib.rs b/crates/horizon-world/src/lib.rs
+index 4f05da9c752f553cab3232cb251adc00ed6a13b3..d8cec134c132c16fd0aec54c462a552e522bd538 100644
+--- a/crates/horizon-world/src/lib.rs
++++ b/crates/horizon-world/src/lib.rs
+@@ -1,6 +1,11 @@
+ //! Vanilla-compatible world data for Horizon. This crate does not run gameplay.
+ #![forbid(unsafe_code)]
+ 
++#[cfg(not(target_has_atomic = "64"))]
++use portable_atomic::AtomicU64;
++#[cfg(target_has_atomic = "64")]
++use std::sync::atomic::AtomicU64;
++
+ pub mod active_effect_tick;
+ pub mod active_effects;
+ pub mod attribute_health;
+diff --git a/crates/horizon-world/src/loot_fill_tests.rs b/crates/horizon-world/src/loot_fill_tests.rs
+index 177c1c8a6043f7efff2b2fa8838061b5992f22fd..5103169784329f48aefb030bc2a439e7ab8450e7 100644
+--- a/crates/horizon-world/src/loot_fill_tests.rs
++++ b/crates/horizon-world/src/loot_fill_tests.rs
+@@ -1,7 +1,7 @@
+ use super::*;
+ 
+ fn fixture(empty: bool) -> LootData {
+-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++    static NEXT: crate::AtomicU64 = crate::AtomicU64::new(0);
+     let root = std::env::temp_dir().join(format!(
+         "loot-fill-{}-{}",
+         std::process::id(),
