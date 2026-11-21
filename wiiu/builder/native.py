@@ -249,16 +249,85 @@ def build_lock(directory):
         yield
 
 
+BUILD_SETTINGS = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC",
+                  "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
+
+
+def compile_game(directory, source, manifest, tools, sysroot, packages, embedded):
+    commands = {name: entry["path"] for name, entry in tools["files"].items()}
+    jobs = str(os.cpu_count() or 1)
+    target = directory / "cargo-target"
+    # Inherit tool and registry locations. Keep ambient compiler overrides
+    # and diagnostic build switches outside the verified recipe.
+    variables = {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME",
+                 "DEVKITPRO", "DEVKITPPC", "SYSTEMROOT"}
+    env = {k: v for k, v in os.environ.items() if k in variables}
+    env.update(BUILD_SETTINGS)
+    env.update(embedded)
+    cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    prefixes = (
+        (directory, "/horizon-build"),
+        (ROOT, "/horizon-port"),
+        (cargo_home / "registry", "/cargo/registry"),
+        (Path(sysroot), "/cafe-sysroot"),
+    )
+    env.update({
+        "RUSTC": commands["rustc"], "CARGO_TARGET_DIR": str(target),
+        f"CC_{TARGET}": commands["powerpc-eabi-gcc"],
+        "CARGO_ENCODED_RUSTFLAGS": "\x1f".join([
+            "--sysroot", sysroot, "--cfg", 'getrandom_backend="custom"',
+            "--check-cfg=cfg(horizon_wiiu_cemu_global_lock)",
+            *(f"--remap-path-prefix={local}={canonical}" for local, canonical in prefixes),
+        ]),
+    })
+    cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
+             "--lib", "--manifest-path", str(manifest), "--target", TARGET, "--jobs", jobs]
+    run(cargo, env)
+    archive = target / TARGET / "release/libhorizon_wiiu_loading_app.a"
+    native = directory / "native"
+    configure = [
+        commands["powerpc-eabi-cmake"], "-S", str(source / "wiiu/loading_app"), "-B", str(native),
+        "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_MAKE_PROGRAM={commands['ninja']}",
+        f"-DHORIZON_WIIU_PREBUILT_STATICLIB={archive}",
+        f"-DHORIZON_WIIU_WINIT_TV_SIZE_SOURCE={manifest.parent / 'winit_tv_size.c'}",
+        f"-DCAFEGLSL_COMPILER_EXECUTABLE={commands['glslcompiler']}",
+        "-DHORIZON_WIIU_DISABLE_AX_AUDIO=OFF", "-DHORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK=OFF",
+    ]
+    if embedded:
+        configure.extend([
+            f"-DHORIZON_WIIU_HOSTED_SHELL={ROOT / 'wiiu/pregame'}",
+            f"-DCAFE_RUSTC={commands['rustc']}",
+        ])
+    link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
+    run(configure, env)
+    run(link, env)
+    imports = subprocess.check_output(
+        [commands["readrpl"], "-i", str(native / "horizon_wiiu_loading_app.rpx")], text=True)
+    if any(name not in imports for name in ("AXInit", "NSSGetRandom", "FSFlushFile")):
+        raise ValueError("native game package is missing the expected Cafe imports")
+    if embedded:
+        symbols = subprocess.check_output([commands["powerpc-eabi-nm"], "-g", "--defined-only",
+            str(native / "horizon_wiiu_loading_app.elf")], text=True)
+        for name in ("main", "shell_process", "horizon_pregame_run", "horizon_hosted_game_run"):
+            if sum(line.endswith(f" T {name}") for line in symbols.splitlines()) != 1:
+                raise ValueError(f"combined executable must define {name} exactly once")
+    shutil.copyfile(native / "horizon_wiiu_loading_app.rpx", directory / packages[0])
+    title = "Horizon Wii U" if embedded else "Horizon Wii U Game"
+    pack = [commands["wuhbtool"], str(directory / packages[0]),
+            str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
+    run(pack, env)
+    return [cargo, configure, link, pack]
+
+
 def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash=None, integrated=False):
     workspace = verify_assembly(assembly, recipe, recipe_hash)
     lock, patch, bridge, tools, sysroot = read_native_inputs(recipe, inputs)
     hosted = hosted_inputs(recipe, recipe_hash) if integrated else None
     launcher = client_input(recipe) if integrated else None
     packages = HOSTED_PACKAGES if integrated else GAME_PACKAGES
-    settings = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC",
-                "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
     identity = {
-        "recipe": recipe_hash, "toolchain": tools, "environment": settings, "workspace_layout": 2,
+        "recipe": recipe_hash, "toolchain": tools, "environment": BUILD_SETTINGS, "workspace_layout": 2,
         "resources": resources_hash, "assembly": str(assembly.resolve()),
     }
     if hosted:
@@ -278,15 +347,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
         if hosted:
             bridge["lock"] = hosted[2][HOSTED_LOCK]
         manifest = write_cargo_inputs(directory, source, inputs, lock, bridge)
-        commands = {name: entry["path"] for name, entry in tools["files"].items()}
-        jobs = str(os.cpu_count() or 1)
-        target = directory / "cargo-target"
-        # Inherit tool and registry locations. Keep ambient compiler overrides
-        # and diagnostic build switches outside the verified recipe.
-        variables = {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME",
-                     "DEVKITPRO", "DEVKITPPC", "SYSTEMROOT"}
-        env = {k: v for k, v in os.environ.items() if k in variables}
-        env.update(settings)
+        embedded = {}
         if hosted:
             spec, hosted_hash, _ = hosted
             pin = spec["resource_pin"]
@@ -303,60 +364,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
                 "HORIZON_NIGHT_BUILD_ID": digest(json.dumps({"hosted": hosted_hash,
                     "standalone": recipe_hash, "launcher": launcher["files"]}, sort_keys=True).encode()),
             }
-            env.update(embedded)
-        cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
-        prefixes = (
-            (directory, "/horizon-build"),
-            (ROOT, "/horizon-port"),
-            (cargo_home / "registry", "/cargo/registry"),
-            (Path(sysroot), "/cafe-sysroot"),
-        )
-        env.update({
-            "RUSTC": commands["rustc"], "CARGO_TARGET_DIR": str(target),
-            f"CC_{TARGET}": commands["powerpc-eabi-gcc"],
-            "CARGO_ENCODED_RUSTFLAGS": "\x1f".join([
-                "--sysroot", sysroot, "--cfg", 'getrandom_backend="custom"',
-                "--check-cfg=cfg(horizon_wiiu_cemu_global_lock)",
-                *(f"--remap-path-prefix={local}={canonical}" for local, canonical in prefixes),
-            ]),
-        })
-        cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
-                 "--lib", "--manifest-path", str(manifest), "--target", TARGET, "--jobs", jobs]
-        run(cargo, env)
-        archive = target / TARGET / "release/libhorizon_wiiu_loading_app.a"
-        native = directory / "native"
-        configure = [
-            commands["powerpc-eabi-cmake"], "-S", str(source / "wiiu/loading_app"), "-B", str(native),
-            "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-            f"-DCMAKE_MAKE_PROGRAM={commands['ninja']}",
-            f"-DHORIZON_WIIU_PREBUILT_STATICLIB={archive}",
-            f"-DHORIZON_WIIU_WINIT_TV_SIZE_SOURCE={manifest.parent / 'winit_tv_size.c'}",
-            f"-DCAFEGLSL_COMPILER_EXECUTABLE={commands['glslcompiler']}",
-            "-DHORIZON_WIIU_DISABLE_AX_AUDIO=OFF", "-DHORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK=OFF",
-        ]
-        if hosted:
-            configure.extend([
-                f"-DHORIZON_WIIU_HOSTED_SHELL={ROOT / 'wiiu/pregame'}",
-                f"-DCAFE_RUSTC={commands['rustc']}",
-            ])
-        link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
-        run(configure, env)
-        run(link, env)
-        imports = subprocess.check_output(
-            [commands["readrpl"], "-i", str(native / "horizon_wiiu_loading_app.rpx")], text=True)
-        if any(name not in imports for name in ("AXInit", "NSSGetRandom", "FSFlushFile")):
-            raise ValueError("native game package is missing the expected Cafe imports")
-        if hosted:
-            symbols = subprocess.check_output([commands["powerpc-eabi-nm"], "-g", "--defined-only",
-                str(native / "horizon_wiiu_loading_app.elf")], text=True)
-            for name in ("main", "shell_process", "horizon_pregame_run", "horizon_hosted_game_run"):
-                if sum(line.endswith(f" T {name}") for line in symbols.splitlines()) != 1:
-                    raise ValueError(f"combined executable must define {name} exactly once")
-        shutil.copyfile(native / "horizon_wiiu_loading_app.rpx", directory / packages[0])
-        title = "Horizon Wii U" if hosted else "Horizon Wii U Game"
-        pack = [commands["wuhbtool"], str(directory / packages[0]),
-                str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
-        run(pack, env)
+        commands = compile_game(directory, source, manifest, tools, sysroot, packages, embedded)
         stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
         result = {
             "schema": 1, "kind": "wiiu-hosted-game-build" if hosted else "wiiu-native-game-build",
@@ -364,7 +372,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             "recipe": recipe, "assembled_tree": recipe["native"]["tree"], "build_tree": staged,
             "workspace_patch_sha256": lock["workspace_patch_sha256"], "toolchain": tools,
             "toolchain_spec_sha256": recipe["inputs_sha256"], "resources_inventory_sha256": resources_hash,
-            "environment": settings, "commands": [cargo, configure, link, pack],
+            "environment": BUILD_SETTINGS, "commands": commands,
             "outputs": artifacts(directory, packages),
             "assembly": "passed", "build": "passed", "cemu": "not-run", "hardware": "not-run",
         }

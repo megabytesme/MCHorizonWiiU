@@ -1,0 +1,37 @@
+diff --git a/wiiu/loading_app/CMakeLists.txt b/wiiu/loading_app/CMakeLists.txt
+index b7ac7e82e7190c6efb1a438e065a8d18815e3e3c..e7fc8c6650d3297e4fca38a9bd9268625e1af01a 100644
+--- a/wiiu/loading_app/CMakeLists.txt
++++ b/wiiu/loading_app/CMakeLists.txt
+@@ -180,6 +180,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../loading_host"
+ add_executable(horizon_wiiu_loading_app
+    "${WUT_CRT0_OBJECT}"
+    memory.c
++   ../platform/src/process_id.c
+    ../audio/audio.c
+    ../platform/src/keyboard_bridge.c
+    ../platform/src/mouse_bridge.c
+@@ -211,6 +212,9 @@ if(NOT HORIZON_WIIU_PREBUILT_STATICLIB)
+ endif()
+ target_link_options(horizon_wiiu_loading_app PRIVATE
+    -mcpu=750 -meabi -mhard-float
++   # std::process::id() panics on the pinned Cafe sysroot. Wrap that exact
++   # symbol for the hosted RPX, including callers in dependent libraries.
++   "-Wl,--wrap=_RNvNtCscY6WUuIVqxx_3std7process2id"
+    "-Wl,--defsym=__end__=ADDR(.bss)+SIZEOF(.bss)")
+ target_link_libraries(horizon_wiiu_loading_app PRIVATE
+    horizon_wiiu_loading_rustlib
+diff --git a/wiiu/platform/src/process_id.c b/wiiu/platform/src/process_id.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..226e34d6a18dddb988fc7108563fe547b0acf1cb
+--- /dev/null
++++ b/wiiu/platform/src/process_id.c
+@@ -0,0 +1,9 @@
++#include <stdint.h>
++#include <coreinit/debug.h>
++
++/* The Toolchain 1.0.0 Rust process::id entry point takes no arguments and
++ * returns u32. CafeOS provides the current process identity through WUT. */
++uint32_t __wrap__RNvNtCscY6WUuIVqxx_3std7process2id(void)
++{
++   return OSGetUPID();
++}

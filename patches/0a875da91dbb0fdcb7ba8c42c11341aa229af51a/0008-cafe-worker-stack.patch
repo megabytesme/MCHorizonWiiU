@@ -1,0 +1,51 @@
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index 31ca70d2006fc383b08e2457ce3132151c678db9..3f984f163e3950b1321e91b8b8f8e09dfe6041a6 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -50,9 +50,8 @@ pub(super) const NO_ANSWER: &str =
+     "the integrated server stopped or did not answer within 10 s (the game log says which)";
+ 
+ /// The server thread holds its `Game` by value and runs every tick on it.
+-/// It reserves the same guest limit and host headroom as the main thread.
+-const SERVER_THREAD_STACK: usize =
+-    horizon_guest_stack::GUEST_STACK_BYTES + horizon_guest_stack::HOST_HEADROOM;
++/// It uses the target's worker stack policy.
++const SERVER_THREAD_STACK: usize = horizon_guest_stack::WORKER_STACK_BYTES;
+ 
+ /// The server thread's stack size: [`SERVER_THREAD_STACK`], or what `RUST_MIN_STACK` asks for
+ /// when that is larger. std reads the variable only for a thread spawned without a size, and
+diff --git a/crates/horizon-guest-stack/src/lib.rs b/crates/horizon-guest-stack/src/lib.rs
+index e2da07f9d3472220fae5b57c6fdcd00110b31091..02df663cd0a3a90e2936d29117e495dff5871ecf 100644
+--- a/crates/horizon-guest-stack/src/lib.rs
++++ b/crates/horizon-guest-stack/src/lib.rs
+@@ -4,18 +4,26 @@
+ mod constants;
+ pub use constants::{GUEST_STACK_BYTES, HOST_HEADROOM};
+ 
+-/// Spawn guarantees the reservation even on platforms without a stack-size query.
++/// Cafe has no guest executor. Its threads reserve stack memory up front;
++/// keep the native worker reservation above the Cafe standard-library default.
++#[cfg(target_os = "cafe")]
++pub const WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
++#[cfg(not(target_os = "cafe"))]
++pub const WORKER_STACK_BYTES: usize = GUEST_STACK_BYTES + HOST_HEADROOM;
++
++/// Spawn guarantees the target's worker reservation.
+ pub fn builder() -> std::thread::Builder {
+-    std::thread::Builder::new().stack_size(GUEST_STACK_BYTES + HOST_HEADROOM)
++    std::thread::Builder::new().stack_size(WORKER_STACK_BYTES)
+ }
+ 
+-/// Starts a thread that may enter a guest: guest-sized and named `name`, and in debug builds it
+-/// asserts at its start that the reservation took, so a test that starts it fails loudly if not.
++/// Starts a named worker. On targets with a guest executor, debug builds verify
++/// the guest reservation before running the worker.
+ pub fn spawn<T: Send + 'static>(
+     name: String,
+     body: impl FnOnce() -> T + Send + 'static,
+ ) -> std::io::Result<std::thread::JoinHandle<T>> {
+     builder().name(name).spawn(move || {
++        #[cfg(not(target_os = "cafe"))]
+         debug_assert_eq!(
+             check_current(),
+             Ok(()),

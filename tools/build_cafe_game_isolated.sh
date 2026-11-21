@@ -3,13 +3,13 @@
 set -euo pipefail
 
 target=build-game
-if [[ "${1:-}" == --hosted ]]; then
-    target=build-hosted
-    shift
-fi
+case "${1:-}" in
+    --hosted) target=build-hosted; shift ;;
+    --hosted-nightly) target=build-hosted-nightly; shift ;;
+esac
 
 if (( $# < 2 )); then
-    echo "Usage: $0 [--hosted] <build-directory> --assembly <path> --inputs <path> [build-game options]" >&2
+    echo "Usage: $0 [--hosted|--hosted-nightly] <build-directory> (--assembly <path>|--source <path>) --inputs <path> [build options]" >&2
     exit 2
 fi
 

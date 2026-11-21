@@ -33,10 +33,14 @@ def main(argv=None):
         game.add_argument("--output", type=Path, required=True)
         game.add_argument("--resources", type=Path)
         game.add_argument("--resource-manifest", type=Path)
-    candidate = commands.add_parser("assemble-hosted-nightly")
-    candidate.add_argument("--source", type=Path, required=True)
-    candidate.add_argument("--inputs", type=Path, required=True)
-    candidate.add_argument("--output", type=Path, required=True)
+    for name in ("assemble-hosted-nightly", "build-hosted-nightly"):
+        candidate = commands.add_parser(name)
+        candidate.add_argument("--source", type=Path, required=True)
+        candidate.add_argument("--inputs", type=Path, required=True)
+        candidate.add_argument("--output", type=Path, required=True)
+        if name == "build-hosted-nightly":
+            candidate.add_argument("--resources", type=Path)
+            candidate.add_argument("--resource-manifest", type=Path)
     resources = commands.add_parser("inventory-resources")
     resources.add_argument("root", type=Path)
     resources.add_argument("--output", type=Path, required=True)
@@ -51,15 +55,19 @@ def main(argv=None):
             print(core.inspect_resources(args.root, args.output))
         else:
             recipe, fingerprint = source.read_recipe(args.manifest)
-            if args.command in ("build-game", "build-hosted"):
+            if args.command in ("build-game", "build-hosted", "build-hosted-nightly"):
                 if bool(args.resources) != bool(args.resource_manifest):
                     raise ValueError("provide both --resources and --resource-manifest")
                 asset_hash = None
                 if args.resources:
                     asset_hash = native.verify_resources(args.resources, args.resource_manifest)
-                print(native.build_game(recipe, fingerprint, args.assembly.resolve(),
-                                        args.inputs.resolve(), args.output, asset_hash,
-                                        integrated=args.command == "build-hosted"))
+                if args.command == "build-hosted-nightly":
+                    print(nightly.assemble(args.source.resolve(), args.inputs.resolve(), args.output,
+                                           recipe, fingerprint, build=True, resources_hash=asset_hash))
+                else:
+                    print(native.build_game(recipe, fingerprint, args.assembly.resolve(),
+                                            args.inputs.resolve(), args.output, asset_hash,
+                                            integrated=args.command == "build-hosted"))
             elif args.command == "assemble-hosted-nightly":
                 print(nightly.assemble(args.source.resolve(), args.inputs.resolve(),
                                        args.output, recipe, fingerprint))

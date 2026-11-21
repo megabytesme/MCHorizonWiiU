@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "5e0aa81035fc0d61dc446f936aaef945da5cd4c6a3ab1a489bc0e8b29c3f3e5a",
-  "output_tree": "21a4e742e765d678b52682e1764084d1e037c2fa",
+  "output_tree": "75c9adda7790b1ab4b7983115e0359fe9581fdc0",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -40,6 +40,36 @@
       "sha256": "012809562c49ef285435e13ce12b84e339dc57f455b8c77fb28c5bd343210747",
       "input_tree": "dea32d7c1dfd4877f4ddc6c176a689fc64fd79a7",
       "output_tree": "21a4e742e765d678b52682e1764084d1e037c2fa"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0006-cafe-native-link.patch",
+      "sha256": "e021c90c8e3a7ed46757d7c315b349715649dc14fb729c7063df16b99c0339b9",
+      "input_tree": "21a4e742e765d678b52682e1764084d1e037c2fa",
+      "output_tree": "7364136bf1c8d215f11f6c0592f62c9864cf7a7b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0007-cafe-process-id.patch",
+      "sha256": "a588d7b9e91071a46e338502a0e12ebf853605065aa8831a4266693741356dff",
+      "input_tree": "7364136bf1c8d215f11f6c0592f62c9864cf7a7b",
+      "output_tree": "39f07406a6a1f103c27d78c19a24bdf7fcc1d80d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0008-cafe-worker-stack.patch",
+      "sha256": "3c8bc4f769b3150392a023a2d69c9cd0f6d7147e7f08fcf6035f65fbe98a3391",
+      "input_tree": "39f07406a6a1f103c27d78c19a24bdf7fcc1d80d",
+      "output_tree": "75c9adda7790b1ab4b7983115e0359fe9581fdc0"
     }
-  ]
+  ],
+  "candidate": {
+    "builder": "0.7.0-rc.1",
+    "client": "0.8.0-rc.1",
+    "patch": "0.5.0-rc.1"
+  },
+  "resource_pin": {
+    "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
+    "exporter_sha256": "145c943637ed177cc4ef8a85f2484da8afd164868e84a8463882feec1653a860",
+    "minecraft": "26.3",
+    "schema": 7,
+    "server_sha256": "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6"
+  }
 }

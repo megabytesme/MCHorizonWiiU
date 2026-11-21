@@ -1,8 +1,11 @@
 """Prepare the pinned hosted Nightly candidate outside the active release recipe."""
+import json
+
 import native
 import source
-from core import (ROOT, TARGET, digest, fields, file_digest, isolated, parse_json,
-                  pattern, verify_source, write_record)
+from core import (ROOT, TARGET, artifacts, client_input, discard_unverified_outputs,
+                  digest, fields, file_digest, isolated, parse_json, pattern, verify_source,
+                  write_record)
 
 MANIFEST = ROOT / "catalog/hosted-nightly-2026-11-20.json"
 OVERLAYS = ("ring", "png", "ureq")
@@ -10,10 +13,20 @@ OVERLAYS = ("ring", "png", "ureq")
 
 def validate(spec):
     fields(spec, "schema", "kind", "target", "upstream", "base_recipe_sha256",
-           "cargo_lock_sha256", "output_tree", "series")
+           "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin")
     if (type(spec["schema"]) is not int or spec["schema"] != 1
             or spec["kind"] != "wiiu-hosted-nightly-source" or spec["target"] != TARGET):
         raise ValueError("unsupported hosted Nightly source recipe")
+    fields(spec["candidate"], "builder", "client", "patch")
+    for version in spec["candidate"].values():
+        pattern(version, r"\d+\.\d+\.\d+-rc\.\d+", "Nightly candidate version")
+    pin = spec["resource_pin"]
+    fields(pin, "minecraft", "schema", "client_sha256", "server_sha256", "exporter_sha256")
+    pattern(pin["minecraft"], r"\d+\.\d+(?:\.\d+)?", "prepared resource version")
+    if type(pin["schema"]) is not int or not 1 <= pin["schema"] <= 65535:
+        raise ValueError("invalid prepared resource schema")
+    for name in ("client_sha256", "server_sha256", "exporter_sha256"):
+        pattern(pin[name], source.SHA256, "prepared resource SHA-256")
     pinned = spec["upstream"]
     fields(pinned, "commit", "tree", "inventory_sha256")
     pattern(pinned["commit"], source.SHA1, "Nightly commit")
@@ -54,17 +67,14 @@ def read_recipe(base_fingerprint):
     return spec, digest(payload), patches
 
 
-def assemble(upstream, inputs, output, base, base_fingerprint):
-    spec, recipe_sha256, patches = read_recipe(base_fingerprint)
+def stage(directory, upstream, inputs, toolchain, recipe):
+    spec, recipe_sha256, patches = recipe
     verify_source(upstream, "HEAD", spec["upstream"])
-    toolchain = native.toolchain_spec(base)
     for name in OVERLAYS:
         if native.inventory_digest(inputs / name) != toolchain["overlay_sha256"][name]:
             raise ValueError(f"external dependency overlay differs: {name}")
     tv_path = native.BRIDGE_FILES["tv_size"]
     tv_size = source.checked_bytes(ROOT, tv_path, toolchain["bridge_inputs"]["tv_size"])
-    directory = isolated(output)
-    directory.mkdir(parents=True, exist_ok=True)
     first, *remaining = spec["series"]
     hosted = {
         "input_tree": first["output_tree"],
@@ -72,22 +82,73 @@ def assemble(upstream, inputs, output, base, base_fingerprint):
         "series": [{"file": item["file"], "tree": item["output_tree"]} for item in remaining],
         "overlay": {},
     }
+    staged, tree = native.stage_source(directory, upstream, spec["upstream"]["tree"],
+                                      patches[first["file"]], (hosted, recipe_sha256, patches))
+    lock = source.checked_bytes(staged, "wiiu/loading_app/Cargo.lock",
+                                spec["cargo_lock_sha256"])
+    manifest = native.write_cargo_inputs(directory, staged, inputs, toolchain,
+                                        {"lock": lock, "tv_size": tv_size}, overlays=OVERLAYS)
+    receipt = {
+        "schema": 1,
+        "kind": "wiiu-hosted-nightly-assembly",
+        "recipe_sha256": recipe_sha256,
+        "upstream": spec["upstream"],
+        "tree": tree,
+        "patches": spec["series"],
+        "cargo_manifest_sha256": file_digest(manifest),
+        "cargo_lock_sha256": spec["cargo_lock_sha256"],
+    }
+    write_record(directory / "nightly-source-record.json", receipt)
+    return staged, manifest, receipt
+
+
+def assemble(upstream, inputs, output, base, base_fingerprint, build=False, resources_hash=None):
+    recipe = read_recipe(base_fingerprint)
+    spec, recipe_sha256, _ = recipe
+    toolchain = native.toolchain_spec(base)
+    directory = isolated(output)
+    directory.mkdir(parents=True, exist_ok=True)
     with native.build_lock(directory):
-        staged, tree = native.stage_source(directory, upstream, spec["upstream"]["tree"],
-                                          patches[first["file"]], (hosted, recipe_sha256, patches))
-        lock = source.checked_bytes(staged, "wiiu/loading_app/Cargo.lock",
-                                    spec["cargo_lock_sha256"])
-        manifest = native.write_cargo_inputs(directory, staged, inputs, toolchain,
-                                            {"lock": lock, "tv_size": tv_size}, overlays=OVERLAYS)
-        record = directory / "nightly-source-record.json"
+        staged, manifest, receipt = stage(directory, upstream, inputs, toolchain, recipe)
+        if not build:
+            return directory / "nightly-source-record.json"
+        tools, sysroot, observed = native.native_toolchain()
+        if observed != toolchain["toolchain"]:
+            changed = sorted(key for key, value in observed.items()
+                             if value != toolchain["toolchain"].get(key))
+            raise ValueError(f"installed Cafe toolchain differs from the pin: {', '.join(changed)}")
+        launcher = client_input(base)
+        versions = spec["candidate"]
+        pin = spec["resource_pin"]
+        build_id = digest(json.dumps({"recipe": recipe_sha256, "launcher": launcher["files"]},
+                                     sort_keys=True).encode())
+        embedded = {
+            "HORIZON_NIGHT_UPSTREAM": spec["upstream"]["commit"],
+            "HORIZON_NIGHT_CLIENT": versions["client"],
+            "HORIZON_NIGHT_PATCH": versions["patch"],
+            "HORIZON_NIGHT_BUILDER": versions["builder"],
+            "HORIZON_NIGHT_MINECRAFT": pin["minecraft"],
+            "HORIZON_NIGHT_PREP_SCHEMA": str(pin["schema"]),
+            "HORIZON_NIGHT_CLIENT_JAR": pin["client_sha256"],
+            "HORIZON_NIGHT_SERVER_JAR": pin["server_sha256"],
+            "HORIZON_NIGHT_EXPORTER": pin["exporter_sha256"],
+            "HORIZON_NIGHT_BUILD_ID": build_id,
+        }
+        record = directory / "build-record.json"
+        packages = native.HOSTED_PACKAGES
+        discard_unverified_outputs(directory, record, packages)
+        record.unlink(missing_ok=True)
+        commands = native.compile_game(directory, staged, manifest, tools, sysroot, packages, embedded)
+        _, _, confirmed = stage(directory, upstream, inputs, toolchain, read_recipe(base_fingerprint))
+        if confirmed != receipt or client_input(base) != launcher:
+            raise ValueError("hosted Nightly inputs changed during compilation")
         write_record(record, {
-            "schema": 1,
-            "kind": "wiiu-hosted-nightly-assembly",
-            "recipe_sha256": recipe_sha256,
-            "upstream": spec["upstream"],
-            "tree": tree,
-            "patches": spec["series"],
-            "cargo_manifest_sha256": file_digest(manifest),
-            "cargo_lock_sha256": spec["cargo_lock_sha256"],
+            "schema": 1, "kind": "wiiu-hosted-game-build",
+            "recipe_sha256": recipe_sha256, "source": receipt, "versions": versions,
+            "toolchain_version": base["toolchain"], "toolchain_spec_sha256": base["inputs_sha256"],
+            "toolchain": tools, "launcher": launcher, "embedded_build": embedded,
+            "environment": native.BUILD_SETTINGS, "commands": commands,
+            "resources_inventory_sha256": resources_hash, "outputs": artifacts(directory, packages),
+            "assembly": "passed", "build": "passed", "cemu": "not-run", "hardware": "not-run",
         })
     return record
