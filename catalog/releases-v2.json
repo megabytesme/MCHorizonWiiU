@@ -89,9 +89,9 @@
       "0.7.0": {
         "artifacts": {
           "build-evidence": {
-            "commit": "568f9d775a5cfbf22870d52ecdb9f0ddffa2b4ae",
+            "commit": "a045bb839420e8204c6289bd11970eab193b2a68",
             "path": "catalog/evidence/client-v0.7.0-patch-v0.4.0.json",
-            "sha256": "ca9c231c17f1e35bc6b1fa9faefcb4d75584f60ceb8dbfe716defb62e884f78d"
+            "sha256": "f617fadd76115b4ff563b1b7feaa0632b88ef35f7cbc2a29cee3ce0dc4b84336"
           },
           "sources": {
             "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
