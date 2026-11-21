@@ -213,9 +213,9 @@ def play_and_save(invoke, window, client_name, index, evidence):
         else:
             print(f"Cemu did not record both display screenshots for session {index}.", flush=True)
 
-    invoke("game_quit")
+    quit_reply = invoke("game_quit")
     # Launcher read tools remain callable while the original game saves.
-    invoke("versions", {"installed": True})
+    launcher_during_save = invoke("versions", {"installed": True})
     try:
         invoke("game_state")
     except RuntimeError as error:
@@ -239,6 +239,18 @@ def play_and_save(invoke, window, client_name, index, evidence):
             time.sleep(2)
         else:
             raise RuntimeError(f"Hosted game {index} never completed its save and return.")
+        launcher_after_save = invoke("versions", {"installed": True})
+        receipt = {
+            "world": saved,
+            "game_state": game,
+            "game_quit": quit_reply,
+            "launcher_during_save": launcher_during_save,
+            "launcher_after_save": launcher_after_save,
+            "game_tools_withdrawn": True,
+        }
+        with (evidence / f"session-{index}-mcp.json").open("x", encoding="utf-8") as output:
+            json.dump(receipt, output, indent=2)
+            output.write("\n")
 
 
 if __name__ == "__main__":
