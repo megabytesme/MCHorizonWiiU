@@ -1,0 +1,267 @@
+diff --git a/crates/horizon-client-render/src/assets.rs b/crates/horizon-client-render/src/assets.rs
+index bca9d2673850fa8327d2696d879fad82e87cc344..6908cdd62533f5ef22f8a70b345a54b8930572a5 100644
+--- a/crates/horizon-client-render/src/assets.rs
++++ b/crates/horizon-client-render/src/assets.rs
+@@ -166,7 +166,10 @@ struct PixelStore {
+     packing: std::sync::atomic::AtomicBool,
+     /// As built; dropped once `packed` holds them.
+     raw: std::sync::Mutex<Option<Arc<Vec<u8>>>>,
++    #[cfg(not(target_os = "cafe"))]
+     packed: std::sync::OnceLock<Vec<u8>>,
++    #[cfg(target_os = "cafe")]
++    packed: std::sync::OnceLock<crate::cafe_pixels::PackedPixels>,
+ }
+ impl SpritePixels {
+     pub fn new(pixels: Vec<u8>) -> Self {
+@@ -188,13 +191,19 @@ impl SpritePixels {
+     pub fn get(&self) -> Arc<Vec<u8>> {
+         let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+         raw.unwrap_or_else(|| {
+-            let packed = self.0.packed.get().map(Vec::as_slice).unwrap_or_default();
+-            Arc::new(
++            #[cfg(not(target_os = "cafe"))]
++            let decoded = self.0.packed.get().and_then(|packed| {
+                 lz4_flex::decompress_size_prepended(packed)
+                     .ok()
+                     .filter(|p| p.len() == self.0.len)
+-                    .unwrap_or_else(|| vec![0; self.0.len]),
+-            )
++            });
++            #[cfg(target_os = "cafe")]
++            let decoded = self
++                .0
++                .packed
++                .get()
++                .and_then(|packed| packed.decompress(self.0.len));
++            Arc::new(decoded.unwrap_or_else(|| vec![0; self.0.len]))
+         })
+     }
+     /// Keep them compressed from now on, once a renderer has uploaded them:
+@@ -208,7 +217,13 @@ impl SpritePixels {
+         let job = move || {
+             let raw = store.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+             if let Some(raw) = raw {
+-                let _ = store.packed.set(lz4_flex::compress_prepend_size(&raw));
++                #[cfg(not(target_os = "cafe"))]
++                let packed = lz4_flex::compress_prepend_size(&raw);
++                #[cfg(target_os = "cafe")]
++                let Some(packed) = crate::cafe_pixels::PackedPixels::compress(&raw) else {
++                    return;
++                };
++                let _ = store.packed.set(packed);
+                 // `get` reads the compressed copy from here on.
+                 *store.raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
+             }
+diff --git a/crates/horizon-client-render/src/cafe_pixels.rs b/crates/horizon-client-render/src/cafe_pixels.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0421b1f2adc4bf0ba3cc34c1d2b51c28db876ecc
+--- /dev/null
++++ b/crates/horizon-client-render/src/cafe_pixels.rs
+@@ -0,0 +1,81 @@
++//! Lossless atlas storage with a bounded temporary allocation on CafeOS.
++
++use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
++
++const BLOCK_BYTES: usize = 256 * 1024;
++
++#[derive(Default)]
++pub(crate) struct PackedPixels(Vec<Box<[u8]>>);
++
++impl PackedPixels {
++    /// Use small blocks so the encoder never reserves an atlas-sized output.
++    /// Retain the original if the packed copy would cost over half its size
++    /// or the heap can't provide a block's workspace.
++    pub(crate) fn compress(pixels: &[u8]) -> Option<Self> {
++        let mut budget = pixels.len() / 2;
++        let mut blocks = Vec::new();
++        blocks
++            .try_reserve_exact(pixels.len().div_ceil(BLOCK_BYTES))
++            .ok()?;
++        let scratch_size = get_maximum_output_size(pixels.len().min(BLOCK_BYTES));
++        let mut scratch = Vec::new();
++        scratch.try_reserve_exact(scratch_size).ok()?;
++        scratch.resize(scratch_size, 0);
++        for block in pixels.chunks(BLOCK_BYTES) {
++            let length = compress_into(block, &mut scratch).ok()?;
++            budget = budget.checked_sub(length)?;
++            let mut stored = Vec::new();
++            stored.try_reserve_exact(length).ok()?;
++            stored.extend_from_slice(&scratch[..length]);
++            blocks.push(stored.into_boxed_slice());
++        }
++        Some(Self(blocks))
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub(crate) fn encoded_len(&self) -> usize {
++        self.0.iter().map(|block| block.len()).sum()
++    }
++
++    pub(crate) fn decompress(&self, length: usize) -> Option<Vec<u8>> {
++        if self.0.len() != length.div_ceil(BLOCK_BYTES) {
++            return None;
++        }
++        let mut pixels = vec![0; length];
++        for (packed, block) in self.0.iter().zip(pixels.chunks_mut(BLOCK_BYTES)) {
++            if decompress_into(packed, block).ok()? != block.len() {
++                return None;
++            }
++        }
++        Some(pixels)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rebuild_recovers_every_pixel_including_the_partial_last_block() {
++        let pixels: Vec<u8> = (0..BLOCK_BYTES * 2 + 517)
++            .map(|index| (index / 17 + index / BLOCK_BYTES) as u8)
++            .collect();
++        let packed = PackedPixels::compress(&pixels).unwrap();
++        assert_eq!(packed.decompress(pixels.len()).unwrap(), pixels);
++        assert!(packed.decompress(pixels.len() - 1).is_none());
++    }
++
++    #[test]
++    fn an_incompressible_texture_keeps_its_existing_backing() {
++        let mut state = 17_u32;
++        let bytes: Vec<u8> = (0..BLOCK_BYTES)
++            .map(|_| {
++                state ^= state << 13;
++                state ^= state >> 17;
++                state ^= state << 5;
++                state as u8
++            })
++            .collect();
++        assert!(PackedPixels::compress(&bytes).is_none());
++    }
++}
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index 741e0b2a09fcc8f5ff79547ee7a97a9648ea7df3..e29b96fb39145cd895bbda209362f8bb2c9c2af5 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -8,8 +8,10 @@ use std::{
+     collections::{HashMap, HashSet},
+     fs,
+     path::{Path, PathBuf},
+-    sync::{Arc, OnceLock},
++    sync::Arc,
+ };
++#[cfg(not(target_os = "cafe"))]
++use std::sync::OnceLock;
+ use wgpu::util::DeviceExt;
+ 
+ pub use model_reducing::set_mod_namespaces;
+@@ -79,7 +81,10 @@ pub struct HudAtlas {
+     pub pixels: Vec<u8>,
+     /// `pixels` compressed (lz4) on a thread of its own once the renderer
+     /// has uploaded them: only rebuilding a renderer reads them again.
++    #[cfg(not(target_os = "cafe"))]
+     packed: Option<Arc<OnceLock<Vec<u8>>>>,
++    #[cfg(target_os = "cafe")]
++    packed: Option<crate::cafe_pixels::PackedPixels>,
+     /// The width each Standard Galactic letter uses in `font/ascii_sga`'s
+     /// cell, by ASCII code (the enchanting table's text), read when built.
+     pub galactic_widths: [u16; 128],
+@@ -883,18 +888,20 @@ impl HudAtlas {
+             return std::borrow::Cow::Borrowed(&self.pixels);
+         };
+         let size = (self.width * self.height * 4) as usize;
+-        std::borrow::Cow::Owned(
+-            lz4_flex::decompress_size_prepended(packed.wait())
+-                .ok()
+-                .filter(|p| p.len() == size)
+-                .unwrap_or_else(|| vec![0; size]),
+-        )
++        #[cfg(target_os = "cafe")]
++        let pixels = packed.decompress(size);
++        #[cfg(not(target_os = "cafe"))]
++        let pixels = lz4_flex::decompress_size_prepended(packed.wait())
++            .ok()
++            .filter(|p| p.len() == size);
++        std::borrow::Cow::Owned(pixels.unwrap_or_else(|| vec![0; size]))
+     }
+     /// Keep the pixels compressed from now on, once a renderer has them: the
+     /// window's GPU holds the atlas, and a copy as built only serves a
+     /// renderer made again (another window, a lost device, another graphics
+     /// API). They are compressed on a thread of their own; `pixels()` waits
+     /// for it.
++    #[cfg(not(target_os = "cafe"))]
+     pub fn pack_pixels(&mut self) {
+         if self.pixels.is_empty() || self.packed.is_some() {
+             return;
+@@ -912,6 +919,26 @@ impl HudAtlas {
+         }
+         self.packed = Some(slot);
+     }
++
++    /// GX2 holds the uploaded image. Keep only a compact copy for foreground
++    /// rebuilds, using one block of compression workspace on this thread.
++    #[cfg(target_os = "cafe")]
++    pub fn pack_pixels(&mut self) {
++        if self.pixels.is_empty() || self.packed.is_some() {
++            return;
++        }
++        let packed = crate::cafe_pixels::PackedPixels::compress(&self.pixels);
++        if let Some(packed) = &packed {
++            log::info!(
++                "Horizon Cafe HUD CPU atlas packed: raw_bytes={} packed_bytes={}",
++                self.pixels.len(),
++                packed.encoded_len()
++            );
++            self.pixels = Vec::new();
++        }
++        // Record the attempt even if this image is better kept uncompressed.
++        self.packed = Some(packed.unwrap_or_default());
++    }
+     /// A sprite, or the missing one when the atlas has no such sprite (an
+     /// effect without its icon), as a stitched atlas answers.
+     pub fn sprite_or_missing(&self, name: &str) -> Option<Rect> {
+diff --git a/crates/horizon-client-render/src/lib.rs b/crates/horizon-client-render/src/lib.rs
+index 41366f7e00f5ab07c6271078c966bf94253f4d99..718afc63c166a135f0d970c60b78919cd5c94328 100644
+--- a/crates/horizon-client-render/src/lib.rs
++++ b/crates/horizon-client-render/src/lib.rs
+@@ -31,6 +31,8 @@ pub mod bluemap_detect;
+ pub mod border_render;
+ pub mod breaking;
+ pub mod brewing;
++#[cfg(any(test, target_os = "cafe"))]
++mod cafe_pixels;
+ pub mod camera;
+ pub mod carrier_fences;
+ pub mod chat;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 3bbe12f362b844f2332369b3de87321d05775d92..3c24bef4986911109e5bdf5b03025f822e10ab67 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -279,6 +279,9 @@ impl<'resources> CafeLoadingSession<'resources> {
+         }
+         self.loading.cafe_viewport = size;
+         presenter.prepare_loading(self.loading_artwork())?;
++        if let Some(gui) = &mut self.loading.gui {
++            gui.atlas.pack_pixels();
++        }
+         let mut batch = HudBatch::new(size, self.loading.settings.gui_scale_inputs());
+         self.loading.draw_menu(&mut batch);
+         self.loading.menu.frame_drawn((batch.width, batch.height));
+@@ -681,6 +684,8 @@ impl CafeGameSession<'_> {
+             hud_generation: self.game.gui.atlas.revision,
+             terrain_generation: self.game.pack.render.generation,
+         })?;
++        self.game.gui.atlas.pack_pixels();
++        self.game.pack.render.pixels.pack();
+         #[cfg(target_os = "cafe")]
+         drop(artwork);
+         let capture = std::mem::take(&mut self.game.cafe_screenshot_requested);
+@@ -805,8 +810,6 @@ impl CafeGameSession<'_> {
+             return Err("Cafe loading presenter returned an empty viewport".into());
+         }
+ 
+-        game.gui.atlas.pack_pixels();
+-        game.pack.render.pixels.pack();
+         game.gui.atlas.font.begin_frame();
+         if game.clock.still() {
+             game.gui.atlas.font.reseed(game.visual_ticks() as i64);
