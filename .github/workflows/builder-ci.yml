@@ -53,8 +53,12 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --log-opts=HEAD --redact=100 --no-banner .
-      - name: Apply exact Horizon patches and reconstruct Cafe dependencies
+      - name: Reconstruct the verified 0.7.0 rollback build inputs
+        id: rollback
         run: |
+          rollback="$RUNNER_TEMP/wiiu-rollback"
+          git worktree add --detach "$rollback" 037cf5618afd75497416917ca8ade1a8eb823c60
+          cd "$rollback"
           trust=(--allow-unsigned)
           if test -f catalog/releases-v2.sig; then
             trust=(--signature catalog/releases-v2.sig --public-key catalog/catalog-public.der)
@@ -64,9 +68,27 @@ jobs:
           "${builder[@]}" check-source
           "${builder[@]}" prepare-overlays
           "${builder[@]}" --offline check-source
-          "${builder[@]}" --offline prepare-overlays
-      - name: Stage public source releases
+          overlays=$("${builder[@]}" --offline prepare-overlays)
+          printf 'overlays=%s\n' "$overlays" >> "$GITHUB_OUTPUT"
+      - name: Assemble the pinned hosted Nightly twice
+        env:
+          CAFE_INPUTS: ${{ steps.rollback.outputs.overlays }}
         run: |
+          nightly="$RUNNER_TEMP/horizon-nightly"
+          pin=$(python3 -c 'import json; print(json.load(open("catalog/hosted-nightly-2026-11-20.json"))["upstream"]["commit"])')
+          git init --quiet "$nightly"
+          git -C "$nightly" fetch --quiet --depth=1 --no-tags --no-recurse-submodules \
+            https://github.com/horizon-rust/horizon.git "$pin"
+          git -C "$nightly" checkout --quiet --detach FETCH_HEAD
+          for lane in a b; do
+            python3 -B wiiu/builder/build.py assemble-hosted-nightly \
+              --source "$nightly" --inputs "$CAFE_INPUTS" --output "$RUNNER_TEMP/nightly-$lane"
+          done
+          cmp "$RUNNER_TEMP/nightly-a/nightly-source-record.json" "$RUNNER_TEMP/nightly-b/nightly-source-record.json"
+          cmp "$RUNNER_TEMP/nightly-a/Cargo.lock" "$RUNNER_TEMP/nightly-b/Cargo.lock"
+      - name: Stage immutable 0.7.0 source releases
+        run: |
+          cd "$RUNNER_TEMP/wiiu-rollback"
           revision="$(git rev-parse HEAD)"
           output="$RUNNER_TEMP/source-candidates"
           python3 -B tools/prepare_release.py builder 0.6.0 --revision "$revision" --output "$output"
