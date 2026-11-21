@@ -5,3 +5,6 @@
 3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62742
 3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62743
 3c0d7017d90a0a96a584643435906a3e00db9b5d:patches/69fab597a6f0e8a6ce524d38d1b73e599e343034/0001-cafe-platform.patch:generic-api-key:62744
+
+# SHA-256 of the OAuth Rust source in the hosted input inventory.
+e3d9952b1428a1ee601878db3a96065df55c6437:catalog/hosted-v3.json:generic-api-key:28

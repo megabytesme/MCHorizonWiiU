@@ -16,7 +16,7 @@ import native
 import releases
 import source
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 MIN_BUILD_SPACE = 8 * 1024**3
 MIN_RESOURCE_SPACE = 3 * 1024**3
 
@@ -72,7 +72,7 @@ def check_source(assembly, recipe, recipe_hash):
     hosted = native.hosted_inputs(recipe, recipe_hash)
     patch = native.public_workspace_patch(recipe)
     with tempfile.TemporaryDirectory(prefix="wiiu-hosted-check-", dir=assembly.parent) as scratch:
-        return native.stage_source(Path(scratch), workspace, recipe["native"]["tree"], patch, hosted, recipe)[1]
+        return native.stage_source(Path(scratch), workspace, recipe["native"]["tree"], patch, hosted)[1]
 
 
 def prepare_dependencies(assembly, recipe, recipe_hash, inputs, offline):
@@ -82,7 +82,7 @@ def prepare_dependencies(assembly, recipe, recipe_hash, inputs, offline):
     bridge["lock"] = hosted[2][native.HOSTED_LOCK]
     with tempfile.TemporaryDirectory(prefix="wiiu-fetch-", dir=assembly.parent) as scratch:
         directory = Path(scratch)
-        staged, _ = native.stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
+        staged, _ = native.stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
         manifest = native.write_cargo_inputs(directory, staged, inputs, lock, bridge)
         cargo = tools["files"]["cargo"]["path"]
         command = [cargo, "+nightly", "fetch", "--locked", "--target", core.TARGET,
@@ -144,8 +144,8 @@ def add_selection(parser):
     parser.add_argument("--allow-unsigned", action="store_true", help="use the checked-in development catalog")
     parser.add_argument("--signature", type=Path)
     parser.add_argument("--public-key", type=Path, help="publisher public key obtained from a trusted release")
-    parser.add_argument("--client", default="0.6.0")
-    parser.add_argument("--patch", default="0.3.1")
+    parser.add_argument("--client", default="0.7.0")
+    parser.add_argument("--patch", default="0.4.0")
     parser.add_argument("--toolchain", default="1.0.0")
     parser.add_argument("--channel", choices=releases.CHANNELS, default="development")
 
@@ -168,12 +168,16 @@ def selection(args):
     for kind in releases.KINDS:
         record = catalog["releases"][kind][rule[kind]]
         for name, artifact in record["artifacts"].items():
-            if kind == "builder" and name == "sources" and args.signature:
+            if kind == "builder" and name == "sources":
                 releases.verify_source_inventory(artifact)
             elif "commit" in artifact:
                 releases.verify_artifact(artifact)
     recipe, fingerprint = source.read_recipe(source.MANIFEST)
-    hosted, _, _ = native.hosted_inputs(recipe, fingerprint)
+    hosted, hosted_hash, _ = native.hosted_inputs(recipe, fingerprint)
+    patch_artifacts = catalog["releases"]["patch"][rule["patch"]]["artifacts"]
+    if (patch_artifacts["base-recipe"]["sha256"] != fingerprint
+            or patch_artifacts["hosted-recipe"]["sha256"] != hosted_hash):
+        raise ValueError("local recipes differ from the selected patch release")
     if (recipe["upstream"]["commit"], recipe["toolchain"], hosted["hosted_client"],
         hosted["hosted_patch"], hosted["builder"]) != (
         rule["upstream"], rule["toolchain"], rule["client"], rule["patch"], rule["builder"]

@@ -31,8 +31,12 @@ extern "C" {
     fn shell_release();
     #[cfg(horizon_wiiu_hosted)]
     fn shell_destroy_view();
+    #[cfg(horizon_wiiu_native_mcp)]
+    fn horizon_night_mcp_tick(on_home: bool) -> bool;
     #[cfg(horizon_wiiu_hosted)]
     fn horizon_swkbd_request(initial: *const u16, max: i32) -> i32;
+    #[cfg(horizon_wiiu_hosted)]
+    fn horizon_swkbd_request_private(max: i32) -> i32;
     #[cfg(horizon_wiiu_hosted)]
     fn horizon_swkbd_take_result(text: *mut u8, capacity: usize, length: *mut usize) -> i32;
     #[cfg(horizon_wiiu_hosted)]
@@ -179,12 +183,20 @@ extern "C" fn horizon_pregame_run() -> i32 {
                 if core::mem::take(&mut keyboard) {
                     unsafe { horizon_swkbd_close() };
                 }
+                #[cfg(horizon_wiiu_native_mcp)]
+                unsafe {
+                    horizon_night_mcp_tick(false)
+                };
                 launcher.focus(false);
                 displayed = None;
                 unsafe { shell_release() };
                 continue;
             }
             _ => {
+                #[cfg(horizon_wiiu_native_mcp)]
+                unsafe {
+                    horizon_night_mcp_tick(false)
+                };
                 launcher.focus(false);
                 displayed = None;
                 continue;
@@ -214,6 +226,13 @@ extern "C" fn horizon_pregame_run() -> i32 {
             trace(c"game.returned_foreground");
             continue;
         };
+        #[cfg(horizon_wiiu_hosted)]
+        if frame % 8 == 0 && !keyboard {
+            let menu = crate::hosted::local_menu(local_wire::TICK, 0, "");
+            if menu.mode != local_wire::NO_UPDATE {
+                launcher.install_local_menu(menu);
+            }
+        }
         let mut samples = [Sample::default(); 16];
         let count = unsafe { shell_poll_input(samples.as_mut_ptr()) };
         #[cfg(horizon_wiiu_hosted)]
@@ -252,7 +271,11 @@ extern "C" fn horizon_pregame_run() -> i32 {
                             *slot = unit;
                         }
                         keyboard = unsafe {
-                            horizon_swkbd_request(initial.as_ptr(), i32::from(input_limit))
+                            if menu.mode & local_wire::PRIVATE_INPUT != 0 {
+                                horizon_swkbd_request_private(i32::from(input_limit))
+                            } else {
+                                horizon_swkbd_request(initial.as_ptr(), i32::from(input_limit))
+                            }
                         } == 0;
                         launcher.input_lost();
                         if !keyboard {
@@ -294,9 +317,18 @@ extern "C" fn horizon_pregame_run() -> i32 {
                     0,
                     input.unwrap_or(""),
                 ));
+                // Clear the outbound keyboard buffer even when the request
+                // was cancelled or the system returned invalid UTF-8.
+                for byte in &mut text {
+                    unsafe { core::ptr::write_volatile(byte, 0) };
+                }
             }
         }
 
+        #[cfg(horizon_wiiu_native_mcp)]
+        if unsafe { horizon_night_mcp_tick(launcher.view().page == Page::Home) } {
+            launcher.dispatch(Action::Play);
+        }
         let view = launcher.view();
         if view.page == Page::Exiting {
             break;
@@ -339,9 +371,10 @@ extern "C" fn horizon_pregame_run() -> i32 {
 
 fn finish(launcher: &mut Launcher<'_, impl crate::session::SessionFactory>, code: i32) -> i32 {
     #[cfg(horizon_wiiu_hosted)]
-    unsafe {
-        horizon_swkbd_close()
-    };
+    {
+        unsafe { horizon_swkbd_close() };
+        crate::hosted::local_menu(local_wire::SHUTDOWN, 0, "");
+    }
     let result = launcher.close();
     if result.is_err() {
         trace(c"session.exit_failed");

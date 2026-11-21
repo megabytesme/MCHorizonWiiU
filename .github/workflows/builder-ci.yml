@@ -69,7 +69,7 @@ jobs:
         run: |
           revision="$(git rev-parse HEAD)"
           output="$RUNNER_TEMP/source-candidates"
-          python3 -B tools/prepare_release.py builder 0.5.0 --revision "$revision" --output "$output"
-          python3 -B tools/prepare_release.py client 0.6.0 --revision "$revision" --output "$output"
-          python3 -B tools/prepare_release.py patch 0.3.1 --revision "$revision" --output "$output"
+          python3 -B tools/prepare_release.py builder 0.6.0 --revision "$revision" --output "$output"
+          python3 -B tools/prepare_release.py client 0.7.0 --revision "$revision" --output "$output"
+          python3 -B tools/prepare_release.py patch 0.4.0 --revision "$revision" --output "$output"
           python3 -B tools/prepare_release.py toolchain 1.0.0 --revision "$revision" --output "$output"

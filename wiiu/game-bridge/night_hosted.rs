@@ -4,10 +4,15 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{CafeLoadingStatus, CafeRunOutcome, Gx2LoadingPresenter, LoadingHost, CAFE_APP_ROOT};
 
+#[path = "night_mcp.rs"]
+pub(super) mod mcp;
+
 #[path = "local_wire.rs"]
 mod local_wire;
 #[path = "night_menu.rs"]
 mod night_menu;
+#[path = "night_online.rs"]
+mod night_online;
 #[path = "night_store.rs"]
 mod night_store;
 
@@ -21,7 +26,12 @@ const OS_SAVE_FAILED: i32 = 4;
 struct NativeFiles;
 
 impl night_menu::GameFiles for NativeFiles {
-    fn world(&self, path: &Path, identity: &str) -> Option<night_menu::World> {
+    fn world(
+        &self,
+        path: &Path,
+        identity: &str,
+        online_uuid: Option<u128>,
+    ) -> Option<night_menu::World> {
         use horizon_client::save::{self, Level, SessionLock};
         let Some(level) = Level::read_summary(path) else {
             return Some(night_menu::World {
@@ -36,8 +46,12 @@ impl night_menu::GameFiles for NativeFiles {
             Some("Incompatible save version")
         } else if save::needs_file_fixes(path) || save::downgraded_from(path).is_some() {
             Some("Open in the game menu for upgrade or backup")
-        } else if !horizon_client::game::hosted_world_profile_matches(level.player_uuid, identity) {
-            Some("Select the world's original offline identity")
+        } else if !horizon_client::game::hosted_world_profile_matches(
+            level.player_uuid,
+            identity,
+            online_uuid,
+        ) {
+            Some("Select the world's owner profile")
         } else {
             None
         };
@@ -103,31 +117,72 @@ pub unsafe extern "C" fn horizon_night_local(
     let Ok(input) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(input, len) }) else {
         return;
     };
-    let mut service = local_service().lock().unwrap_or_else(|e| e.into_inner());
-    if command != 0 {
-        service.command(command, index, input);
+    if command == local_wire::SHUTDOWN {
+        local_service()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutdown();
+        mcp::horizon_night_mcp_shutdown();
+        return;
     }
-    unsafe { output.write(service.model()) };
+    let agent_menu = command == local_wire::OPEN_AGENT || mcp::menu_open();
+    let mut service = local_service().lock().unwrap_or_else(|e| e.into_inner());
+    if command == local_wire::TICK {
+        if !service.tick() && !agent_menu {
+            let mut unchanged = local_wire::LocalMenu::default();
+            unchanged.mode = local_wire::NO_UPDATE;
+            unsafe { output.write(unchanged) };
+            return;
+        }
+    } else if command != 0 && !agent_menu {
+        let time = std::time::Instant::now();
+        service.command(command, index, input);
+        if option_env!("HORIZON_NIGHT_ACCOUNT_FIXTURE").is_some()
+            && command == local_wire::TEXT_ACCEPTED
+        {
+            let ms = time.elapsed().as_millis().min(u32::MAX as u128) as u32;
+            unsafe {
+                super::OSReport(
+                    c"Horizon Night fixture keyboard operation: %u ms\n".as_ptr(),
+                    ms,
+                );
+            }
+        }
+    }
+    let model = service.model();
+    drop(service);
+    let model = if agent_menu {
+        mcp::local_menu(command, index, model).unwrap_or(model)
+    } else {
+        model
+    };
+    unsafe { output.write(model) };
 }
 
 /// The RPX calls this synchronously on the foreground thread. The caller has
 /// released the Night HUD and lends the same ProcUI pump and WHB context.
 #[no_mangle]
 pub extern "C" fn horizon_hosted_game_run() -> i32 {
-    let result = local_service()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .launch();
-    let launch = match result {
-        Ok(launch) => launch,
-        Err(code) => return i32::from(code),
+    let launch = match mcp::take_launch() {
+        Ok(Some(launch)) => launch,
+        Ok(None) => match local_service()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .launch()
+        {
+            Ok(launch) => launch,
+            Err(code) => return i32::from(code),
+        },
+        Err(()) => return FAILED,
     };
+    let _registration = mcp::prepare_game();
     if std::env::set_current_dir(&launch.game).is_err() {
         return RESOURCES;
     }
     horizon_client::spans::startup::enable_log_sink();
     horizon_client_platform::cafe_memory::report("hosted.before_game");
     let result = run(launch);
+    mcp::withdraw();
     if let Err(error) = std::env::set_current_dir(CAFE_APP_ROOT) {
         log::error!("Cafe did not restore the launcher working directory: {error}");
     }
@@ -164,6 +219,13 @@ fn run(launch: night_menu::Launch) -> i32 {
         &mut host,
         options,
         [!launch.swap_ab, !launch.swap_xy],
+        launch.identity.as_ref().map(|identity| {
+            horizon_client::auth::AuthSession::new(
+                &identity.name,
+                identity.id.0,
+                identity.access_token(),
+            )
+        }),
     );
     if host.hosted_exit_save_failed {
         return OS_SAVE_FAILED;

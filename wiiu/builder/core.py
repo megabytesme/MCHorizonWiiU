@@ -242,10 +242,29 @@ def launcher_packages(theme, fixture):
     return [stem + ".rpx", stem + ".wuhb"]
 
 
+def standalone_rust_archives(rustc, recipe):
+    from native import inventory_digest, toolchain_spec
+
+    libraries = Path(subprocess.check_output(
+        [rustc, "--target", TARGET, "--print", "target-libdir"], text=True,
+    ).strip())
+    expected = toolchain_spec(recipe)["toolchain"]["target_library_inventory_sha256"]
+    if inventory_digest(libraries) != expected:
+        raise ValueError("standalone Cafe Rust libraries differ from the toolchain pin")
+    archives = []
+    for name in ("core", "compiler_builtins"):
+        matches = list(libraries.glob(f"lib{name}-*.rlib"))
+        if len(matches) != 1:
+            raise ValueError(f"expected one verified Cafe {name} archive")
+        archives.append(matches[0])
+    return archives
+
+
 def build(recipe, recipe_hash, build_root, fixture=False):
     theme = "night"
     client = client_input(recipe)
     toolchain = inspect_toolchain()
+    libcore, builtins = standalone_rust_archives(toolchain["files"]["rustc"]["path"], recipe)
     build_settings = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC"}
     ignored_flags = {"CC", "CFLAGS", "CPPFLAGS", "LDFLAGS", "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE"}
     env = {name: value for name, value in os.environ.items() if name not in ignored_flags}
@@ -273,6 +292,9 @@ def build(recipe, recipe_hash, build_root, fixture=False):
         configure = [
             tools["powerpc-eabi-cmake"], "-S", str(ROOT / "wiiu/pregame"), "-B", str(directory),
             "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+            f"-DCMAKE_PROJECT_horizon_wiiu_pregame_INCLUDE={ROOT / 'wiiu/builder/standalone_night.cmake'}",
+            f"-DHORIZON_CAFE_LIBCORE={libcore}",
+            f"-DHORIZON_CAFE_BUILTINS={builtins}",
             f"-DHORIZON_WIIU_PREGAME_FIXTURE={'ON' if fixture else 'OFF'}",
             f'-DCMAKE_MAKE_PROGRAM={tools["ninja"]}',
             f'-DCAFE_RUSTC={tools["rustc"]}',

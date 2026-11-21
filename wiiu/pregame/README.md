@@ -69,24 +69,27 @@ when saving fails and holds the same session. It returns to Play after the
 driver quiesces and drops. The Cafe fixture exercises this protocol with a mock session. See the [session contract](CORE.md) and
 [game bridge changes](INTEGRATION.md).
 
-The account traits cover offline name validation, device-code initiate,
-poll and cancel, account listing and selection, Minecraft entitlement,
-protected refresh storage and sign-out. UI receives a verification URL,
-user code and polling timing. The provider retains private polling credentials
-and identities through opaque in-memory types. Launch and profile records
-carry identifiers and public display fields. Keep sign-in session-only if
-secure persistence is unavailable. Microsoft/Xbox/Minecraft transport and
-account, world and server menus remain future work. CafeOS protected storage
-support is unverified. [Account contracts](src/accounts.rs).
+On an integrated build, open **Profiles → Microsoft accounts**. Use **Sign in
+with Microsoft**, then open the displayed Microsoft page on another device.
+Night polls on the Wii U, checks Xbox and Minecraft Java entitlements and
+loads the verified profile. Choose PIN protection, no PIN, or this session
+only when saving. Select the account to play as it or open the profile
+to change protection or sign out. Returning from Horizon keeps the vault
+unlocked for this app run. Use **Use offline profile** to return to the
+original offline identity. The two profile lists are independent.
 
-The future app host would own one MCP listener and its authenticated PC
-pairing. Expose launcher tools in the menu and publish existing gameplay tools
-with a session-scoped dispatch handle only while a game is live. Withdraw these
-tools, reject stale handles and drain requests before destroying the session.
-Preserve the physically verified LAN game MCP behavior and validate pairing
-persistence across restarts. Standard MCP HTTP and an optional Aroma discovery
-companion can follow. Normal launches must work on their own. This prototype
-opens no endpoint.
+Microsoft refresh tokens live in per-UUID vaults under
+`wiiu/apps/HorizonWiiU/private/microsoft` on the SD card. Night stores public
+profile metadata separately and passes the verified Minecraft session to
+the game in memory. A saved world opens through the hosted game under the
+same UUID that owns it. A locked or revoked selected account must be
+unlocked or signed in again, or the player can explicitly switch back to
+offline play. [Vault formats and limitations](../security/README.md).
+
+The combined host owns one HTTPS listener across Night, gameplay and save.
+[Native Agent Control](../../docs/mcp/README.md) uses a separate vault
+domain and the same local GamePad authorization controls after returning to
+Night. The standalone Night fixture has no network service.
 
 The Cemu fixture verifies emulated VPAD and both displays through guest
 `coreinit.exit(0)`. The emulator process can stay open after the guest exits.

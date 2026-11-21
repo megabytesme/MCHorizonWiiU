@@ -4,7 +4,7 @@ MCHorizonWiiU is an unofficial Nintendo Wii U port of [Horizon](https://github.c
 
 **Current channel: development.** Horizon Night is the on-console launcher. It manages local offline profiles, prepared installations, saved-world selection, server bookmarks, and controller preferences. The combined RPX enters the native game and returns to Night in the same process. Display and input use the Wii U's TV and GamePad support through WUT and native GX2. The renderer is still under development. See the [GX2 checkpoint](wiiu/RENDERER_CHECKPOINT.md) and the [feature matrix](docs/launcher-features.md) for coverage.
 
-The public baseline uses offline identities and retains its existing opt-in LAN Agent Control pairing with a local stdio MCP bridge. Microsoft sign-in, entitlement checks, refresh-token storage and native HTTP MCP pairing belong to separate reviews. Keep the experimental Cemu control endpoint isolated. See the [Agent Control notes](wiiu/game-bridge/agent-control.md).
+Horizon Night supports offline profiles and Microsoft device sign-in for accounts that own Minecraft: Java Edition. Account refresh credentials are stored per profile with PIN protection by default. Night also hosts its own [HTTPS Agent Control endpoint](docs/mcp/README.md) with local GamePad approval. The original [encrypted LAN control transport](wiiu/game-bridge/agent-control.md) remains available for diagnostics.
 
 ## Build and install
 
@@ -16,7 +16,7 @@ The builder is a desktop packaging tool. Gameplay and local launcher operations 
 
 ## Validation
 
-The [Night validation record](docs/night-local-validation.md) describes exact package hashes and Cemu results from the original baseline. The [migration build record](docs/releases/client-v0.6.0.md) tracks the sanitized source candidate separately. **Reopening a saved world on physical Wii U remains a release blocker.** Earlier hardware observations and the Cemu save cycle are documented in the [hosted validation record](docs/hosted-validation.md).
+The [unified candidate validation](docs/releases/client-v0.7.0.md) tracks the combined application. The [Night validation record](docs/night-local-validation.md) describes exact package hashes and Cemu results from the original baseline. The [migration build record](docs/releases/client-v0.6.0.md) tracks the sanitized source candidate separately. **Reopening a saved world on physical Wii U remains a release blocker.** Earlier hardware observations and the Cemu save cycle are documented in the [hosted validation record](docs/hosted-validation.md).
 
 ## Development
 

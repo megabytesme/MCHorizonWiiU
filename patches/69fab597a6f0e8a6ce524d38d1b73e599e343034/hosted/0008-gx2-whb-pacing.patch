@@ -1,0 +1,186 @@
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 38c772c884869af34cab30de59b3f474e1b9542d..46c032d27ebf13a5ce4183a1e37ea478feccaacf 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -42,6 +42,8 @@ unsafe extern "C" {
+     ) -> i32;
+     fn horizon_swkbd_close();
+     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
++    fn horizon_loading_host_completed_presents() -> u32;
++    fn horizon_gx2_profile_legacy_pacing() -> bool;
+ }
+ 
+ /// Status returned to the WUT entry point: 0 finished, 1 title is ready but
+@@ -917,6 +919,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         let mut hosted_fault_close = false;
+         let mut hosted_confirm_held = false;
+         let mut hosted_cancel_held = true;
++        let legacy_pacing = unsafe { horizon_gx2_profile_legacy_pacing() };
+         loop {
+             use horizon_client_platform::cafe_profile::{self, Phase, Span, Stage};
+             let _capture = cafe_profile::Frame::begin();
+@@ -1588,6 +1591,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 );
+             }
+             let mut world_start_failure = None;
++            let previous_present = unsafe { horizon_loading_host_completed_presents() };
+             let draw_result = if let Some(game) = &mut game_session {
+                 self.sync_game_viewport(game);
+                 // Game can consume the pending entry while reporting an error.
+@@ -1727,11 +1731,13 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 frames_since_progress_report = 0;
+             }
+ 
+-            // Bound the software loop to the display cadence while honoring
+-            // host exit. The title callback itself synchronously presents TV
+-            // and DRC with WHB's own frame begin/finish calls.
++            // A successful WHB present already paces the next frame at
++            // the display. Yield when no output was accepted, including
++            // suspended or temporarily unrenderable frames.
++            let presented = unsafe { horizon_loading_host_completed_presents() } != previous_present;
+             let delay = match self.control.get() {
+                 EventLoopControl::Exit => Duration::ZERO,
++                EventLoopControl::Poll if presented && !legacy_pacing => Duration::ZERO,
+                 EventLoopControl::Poll => Duration::from_millis(16),
+                 EventLoopControl::WaitUntil(deadline) => {
+                     deadline.saturating_duration_since(Instant::now())
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 0f68927b173f463a88349b27138647e1ea4f57b0..71e60610b69d7e129d677a99889d413698d9f9fc 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -30,7 +30,9 @@ static ProfileFrame ring[CAPACITY], current;
+ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+-static bool recording;
++static bool recording, legacy_pacing;
++static uint32_t phase_frames[8];
++static void flush_to(const char *path, const char *temporary);
+ 
+ static uint32_t ticks(uint64_t begin, uint64_t end)
+ {
+@@ -42,12 +44,19 @@ void horizon_gx2_profile_init(void)
+ {
+    FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
+    if (!marker) return;
++   // A leading '1' opts into the old Poll delay for matched capture runs.
++   legacy_pacing = fgetc(marker) == '1';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+ }
+ 
++bool horizon_gx2_profile_legacy_pacing(void)
++{
++   return legacy_pacing;
++}
++
+ bool horizon_gx2_profile_begin(uint32_t phase)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+@@ -109,6 +118,17 @@ void horizon_gx2_profile_finish(void)
+          current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
+    ring[total++ % CAPACITY] = current;
+    recording = false;
++
++   // One bounded checkpoint per phase survives a forced emulator stop.
++   // Skip the next start-to-start interval so the export I/O is excluded.
++   if (current.phase < 8 && current.counters[GX2_PROFILE_PRESENTED] &&
++       ++phase_frames[current.phase] == 300) {
++      char path[sizeof(ROOT) + 36], temporary[sizeof(path)];
++      snprintf(path, sizeof(path), ROOT "gx2-profile-phase-%u.hzp", current.phase);
++      snprintf(temporary, sizeof(temporary), ROOT "gx2-profile-phase-%u.tmp", current.phase);
++      flush_to(path, temporary);
++      previous_phase = 0;
++   }
+ }
+ 
+ static ProfileHeader header(void)
+@@ -136,14 +156,14 @@ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes)
+    return (uint32_t)(dst - (uint8_t *)out);
+ }
+ 
+-void horizon_gx2_profile_flush(void)
++static void flush_to(const char *path, const char *temporary)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire) || !total) return;
+    recording = false;
+    const ProfileHeader info = header();
+    const uint32_t first = (total - info.count) % CAPACITY;
+    const uint32_t tail = info.count < CAPACITY - first ? info.count : CAPACITY - first;
+-   FILE *file = fopen(CAPTURE ".tmp", "wb");
++   FILE *file = fopen(temporary, "wb");
+    if (!file) {
+       OSReport("Horizon GX2 capture open failed\n");
+       return;
+@@ -152,9 +172,14 @@ void horizon_gx2_profile_flush(void)
+       fwrite(&ring[first], sizeof(ProfileFrame), tail, file) == tail &&
+       fwrite(ring, sizeof(ProfileFrame), info.count - tail, file) == info.count - tail;
+    const bool closed = fclose(file) == 0;
+-   if (!written || !closed || rename(CAPTURE ".tmp", CAPTURE) != 0) {
++   if (!written || !closed || rename(temporary, path) != 0) {
+       OSReport("Horizon GX2 capture write failed\n");
+       return;
+    }
+-   OSReport("Horizon GX2 capture complete: frames=%u total=%u\n", info.count, total);
++   OSReport("Horizon GX2 capture complete: frames=%u total=%u path=%s\n", info.count, total, path);
++}
++
++void horizon_gx2_profile_flush(void)
++{
++   flush_to(CAPTURE, CAPTURE ".tmp");
+ }
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 658aceb32919679cd69bc51b4cdc8578a409c770..72b7d22921e5196a914ecd83309d831909d188be 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -14,6 +14,7 @@ enum {
+ };
+ 
+ void horizon_gx2_profile_init(void);
++bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ee7d89ac693850d2daddbc15050dd6aa2e06e1f0..64bb56839471ae0faf30aa885391ab7e2e9dd8b8 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -111,6 +111,13 @@ cleanup:
+    return result;
+ }
+ 
++// Only the rendering thread calls these functions.
++static uint32_t completed_presents;
++uint32_t horizon_loading_host_completed_presents(void)
++{
++   return completed_presents;
++}
++
+ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context)
+ {
+    const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+@@ -150,6 +157,9 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ 
+    WHBGfxFinishRender();
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+-   if (result == 0) horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
++   if (result == 0) {
++      ++completed_presents;
++      horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
++   }
+    return result;
+ }
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index ca4ea12274057e2dbc839960957fce185c352a2e..96629d0ca20ba5608a60b8d9c7152b4cf5f689f2 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -8,6 +8,7 @@ typedef int (*HorizonLoadingDrawTarget)(void *context, uint32_t target,
+ /* Begin a WHB frame, bind/clear TV then DRC, call draw for each while its GX2
+  * target is active, and finish both. This is synchronous on the GX2 thread. */
+ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context);
++uint32_t horizon_loading_host_completed_presents(void);
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4]);
+ 

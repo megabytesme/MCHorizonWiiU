@@ -17,7 +17,7 @@ if(NOT TARGET horizon_gx2_hud)
 endif()
 get_target_property(hud_dir horizon_gx2_hud BINARY_DIR)
 if(TARGET horizon_wiiu_loading_app)
-   set(hosted_cfg --cfg horizon_wiiu_hosted)
+   set(hosted_cfg --cfg horizon_wiiu_hosted --cfg horizon_wiiu_native_mcp)
 endif()
 
 set(package_name HorizonLauncher-Night)
@@ -38,6 +38,7 @@ set(shell_object "${CMAKE_CURRENT_BINARY_DIR}/shell.o")
 add_custom_command(OUTPUT "${shell_object}"
    COMMAND "${CMAKE_COMMAND}" -E env  "CARGO_PKG_VERSION=${launcher_version}" "${CAFE_RUSTC}" --target powerpc-nintendo-cafe --edition 2021
       --crate-name horizon_wiiu_pregame --crate-type lib --emit=obj --cfg horizon_wiiu_cafe ${fixture_cfg} ${hosted_cfg}
+      "--remap-path-prefix=${CMAKE_CURRENT_SOURCE_DIR}=/horizon-port/wiiu/pregame"
       -C opt-level=s -C panic=abort -C codegen-units=1 -D warnings
       -o "${shell_object}" "${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs"
    DEPENDS Cargo.toml src/lib.rs src/accounts.rs src/config.rs src/session.rs src/launcher.rs src/cafe.rs src/canvas.rs src/mock.rs src/hosted.rs src/local_wire.rs "${CAFE_RUSTC}" ${theme_inputs}

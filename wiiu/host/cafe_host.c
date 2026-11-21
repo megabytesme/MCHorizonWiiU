@@ -11,6 +11,7 @@
 #include <whb/gfx.h>
 #ifdef HORIZON_WIIU_HOSTED
 #include <nn/ac.h>
+#include "gx2_profile.h"
 #endif
 
 enum { VIEW_WIDTH = 1280, VIEW_HEIGHT = 720, VPAD_CAPACITY = 16 };
@@ -119,10 +120,15 @@ static uint32_t map_buttons(uint32_t buttons)
 
 int32_t shell_poll_input(LauncherSample *samples)
 {
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_begin(GX2_PROFILE_NIGHT);
+   const uint64_t input_stamp = horizon_gx2_profile_stamp();
+#endif
    VPADStatus batch[VPAD_CAPACITY];
    VPADReadError error = VPAD_READ_SUCCESS;
    const int32_t count = VPADRead(VPAD_CHAN_0, batch, VPAD_CAPACITY, &error);
 #ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_INPUT, input_stamp);
    if (horizon_swkbd_is_open()) {
       /* Back out even if the system keyboard accepts no input in the emulator. */
       if (error == VPAD_READ_SUCCESS && count > 0 && (batch[0].trigger & VPAD_BUTTON_MINUS)) {
@@ -193,20 +199,41 @@ bool shell_present(const HorizonHudVertex *tv_vertices, uint32_t tv_count, uint3
    if (!tv || !drc || !tv->surface.image || !drc->surface.image)
       return false;
 
+#ifdef HORIZON_WIIU_HOSTED
+   uint64_t stamp = horizon_gx2_profile_stamp();
+#endif
    WHBGfxBeginRender();
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
+   stamp = horizon_gx2_profile_stamp();
+#endif
    WHBGfxBeginRenderTV();
    const bool tv_ok = draw(tv_vertices, tv_count, tv_color, tv, 0);
 #ifdef HORIZON_WIIU_HOSTED
    horizon_swkbd_draw(0);
 #endif
    WHBGfxFinishRenderTV();
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
+   stamp = horizon_gx2_profile_stamp();
+#endif
    WHBGfxBeginRenderDRC();
    const bool drc_ok = draw(drc_vertices, drc_count, drc_color, drc, 1);
 #ifdef HORIZON_WIIU_HOSTED
    horizon_swkbd_draw(1);
 #endif
    WHBGfxFinishRenderDRC();
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+   stamp = horizon_gx2_profile_stamp();
+#endif
    WHBGfxFinishRender();
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+   if (tv_ok && drc_ok) horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+   horizon_gx2_profile_count(GX2_PROFILE_HUD_VERTICES, tv_count + drc_count);
+   horizon_gx2_profile_finish();
+#endif
    return tv_ok && drc_ok;
 }
 
@@ -225,8 +252,12 @@ int main(void)
 
 #ifdef HORIZON_WIIU_HOSTED
    horizon_wiiu_memory_report_display_surfaces();
+   horizon_gx2_profile_init();
 #endif
    const int32_t result = horizon_pregame_run();
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_flush();
+#endif
    horizon_gx2_hud_destroy(view);
    shell_trace("view.released");
    WHBGfxShutdown();

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from core import (ROOT, TARGET, artifacts, digest, directory_inventory, file_digest,
                   client_input, fields, git, inspect_toolchain, isolated, parse_json, pattern, program, run,
                   write_record, discard_unverified_outputs)
-from source import apply_patch, checked_bytes, staged_tree, verify_assembly
+from source import SHA1, SHA256, apply_patch, checked_bytes, relative, staged_tree, verify_assembly
 
 OVERLAYS = ("winit", "ring", "png", "ureq")
 INPUTS_FILE = "catalog/toolchain-cafe-v1.json"
@@ -19,14 +19,9 @@ BRIDGE_FILES = {"lock": "wiiu/game-bridge/offline/Cargo.lock",
                 "tv_size": "wiiu/game-bridge/offline/winit_tv_size.c"}
 GAME_PACKAGES = ["HorizonWiiU-Game.rpx", "HorizonWiiU-Game.wuhb"]
 HOSTED_PACKAGES = ["HorizonWiiU.rpx", "HorizonWiiU.wuhb"]
-HOSTED_SPEC = "catalog/hosted-v2.json"
-HOSTED_LOCAL_FILES = {
-    "wiiu/game-bridge/night_hosted.rs": "hosted.rs",
-    "wiiu/game-bridge/night_store.rs": "night_store.rs",
-    "wiiu/game-bridge/night_menu.rs": "night_menu.rs",
-    "wiiu/pregame/src/local_wire.rs": "local_wire.rs",
-}
-HOSTED_LOCK = "wiiu/game-bridge/offline/night.Cargo.lock"
+HOSTED_SPEC = "catalog/hosted-v3.json"
+HOSTED_LOCK = "wiiu/game-bridge/offline/unified.Cargo.lock"
+
 
 
 def toolchain_spec(recipe):
@@ -48,22 +43,16 @@ def decode_workspace_patch(patch):
     return patch.replace(b"\r\n", b"\n")
 
 
-def hosted_patches(recipe):
-    folder = f'patches/{recipe["upstream"]["commit"]}/hosted'
-    return (f"{folder}/0001-cafe-hosted-session.patch", "wiiu/game-bridge/hosted.patch",
-            f"{folder}/0002-night-launch-options.patch", "wiiu/game-bridge/night-platform.patch")
-
-
 def hosted_inputs(recipe, recipe_hash):
     payload = (ROOT / HOSTED_SPEC).read_bytes()
     spec = parse_json(payload)
     fields(spec, "schema", "hosted_client", "hosted_patch", "builder", "base_recipe_sha256", "input_tree",
-           "output_tree", "resource_pin", "files")
-    if type(spec["schema"]) is not int or spec["schema"] != 2 or spec["base_recipe_sha256"] != recipe_hash:
+           "output_tree", "resource_pin", "series", "overlay", "files")
+    if type(spec["schema"]) is not int or spec["schema"] != 3 or spec["base_recipe_sha256"] != recipe_hash:
         raise ValueError("hosted recipe does not match the standalone pin")
     for name in ("hosted_client", "hosted_patch", "builder"):
         pattern(spec[name], r"\d+\.\d+\.\d+", name)
-    if spec["builder"] != "0.5.0":
+    if spec["builder"] != "0.6.0":
         raise ValueError("incompatible hosted builder version")
     pin = spec["resource_pin"]
     fields(pin, "minecraft", "schema", "client_sha256", "server_sha256", "exporter_sha256")
@@ -71,15 +60,31 @@ def hosted_inputs(recipe, recipe_hash):
     if type(pin["schema"]) is not int or not 1 <= pin["schema"] <= 65535:
         raise ValueError("invalid prepared resource schema")
     for name in ("client_sha256", "server_sha256", "exporter_sha256"):
-        pattern(pin[name], "[0-9a-f]{64}", name)
+        pattern(pin[name], SHA256, name)
     for name in ("input_tree", "output_tree"):
-        pattern(spec[name], "[0-9a-f]{40}", name)
-    files = (*hosted_patches(recipe), *HOSTED_LOCAL_FILES, HOSTED_LOCK)
+        pattern(spec[name], SHA1, name)
+    series = spec["series"]
+    if not isinstance(series, list) or not series:
+        raise ValueError("empty hosted patch series")
+    for step in series:
+        fields(step, "file", "tree")
+        relative(step["file"])
+        pattern(step["tree"], SHA1, "hosted patch result tree")
+    overlay = spec["overlay"]
+    if not isinstance(overlay, dict) or not overlay:
+        raise ValueError("missing port-owned hosted sources")
+    for destination in overlay.values():
+        if not relative(destination).as_posix().startswith((
+            "wiiu/loading_app/src/", "wiiu/security/", "wiiu/microsoft/", "wiiu/mcp/",
+        )):
+            raise ValueError("invalid hosted overlay destination")
+    files = (*(step["file"] for step in series), *overlay, HOSTED_LOCK)
+    if len(set(files)) != len(files) or len(set(overlay.values())) != len(overlay):
+        raise ValueError("duplicate hosted patch or overlay path")
     fields(spec["files"], *files)
     for name in files:
-        pattern(spec["files"][name], "[0-9a-f]{64}", "hosted patch hash")
+        pattern(spec["files"][name], SHA256, "hosted file hash")
     return spec, digest(payload), {name: checked_bytes(ROOT, name, spec["files"][name]) for name in files}
-
 
 
 def inventory_digest(directory):
@@ -135,7 +140,7 @@ def verify_resources(root, manifest):
     return digest(payload)
 
 
-def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=None):
+def stage_source(directory, workspace, release_tree, patch, hosted=None):
     source = directory / "source"
     stamp = directory / "stage.json"
     # A changed cache is rejected. Allocate a new build root to reconstruct it.
@@ -169,12 +174,15 @@ def stage_source(directory, workspace, release_tree, patch, hosted=None, recipe=
             spec, _, files = hosted
             if staged_tree(staged) != spec["input_tree"]:
                 raise ValueError("hosted patch preimage does not match")
-            for name in hosted_patches(recipe):
-                apply_patch(staged, files[name])
-            for name, destination in HOSTED_LOCAL_FILES.items():
-                path = f"wiiu/loading_app/src/{destination}"
-                (staged / path).write_bytes(files[name])
-                git(staged, "add", "--", path)
+            for step in spec["series"]:
+                apply_patch(staged, files[step["file"]])
+                if staged_tree(staged) != step["tree"]:
+                    raise ValueError(f'hosted patch result does not match: {step["file"]}')
+            for name, destination in spec["overlay"].items():
+                path = staged / destination
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(files[name])
+            git(staged, "add", "--", *spec["overlay"].values())
         tree = staged_tree(staged)
         if hosted is not None and tree != hosted[0]["output_tree"]:
             raise ValueError("hosted patch result does not match")
@@ -265,7 +273,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     with build_lock(directory):
         discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
-        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
+        source, staged = stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
         if hosted:
             bridge["lock"] = hosted[2][HOSTED_LOCK]
         manifest = write_cargo_inputs(directory, source, inputs, lock, bridge)
@@ -295,13 +303,20 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
                     "standalone": recipe_hash, "launcher": launcher["files"]}, sort_keys=True).encode()),
             }
             env.update(embedded)
+        cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+        prefixes = (
+            (directory, "/horizon-build"),
+            (ROOT, "/horizon-port"),
+            (cargo_home / "registry", "/cargo/registry"),
+            (Path(sysroot), "/cafe-sysroot"),
+        )
         env.update({
             "RUSTC": commands["rustc"], "CARGO_TARGET_DIR": str(target),
             f"CC_{TARGET}": commands["powerpc-eabi-gcc"],
             "CARGO_ENCODED_RUSTFLAGS": "\x1f".join([
                 "--sysroot", sysroot, "--cfg", 'getrandom_backend="custom"',
                 "--check-cfg=cfg(horizon_wiiu_cemu_global_lock)",
-                f"--remap-path-prefix={directory}=/horizon-build",
+                *(f"--remap-path-prefix={local}={canonical}" for local, canonical in prefixes),
             ]),
         })
         cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
@@ -341,7 +356,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
         pack = [commands["wuhbtool"], str(directory / packages[0]),
                 str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
         run(pack, env)
-        stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted, recipe)
+        stage_source(directory, workspace, recipe["native"]["tree"], patch, hosted)
         result = {
             "schema": 1, "kind": "wiiu-hosted-game-build" if hosted else "wiiu-native-game-build",
             "recipe_sha256": recipe_hash,

@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "../../game-bridge/night_menu.rs"]
 mod night_menu;
+#[path = "../../game-bridge/night_online.rs"]
+mod night_online;
 #[path = "../../game-bridge/night_store.rs"]
 mod night_store;
 
@@ -69,7 +71,7 @@ fn prepare(app: &Path) -> PathBuf {
 struct Game;
 
 impl GameFiles for Game {
-    fn world(&self, path: &Path, identity: &str) -> Option<World> {
+    fn world(&self, path: &Path, identity: &str, _: Option<u128>) -> Option<World> {
         let title = fs::read_to_string(path.join("level.dat")).ok()?;
         Some(World {
             name: title,
@@ -87,6 +89,77 @@ impl GameFiles for Game {
 
 fn open(root: &Scratch) -> LocalService<Game> {
     LocalService::new(root.0.clone(), pin(), Game, &[("Builder", "0.4.0")])
+}
+
+#[test]
+fn cancelling_the_microsoft_prompt_discards_codes_and_late_results() {
+    use horizon_wiiu_microsoft::Provider;
+    let root = Scratch::new();
+    let mut online = night_online::Online::new(&root.0, Provider::for_night(None, true));
+    let mut menu = LocalMenu::default();
+    online.model(&mut menu);
+    let sign_in = menu
+        .rows
+        .iter()
+        .position(|r| r.label.as_str() == "Sign in with Microsoft")
+        .unwrap();
+    online.command(ACTIVATE, sign_in as u8, "");
+    let start = std::time::Instant::now();
+    while !menu.rows.iter().any(|r| r.detail.as_str() == "MOCK-ONLY") {
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        online.tick();
+        menu = LocalMenu::default();
+        online.model(&mut menu);
+        std::thread::yield_now();
+    }
+    assert!(!format!("{menu:?}").contains("fake-device"));
+    online.command(BACK, 0, "");
+    assert!(!online.tick());
+    let mut menu = LocalMenu::default();
+    online.model(&mut menu);
+    assert!(!format!("{menu:?}").contains("MOCK-ONLY"));
+    assert!(online.active().is_none());
+    assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
+}
+
+#[test]
+fn remote_tools_use_the_installed_version_and_enforce_world_ownership() {
+    let root = Scratch::new();
+    prepare(&root.0);
+    let mut service = open(&root);
+    let versions = service
+        .tool("versions", &json!({"installed": true}))
+        .unwrap();
+    assert_eq!(versions[0]["minecraft"], "26.3");
+    assert_eq!(versions[0]["prepared"], true);
+    assert!(service.tool("account_list", &json!({})).is_err());
+    assert!(service
+        .tool_launch(&json!({"world": "../private"}))
+        .is_err());
+
+    let world = root.0.join("saves/Fixture");
+    fs::create_dir_all(&world).unwrap();
+    fs::write(world.join("level.dat"), "Fixture").unwrap();
+    assert_eq!(
+        service
+            .tool_launch(&json!({"world": "Fixture"}))
+            .unwrap()
+            .world
+            .as_deref(),
+        Some("Fixture")
+    );
+    fs::write(world.join("guard"), "").unwrap();
+    assert!(service.tool_launch(&json!({"world": "Fixture"})).is_err());
+}
+
+#[test]
+fn offline_launch_keeps_its_original_identity() {
+    let root = Scratch::new();
+    prepare(&root.0);
+    let mut service = open(&root);
+    assert!(!service.tick());
+    assert!(service.launch().unwrap().identity.is_none());
+    service.shutdown();
 }
 
 fn action(service: &mut LocalService<Game>, label: &str) {

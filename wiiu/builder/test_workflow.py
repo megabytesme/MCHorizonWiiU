@@ -16,7 +16,7 @@ import workflow
 class ReleaseSelectionTests(unittest.TestCase):
     def setUp(self):
         self.catalog, self.payload = releases.read_catalog()
-        self.args = {"builder": "0.5.0", "client": "0.6.0", "patch": "0.3.1",
+        self.args = {"builder": "0.6.0", "client": "0.7.0", "patch": "0.4.0",
                      "toolchain": "1.0.0", "channel": "development"}
 
     def test_exact_compatible_tuple_and_revocation(self):
@@ -27,7 +27,7 @@ class ReleaseSelectionTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "compatible"):
                 releases.resolve(self.catalog, **dict(self.args, **{field: value}))
         revoked = copy.deepcopy(self.catalog)
-        revoked["releases"]["client"]["0.6.0"]["status"] = "revoked"
+        revoked["releases"]["client"]["0.7.0"]["status"] = "revoked"
         with self.assertRaisesRegex(ValueError, "revoked"):
             releases.resolve(revoked, **self.args)
 

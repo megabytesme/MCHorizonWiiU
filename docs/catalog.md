@@ -1,6 +1,6 @@
 # Compatibility catalog and release process
 
-The [versioned catalog](../catalog/releases-v2.json) has independent builder, client, Horizon patch and toolchain release records. A compatibility row explicitly permits one version tuple on the Cafe target and records the bridge ABI and exact upstream commit. Each source reference identifies an immutable Git commit, path and SHA-256. It can be fetched as `https://raw.githubusercontent.com/megabytesme/MCHorizonWiiU/<commit>/<path>`. The builder verifies bytes against the catalog and Git object before use. Old packages may stay documented after deprecation or revocation. Revoked selections fail resolution.
+The [versioned catalog](../catalog/releases-v2.json) has independent builder, client, Horizon patch and toolchain release records. A compatibility row explicitly permits one version tuple on the Cafe target and records the bridge ABI and exact upstream commit. Each source reference identifies an immutable Git commit, path and SHA-256. It can be fetched as `https://raw.githubusercontent.com/megabytesme/MCHorizonWiiU/<commit>/<path>`. The builder verifies bytes against the catalog and Git object before use. Deprecated source records are checked against their archived Git blobs. Check out the matching builder revision to recreate that version. Revoked selections fail resolution.
 
 Stable releases require a signed catalog and stable component records. Development permits explicitly selected local unsigned drafts. Nightly rows must be approved individually against exact upstream commits. A GitHub nightly moving to a new revision never changes a pinned row. Build, Cemu and hardware evidence are separate catalog fields. Publishing a new client with runtime changes requires evidence keyed to its RPX SHA-256.
 
@@ -9,12 +9,12 @@ Stable releases require a signed catalog and stable component records. Developme
 From a verified port-only checkout, run the host checks in [Contributing](../CONTRIBUTING.md). Prepare independently versioned source archives from the reviewed commit. For example:
 
 ```sh
-python3 -B tools/prepare_release.py builder 0.5.0 --revision "$reviewed_commit" --output "$scratch/releases"
-python3 -B tools/prepare_release.py client 0.6.0 --revision "$reviewed_commit" --output "$scratch/releases"
-python3 -B tools/prepare_release.py patch 0.3.1 --revision "$reviewed_commit" --output "$scratch/releases"
+python3 -B tools/prepare_release.py builder 0.6.0 --revision "$reviewed_commit" --output "$scratch/releases"
+python3 -B tools/prepare_release.py client 0.7.0 --revision "$reviewed_commit" --output "$scratch/releases"
+python3 -B tools/prepare_release.py patch 0.4.0 --revision "$reviewed_commit" --output "$scratch/releases"
 ```
 
-Each archive includes its versioned notes and a separate SHA-256 receipt. Use distinct tags such as `builder-v0.5.0`, `client-v0.6.0`, `patch-v0.3.1` and `toolchain-v1.0.0` only when publication is authorized. Source releases can serve builders who generate private client installations. Optional prebuilt RPX/WUHB packages need complete linked dependency notices, redistribution review, an asset-free packaging audit and matching build and hardware evidence. Use [prepare_prebuilt.py](../tools/prepare_prebuilt.py) to stage an approved build by RPX hash and verify the WUHB by repacking without content files. Publish only the reviewed package files and redacted receipts. The signed catalog can reference the exact GitHub release asset ID, filename, size and SHA-256. Use `tools/check_release.py --client-asset VERSION rpx FILE` with signed trust inputs to verify a downloaded package.
+Each archive includes its versioned notes and a separate SHA-256 receipt. Use distinct tags such as `builder-v0.6.0`, `client-v0.7.0`, `patch-v0.4.0` and `toolchain-v1.0.0` only when publication is authorized. Source releases can serve builders who generate private client installations. Optional prebuilt RPX/WUHB packages need complete linked dependency notices, redistribution review, an asset-free packaging audit and matching build and hardware evidence. Use [prepare_prebuilt.py](../tools/prepare_prebuilt.py) to stage an approved build by RPX hash and verify the WUHB by repacking without content files. Publish only the reviewed package files and redacted receipts. The signed catalog can reference the exact GitHub release asset ID, filename, size and SHA-256. Use `tools/check_release.py --client-asset VERSION rpx FILE` with signed trust inputs to verify a downloaded package.
 
 ## Final signing with the maintainer certificate
 

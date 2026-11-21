@@ -18,8 +18,10 @@ DIRECTORIES = {
     "builder": ("wiiu/builder", "tools/catalog-signer", "tools/build_cafe_game_isolated.sh",
                 "tools/check_release.py", "tools/prepare_release.py", "tools/prepare_prebuilt.py",
                 "tools/wiiu_recompress_rpx.py", "catalog", "docs", "README.md", "CONTRIBUTING.md"),
-    "client": tuple(core.CLIENT_PATHS) + ("wiiu/game-bridge",),
-    "patch": ("patches", "catalog", "wiiu/game-bridge", "wiiu/pregame/src/local_wire.rs"),
+    "client": tuple(core.CLIENT_PATHS) + ("wiiu/game-bridge", "wiiu/security", "wiiu/microsoft",
+                                          "wiiu/mcp", "docs/mcp", "docs/gx2"),
+    "patch": ("patches", "catalog", "wiiu/game-bridge", "wiiu/pregame/src/local_wire.rs",
+              "wiiu/security", "wiiu/microsoft", "wiiu/mcp", "docs/mcp/pinned-tools.json"),
     "toolchain": ("patches/toolchain", "catalog/toolchain-cafe-v1.json", "catalog/dependencies-cafe-v1.json", "docs/inputs.md"),
 }
 

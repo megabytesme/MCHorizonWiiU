@@ -291,6 +291,9 @@ impl View {
             }
             Versions => ("Version & resources", env!("CARGO_PKG_VERSION"), Available),
             Settings => ("Settings", "Controller and touch", Available),
+            #[cfg(horizon_wiiu_native_mcp)]
+            AgentControl => ("Agent Control", "HTTPS and trusted clients", Available),
+            #[cfg(not(horizon_wiiu_native_mcp))]
             AgentControl => ("Agent Control", "Unavailable", Available),
             Quit => ("Close Horizon", "", Available),
             Player => (
@@ -705,6 +708,11 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
             ),
             Versions => self.show(Page::Versions, None),
             Settings => self.show(Page::Settings, None),
+            #[cfg(horizon_wiiu_native_mcp)]
+            AgentControl if self.view.local.is_some() => {
+                self.local_return = Some(AgentControl);
+                self.local_intent = Some((local_wire::OPEN_AGENT, 0));
+            }
             AgentControl => self.show(Page::AgentControl, None),
             // Close Horizon is available only on Home, after all sessions are gone.
             Quit => {

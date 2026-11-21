@@ -1,0 +1,165 @@
+{
+  "base_source_tree": "490ed0fd414fb7fc5360adbc6aba8efcb67c5226",
+  "build": {
+    "asset_free_wuhb_repack_matches": true,
+    "byte_identical": true,
+    "diagnostic_source": "pinned world-reopen diagnostic tree reconstructed",
+    "host": "Linux x86-64 on WSL 2",
+    "independent_clean_builds": 2,
+    "logical_cpus": 32,
+    "offline": true,
+    "private_resource_inputs_during_build": true,
+    "standalone_game": "packaged",
+    "standalone_night": "packaged and booted in stock Cemu",
+    "status": "passed"
+  },
+  "builder": "0.6.0",
+  "cemu": {
+    "direct_codex_oauth": {
+      "certificate_validation": "exported CA and LAN hostname",
+      "codex_cli": "0.169.0-alpha.11.1",
+      "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+      "gamepad_approved": true,
+      "independent_clients_calling_real_night_versions": 2,
+      "launcher_closed": true,
+      "private_ipv4_discovery": "blocked by the tested client",
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47",
+      "status": "passed for the launcher over a resolvable .local hostname"
+    },
+    "nss_patched_gameplay": {
+      "completed_save_barriers": 2,
+      "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+      "gemini_cli": "0.70.0",
+      "hosted_launches": 2,
+      "launcher_closed": true,
+      "live_game_state_and_tool_withdrawal_in_both_sessions": true,
+      "profile": {
+        "peak_indices": 85068,
+        "peak_section_draws": 112,
+        "presented": 274,
+        "session": 1,
+        "worker_completions": 266.0
+      },
+      "protected_metadata_http_status": 200,
+      "protocols": [
+        "2025-06-18",
+        "2026-07-28"
+      ],
+      "render_distance": 12,
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47",
+      "save_changed": true
+    },
+    "nss_patched_launcher": {
+      "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+      "guest_exited": true,
+      "microsoft_menu_opened": true,
+      "offline_profile_and_settings_persisted": true,
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47"
+    },
+    "nss_patched_oauth_restarts": {
+      "automatic_unlock": true,
+      "emulator_sha256": "e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d",
+      "launcher_closed": true,
+      "local_pin_unlock": true,
+      "no_ai": true,
+      "refresh_and_consented_scope_restore": true,
+      "revocation": true,
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47",
+      "suite": "launcher-only OAuth cold restarts"
+    },
+    "real_microsoft_login": "pending",
+    "status": "partial",
+    "stock": {
+      "boot_result": "Cafe system RNG failed its startup check",
+      "emulator_sha256": "d35da74021799ebffa762b6c29ba0de5d9c1914c9539610b994bfd6499cf3c0d",
+      "mode": "stock-interpreter",
+      "rpx_sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47"
+    },
+    "stock_lightmap_diagnostic": {
+      "checks": 8,
+      "diagnostic_sha256": "aac71aae855d283f9dcd14fc5a76fc495b03e7eac340160c17e3742973e66680",
+      "emulator_sha256": "d35da74021799ebffa762b6c29ba0de5d9c1914c9539610b994bfd6499cf3c0d",
+      "samples": [
+        "GX2 lightmap sample target=0 index=0 rgb=0,0,32",
+        "GX2 lightmap sample target=0 index=1 rgb=255,0,32",
+        "GX2 lightmap sample target=0 index=2 rgb=0,255,32",
+        "GX2 lightmap sample target=0 index=3 rgb=127,42,32",
+        "GX2 lightmap sample target=1 index=0 rgb=0,0,32",
+        "GX2 lightmap sample target=1 index=1 rgb=255,0,32",
+        "GX2 lightmap sample target=1 index=2 rgb=0,255,32",
+        "GX2 lightmap sample target=1 index=3 rgb=127,42,32"
+      ],
+      "status": "passed"
+    },
+    "version": "2.6"
+  },
+  "client": "0.7.0",
+  "hardware": {
+    "open_blocker": "physical Wii U saved-world reopening",
+    "status": "pending"
+  },
+  "host_tests": {
+    "builder": 15,
+    "catalog_signer_self_test": "passed",
+    "gx2_projection_and_atlas": 6,
+    "mcp_implemented": 44,
+    "mcp_pinned_inventory": 192,
+    "profile_decoder": 3,
+    "rust_vault_microsoft_mcp_night": 43
+  },
+  "hosted_recipe_sha256": "71466e379a552efe55b4f4184ad7a44868dd6ffb4c3727bab7efb8ed5449bd12",
+  "hosted_source_tree": "ec14a2de4bb314b8ad72cfac859767be93c62aff",
+  "night_build_identity": "aad262268894c88697f17479d4ec7b78c97e91714f2c6e4c857ee316e2f35536",
+  "outputs": {
+    "HorizonWiiU.rpx": {
+      "bytes": 36339742,
+      "sha256": "003d27df3db81f099adbba99783ef194ae0af12a9e21a28075389870a11fdc47"
+    },
+    "HorizonWiiU.wuhb": {
+      "bytes": 36340556,
+      "sha256": "b86134dd2ee2daaf963e184b15e869613b9c775cedb9896eed3d24b72c759325"
+    }
+  },
+  "patch": "0.4.0",
+  "port_revision": "8df2cf1f329e841493cc8613be9fa8d90ba6f695",
+  "publication": {
+    "production_catalog_signing": "pending",
+    "reason": "precompiled SDK and Rust dependency paths in the RPX",
+    "status": "blocked"
+  },
+  "recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "schema": 1,
+  "tool_sha256": {
+    "cargo": "b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55",
+    "cargo-wiiu": "c85d29f81b87c5edf3a99522fcad5940a4503332e2c2cb5f2c0ee574085ec9e4",
+    "cmake": "1c5227af4edd22d8d689def545e18ee458260c0fd579eba2187967f38817e638",
+    "gcc/as": "ebb96eb91005f5b6516a58478efc89416a43a11e9239e9fa5eeac1f0c20e05e7",
+    "gcc/cc1": "12e6a83f96f1acbf0a50b3262844cea2b96bcdeb0560bdc11ca85c0740860e01",
+    "gcc/ld": "1fe878476b61fcb650c988f8f682bdf0afc1435637e5bd9d558d1c61e7b31922",
+    "gcc/libc.a": "cb8c3e33434d60d7767010b24bc8beba899e2eb386dc071da92cc3e54f765b5d",
+    "gcc/libgcc.a": "623b38def2df94e58a3c217e8e9ce4440c9071e12bb945a3ff92bb2f1e30bdaa",
+    "gcc/libm.a": "67cde7a63b8c17c8ce1843fd1158940577e523db3fe92719055c33071614e686",
+    "glslcompiler": "8268622fbaade63707d649c212e990ef871a4d1657450d03dc2ff85f8fa4ec90",
+    "ninja": "5965527e09fe2b3787772aa4f711d6a36b393e7f2fcaa744a7a96c5a4ddf59cb",
+    "powerpc-eabi-ar": "6ec7328f214630b8c5d8986b2b641eb9dee7acfe1bd0043819db662c59b1540c",
+    "powerpc-eabi-cmake": "ee87536e1f4826f2f13008c3b935d5dfaaa901f9e1d64979642570070fd96786",
+    "powerpc-eabi-g++": "e4513a941e3ea6794295ce5758a6333f24c8f289280005bbe0e6279bcb61847e",
+    "powerpc-eabi-gcc": "be3ef2cd21bc7da3f0689c3be2a0c427ad0f0df4b808281c1d4a99064456b302",
+    "powerpc-eabi-nm": "a8e90be3a6619e6236df601f852d23b5f14dcaaf7fa0ce74adaa717102fce990",
+    "powerpc-eabi-objcopy": "1e03326f5947c99de5896a4ed0241959cb3b8fbe8ba4991ef64eabc5ccedb0e7",
+    "readrpl": "b55a458599793596acfd233915f28d635eb4d16c10818cbcb942bd9594b0dc0f",
+    "rust/libLLVM-23-rust-1.101.0-nightly.so": "ccfd1258407eda67c3335f740a9e03e62b28ad830683c11524033d5013334938",
+    "rust/libLLVM.so.23.1-rust-1.101.0-nightly": "df169e71ee3e2cae60f774ebcb1e372964531dd98652b3b8dbf2349866e30b61",
+    "rust/libcore-8c6158bc4796d611.rlib": "fd4711748f4924733de29dc85c764f47bf9a29213bd40aed0c6762664dd757f8",
+    "rust/librustc_driver-dc384dfdf85f9584.so": "46a73ff8cc26ab4039ab3b1bdca321cc24e241674cdd28d9e0ff697923661113",
+    "rustc": "81eedd871c42741e79047e7d74d7d7cfabea095fdd4c11d4cc8d826be8fff583",
+    "wuhbtool": "c7805e61cb714a7c128e3c355bdc13c2a0b441d8e400d6201f9ee0c6b16b367a",
+    "wut/lib/libwut.a": "015007736b886aedcca8c85053a2bdd1c071d34e60a44ab9b1db8d731bba07b6",
+    "wut/share/wut.cmake": "27dad010b1849120bc8a92be426d0eb9091e1cfc41d7af9593f27f4dd3f288db",
+    "wut/share/wut.ld": "f99fdd90d24a92b411b04b5b9e78f8354af949c56b32a1094df5bde905f0c07c",
+    "wut/share/wut.specs": "db4b0f1c0ad0fe8dadddee0c1829b7e9ecfcb2266b69aea4649ed9c15198111c",
+    "wut/share/wut.toolchain.cmake": "79e818897961e2f1469c20dac73454edb67fac267259dc75c7bcd1fed43ee663"
+  },
+  "toolchain": "1.0.0",
+  "upstream": "69fab597a6f0e8a6ce524d38d1b73e599e343034"
+}

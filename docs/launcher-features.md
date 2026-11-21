@@ -8,9 +8,9 @@ keyboard is unavailable.
 
 | Control | Actual effect | Availability and errors |
 | --- | --- | --- |
-| Start Game | Starts the pinned native client with the selected installation, offline identity, target and face-button mapping. Returns through the existing game save and resource-release barrier. | Requires a compatible preparation. A missing or stale selected target gives a startup error. |
+| Start Game | Starts the pinned native client with the selected installation, offline or verified online identity, target and face-button mapping. Returns through the existing game save and resource-release barrier. | Requires a compatible preparation. A missing or stale selected target gives a startup error. |
 | Profiles | Create an offline login identity, select it, rename its local display label, or remove the profile after confirmation. | Login identity is immutable and is the input to Horizon's existing offline UUID calculation. At least one profile is required. Saves are never deleted by profile management. |
-| Worlds & servers / Local worlds | Lists save metadata under the selected installation, then resolves a chosen world as a direct launch target. | Night disables saves with missing ownership evidence, a different offline UUID, a lock, corrupt metadata or a compatibility warning. Native game menus handle recovery and upgrades. Direct selection does not edit any world file. |
+| Worlds & servers / Local worlds | Lists save metadata under the selected installation, then resolves a chosen world as a direct launch target. | Night disables saves with missing ownership evidence, a different profile UUID, a lock, corrupt metadata or a compatibility warning. Native game menus handle recovery and upgrades. Direct selection does not edit any world file. |
 | Worlds & servers / Saved servers | Add, edit, select or confirm removal of an endpoint. Start Game uses the client's standard direct multiplayer entry. | Validates names, hostnames, IPv4, IPv6 and ports before saving. Actual connectivity and authentication are handled by the native client. |
 | Worlds & servers / Use game menu | Clears the direct target and lets the game open its usual title menu. | A failed preference write retains the previous target. |
 | Version & resources / Installed resources | Shows the default directory and additional installed instances. Selection changes the exact resource directory and game folder handed to the game. | The hosted recipe pins the prepared version, schema and build input digests. Missing, incompatible and invalid preparations have distinct states. Cache installation and updates are pending. |
@@ -19,8 +19,8 @@ keyboard is unavailable.
 | Settings / Swap X and Y | Persists the swap and remaps the real game's Cafe X/Y input for the session. | Night has no normal X/Y navigation actions. |
 | Settings / GamePad touch | Persists whether touch can activate Night navigation. | D-pad and face buttons remain available. The original game owns its touch behaviour. |
 | Settings / Reports | Opens compatible existing benchmark JSON under the current instance `benchmarks/` and displays recorded fields and measurements. | Malformed or unsupported reports give a clear error. Running benchmarks from Night and uploading reports are pending. |
-| Agent Control | Shows that launcher pairing is unavailable. | No new listener or pairing service. Existing in-game authenticated Agent Control stays in the game. |
-| Microsoft accounts | Shows that Microsoft sign-in is unavailable. | Microsoft/Xbox/Minecraft protocols, ownership, account management, sign-out and protected refresh storage are pending. No launcher file contains authentication material. |
+| Agent Control | Manages HTTPS identity, GamePad approval, trusted clients, scopes, revocation and No AI. | The native game publishes scoped gameplay tools only for its live session. See the [MCP inventory](mcp/parity.md). |
+| Microsoft accounts | Uses device sign-in and checks Java Edition ownership. Select PIN-protected, explicitly unprotected or session-only storage. | A protected profile requires local unlock once per app run. Night keeps Microsoft and MCP credentials in separate vault domains. |
 | Close Horizon | Exits via the shared Cafe lifecycle. | Game teardown remains authoritative while a session is running. |
 
 The standalone Night build remains a diagnostic shell with the Start Game
