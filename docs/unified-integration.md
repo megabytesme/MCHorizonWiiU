@@ -53,32 +53,12 @@ local panic handler so it can resolve Rust formatting independently.
 
 ## GitHub review and release
 
-1. Have the maintainer approve pushing the local candidate. Run
-   `git push -u origin codex/wiiu-unified-candidate` from this worktree, then
-   open a draft review against the sanitized branch with
-   `gh pr create --repo megabytesme/MCHorizonWiiU --draft --base codex/wiiu-canonical-release --head codex/wiiu-unified-candidate --title "Unify Horizon Night accounts, native MCP and GX2" --body-file "$pr_body"`.
-   Use the authenticated account's agent attribution and include exact RPX
-   hashes and the validation matrix. Review this branch against
-   `60ab798f3f53dc859420480c9bfb38bada46a8a8`. [GitHub PR command](https://cli.github.com/manual/gh_pr_create)
-2. Require both host CI platforms, the public-tree and secret scan,
-   source and dependency reconstruction, and review of the credential,
-   game teardown and rendering deltas. When approved, use a merge commit
-   to retain the source commits referenced by the catalog.
-   `gh pr merge PR_NUMBER --repo megabytesme/MCHorizonWiiU --merge`.
-3. After a separate production approval, select the maintainer-owned P-256
-   certificate, advance the catalog sequence and validity interval, sign the
-   exact bytes, and verify from a clean scratch trust store. Keep binaries
-   private until the path audit, linked-dependency redistribution review and
-   required hardware checks pass. [Signing and publication](catalog.md)
-4. The legacy `main` and port-only histories have separate roots. After
-   separate authorization for cutover, have a repository administrator set
-   the reviewed port-only branch as default with
-   `gh repo edit megabytesme/MCHorizonWiiU --default-branch codex/wiiu-canonical-release`.
-   Verify `git ls-remote --symref origin HEAD refs/heads/main refs/heads/archive/legacy-full-horizon`,
-   update rulesets and release automation, and preserve both legacy refs.
-   Rollback is switching the default setting back to `main`.
-   [Existing migration record](migration.md) Ã‚Â· [GitHub branch settings](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-branches-in-your-repository/changing-the-default-branch)
-
+[PR #4](https://github.com/megabytesme/MCHorizonWiiU/pull/4) records the review,
+exact build hashes and acceptance matrix. The merge retained the pinned source
+commits and the unified tree now lives on `main`. See the
+[cutover record](migration.md) and [signing and publication procedure](catalog.md).
+Keep binaries private until the dependency-path audit, redistribution review
+and required hardware checks pass.
 
 ## Exact feature file inventory
 

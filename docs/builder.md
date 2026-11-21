@@ -2,7 +2,7 @@
 
 The Windows desktop builder uses Python 3.11+ with Tk and an x86-64 Linux environment under WSL 2. The same CLI runs directly in Linux. The [Cafe toolchain guide](inputs.md) lists the host prerequisites, package hashes and components that need maintainer provision.
 
-Clone the port-only branch inside the Linux filesystem of your WSL distribution. Keep the build cache there. Windows package destinations can use WSL paths such as `/mnt/c/Builds/HorizonWiiU`, although builds on the Linux filesystem are faster. Start the desktop window from a Windows checkout of the same branch.
+Clone [MCHorizonWiiU](https://github.com/megabytesme/MCHorizonWiiU) inside the Linux filesystem of your WSL distribution. Its default branch, `main`, contains the CafeOS port and builder. Keep the build cache there. Windows package destinations can use WSL paths such as `/mnt/c/Builds/HorizonWiiU`, although builds on the Linux filesystem are faster. Start the desktop window from a Windows checkout of the same revision.
 
 ```powershell
 pythonw.exe wiiu/builder/desktop.py --allow-unsigned
