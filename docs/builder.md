@@ -81,3 +81,20 @@ bash tools/build_cafe_game_isolated.sh --hosted-nightly "$candidate_output" \
 The local directory contains `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and
 `build-record.json`. The recipe records its own candidate versions.
 The active `build-hosted` command still uses the 0.7.0 release recipe.
+
+### Prepare a copied archive for an isolated game path
+
+The prepared archive includes the absolute resource path it is bound to.
+When the archived path differs from the path seen by CafeOS in a disposable
+Cemu profile, create a separate copy with the correct root.
+
+```sh
+python3 tools/rebind_cafe_prepared_archive.py "$prepared_copy" \
+  --output "$scratch/horizon-data.bin"
+```
+
+Place the resulting archive alongside the matching manifest in the isolated
+resource copy. The command verifies the embedded manifest and preserves
+the payload bytes. Its default guest path is the standard Horizon Wii U
+installation. For an isolated instance with a different path, pass
+`--guest-root` with the full CafeOS resource directory.
