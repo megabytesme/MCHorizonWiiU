@@ -1,0 +1,379 @@
+diff --git a/crates/horizon-client-render/src/assets.rs b/crates/horizon-client-render/src/assets.rs
+index 6908cdd62533f5ef22f8a70b345a54b8930572a5..04b264007b6b02ee52555d3995897d23a604ae17 100644
+--- a/crates/horizon-client-render/src/assets.rs
++++ b/crates/horizon-client-render/src/assets.rs
+@@ -206,6 +206,26 @@ impl SpritePixels {
+             Arc::new(decoded.unwrap_or_else(|| vec![0; self.0.len]))
+         })
+     }
++    #[cfg(target_os = "cafe")]
++    pub fn visit_layers(
++        &self,
++        layer_bytes: usize,
++        mut visit: impl FnMut(&[u8]) -> Option<()>,
++    ) -> Option<()> {
++        if layer_bytes == 0 || !self.0.len.is_multiple_of(layer_bytes) {
++            return None;
++        }
++        let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
++        if let Some(raw) = raw {
++            for layer in raw.chunks_exact(layer_bytes) {
++                visit(layer)?;
++            }
++            Some(())
++        } else {
++            self.0.packed.get()?.visit_layers(self.0.len, layer_bytes, visit)
++        }
++    }
++
+     /// Keep them compressed from now on, once a renderer has uploaded them:
+     /// compressed on a thread of their own, the raw copy dropped after.
+     pub fn pack(&self) {
+@@ -228,13 +248,18 @@ impl SpritePixels {
+                 *store.raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
+             }
+         };
+-        let fallback = job.clone();
+-        if std::thread::Builder::new()
+-            .name("Sprite packing".into())
+-            .spawn(job)
+-            .is_err()
++        #[cfg(target_os = "cafe")]
++        job();
++        #[cfg(not(target_os = "cafe"))]
+         {
+-            fallback();
++            let fallback = job.clone();
++            if std::thread::Builder::new()
++                .name("Sprite packing".into())
++                .spawn(job)
++                .is_err()
++            {
++                fallback();
++            }
+         }
+     }
+ }
+diff --git a/crates/horizon-client-render/src/cafe_pixels.rs b/crates/horizon-client-render/src/cafe_pixels.rs
+index 3b853f401191686e4ce06ba8c1f4c42a25e0fcc4..1a367e1939f65e3a762c4a6077cf2296f301b4bf 100644
+--- a/crates/horizon-client-render/src/cafe_pixels.rs
++++ b/crates/horizon-client-render/src/cafe_pixels.rs
+@@ -74,6 +74,46 @@ impl PackedPixels {
+         Some(())
+     }
+ 
++    /// Decode the terrain source sequentially without a second full CPU
++    /// image. At most one partial layer crosses a compression block.
++    pub(crate) fn visit_layers(
++        &self,
++        length: usize,
++        layer_bytes: usize,
++        mut visit: impl FnMut(&[u8]) -> Option<()>,
++    ) -> Option<()> {
++        if layer_bytes == 0
++            || !length.is_multiple_of(layer_bytes)
++            || self.0.len() != length.div_ceil(BLOCK_BYTES)
++        {
++            return None;
++        }
++        let mut scratch = vec![0; length.min(BLOCK_BYTES)];
++        let mut partial = Vec::new();
++        for (index, packed) in self.0.iter().enumerate() {
++            let decoded = &mut scratch[..(length - index * BLOCK_BYTES).min(BLOCK_BYTES)];
++            if decompress_into(packed, decoded).ok()? != decoded.len() {
++                return None;
++            }
++            let mut bytes = &*decoded;
++            if !partial.is_empty() {
++                let copied = bytes.len().min(layer_bytes - partial.len());
++                partial.extend_from_slice(&bytes[..copied]);
++                bytes = &bytes[copied..];
++                if partial.len() == layer_bytes {
++                    visit(&partial)?;
++                    partial.clear();
++                }
++            }
++            let layers = bytes.chunks_exact(layer_bytes);
++            partial.extend_from_slice(layers.remainder());
++            for layer in layers {
++                visit(layer)?;
++            }
++        }
++        partial.is_empty().then_some(())
++    }
++
+     pub(crate) fn decompress(&self, length: usize) -> Option<Vec<u8>> {
+         if self.0.len() != length.div_ceil(BLOCK_BYTES) {
+             return None;
+@@ -148,6 +188,26 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn terrain_layers_cover_all_bytes_in_order_across_compression_blocks() {
++        let layer_bytes = 1236;
++        let pixels: Vec<u8> = (0..layer_bytes * 500).map(|i| (i / 29) as u8).collect();
++        let packed = PackedPixels::compress(&pixels).unwrap();
++        let mut expected = pixels.chunks_exact(layer_bytes);
++        packed
++            .visit_layers(pixels.len(), layer_bytes, |layer| {
++                assert_eq!(Some(layer), expected.next());
++                Some(())
++            })
++            .unwrap();
++        assert!(expected.next().is_none());
++        assert!(
++            packed
++                .visit_layers(pixels.len() - 1, layer_bytes, |_| Some(()))
++                .is_none()
++        );
++    }
++
+     #[test]
+     fn an_incompressible_texture_keeps_its_existing_backing() {
+         let mut state = 17_u32;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index ba9768859d03f06c673d5b47a8ea060813e78264..08c992de41bf1595c6184a465674b0f5a760ce70 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -685,7 +685,6 @@ impl CafeGameSession<'_> {
+             hud_generation: self.game.gui.atlas.revision,
+             terrain_generation: self.game.pack.render.generation,
+         })?;
+-        self.game.pack.render.pixels.pack();
+         #[cfg(target_os = "cafe")]
+         drop(artwork);
+         let capture = std::mem::take(&mut self.game.cafe_screenshot_requested);
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index d9d9139bd3b701327764e460bd4e53f6989b46bc..e9d0b3de991854e12a4bfcc2522c146b1814e264 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -335,38 +335,52 @@ impl TerrainAtlasLayout {
+         pixels: &mut [u8],
+         pitch: usize,
+     ) -> Result<(), &'static str> {
+-        let Self {
+-            width,
+-            height,
+-            sprite_size,
+-            layers,
+-            cell_size,
+-            columns,
+-        } = *self;
+-        let expected = usize::try_from(layers)
+-            .ok()
+-            .and_then(|n| n.checked_mul(sprite_size as usize))
+-            .and_then(|n| n.checked_mul(sprite_size as usize))
+-            .and_then(|n| n.checked_mul(4))
+-            .ok_or("Horizon sprite byte count overflow")?;
+-        if source.len() != expected {
++        let bytes = self.layer_bytes()?;
++        if bytes.checked_mul(self.layers as usize) != Some(source.len()) {
+             return Err("Horizon sprite byte count mismatch");
+         }
+-        if pitch < width as usize * 4 || pitch.checked_mul(height as usize) != Some(pixels.len()) {
++        for (layer, rgba) in source.chunks_exact(bytes).enumerate() {
++            self.write_layer(layer as u32, rgba, pixels, pitch)?;
++        }
++        Ok(())
++    }
++
++    pub fn layer_bytes(&self) -> Result<usize, &'static str> {
++        if self.sprite_size == 0 {
++            return Err("Horizon sprite atlas layer is empty");
++        }
++        (self.sprite_size as usize)
++            .checked_pow(2)
++            .and_then(|n| n.checked_mul(4))
++            .ok_or("Horizon sprite byte count overflow")
++    }
++
++    /// Copy a layer from the original source and extrude the same border.
++    pub fn write_layer(
++        &self,
++        layer: u32,
++        source: &[u8],
++        pixels: &mut [u8],
++        pitch: usize,
++    ) -> Result<(), &'static str> {
++        if layer >= self.layers || source.len() != self.layer_bytes()? {
++            return Err("Horizon sprite layer mismatch");
++        }
++        if pitch < self.width as usize * 4
++            || pitch.checked_mul(self.height as usize) != Some(pixels.len())
++        {
+             return Err("invalid writable GX2 atlas storage");
+         }
+-        for layer in 0..layers {
+-            let cx = (layer % columns) * cell_size;
+-            let cy = (layer / columns) * cell_size;
+-            let source_layer = layer as usize * sprite_size as usize * sprite_size as usize * 4;
+-            for y in 0..cell_size {
+-                let sy = y.saturating_sub(1).min(sprite_size - 1) as usize;
+-                for x in 0..cell_size {
+-                    let sx = x.saturating_sub(1).min(sprite_size - 1) as usize;
+-                    let from = source_layer + (sy * sprite_size as usize + sx) * 4;
+-                    let to = (cy + y) as usize * pitch + (cx + x) as usize * 4;
+-                    pixels[to..to + 4].copy_from_slice(&source[from..from + 4]);
+-                }
++        let side = self.sprite_size;
++        let cx = (layer % self.columns) * self.cell_size;
++        let cy = (layer / self.columns) * self.cell_size;
++        for y in 0..self.cell_size {
++            let sy = y.saturating_sub(1).min(side - 1) as usize;
++            for x in 0..self.cell_size {
++                let sx = x.saturating_sub(1).min(side - 1) as usize;
++                let from = (sy * side as usize + sx) * 4;
++                let to = (cy + y) as usize * pitch + (cx + x) as usize * 4;
++                pixels[to..to + 4].copy_from_slice(&source[from..from + 4]);
+             }
+         }
+         Ok(())
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 8a12df434a3794988436037997837a3ccd9fa760..172006690679531291cea8cbba072ca2cda6d6ed 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -2,6 +2,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <coreinit/debug.h>
++#include <coreinit/memdefaultheap.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
+ #include <gx2/registers.h>
+@@ -18,6 +19,7 @@
+ 
+ _Static_assert(sizeof(HorizonTerrainVertex) == 40, "terrain vertex ABI changed");
+ struct HorizonGx2Terrain {
++   uint8_t *atlas_storage;
+    WHBGfxShaderGroup shader;
+    GX2Texture texture;
+    GX2Sampler sampler;
+@@ -44,7 +46,8 @@ static int uniform_offset(const GX2UniformVar *var, uint32_t *offset)
+    return 1;
+ }
+ 
+-static int create_texture(GX2Texture *texture, uint32_t width, uint32_t height)
++static int create_texture(GX2Texture *texture, uint32_t width, uint32_t height,
++                          uint8_t **storage)
+ {
+    GX2Surface *s = &texture->surface;
+    s->use = GX2_SURFACE_USE_TEXTURE;
+@@ -57,7 +60,18 @@ static int create_texture(GX2Texture *texture, uint32_t width, uint32_t height)
+    s->tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    texture->viewNumMips = texture->viewNumSlices = 1;
+    texture->compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
+-   if (!GX2RCreateSurface(s, texture_flags)) return -2;
++   if (storage) {
++      GX2CalcSurfaceSizeAndAlignment(s);
++      if (!s->imageSize || !s->alignment || s->mipmapSize) return -3;
++      uint8_t *backing = MEMAllocFromDefaultHeapEx(s->imageSize, s->alignment);
++      if (!backing) return -2;
++      if (!GX2RCreateSurfaceUserMemory(s, backing, NULL, texture_flags)) {
++         MEMFreeToDefaultHeap(backing);
++         memset(texture, 0, sizeof(*texture));
++         return -2;
++      }
++      *storage = backing;
++   } else if (!GX2RCreateSurface(s, texture_flags)) return -2;
+    if (s->pitch < width || (size_t)s->imageSize < (size_t)s->pitch * height * 4) return -3;
+    GX2InitTextureRegs(texture);
+    return 0;
+@@ -69,6 +83,7 @@ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain)
+    GX2DrawDone();
+    terrain_buffer_release(&terrain->quad_indices);
+    if (terrain->texture.surface.image) GX2RDestroySurfaceEx(&terrain->texture.surface, texture_flags);
++   if (terrain->atlas_storage) MEMFreeToDefaultHeap(terrain->atlas_storage);
+    if (terrain->lightmap.surface.image) GX2RDestroySurfaceEx(&terrain->lightmap.surface, texture_flags);
+    if (terrain->shader_loaded) WHBGfxFreeShaderGroup(&terrain->shader);
+    free(terrain);
+@@ -133,7 +148,7 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+        !WHBGfxInitShaderAttribute(&t->shader, "aCutout", 0, offsetof(HorizonTerrainVertex, cutout), GX2_ATTRIB_FORMAT_FLOAT_32) ||
+        !WHBGfxInitFetchShader(&t->shader)) goto fail;
+    stage = "atlas surface";
+-   result = create_texture(&t->texture, width, height);
++   result = create_texture(&t->texture, width, height, &t->atlas_storage);
+    if (result) goto fail;
+    GX2Surface *s = &t->texture.surface;
+    stage = "atlas mapping";
+@@ -146,7 +161,7 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+    if (result) goto fail;
+    GX2InitSampler(&t->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
+    stage = "lightmap surface";
+-   result = create_texture(&t->lightmap, 16, 16);
++   result = create_texture(&t->lightmap, 16, 16, NULL);
+    if (result) goto fail;
+    GX2InitSampler(&t->lightmap_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+    stage = "index buffer";
+diff --git a/wiiu/loading_app/memory.c b/wiiu/loading_app/memory.c
+index 2d0f01d0edcb0ec854d8ffd23f57b3aea2ceb74a..377b12f44fd223411d7964233abe777a5752f8e8 100644
+--- a/wiiu/loading_app/memory.c
++++ b/wiiu/loading_app/memory.c
+@@ -11,7 +11,7 @@ static MEMHeapHandle default_heap;
+ 
+ // Keep large transient Rust blocks together in process-owned backing.
+ // Small persistent allocations in the default heap can't split these blocks.
+-enum { BULK_HEAP_BYTES = 192 * 1024 * 1024 };
++enum { BULK_HEAP_BYTES = 224 * 1024 * 1024 };
+ static MEMHeapHandle bulk_heap;
+ static uintptr_t bulk_start;
+ static MEMAllocFromDefaultHeapExFn original_alloc;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index bb0746a07b87313acae91b31ed085769dd0f1f84..edcc535c8b5c4b392f6d9f3a7d6347e3f92879db 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -468,7 +468,8 @@ unsafe extern "C" fn fill_terrain_vertices(
+ 
+ struct TerrainAtlasUpload<'a> {
+     layout: &'a TerrainAtlasLayout,
+-    source: &'a [u8],
++    source: &'a horizon_client::assets::SpritePixels,
++    layer_bytes: usize,
+ }
+ 
+ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, pitch: u32) -> i32 {
+@@ -480,12 +481,17 @@ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, p
+     let Some(bytes) = pitch.checked_mul(upload.layout.height as usize) else {
+         return -1;
+     };
++    if pixels.is_null() || bytes > isize::MAX as usize {
++        return -1;
++    }
+     let pixels = unsafe { std::slice::from_raw_parts_mut(pixels, bytes) };
+-    if upload
+-        .layout
+-        .write_layers(upload.source, pixels, pitch)
+-        .is_ok()
+-    {
++    let mut layer = 0;
++    let written = upload.source.visit_layers(upload.layer_bytes, |rgba| {
++        upload.layout.write_layer(layer, rgba, pixels, pitch).ok()?;
++        layer += 1;
++        Some(())
++    });
++    if written.is_some() && layer == upload.layout.layers {
+         0
+     } else {
+         -1
+@@ -1274,14 +1280,19 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         if self.terrain_generation != Some(artwork.terrain_generation) || self.terrain.is_none() {
+             let _upload = Span::new(Stage::TextureUpload);
+             self.lightmap = None;
+-            let source = artwork.terrain_pixels.get();
+             let layout = TerrainAtlasLayout::for_layers(
+                 artwork.terrain_sprite_size,
+                 artwork.terrain_layers,
+             )?;
++            let layer_bytes = layout.layer_bytes()?;
++            if layer_bytes.checked_mul(layout.layers as usize) != Some(artwork.terrain_pixels.len()) {
++                return Err("GX2 terrain atlas source length differs from the layer layout".into());
++            }
++            artwork.terrain_pixels.pack();
+             let mut upload = TerrainAtlasUpload {
+                 layout: &layout,
+-                source: &source,
++                source: artwork.terrain_pixels,
++                layer_bytes,
+             };
+             let mut native = std::ptr::null_mut();
+             let code = unsafe {
