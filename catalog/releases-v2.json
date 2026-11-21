@@ -88,6 +88,11 @@
       },
       "0.7.0": {
         "artifacts": {
+          "build-evidence": {
+            "commit": "568f9d775a5cfbf22870d52ecdb9f0ddffa2b4ae",
+            "path": "catalog/evidence/client-v0.7.0-patch-v0.4.0.json",
+            "sha256": "ca9c231c17f1e35bc6b1fa9faefcb4d75584f60ceb8dbfe716defb62e884f78d"
+          },
           "sources": {
             "commit": "e3d9952b1428a1ee601878db3a96065df55c6437",
             "path": "catalog/client-source-v0.7.0.json",
@@ -100,11 +105,11 @@
         "evidence": {
           "build": {
             "record": "docs/releases/client-v0.7.0.md",
-            "status": "pending"
+            "status": "passed"
           },
           "cemu": {
             "record": "docs/releases/client-v0.7.0.md",
-            "status": "pending"
+            "status": "partial"
           },
           "hardware": {
             "record": "docs/releases/client-v0.7.0.md",
