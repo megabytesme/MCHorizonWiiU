@@ -1,0 +1,600 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index cbd987ef3bf320ce1f94f19f0548443426f384d0..f598cdbb7a2d3e356fe88b4899deb11ca1ca32a5 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2018,6 +2018,7 @@ dependencies = [
+  "horizon-guest-stack",
+  "horizon-hdr",
+  "horizon-hooks",
++ "horizon-hud-data",
+  "horizon-items",
+  "horizon-mod-api",
+  "horizon-mod-api-macros",
+@@ -2033,6 +2034,7 @@ dependencies = [
+  "horizon-shader-api",
+  "horizon-shaders",
+  "horizon-system",
++ "horizon-terrain-data",
+  "horizon-theme",
+  "horizon-threads",
+  "horizon-world",
+@@ -2228,6 +2230,13 @@ dependencies = [
+  "horizon-mod-package",
+ ]
+ 
++[[package]]
++name = "horizon-hud-data"
++version = "0.1.0"
++dependencies = [
++ "bytemuck",
++]
++
+ [[package]]
+ name = "horizon-internals"
+ version = "0.1.0"
+@@ -2847,6 +2856,13 @@ dependencies = [
+  "ureq",
+ ]
+ 
++[[package]]
++name = "horizon-terrain-data"
++version = "0.1.0"
++dependencies = [
++ "bytemuck",
++]
++
+ [[package]]
+ name = "horizon-theme"
+ version = "0.1.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 43a06b584d9ff00580a93e5ab8e50a0dcd40b02a..530e0a80adeece5304f252f88e82a410d97fd5ae 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -33,6 +33,8 @@ members = [
+     "crates/horizon-client-core",
+     "crates/horizon-client-input",
+     "crates/horizon-client-render",
++    "crates/horizon-hud-data",
++    "crates/horizon-terrain-data",
+     "crates/horizon-command",
+     "crates/horizon-items",
+     "crates/horizon-server-files",
+diff --git a/crates/horizon-client-render/Cargo.toml b/crates/horizon-client-render/Cargo.toml
+index a9121f71a51ed6263c61a24e032469ad2137522f..d932a03edccdf7ab0956e4a48cd7d90f7e29ffc5 100644
+--- a/crates/horizon-client-render/Cargo.toml
++++ b/crates/horizon-client-render/Cargo.toml
+@@ -7,6 +7,8 @@ rust-version.workspace = true
+ description = "The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer, the HUD, menus and settings; no gameplay"
+ 
+ [dependencies]
++horizon-hud-data = { path = "../horizon-hud-data" }
++horizon-terrain-data = { path = "../horizon-terrain-data" }
+ horizon-guest-stack = { path = "../horizon-guest-stack" }
+ # The settings stores of the crates above the engine (docs/layers.md, "Platform registries").
+ horizon-hooks = { path = "../horizon-hooks" }
+diff --git a/crates/horizon-client-render/src/font.rs b/crates/horizon-client-render/src/font.rs
+index 190fb30d80531e835a23323c8d722cd6c2e19679..51d54204f476e0e978cb07e1eb88b00999fd0e74 100644
+--- a/crates/horizon-client-render/src/font.rs
++++ b/crates/horizon-client-render/src/font.rs
+@@ -31,15 +31,7 @@ pub struct Glyph {
+     /// Shadow and bold offset (1 for bitmap and TrueType glyphs, 0.5 for unihex).
+     pub offset: f32,
+ }
+-/// Pixels to copy into the shared atlas before the next HUD draw.
+-#[derive(Clone, Debug)]
+-pub struct Patch {
+-    pub x: u32,
+-    pub y: u32,
+-    pub width: u32,
+-    pub height: u32,
+-    pub rgba: Vec<u8>,
+-}
++pub use horizon_hud_data::Patch;
+ #[derive(Clone, Copy)]
+ struct HexGlyph {
+     /// Rows left-aligned in 32 bits.
+diff --git a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+index ade121700540ab728a674ac7928e2d27d63330eb..513a80cde7bacb05c73c08e30eae2246c1f8083f 100644
+--- a/crates/horizon-client-render/src/gfx.rs
++++ b/crates/horizon-client-render/src/gfx.rs
+@@ -836,6 +836,50 @@ pub(crate) fn collect_animated_layers(
+         .collect()
+ }
+ 
++/// The world lightmap shared by the desktop renderer and the native Cafe presenter.
++pub fn stock_lightmap_pixels(
++    sky: &Sky,
++    darkness: f32,
++    gamma: f32,
++    night_vision: f32,
++    flicker: f32,
++    boss_darken: f32,
++) -> [u8; 16 * 16 * 4] {
++    // lightmap.fsh: per (block, sky) level.
++    let brightness = |level: f32| level / (4.0 - 3.0 * level);
++    let mut pixels = [0u8; 16 * 16 * 4];
++    for s in 0..16 {
++        for b in 0..16 {
++            let block_level = b as f32 / 15.0;
++            let sky_level = s as f32 / 15.0;
++            let block_brightness = brightness(block_level) * (1.4 + flicker);
++            let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
++            // NightVisionColor defaults to 0x999999.
++            let mut color =
++                Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
++            color += Vec3::from(sky.sky_light_color) * sky_brightness;
++            let parabolic = (2.0 * block_level - 1.0).powi(2);
++            let block_color = Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
++            color += block_color * block_brightness;
++            // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
++            color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
++            color -= Vec3::splat(darkness);
++            color = color.clamp(Vec3::ZERO, Vec3::ONE);
++            let max = color.max_element().max(1e-6);
++            let inverted = 1.0 - max;
++            let scaled = 1.0 - inverted.powi(4);
++            let not_gamma = color * (scaled / max);
++            color = color.lerp(not_gamma, gamma);
++            let i = (s * 16 + b) * 4;
++            pixels[i] = (color.x * 255.0) as u8;
++            pixels[i + 1] = (color.y * 255.0) as u8;
++            pixels[i + 2] = (color.z * 255.0) as u8;
++            pixels[i + 3] = 255;
++        }
++    }
++    pixels
++}
++
+ impl SectionGpu {
+     /// Its fade code this frame: 0, drawn whole, or `lod::HELD` (whole, in
+     /// front of far terrain) while it leaves (`leaving`) or its column has left
+@@ -7027,38 +7071,8 @@ impl Renderer {
+         flicker: f32,
+         boss_darken: f32,
+     ) {
+-        // lightmap.fsh: per (block, sky) level.
+-        let brightness = |level: f32| level / (4.0 - 3.0 * level);
+-        let mut pixels = [0u8; 16 * 16 * 4];
+-        for s in 0..16 {
+-            for b in 0..16 {
+-                let block_level = b as f32 / 15.0;
+-                let sky_level = s as f32 / 15.0;
+-                let block_brightness = brightness(block_level) * (1.4 + flicker);
+-                let sky_brightness = brightness(sky_level) * sky.sky_light_factor;
+-                // NightVisionColor defaults to 0x999999.
+-                let mut color =
+-                    Vec3::from(sky.ambient_light_color).max(Vec3::splat(0.6 * night_vision));
+-                color += Vec3::from(sky.sky_light_color) * sky_brightness;
+-                let parabolic = (2.0 * block_level - 1.0).powi(2);
+-                let block_color = Vec3::from(sky.block_light_tint).lerp(Vec3::ONE, 0.9 * parabolic);
+-                color += block_color * block_brightness;
+-                // lightmap.fsh: a boss bar mixes the light toward 70/60/60%.
+-                color = color.lerp(color * Vec3::new(0.7, 0.6, 0.6), boss_darken);
+-                color -= Vec3::splat(darkness);
+-                color = color.clamp(Vec3::ZERO, Vec3::ONE);
+-                let max = color.max_element().max(1e-6);
+-                let inverted = 1.0 - max;
+-                let scaled = 1.0 - inverted.powi(4);
+-                let not_gamma = color * (scaled / max);
+-                color = color.lerp(not_gamma, gamma);
+-                let i = (s * 16 + b) * 4;
+-                pixels[i] = (color.x * 255.0) as u8;
+-                pixels[i + 1] = (color.y * 255.0) as u8;
+-                pixels[i + 2] = (color.z * 255.0) as u8;
+-                pixels[i + 3] = 255;
+-            }
+-        }
++        let mut pixels =
++            stock_lightmap_pixels(sky, darkness, gamma, night_vision, flicker, boss_darken);
+         if self.fullbright {
+             pixels.fill(255);
+         }
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index 01178909a49bed65fcf14aa5621a2f6173eddb09..b16d10cba932b9dccfa6e3604d58347812b98261 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -1718,20 +1718,7 @@ impl HudAtlas {
+             .map_or((vec![0; 4], 1, 1), |(w, h, pixels)| (pixels, w, h))
+     }
+ }
+-#[repr(C)]
+-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+-pub struct HudVertex {
+-    pub pos: [f32; 2],
+-    pub uv: [f32; 2],
+-    pub color: u32,
+-    pub depth: f32,
+-    /// The `GLINT_TEXTURING` UV into the repeating glint texture, unused
+-    /// unless `uv.x >= 2`.
+-    pub glint_uv: [f32; 2],
+-    /// 1 for the GUI's text (`RenderPipelines.GUI_TEXT`), which a resource
+-    /// pack's text shader draws when it has one.
+-    pub text: u32,
+-}
++pub use horizon_hud_data::HudVertex;
+ /// Sutherland-Hodgman against one half plane, interpolating every attribute.
+ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -> Vec<HudVertex> {
+     let inside = |v: &HudVertex| {
+diff --git a/crates/horizon-client-render/src/mesher.rs b/crates/horizon-client-render/src/mesher.rs
+index 88cc1234877ceff8c5fdfbc58dff7d187002e9ce..fc70d4053b35c35ccb4a33939e5eddc7b005b534 100644
+--- a/crates/horizon-client-render/src/mesher.rs
++++ b/crates/horizon-client-render/src/mesher.rs
+@@ -70,29 +70,7 @@ pub fn culls_back(normal: [i8; 4]) -> bool {
+     let w = normal[3];
+     (1..64).contains(&w) || (-126..0).contains(&w)
+ }
+-/// A section vertex: vanilla's `DefaultVertexFormat.BLOCK` (position, colour,
+-/// UV0, UV2) with the sprite's array layer beside the light, in 24 bytes
+-/// rather than vanilla's 28: the UV is fixed point, which holds model UVs
+-/// (multiples of 1/16 and their halves) exactly. The position stays a float:
+-/// fixed point would move the edges of offset plants and rotated elements by
+-/// a fraction of a pixel. Terrain has no normal: `ModelBlockRenderer` bakes
+-/// the face shade into the colour and `terrain.vsh` only multiplies it by the
+-/// lightmap.
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+-pub struct TerrainVertex {
+-    /// Section-relative position.
+-    pub pos: [f32; 3],
+-    /// UV within the sprite, `UV_STEPS` per unit (`TerrainVertex::new`,
+-    /// `terrain.wgsl`'s `terrain_uv`).
+-    pub(crate) uv: [u16; 2],
+-    /// Sprite array layer, with `OPAQUE_LAYER` for opaque leaves and quads over opaque texels.
+-    pub layer: u16,
+-    /// Smooth light, 16x fixed point: sky in the low byte, block in the high one.
+-    pub light: u16,
+-    /// RGBA8: tint multiplied by directional shade and ambient occlusion.
+-    pub color: u32,
+-}
++pub use horizon_terrain_data::{TILED_UV_STEPS, TerrainVertex, UV_STEPS};
+ /// `v.round().clamp(0.0, 65535.0) as u16`, without the `roundf` call x86-64's
+ /// baseline instruction set makes of `f32::round`: clamped first (the same
+ /// result), the fraction is exact below 2^23, and every float above is whole.
+@@ -102,59 +80,11 @@ fn round_to_u16(v: f32) -> u16 {
+     let whole = v as u32;
+     (whole + u32::from(v - whole as f32 >= 0.5)) as u16
+ }
+-/// Fixed-point steps per unit of `TerrainVertex` UVs, which span `[0, 2)`.
+-pub const UV_STEPS: f32 = 32768.0;
+ /// A model quad's own UVs in `TerrainVertex` fixed point, the packing
+ /// `TerrainVertex::new` does, baked once per face (`BakedFace::uv_fixed`).
+ pub(crate) fn baked_uv(uv: [[f32; 2]; 4]) -> [[u16; 2]; 4] {
+     uv.map(|uv| uv.map(|v| round_to_u16(v * UV_STEPS)))
+ }
+-/// Fixed-point steps per block of distant-terrain UVs (`TerrainVertex::tiled`),
+-/// which span `[0, 2048)`: merged faces repeat their sprite once per block.
+-pub const TILED_UV_STEPS: f32 = 32.0;
+-impl TerrainVertex {
+-    pub fn new(pos: [f32; 3], uv: [f32; 2], layer: u16, color: u32, light: u16) -> Self {
+-        Self {
+-            pos,
+-            uv: uv.map(|v| round_to_u16(v * UV_STEPS)),
+-            layer,
+-            light,
+-            color,
+-        }
+-    }
+-    /// A vertex whose UV is already in `UV_STEPS` fixed point (a model face's
+-    /// own UVs, baked in `BakedFace::uv_fixed`).
+-    pub(crate) fn packed_uv(
+-        pos: [f32; 3],
+-        uv: [u16; 2],
+-        layer: u16,
+-        color: u32,
+-        light: u16,
+-    ) -> Self {
+-        Self {
+-            pos,
+-            uv,
+-            layer,
+-            light,
+-            color,
+-        }
+-    }
+-    /// A vertex of a merged distant-terrain face, its UV in blocks from the
+-    /// face's corner. Drawn with an instance UV scale of `1 / TILED_UV_STEPS`.
+-    pub fn tiled(pos: [f32; 3], uv: [f32; 2], layer: u16, color: u32, light: u16) -> Self {
+-        Self {
+-            pos,
+-            uv: uv.map(|v| round_to_u16(v * TILED_UV_STEPS)),
+-            layer,
+-            light,
+-            color,
+-        }
+-    }
+-    /// The UV the GPU samples.
+-    pub fn uv(&self) -> [f32; 2] {
+-        self.uv.map(|v| f32::from(v) / UV_STEPS)
+-    }
+-}
+ #[cfg(test)]
+ mod cull_back_tests {
+     use super::{CULL_BACK, SHADED_CULL_W, cull_back};
+diff --git a/crates/horizon-hud-data/Cargo.toml b/crates/horizon-hud-data/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..19e9261fe9ec3675b8c3621e66a383f39cb449cc
+--- /dev/null
++++ b/crates/horizon-hud-data/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "horizon-hud-data"
++version = "0.1.0"
++edition.workspace = true
++license.workspace = true
++rust-version.workspace = true
++description = "Portable HUD vertex and blend data shared by Horizon render backends"
++
++[dependencies]
++bytemuck = { version = "1.24", default-features = false, features = ["derive"] }
++
++[lints]
++workspace = true
+diff --git a/crates/horizon-hud-data/src/lib.rs b/crates/horizon-hud-data/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebe14b960db551288adc050b92812714758e5d2c
+--- /dev/null
++++ b/crates/horizon-hud-data/src/lib.rs
+@@ -0,0 +1,98 @@
++#![no_std]
++
++extern crate alloc;
++
++use alloc::vec::Vec;
++
++pub mod minimap {
++    /// The minimap image's side in texels.
++    pub const SIZE: usize = 128;
++}
++
++#[repr(C)]
++#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
++pub struct HudVertex {
++    pub pos: [f32; 2],
++    pub uv: [f32; 2],
++    pub color: u32,
++    pub depth: f32,
++    /// The `GLINT_TEXTURING` UV into the repeating glint texture, unused
++    /// unless `uv.x >= 2`.
++    pub glint_uv: [f32; 2],
++    /// 1 for the GUI's text (`RenderPipelines.GUI_TEXT`), which a resource
++    /// pack's text shader draws when it has one.
++    pub text: u32,
++}
++/// How a run of HUD vertices blends and tests depth.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum Blend {
++    /// `BlendFunction.TRANSLUCENT`.
++    Alpha,
++    /// `BlendFunction.INVERT` (`RenderPipelines.CROSSHAIR`, `GUI_INVERT`).
++    Invert,
++    /// `BlendFunction.ADDITIVE` (`RenderPipelines.GUI_TEXT_HIGHLIGHT`).
++    Additive,
++    /// Alpha blending with an isolated depth buffer and a pixel scissor.
++    Depth([u32; 4]),
++    /// `RenderPipelines.VIGNETTE`: the destination darkened by the texture
++    /// (`ZERO, ONE_MINUS_SRC_COLOR`).
++    Vignette,
++    /// `RenderPipelines.END_PORTAL` as a GUI fill: the End portal's layers
++    /// projected from the screen (`HudBatch::end_portal` sets the textures).
++    EndPortal,
++    /// An OptiFine CIT glint layer (`cit_glint`), blended as entry `n` of
++    /// `GlintTextures::blends` says.
++    CitGlint(u8),
++}
++/// What a `Blend::EndPortal` fill samples: the atlas rects (u0, v0, width,
++/// height) of `end_sky.png` and `end_portal.png`, and the `GameTime` uniform.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct EndPortalFill {
++    pub sprites: [[f32; 4]; 2],
++    pub game_time: f32,
++}
++pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
++    u32::from(a) << 24 | u32::from(b) << 16 | u32::from(g) << 8 | u32::from(r)
++}
++
++/// Pixels to copy into the shared atlas before the next HUD draw.
++#[derive(Clone, Debug)]
++pub struct Patch {
++    pub x: u32,
++    pub y: u32,
++    pub width: u32,
++    pub height: u32,
++    pub rgba: Vec<u8>,
++}
++
++// Checked on every target, including Cafe: the GX2 bridge consumes this layout.
++const _: () = {
++    assert!(core::mem::size_of::<HudVertex>() == 36);
++    assert!(core::mem::align_of::<HudVertex>() == 4);
++    assert!(core::mem::offset_of!(HudVertex, pos) == 0);
++    assert!(core::mem::offset_of!(HudVertex, uv) == 8);
++    assert!(core::mem::offset_of!(HudVertex, color) == 16);
++    assert!(core::mem::offset_of!(HudVertex, depth) == 20);
++    assert!(core::mem::offset_of!(HudVertex, glint_uv) == 24);
++    assert!(core::mem::offset_of!(HudVertex, text) == 32);
++};
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn packed_color_keeps_horizons_channel_order() {
++        assert_eq!(rgba(0x12, 0x34, 0x56, 0x78), 0x7856_3412);
++        let vertex = HudVertex {
++            pos: [1.0, 2.0],
++            uv: [0.25, 0.5],
++            color: rgba(0x12, 0x34, 0x56, 0x78),
++            depth: 0.75,
++            glint_uv: [0.0, 1.0],
++            text: 1,
++        };
++        let bytes = bytemuck::bytes_of(&vertex);
++        assert_eq!(&bytes[16..20], &0x7856_3412u32.to_ne_bytes());
++    }
++}
+diff --git a/crates/horizon-terrain-data/Cargo.toml b/crates/horizon-terrain-data/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..32bbe90e9c6510f4c04bd418f6bfe07f15dcb3c3
+--- /dev/null
++++ b/crates/horizon-terrain-data/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "horizon-terrain-data"
++version = "0.1.0"
++edition.workspace = true
++license.workspace = true
++rust-version.workspace = true
++description = "Portable terrain vertex data shared by Horizon render backends"
++
++[dependencies]
++bytemuck = { version = "1.24", default-features = false, features = ["derive"] }
++
++[lints]
++workspace = true
+diff --git a/crates/horizon-terrain-data/src/lib.rs b/crates/horizon-terrain-data/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..df1340116caf4dfcf151fc19bb5326239c73189a
+--- /dev/null
++++ b/crates/horizon-terrain-data/src/lib.rs
+@@ -0,0 +1,140 @@
++#![no_std]
++
++/// A section vertex: position, packed UV, sprite layer, smooth light, and
++/// RGBA8 colour. Its 24-byte layout is shared by Horizon's renderer and
++/// embedded backends that adapt the same mesher output.
++#[repr(C)]
++#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
++pub struct TerrainVertex {
++    /// Section-relative position.
++    pub pos: [f32; 3],
++    /// UV in fixed point, with [`UV_STEPS`] units per sprite coordinate.
++    pub uv: [u16; 2],
++    /// Sprite array layer, with Horizon's opaque-layer flag where applicable.
++    pub layer: u16,
++    /// Smooth light: sky in the low byte, block in the high byte.
++    pub light: u16,
++    /// RGBA8: red in the low byte, alpha in the high byte.
++    pub color: u32,
++}
++
++/// Fixed-point steps per unit of `TerrainVertex` UVs, which span `[0, 2)`.
++pub const UV_STEPS: f32 = 32768.0;
++/// Fixed-point steps per block of distant-terrain UVs, which span `[0, 2048)`.
++pub const TILED_UV_STEPS: f32 = 32.0;
++
++/// `v.round().clamp(0.0, 65535.0) as u16`, with clamping before conversion.
++#[inline]
++fn round_to_u16(v: f32) -> u16 {
++    let v = v.clamp(0.0, f32::from(u16::MAX));
++    let whole = v as u32;
++    (whole + u32::from(v - whole as f32 >= 0.5)) as u16
++}
++
++impl TerrainVertex {
++    pub fn new(pos: [f32; 3], uv: [f32; 2], layer: u16, color: u32, light: u16) -> Self {
++        Self {
++            pos,
++            uv: uv.map(|v| round_to_u16(v * UV_STEPS)),
++            layer,
++            light,
++            color,
++        }
++    }
++
++    /// A vertex whose UV was packed when the model was baked.
++    pub fn packed_uv(pos: [f32; 3], uv: [u16; 2], layer: u16, color: u32, light: u16) -> Self {
++        Self {
++            pos,
++            uv,
++            layer,
++            light,
++            color,
++        }
++    }
++
++    /// A vertex of a merged distant-terrain face; UVs are in blocks from its corner.
++    pub fn tiled(pos: [f32; 3], uv: [f32; 2], layer: u16, color: u32, light: u16) -> Self {
++        Self {
++            pos,
++            uv: uv.map(|v| round_to_u16(v * TILED_UV_STEPS)),
++            layer,
++            light,
++            color,
++        }
++    }
++
++    /// The UV the GPU samples.
++    pub fn uv(&self) -> [f32; 2] {
++        self.uv.map(|v| f32::from(v) / UV_STEPS)
++    }
++
++    /// Unpacks the vertex's little-endian RGBA8 value independent of CPU byte order.
++    pub fn rgba(&self) -> [u8; 4] {
++        [
++            self.color as u8,
++            (self.color >> 8) as u8,
++            (self.color >> 16) as u8,
++            (self.color >> 24) as u8,
++        ]
++    }
++}
++
++#[cfg(test)]
++extern crate std;
++
++#[cfg(test)]
++mod tests {
++    use super::TerrainVertex;
++    use std::vec;
++
++    #[test]
++    fn model_uvs_pack_exactly() {
++        for i in 0..=32 {
++            let u = i as f32 / 32.0;
++            let vertex = TerrainVertex::new([0.0; 3], [u, 1.0 - u], 0, 0, 0);
++            assert_eq!(vertex.uv(), [u, 1.0 - u]);
++        }
++    }
++
++    #[test]
++    fn uv_rounding_matches_f32_round() {
++        let reference = |v: f32| v.round().clamp(0.0, f32::from(u16::MAX)) as u16;
++        let mut values = vec![
++            f32::NAN,
++            f32::INFINITY,
++            f32::NEG_INFINITY,
++            -0.0,
++            0.5,
++            1.5,
++            65534.5,
++            1e9,
++        ];
++        for bits in (0..u32::MAX).step_by(9973) {
++            values.push(f32::from_bits(bits));
++        }
++        for i in 0..=140_000 {
++            values.push(i as f32 * 0.5 - 2.0);
++            values.push(i as f32 * 0.5 - 2.0 + f32::EPSILON);
++        }
++        for value in values {
++            assert_eq!(super::round_to_u16(value), reference(value), "{value:e}");
++        }
++    }
++
++    #[test]
++    fn rgba_unpack_is_independent_of_host_byte_order() {
++        let vertex = TerrainVertex::new([1.0, 2.0, 3.0], [0.5, 1.5], 7, 0xA1B2_C3D4, 0x1234);
++        assert_eq!(vertex.rgba(), [0xD4, 0xC3, 0xB2, 0xA1]);
++        assert_eq!(core::mem::size_of::<TerrainVertex>(), 24);
++    }
++
++    #[test]
++    fn non_grid_uvs_round_within_half_a_step() {
++        let uv = [0.5 + 0.25 * 0.3f32.sin(), 0.5 - 0.25 * 0.3f32.cos()];
++        let packed = TerrainVertex::new([0.0; 3], uv, 0, 0, 0).uv();
++        for (actual, expected) in packed.iter().zip(uv) {
++            assert!((actual - expected).abs() <= 0.5 / 32768.0);
++        }
++    }
++}
