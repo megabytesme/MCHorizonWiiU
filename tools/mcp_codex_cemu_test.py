@@ -191,7 +191,7 @@ def play_and_save(invoke, window, client_name, index, evidence):
     if evidence:
         # Leave time for terrain streaming before capturing both displays.
         # A live player can appear while the first visible sections are queued.
-        time.sleep(45)
+        time.sleep(int(os.environ.get("MCHORIZON_CEMU_CAPTURE_DELAY", "45")))
         shots = evidence / "portable/screenshots"
         previous = set(shots.glob("*.png"))
         press(window, 123)

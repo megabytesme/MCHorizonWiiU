@@ -1,0 +1,466 @@
+diff --git a/crates/horizon-client-render/src/cafe_pixels.rs b/crates/horizon-client-render/src/cafe_pixels.rs
+index 0421b1f2adc4bf0ba3cc34c1d2b51c28db876ecc..3b853f401191686e4ce06ba8c1f4c42a25e0fcc4 100644
+--- a/crates/horizon-client-render/src/cafe_pixels.rs
++++ b/crates/horizon-client-render/src/cafe_pixels.rs
+@@ -37,6 +37,43 @@ impl PackedPixels {
+         self.0.iter().map(|block| block.len()).sum()
+     }
+ 
++    /// Fill GX2's mapped texture directly. A padded surface needs at most
++    /// one block of scratch, even when an atlas block spans several rows.
++    pub(crate) fn write_pitched(
++        &self,
++        target: &mut [u8],
++        row_bytes: usize,
++        pitch: usize,
++        height: usize,
++    ) -> Option<()> {
++        let length = row_bytes.checked_mul(height)?;
++        if row_bytes == 0
++            || pitch < row_bytes
++            || target.len() != pitch.checked_mul(height)?
++            || self.0.len() != length.div_ceil(BLOCK_BYTES)
++        {
++            return None;
++        }
++        if pitch == row_bytes {
++            for (packed, block) in self.0.iter().zip(target.chunks_mut(BLOCK_BYTES)) {
++                if decompress_into(packed, block).ok()? != block.len() {
++                    return None;
++                }
++            }
++        } else {
++            let mut scratch = vec![0; length.min(BLOCK_BYTES)];
++            for (index, packed) in self.0.iter().enumerate() {
++                let offset = index * BLOCK_BYTES;
++                let block = &mut scratch[..(length - offset).min(BLOCK_BYTES)];
++                if decompress_into(packed, block).ok()? != block.len() {
++                    return None;
++                }
++                copy_rows(block, target, offset, row_bytes, pitch);
++            }
++        }
++        Some(())
++    }
++
+     pub(crate) fn decompress(&self, length: usize) -> Option<Vec<u8>> {
+         if self.0.len() != length.div_ceil(BLOCK_BYTES) {
+             return None;
+@@ -51,6 +88,23 @@ impl PackedPixels {
+     }
+ }
+ 
++pub(crate) fn copy_rows(
++    mut source: &[u8],
++    target: &mut [u8],
++    mut offset: usize,
++    row_bytes: usize,
++    pitch: usize,
++) {
++    while !source.is_empty() {
++        let (row, column) = (offset / row_bytes, offset % row_bytes);
++        let copied = source.len().min(row_bytes - column);
++        let start = row * pitch + column;
++        target[start..start + copied].copy_from_slice(&source[..copied]);
++        source = &source[copied..];
++        offset += copied;
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -65,6 +119,35 @@ mod tests {
+         assert!(packed.decompress(pixels.len() - 1).is_none());
+     }
+ 
++    #[test]
++    fn mapped_decode_keeps_padded_rows_and_cross_block_pixels() {
++        let row_bytes = 1304;
++        let height = 410;
++        let pitch = 1408;
++        let pixels: Vec<u8> = (0..row_bytes * height)
++            .map(|index| (index / 29) as u8)
++            .collect();
++        let packed = PackedPixels::compress(&pixels).unwrap();
++        let mut tight = vec![0; pixels.len()];
++        packed
++            .write_pitched(&mut tight, row_bytes, row_bytes, height)
++            .unwrap();
++        assert_eq!(tight, pixels);
++        let mut padded = vec![0xcd; pitch * height];
++        packed
++            .write_pitched(&mut padded, row_bytes, pitch, height)
++            .unwrap();
++        for (row, expected) in padded.chunks(pitch).zip(pixels.chunks(row_bytes)) {
++            assert_eq!(&row[..row_bytes], expected);
++            assert!(row[row_bytes..].iter().all(|&byte| byte == 0xcd));
++        }
++        assert!(
++            packed
++                .write_pitched(&mut padded, row_bytes, row_bytes - 1, height)
++                .is_none()
++        );
++    }
++
+     #[test]
+     fn an_incompressible_texture_keeps_its_existing_backing() {
+         let mut state = 17_u32;
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index e29b96fb39145cd895bbda209362f8bb2c9c2af5..b942b2009d70a63ea43eb92a3fa939a93695f2ee 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -896,6 +896,25 @@ impl HudAtlas {
+             .filter(|p| p.len() == size);
+         std::borrow::Cow::Owned(pixels.unwrap_or_else(|| vec![0; size]))
+     }
++    #[cfg(target_os = "cafe")]
++    pub fn write_mapped_rgba(&self, target: &mut [u8], pitch: usize) -> bool {
++        let row_bytes = self.width as usize * 4;
++        let height = self.height as usize;
++        if row_bytes == 0 || pitch < row_bytes || pitch.checked_mul(height) != Some(target.len()) {
++            return false;
++        }
++        if self.pixels.is_empty() {
++            return self.packed.as_ref().is_some_and(|packed| {
++                packed.write_pitched(target, row_bytes, pitch, height).is_some()
++            });
++        }
++        if self.pixels.len() != row_bytes * height {
++            return false;
++        }
++        crate::cafe_pixels::copy_rows(&self.pixels, target, 0, row_bytes, pitch);
++        true
++    }
++
+     /// Keep the pixels compressed from now on, once a renderer has them: the
+     /// window's GPU holds the atlas, and a copy as built only serves a
+     /// renderer made again (another window, a lost device, another graphics
+@@ -920,7 +939,7 @@ impl HudAtlas {
+         self.packed = Some(slot);
+     }
+ 
+-    /// GX2 holds the uploaded image. Keep only a compact copy for foreground
++    /// Retain a compact CPU copy for the mapped GX2 upload and foreground
+     /// rebuilds, using one block of compression workspace on this thread.
+     #[cfg(target_os = "cafe")]
+     pub fn pack_pixels(&mut self) {
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 3c24bef4986911109e5bdf5b03025f822e10ab67..ba9768859d03f06c673d5b47a8ea060813e78264 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -278,10 +278,10 @@ impl<'resources> CafeLoadingSession<'resources> {
+             log::info!("Horizon Cafe loading draw host_iteration={iteration}");
+         }
+         self.loading.cafe_viewport = size;
+-        presenter.prepare_loading(self.loading_artwork())?;
+         if let Some(gui) = &mut self.loading.gui {
+             gui.atlas.pack_pixels();
+         }
++        presenter.prepare_loading(self.loading_artwork())?;
+         let mut batch = HudBatch::new(size, self.loading.settings.gui_scale_inputs());
+         self.loading.draw_menu(&mut batch);
+         self.loading.menu.frame_drawn((batch.width, batch.height));
+@@ -667,6 +667,7 @@ impl CafeGameSession<'_> {
+         }
+ 
+         horizon_client_platform::cafe_span!(artwork, StageArtwork);
++        self.game.gui.atlas.pack_pixels();
+         backend.prepare_game_artwork(CafeGameArtwork {
+             gamma: self.game.settings.gamma,
+             atlas: &self.game.gui.atlas,
+@@ -684,7 +685,6 @@ impl CafeGameSession<'_> {
+             hud_generation: self.game.gui.atlas.revision,
+             terrain_generation: self.game.pack.render.generation,
+         })?;
+-        self.game.gui.atlas.pack_pixels();
+         self.game.pack.render.pixels.pack();
+         #[cfg(target_os = "cafe")]
+         drop(artwork);
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index cdb12a65a72b6607b48749f928f3a905c6614f56..7646950867712e7e3b634e4c1b114540b912d447 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -4,6 +4,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <coreinit/debug.h>
++#include <coreinit/memdefaultheap.h>
+ #include <gx2/clear.h>
+ #include <gx2/context.h>
+ #include <gx2/draw.h>
+@@ -52,6 +53,7 @@ _Static_assert(offsetof(HorizonHudFrame, scale) == 32, "HUD frame scale offset c
+ _Static_assert(offsetof(HorizonHudFrame, pack_text_shader) == 36, "HUD frame shader offset changed");
+ 
+ struct HorizonGx2Hud {
++   uint8_t *atlas_storage;
+    WHBGfxShaderGroup shader;
+    GX2RBuffer buffer;
+    GX2Texture atlas, glint;
+@@ -82,11 +84,12 @@ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud)
+    horizon_hud_cit_destroy(hud->cit);
+    horizon_hud_texture_destroy(&hud->glint);
+    horizon_hud_texture_destroy(&hud->atlas);
++   if (hud->atlas_storage) MEMFreeToDefaultHeap(hud->atlas_storage);
+    if (hud->shader_loaded) WHBGfxFreeShaderGroup(&hud->shader);
+    free(hud);
+ }
+ 
+-int horizon_hud_texture_create(GX2Texture *texture, uint32_t width, uint32_t height, const uint8_t *rgba)
++static void set_texture_layout(GX2Texture *texture, uint32_t width, uint32_t height)
+ {
+    GX2Surface *surface = &texture->surface;
+    surface->use = GX2_SURFACE_USE_TEXTURE;
+@@ -101,6 +104,12 @@ int horizon_hud_texture_create(GX2Texture *texture, uint32_t width, uint32_t hei
+    texture->viewNumMips = 1;
+    texture->viewNumSlices = 1;
+    texture->compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
++}
++
++int horizon_hud_texture_create(GX2Texture *texture, uint32_t width, uint32_t height, const uint8_t *rgba)
++{
++   set_texture_layout(texture, width, height);
++   GX2Surface *surface = &texture->surface;
+    if (!GX2RCreateSurface(surface, texture_flags)) return 0;
+    uint8_t *pixels = GX2RLockSurfaceEx(surface, 0, texture_flags);
+    if (!pixels) {
+@@ -115,6 +124,37 @@ int horizon_hud_texture_create(GX2Texture *texture, uint32_t width, uint32_t hei
+    return 1;
+ }
+ 
++static int fill_mapped_atlas(HorizonGx2Hud *hud, uint32_t width, uint32_t height,
++                             HorizonHudFillAtlas fill, const void *context)
++{
++   GX2Texture *texture = &hud->atlas;
++   set_texture_layout(texture, width, height);
++   GX2Surface *surface = &texture->surface;
++   GX2CalcSurfaceSizeAndAlignment(surface);
++   if (!surface->imageSize || !surface->alignment || surface->mipmapSize) return 0;
++   uint8_t *storage = MEMAllocFromDefaultHeapEx(surface->imageSize, surface->alignment);
++   if (!storage) return 0;
++   if (!GX2RCreateSurfaceUserMemory(surface, storage, NULL, texture_flags)) {
++      MEMFreeToDefaultHeap(storage);
++      memset(texture, 0, sizeof(*texture));
++      return 0;
++   }
++   hud->atlas_storage = storage;
++   uint8_t *pixels = GX2RLockSurfaceEx(surface, 0, texture_flags);
++   if (!pixels) return 0;
++   const size_t rows = (size_t)surface->pitch * height * 4;
++   int filled = 0;
++   if (rows <= surface->imageSize && surface->pitch >= width) {
++      memset(pixels, 0, rows);
++      filled = fill(context, pixels, surface->pitch);
++   }
++   GX2RUnlockSurfaceEx(surface, 0, texture_flags);
++   if (!filled) return 0;
++   GX2InitTextureRegs(texture);
++   OSReport("Horizon memory gx2_hud mapped_bytes=%u pitch=%u\n", surface->imageSize, surface->pitch);
++   return 1;
++}
++
+ HorizonHudResult horizon_gx2_hud_set_glint_texture(HorizonGx2Hud *hud, uint32_t width, uint32_t height,
+                                                   const uint8_t *rgba, size_t length)
+ {
+@@ -158,17 +198,18 @@ static int pixel_uniform_offset(const GX2PixelShader *shader, const char *name,
+    return 1;
+ }
+ 
+-HorizonHudResult horizon_gx2_hud_create(HorizonGx2Hud **out, const void *gfd,
+-                                        uint32_t width, uint32_t height,
+-                                        const uint8_t *rgba, size_t length,
+-                                        uint32_t capacity)
++static HorizonHudResult create_hud(HorizonGx2Hud **out, const void *gfd,
++                                   uint32_t width, uint32_t height,
++                                   const uint8_t *rgba, size_t length,
++                                   HorizonHudFillAtlas fill, const void *context,
++                                   uint32_t capacity)
+ {
+    if (!out) return HORIZON_HUD_INVALID;
+    *out = NULL;
+    size_t atlas_bytes;
+-   if (!gfd || !rgba || !width || !height || !capacity ||
++   if (!gfd || !width || !height || !capacity ||
+        width > 16384 || height > 16384 || !horizon_hud_rgba_bytes(width, height, &atlas_bytes) ||
+-       atlas_bytes > length ||
++       (!fill && (!rgba || atlas_bytes > length)) ||
+        capacity > UINT32_MAX / sizeof(HorizonHudGpuVertex)) return HORIZON_HUD_INVALID;
+    HorizonGx2Hud *hud = calloc(1, sizeof(*hud));
+    if (!hud) return HORIZON_HUD_ALLOCATION_FAILED;
+@@ -212,7 +253,9 @@ HorizonHudResult horizon_gx2_hud_create(HorizonGx2Hud **out, const void *gfd,
+    hud->buffer.elemSize = sizeof(HorizonHudGpuVertex);
+    hud->buffer.elemCount = capacity;
+    if (!GX2RCreateBuffer(&hud->buffer)) goto fail;
+-   if (!horizon_hud_texture_create(&hud->atlas, width, height, rgba)) goto fail;
++   if (fill) {
++      if (!fill_mapped_atlas(hud, width, height, fill, context)) goto fail;
++   } else if (!horizon_hud_texture_create(&hud->atlas, width, height, rgba)) goto fail;
+    GX2InitSampler(&hud->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
+    GX2InitSampler(&hud->linear_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+    GX2InitSampler(&hud->glint_sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+@@ -227,6 +270,26 @@ fail:
+    return failure;
+ }
+ 
++HorizonHudResult horizon_gx2_hud_create(HorizonGx2Hud **out, const void *gfd,
++                                        uint32_t width, uint32_t height,
++                                        const uint8_t *rgba, size_t length,
++                                        uint32_t capacity)
++{
++   return create_hud(out, gfd, width, height, rgba, length, NULL, NULL, capacity);
++}
++
++HorizonHudResult horizon_gx2_hud_create_mapped(HorizonGx2Hud **out, const void *gfd,
++                                               uint32_t width, uint32_t height,
++                                               HorizonHudFillAtlas fill, const void *context,
++                                               uint32_t capacity)
++{
++   if (!fill) {
++      if (out) *out = NULL;
++      return HORIZON_HUD_INVALID;
++   }
++   return create_hud(out, gfd, width, height, NULL, 0, fill, context, capacity);
++}
++
+ static HorizonHudResult validate_target_viewport(const HorizonHudFrame *f,
+                                                   uint32_t x, uint32_t y,
+                                                   uint32_t width, uint32_t height)
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index aea728e70c2b55f9892e71c77457fe9ec868d4e0..7240194c0e1cbefbf0b466e97aba3a7f5c5ac645 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -54,6 +54,11 @@ typedef enum HorizonHudResult {
+ } HorizonHudResult;
+ 
+ typedef struct HorizonGx2Hud HorizonGx2Hud;
++typedef int (*HorizonHudFillAtlas)(const void *context, uint8_t *pixels, uint32_t pitch);
++HorizonHudResult horizon_gx2_hud_create_mapped(HorizonGx2Hud **out, const void *gfd,
++                                               uint32_t width, uint32_t height,
++                                               HorizonHudFillAtlas fill, const void *context,
++                                               uint32_t capacity);
+ struct HorizonHudCitSlot;
+ 
+ /* The GFD shader bytes must remain alive until destroy; atlas is copied. */
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index 02b54ce46c02320e7a37435b40563f987e57e193..100356a2bd489a4005fdd76e0d049afe0ee47840 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -222,7 +222,18 @@ mod cafe {
+     use super::*;
+     use std::{ffi::c_void, marker::PhantomData, ptr::NonNull};
+ 
++    type FillAtlas = unsafe extern "C" fn(*const c_void, *mut u8, u32) -> std::ffi::c_int;
++
+     extern "C" {
++        fn horizon_gx2_hud_create_mapped(
++            out: *mut *mut c_void,
++            gfd: *const c_void,
++            width: u32,
++            height: u32,
++            fill: FillAtlas,
++            context: *const c_void,
++            capacity: u32,
++        ) -> i32;
+         fn horizon_gx2_hud_create(
+             out: *mut *mut c_void,
+             gfd: *const c_void,
+@@ -381,6 +392,35 @@ mod cafe {
+             })
+         }
+ 
++        /// # Safety
++        /// The shader and GX2 must meet new's requirements. The synchronous fill
++        /// callback must honor the mapped surface dimensions and the context.
++        pub unsafe fn new_mapped(
++            gfd: &'shader [u8],
++            width: u32,
++            height: u32,
++            capacity: u32,
++            fill: FillAtlas,
++            context: *const c_void,
++        ) -> Result<Self, Error> {
++            let mut hud = std::ptr::null_mut();
++            result(horizon_gx2_hud_create_mapped(
++                &mut hud,
++                gfd.as_ptr().cast(),
++                width,
++                height,
++                fill,
++                context,
++                capacity,
++            ))?;
++            let hud = NonNull::new(hud).ok_or(Error::Invalid)?;
++            Ok(Self {
++                hud,
++                _shader: PhantomData,
++                _thread: PhantomData,
++            })
++        }
++
+         /// # Safety
+         /// The calling render thread must have a valid GX2 color target bound.
+         /// This changes GX2 render state.
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index e167e6fcf743ac297c61a4c5d24c26a20089500f..921c102a59df6eb9710856bc6fae7d7a8edde876 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -5,14 +5,36 @@ use horizon_client_render::hud::{HudAtlas, HudBatch};
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ use super::Error;
+ use super::{Blend, Frame};
+-#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
++#[cfg(test)]
+ use std::borrow::Cow;
+ use std::ops::Range;
+ 
++#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
++unsafe extern "C" fn fill_gx2_atlas(
++    context: *const std::ffi::c_void,
++    pixels: *mut u8,
++    pitch: u32,
++) -> std::ffi::c_int {
++    // The constructor lends this atlas for the duration of the synchronous call.
++    let atlas = unsafe { &*context.cast::<HudAtlas>() };
++    let Some(pitch) = (pitch as usize).checked_mul(4) else {
++        return 0;
++    };
++    let Some(length) = pitch.checked_mul(atlas.height as usize) else {
++        return 0;
++    };
++    if pixels.is_null() || length > isize::MAX as usize {
++        return 0;
++    }
++    // The native caller verifies the mapped bounds and initializes every byte.
++    let target = unsafe { std::slice::from_raw_parts_mut(pixels, length) };
++    i32::from(atlas.write_mapped_rgba(target, pitch))
++}
++
+ /// Prepare the original CPU atlas for a new renderer. Horizon's atlas pixels
+ /// omit glyphs rasterized into an earlier GPU texture, so their cache must be
+ /// reset before the new renderer is created, as in `build_renderer`.
+-#[cfg(any(test, all(feature = "cafe", target_arch = "powerpc")))]
++#[cfg(test)]
+ fn prepare_atlas(atlas: &HudAtlas) -> Cow<'_, [u8]> {
+     atlas.font.reset_cache();
+     atlas.pixels()
+@@ -185,11 +207,15 @@ impl<'shader> HorizonPresenter<'shader> {
+     /// presenter before laying out its first batch: this resets the font cache
+     /// and batches from an earlier renderer may contain stale glyph UVs.
+     pub unsafe fn new(gfd: &'shader [u8], atlas: &HudAtlas, capacity: u32) -> Result<Self, Error> {
+-        // `pixels()` can decompress into an owned buffer. GX2 copies those
+-        // pixels during creation, before the temporary buffer is dropped.
+-        let pixels = prepare_atlas(atlas);
+-        let mut presenter =
+-            super::Presenter::new(gfd, atlas.width, atlas.height, &pixels, capacity)?;
++        atlas.font.reset_cache();
++        let mut presenter = super::Presenter::new_mapped(
++            gfd,
++            atlas.width,
++            atlas.height,
++            capacity,
++            fill_gx2_atlas,
++            std::ptr::from_ref(atlas).cast(),
++        )?;
+         let (rgba, width, height) = &atlas.glint;
+         if !rgba.is_empty() {
+             presenter.set_glint_texture(*width, *height, rgba)?;
