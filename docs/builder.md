@@ -97,9 +97,11 @@ The local directory contains `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and
 The active `build-hosted` command still uses the 0.7.0 release recipe.
 
 Inspect an RPX against the measured Aroma loader budget before hardware use.
-The command prints the stored and decompressed code sizes, verifies the code
-span against the RPL file info, and exits unsuccessfully if the estimated
-allocation exceeds the 67,096,512-byte contiguous heap observed on hardware.
+The command verifies the mapped code span against the RPL file info. It
+estimates the simultaneous allocations for executable text and the stored
+relocation buffer, using the allocation alignment and pre-relocation overhead
+observed on hardware. It rejects estimates above the 67,096,512-byte
+contiguous heap of the Aroma wrapper.
 The Nightly builder runs this check before writing its successful build
 receipt and saves the measurements in `code-heap.json`. A passing estimate
 still needs a console boot test.

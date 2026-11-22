@@ -8,20 +8,27 @@ FILE_INFO = Struct(">24I")
 CODE_BASE = 0x02000000
 DATA_BASE = 0x10000000
 SHT_PROGBITS = 1
+SHT_RELA = 4
 SHT_NOBITS = 8
+SHT_REL = 9
 SHT_RPL_FILEINFO = 0x80000004
 SHF_EXECINSTR = 4
 SHF_DEFLATED = 0x08000000
 
-# Aroma's Mocha wrapper reserves 64 MiB. The physical RC 15 log measured
-# the contiguous space after heap bookkeeping and the allocator's extra
-# 64 bytes for an already cache-line-aligned text allocation.
+# Aroma's Mocha wrapper reserves 64 MiB. RC 15 measured the contiguous
+# heap before allocating text. RC 16 measured another 6,208 bytes in use
+# when the loader tried to allocate its combined relocation buffer.
 AROMA_CONTIGUOUS_BYTES = 67_096_512
+AROMA_PRE_RELOCATION_OVERHEAD = 6_208
 CAFE_ALLOCATION_OVERHEAD = 64
 
 
-def read_code_heap(path):
-    """Check the decompressed code span and RPL file-info declaration."""
+def cache_line_allocation(size):
+    return ((size + 63) & -64) + CAFE_ALLOCATION_OVERHEAD
+
+
+def read_code_heap(path, *, legacy_text_only=False):
+    """Check the mapped text and loader's stored relocation buffer."""
     with path.open("rb") as stream:
         size = stream.seek(0, 2)
 
@@ -39,8 +46,13 @@ def read_code_heap(path):
 
         code = []
         file_info = []
+        relocation_bytes = 0
         for index, section in enumerate(SECTION_HEADER.iter_unpack(read_at(table, count * header_size))):
             _, section_type, flags, address, offset, stored, _, _, alignment, _ = section
+            if section_type in (SHT_RELA, SHT_REL):
+                if offset + stored > size:
+                    raise ValueError("truncated RPX relocation section")
+                relocation_bytes += stored
             if section_type == SHT_RPL_FILEINFO:
                 if stored < FILE_INFO.size or flags & SHF_DEFLATED:
                     raise ValueError("unsupported Cafe RPL file info")
@@ -77,11 +89,8 @@ def read_code_heap(path):
     if ((span + alignment - 1) & -alignment) != declared:
         raise ValueError("RPX code span disagrees with the declared Cafe text size")
 
-    # The largest code section alone caused the measured physical failure.
-    # Budget the whole mapped span and round up to a conservative 64-byte
-    # boundary to account for section gaps and any trailing alignment.
-    needed = ((declared + 63) & -64) + CAFE_ALLOCATION_OVERHEAD
-    return {
+    needed = cache_line_allocation(declared)
+    report = {
         "rpx_bytes": size,
         "code_sections": code,
         "expanded_executable_bytes": sum(item["expanded_bytes"] for item in code if item["executable"]),
@@ -96,6 +105,18 @@ def read_code_heap(path):
         "observed_contiguous_bytes": AROMA_CONTIGUOUS_BYTES,
         "remaining_bytes": AROMA_CONTIGUOUS_BYTES - needed,
     }
+    if not legacy_text_only:
+        # The RC 16 allocation request equals the sum of stored sizes,
+        # including the small relocation sections stored without deflate.
+        relocation_allocation = cache_line_allocation(relocation_bytes) if relocation_bytes else 0
+        overhead = AROMA_PRE_RELOCATION_OVERHEAD if relocation_bytes else 0
+        report.update(
+            stored_relocation_bytes=relocation_bytes,
+            estimated_relocation_allocation_bytes=relocation_allocation,
+            observed_pre_relocation_overhead_bytes=overhead,
+            remaining_bytes=report["remaining_bytes"] - relocation_allocation - overhead,
+        )
+    return report
 
 
 def require_aroma_fit(report):

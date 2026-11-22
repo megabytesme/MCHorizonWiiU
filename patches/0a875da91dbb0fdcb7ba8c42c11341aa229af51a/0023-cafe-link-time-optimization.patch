@@ -1,0 +1,13 @@
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index e76582975f94a895263634f7b1091d99c7e67273..cdc50472af4e895e05ba7f142056961cf18dfcd9 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -26,6 +26,8 @@ serde_json = "1"
+ 
+ [profile.release]
+ opt-level = "z"
++lto = "fat"
++codegen-units = 1
+ 
+ [patch.crates-io]
+ getrandom = { path = "../../third_party/getrandom-0.4.3" }

@@ -57,7 +57,10 @@ def main(argv=None):
             directory = args.record.resolve().parent
             core.verify_outputs(record, directory)
             if "code_heap" in record:
-                actual = rpx.read_code_heap(directory / native.HOSTED_PACKAGES[0])
+                actual = rpx.read_code_heap(
+                    directory / native.HOSTED_PACKAGES[0],
+                    legacy_text_only="stored_relocation_bytes" not in record["code_heap"],
+                )
                 if actual != record["code_heap"]:
                     raise ValueError("Aroma code heap report differs from the RPX")
                 rpx.require_aroma_fit(actual)

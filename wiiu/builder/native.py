@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from contextlib import contextmanager
 
 from core import (ROOT, TARGET, artifacts, digest, directory_inventory, file_digest,
@@ -253,6 +254,28 @@ BUILD_SETTINGS = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC"}
 LEGACY_BUILD_SETTINGS = {**BUILD_SETTINGS, "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
 
 
+def hosted_lto_link(directory, archive, commands):
+    """Link core for Night's separate Rust object after game LTO internalizes it."""
+    libdir = Path(subprocess.check_output(
+        [commands["rustc"], "--print", "target-libdir", "--target", TARGET], text=True).strip())
+    libraries = list(libdir.glob("libcore-*.rlib"))
+    if len(libraries) != 1:
+        raise ValueError("expected one Cafe core library for the hosted Night shell")
+    core = libraries[0]
+    undefined = subprocess.check_output([commands["powerpc-eabi-nm"], "-u", str(core)],
+                                        text=True, stderr=subprocess.DEVNULL)
+    panic = set(re.findall(r"^\s*U\s+(_R\w+17rust_begin_unwind)$", undefined, re.MULTILINE))
+    if len(panic) != 1:
+        raise ValueError("could not identify the pinned Cafe core panic entry")
+
+    # Keep the std panic implementation already linked into the game. The
+    # separate core archive must be able to resolve its now-local symbol.
+    output = directory / "libhorizon_wiiu_loading_hosted_lto.a"
+    expose_panic = [commands["powerpc-eabi-objcopy"], "--globalize-symbol=" + panic.pop(),
+                    str(archive), str(output)]
+    return output, core, expose_panic
+
+
 def compile_game(directory, source, manifest, tools, sysroot, packages, embedded, *,
                  settings=LEGACY_BUILD_SETTINGS):
     commands = {name: entry["path"] for name, entry in tools["files"].items()}
@@ -284,7 +307,14 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
              "--lib", "--manifest-path", str(manifest), "--target", TARGET, "--jobs", jobs]
     run(cargo, env)
+    build_commands = [cargo]
     archive = target / TARGET / "release/libhorizon_wiiu_loading_app.a"
+    profile = tomllib.loads(manifest.read_text()).get("profile", {}).get("release", {})
+    core = None
+    if embedded and profile.get("lto") in (True, "fat"):
+        archive, core, expose_panic = hosted_lto_link(directory, archive, commands)
+        run(expose_panic, env)
+        build_commands.append(expose_panic)
     native = directory / "native"
     configure = [
         commands["powerpc-eabi-cmake"], "-S", str(source / "wiiu/loading_app"), "-B", str(native),
@@ -300,6 +330,17 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
             f"-DHORIZON_WIIU_HOSTED_SHELL={ROOT / 'wiiu/pregame'}",
             f"-DCAFE_RUSTC={commands['rustc']}",
         ])
+    if core is not None:
+        # WUT sets its own standard libraries. Append core to the hosted
+        # target's libraries after CMake has created the target.
+        core_link = directory / "hosted-lto-link.cmake"
+        core_link.write_text(
+            'cmake_language(DEFER CALL target_link_libraries horizon_wiiu_loading_app '
+            'PRIVATE "${HORIZON_WIIU_HOSTED_CORE}")\n', encoding="utf-8")
+        configure.extend([
+            f"-DCMAKE_PROJECT_horizon_wiiu_loading_app_INCLUDE={core_link}",
+            f"-DHORIZON_WIIU_HOSTED_CORE={core}",
+        ])
     link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
     run(configure, env)
     run(link, env)
@@ -308,8 +349,12 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     if any(name not in imports for name in ("AXInit", "NSSGetRandom", "FSFlushFile")):
         raise ValueError("native game package is missing the expected Cafe imports")
     if embedded:
-        symbols = subprocess.check_output([commands["powerpc-eabi-nm"], "-g", "--defined-only",
+        scope = ["-g"] if core is None else []
+        symbols = subprocess.check_output([commands["powerpc-eabi-nm"], *scope, "--defined-only",
             str(native / "horizon_wiiu_loading_app.elf")], text=True)
+        if core is not None and ("OSGetUPID" not in imports or
+                                 re.search(r" [tT] _R\w+3std7process2id$", symbols, re.MULTILINE)):
+            raise ValueError("hosted LTO requires direct Cafe process identity calls")
         for name in ("main", "shell_process", "horizon_pregame_run", "horizon_hosted_game_run"):
             if sum(line.endswith(f" T {name}") for line in symbols.splitlines()) != 1:
                 raise ValueError(f"combined executable must define {name} exactly once")
@@ -318,7 +363,7 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     pack = [commands["wuhbtool"], str(directory / packages[0]),
             str(directory / packages[1]), f"--name={title}", "--short-name=Horizon"]
     run(pack, env)
-    return [cargo, configure, link, pack]
+    return [*build_commands, configure, link, pack]
 
 
 def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash=None, integrated=False):

@@ -1,0 +1,341 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 0b17802e8759f6cc98f007375b0d1627d6ec7074..c8d1333146984f7bb5406e15f4153102af66b243 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2102,6 +2102,7 @@ dependencies = [
+ name = "horizon-core"
+ version = "0.1.0"
+ dependencies = [
++ "horizon-system",
+  "libm",
+  "log",
+  "portable-atomic",
+diff --git a/crates/horizon-client-render/src/datapack.rs b/crates/horizon-client-render/src/datapack.rs
+index a483ca64f13cc0f32bee635ccb0e03196e37e333..276167cb1dec3ebf5b981b1c494433c19d1245cf 100644
+--- a/crates/horizon-client-render/src/datapack.rs
++++ b/crates/horizon-client-render/src/datapack.rs
+@@ -357,7 +357,7 @@ pub fn temp_folder() -> std::io::Result<PathBuf> {
+         .duration_since(std::time::UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_nanos();
+-    let dir = std::env::temp_dir().join(format!("mcworld-{}-{nanos}", std::process::id()));
++    let dir = std::env::temp_dir().join(format!("mcworld-{}-{nanos}", horizon_core::process_id()));
+     std::fs::create_dir_all(&dir)?;
+     Ok(dir)
+ }
+diff --git a/crates/horizon-client-render/src/gfx/screenshot.rs b/crates/horizon-client-render/src/gfx/screenshot.rs
+index 9bcd8882580b7257674dc81eef06545531ab3b60..5439560b713ddfe19f3f57f3890e9bf66c5dd9fa 100644
+--- a/crates/horizon-client-render/src/gfx/screenshot.rs
++++ b/crates/horizon-client-render/src/gfx/screenshot.rs
+@@ -211,7 +211,7 @@ fn publish_new(path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<(
+         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         let temp = dir.join(format!(
+             ".horizon-screenshot-{}-{n}.tmp",
+-            std::process::id()
++            horizon_core::process_id()
+         ));
+         match std::fs::File::create_new(&temp) {
+             Ok(_) => break temp,
+diff --git a/crates/horizon-client-render/src/sprite_cache.rs b/crates/horizon-client-render/src/sprite_cache.rs
+index 1e8ad19ad7b3c9d00e2b57145b840f2b0930e877..d7d9ea025c7eff5dc84c56fead1c40e3790ae4d6 100644
+--- a/crates/horizon-client-render/src/sprite_cache.rs
++++ b/crates/horizon-client-render/src/sprite_cache.rs
+@@ -72,7 +72,7 @@ impl SpriteCache {
+         self.dirty = false;
+         let temporary = self
+             .path
+-            .with_extension(format!("{}.tmp", std::process::id()));
++            .with_extension(format!("{}.tmp", horizon_core::process_id()));
+         if fs::write(&temporary, serialize(self.fingerprint, &self.entries)).is_ok()
+             && fs::rename(&temporary, &self.path).is_err()
+         {
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index 456a0378c001b36d1ecc674eadaf2d9750b23382..9723f6ed265a823db9d23ff8eea37b28f2227492 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -252,7 +252,7 @@ fn time_passes(control: &Control, scene: &str, report: &mut Report) -> Result<bo
+ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+     let scenario = Scenario::parse(&setup.scenario)?;
+     let mut report = Report::new(Kind::Game, setup.app.clone());
+-    let pid = std::process::id();
++    let pid = horizon_core::process_id();
+     report.conditions.load_avg_1m = horizon_bench::load_average();
+     report.conditions.power = horizon_bench::power_source().map(str::to_owned);
+     let rss = RssSampler::start(pid);
+diff --git a/crates/horizon-client/src/game/interface/dedicated/mod.rs b/crates/horizon-client/src/game/interface/dedicated/mod.rs
+index cc1688e72ed1ce695ac13f8e9a97ff745bb1231b..a95839d21b12f8a208c2d148529d6ed3e201bc3b 100644
+--- a/crates/horizon-client/src/game/interface/dedicated/mod.rs
++++ b/crates/horizon-client/src/game/interface/dedicated/mod.rs
+@@ -461,7 +461,7 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
+             "serverId" | "pidFile" => {
+                 let value = value.expect("parsed operand");
+                 if name == "pidFile" {
+-                    std::fs::write(value, std::process::id().to_string())?;
++                    std::fs::write(value, horizon_core::process_id().to_string())?;
+                 }
+             }
+             _ => return Err(format!("{name} is not a recognized option").into()),
+diff --git a/crates/horizon-client/src/game/modding/native_config_files.rs b/crates/horizon-client/src/game/modding/native_config_files.rs
+index a1a7fa10769d3e972060df2eaa7e3843147d0d37..45ff6a629dace4812e476059b94df870717c67ba 100644
+--- a/crates/horizon-client/src/game/modding/native_config_files.rs
++++ b/crates/horizon-client/src/game/modding/native_config_files.rs
+@@ -276,7 +276,7 @@ fn write(root: &FileRoot, file: &ConfigPath, bytes: &[u8]) -> Result<(), ConfigF
+     #[cfg(target_os = "cafe")]
+     let process = 0; // Cafe runs a single application in this title's address space.
+     #[cfg(not(target_os = "cafe"))]
+-    let process = std::process::id();
++    let process = horizon_core::process_id();
+     let temp = format!(
+         "{name}.{process}-{}.tmp",
+         WRITES.fetch_add(1, Ordering::Relaxed)
+diff --git a/crates/horizon-client/src/mod_content/root_lifetime.rs b/crates/horizon-client/src/mod_content/root_lifetime.rs
+index 7a35ab285b65ee52aa6603f35356f034c0de0674..8953abffd8d6973b92f29b66f438e700231c438e 100644
+--- a/crates/horizon-client/src/mod_content/root_lifetime.rs
++++ b/crates/horizon-client/src/mod_content/root_lifetime.rs
+@@ -131,7 +131,10 @@ fn retire_root(
+         return Ok(None);
+     }
+     let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+-    let doomed = path.with_file_name(format!("{name}{PRUNING}{}-{serial}", std::process::id()));
++    let doomed = path.with_file_name(format!(
++        "{name}{PRUNING}{}-{serial}",
++        horizon_core::process_id()
++    ));
+     fs::rename(path, &doomed)?;
+     let _ = fs::remove_file(used);
+     Ok(Some(doomed))
+diff --git a/crates/horizon-client/src/offline_name.rs b/crates/horizon-client/src/offline_name.rs
+index e1f6d6390dcb9f471f4f56305d2d09a54f8984ab..95288e00d2f8553fc6f89b70cb7574b3daf45256 100644
+--- a/crates/horizon-client/src/offline_name.rs
++++ b/crates/horizon-client/src/offline_name.rs
+@@ -52,7 +52,7 @@ fn seed() -> u64 {
+         .duration_since(std::time::UNIX_EPOCH)
+         .map_or(0, |d| d.as_nanos() as u64);
+     // Two players starting the game in the same millisecond still differ.
+-    let mut x = nanos ^ u64::from(std::process::id()).rotate_left(32);
++    let mut x = nanos ^ u64::from(horizon_core::process_id()).rotate_left(32);
+     x ^= x >> 33;
+     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+     x ^ (x >> 33)
+diff --git a/crates/horizon-client/src/realms.rs b/crates/horizon-client/src/realms.rs
+index 3171e795b0d716179a812a42c69c0468fba1cb17..51caa821a09955f764357bd0ab8fb5d7ce1f7875 100644
+--- a/crates/horizon-client/src/realms.rs
++++ b/crates/horizon-client/src/realms.rs
+@@ -1540,7 +1540,7 @@ fn create_temporary_world(world: &CreatedWorld) -> std::result::Result<PathBuf,
+     static NEXT: crate::AtomicU64 = crate::AtomicU64::new(0);
+     let dir = std::env::temp_dir().join(format!(
+         "horizon-realms-world-upload-{}-{}",
+-        std::process::id(),
++        horizon_core::process_id(),
+         NEXT.fetch_add(1, Ordering::Relaxed)
+     ));
+     let _ = std::fs::remove_dir_all(&dir);
+diff --git a/crates/horizon-client/src/realms/download.rs b/crates/horizon-client/src/realms/download.rs
+index 81a8b328349ea47619719b08bcfa9abf7057a9fb..897988ca1b3d39a46ae99179d26b86c999c77df3 100644
+--- a/crates/horizon-client/src/realms/download.rs
++++ b/crates/horizon-client/src/realms/download.rs
+@@ -263,7 +263,7 @@ pub(super) fn unguessable(prefix: &str, suffix: &str) -> PathBuf {
+     key.write_u64(n);
+     std::env::temp_dir().join(format!(
+         "{prefix}-{}-{n}-{:016x}{suffix}",
+-        std::process::id(),
++        horizon_core::process_id(),
+         key.finish()
+     ))
+ }
+diff --git a/crates/horizon-client/src/save.rs b/crates/horizon-client/src/save.rs
+index 6de95eb92994749ba1ccb85b7bf3469b3655a46a..3b6e99e8fb333c7d3c11e3987e9cab9f6cbbc30a 100644
+--- a/crates/horizon-client/src/save.rs
++++ b/crates/horizon-client/src/save.rs
+@@ -3276,7 +3276,7 @@ pub fn random_uuid() -> [i32; 4] {
+             .duration_since(std::time::UNIX_EPOCH)
+             .map_or(0, |d| d.as_nanos() as u64);
+         #[cfg(not(target_os = "cafe"))]
+-        let t = t ^ (std::process::id() as u64).rotate_left(32);
++        let t = t ^ (horizon_core::process_id() as u64).rotate_left(32);
+         AtomicU64::new(t)
+     });
+     // SplitMix64: distinct steps give distinct outputs.
+diff --git a/crates/horizon-client/src/server_perf/system.rs b/crates/horizon-client/src/server_perf/system.rs
+index 5d86e344791ecdfdfe22c27d707541eb6d93a7c6..56c60dec9a6c759641d524cbb2d29a2c617bc43b 100644
+--- a/crates/horizon-client/src/server_perf/system.rs
++++ b/crates/horizon-client/src/server_perf/system.rs
+@@ -29,7 +29,7 @@ pub(super) struct SystemProbe {
+ 
+ impl SystemProbe {
+     pub(super) fn read(&mut self, t: f64, counts: WorldCounts) -> Gauges {
+-        let pid = std::process::id();
++        let pid = horizon_core::process_id();
+         let cpu_s = horizon_bench::cpu_seconds(pid);
+         let stat = std::fs::read_to_string("/proc/stat")
+             .ok()
+diff --git a/crates/horizon-client/src/studio/mcpr.rs b/crates/horizon-client/src/studio/mcpr.rs
+index 17891d63d1bb1e0b4c292a3efc41c829b9bbaa5e..e7a63faf1f8862d0901a3d5ce9bf95769789c687 100644
+--- a/crates/horizon-client/src/studio/mcpr.rs
++++ b/crates/horizon-client/src/studio/mcpr.rs
+@@ -117,7 +117,7 @@ fn sibling(dest: &Path, suffix: &str) -> PathBuf {
+         .duration_since(std::time::UNIX_EPOCH)
+         .map_or(0, |d| d.as_nanos());
+     let mut name = dest.file_name().unwrap_or_default().to_os_string();
+-    name.push(format!(".{}-{nanos}.{suffix}", std::process::id()));
++    name.push(format!(".{}-{nanos}.{suffix}", horizon_core::process_id()));
+     dest.with_file_name(name)
+ }
+ 
+@@ -637,7 +637,7 @@ impl TemporaryStream {
+                 .map_or(0, |duration| duration.as_nanos());
+             let path = std::env::temp_dir().join(format!(
+                 "horizon-mcpr-{}-{nanos}-{attempt}.tmcpr",
+-                std::process::id()
++                horizon_core::process_id()
+             ));
+             match create_private_file(&path) {
+                 Ok(file) => {
+@@ -1001,7 +1001,7 @@ pub fn recover_crashed_recordings(dir: &Path) -> io::Result<RecoveryReport> {
+ /// Err on the side of yes: packaging a live recording would take the stream from
+ /// under its writer.
+ fn writer_may_be_alive(stream: &Path, pid: u32) -> bool {
+-    if pid == std::process::id() {
++    if pid == horizon_core::process_id() {
+         return true;
+     }
+     #[cfg(target_os = "linux")]
+diff --git a/crates/horizon-core/Cargo.toml b/crates/horizon-core/Cargo.toml
+index 541e737887128863db12e3c4618494246e967f42..aca493334f402446f35908fa27a5ddf89a8f8014 100644
+--- a/crates/horizon-core/Cargo.toml
++++ b/crates/horizon-core/Cargo.toml
+@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
+ unicode_names2 = "=2.0.0"
+ 
+ [target.'cfg(target_os = "cafe")'.dependencies]
++horizon-system = { path = "../horizon-system" }
+ log = "0.4"
+ 
+ [target.'cfg(not(target_has_atomic = "64"))'.dependencies]
+diff --git a/crates/horizon-core/src/lib.rs b/crates/horizon-core/src/lib.rs
+index 783f12f9871a5611a041023c9fd7d0e9dea24cd6..18c24f0cb0c4298c803beec0e8d8a4012d50ecb7 100644
+--- a/crates/horizon-core/src/lib.rs
++++ b/crates/horizon-core/src/lib.rs
+@@ -46,7 +46,11 @@ pub mod trading;
+ pub mod use_animation;
+ pub mod version;
+ 
++#[cfg(target_os = "cafe")]
++pub use horizon_system::process_id;
+ pub use level_key::LevelKey;
++#[cfg(not(target_os = "cafe"))]
++pub use std::process::id as process_id;
+ pub use version::VANILLA_VERSION;
+ 
+ /// Queried loot table id before a root roll finishes, or for an unnamed root.
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index 7c17f7502866459f8cefaddd28533679e092469a..42cd74933ee06eb7bdb64523f9e30a42fe7ed758 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -547,7 +547,7 @@ pub fn write_with_readers(root: &Path, readers: usize) -> io::Result<()> {
+         + pad(source.len() as u64)
+         + (files.len() * ENTRY) as u64
+         + pad(pool_len as u64);
+-    let tmp = root.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
++    let tmp = root.join(format!("{FILE_NAME}.{}.tmp", crate::process_id()));
+     remove_abandoned(root);
+     let result = (|| {
+         let mut out = BufWriter::new(File::create(&tmp)?);
+diff --git a/crates/horizon-protocol/src/servers.rs b/crates/horizon-protocol/src/servers.rs
+index 30b5273c84953207d2c570688a0bb3fe9ab88322..d515fc675a8f28af4d9967b4a1a5a6baf2e5c4e0 100644
+--- a/crates/horizon-protocol/src/servers.rs
++++ b/crates/horizon-protocol/src/servers.rs
+@@ -219,7 +219,7 @@ fn insert(
+ fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
+     let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
+     // Its own temporary file: another game on the same folder writes at the same time.
+-    let tmp = path.with_extension(format!("dat_tmp.{}", std::process::id()));
++    let tmp = path.with_extension(format!("dat_tmp.{}", horizon_core::process_id()));
+     std::fs::write(&tmp, bytes)?;
+     std::fs::rename(tmp, path)
+ }
+diff --git a/crates/horizon-server-files/src/private_file.rs b/crates/horizon-server-files/src/private_file.rs
+index 62806b561008d59b98d39845de4d63766038a20f..68c8006e0ac703e9ffa7176e16d47aeb8b399bb5 100644
+--- a/crates/horizon-server-files/src/private_file.rs
++++ b/crates/horizon-server-files/src/private_file.rs
+@@ -18,7 +18,7 @@ pub fn write_private(path: &Path, text: impl AsRef<[u8]>) -> io::Result<()> {
+     let tmp = path.with_file_name(format!(
+         ".{}.{}.{}.tmp",
+         name.to_string_lossy(),
+-        std::process::id(),
++        horizon_core::process_id(),
+         WRITES.fetch_add(1, Ordering::Relaxed)
+     ));
+     let mut options = std::fs::OpenOptions::new();
+diff --git a/crates/horizon-server-files/src/properties.rs b/crates/horizon-server-files/src/properties.rs
+index 66e7118f0ea9747ca1ad5ba80a4057afc0fa35d7..ff7191b98623abedcfc60cfd7dbbe8edb2095a77 100644
+--- a/crates/horizon-server-files/src/properties.rs
++++ b/crates/horizon-server-files/src/properties.rs
+@@ -506,7 +506,7 @@ impl ServerProperties {
+     /// its owner's only, as it holds the RCON password and that secret; an existing one keeps its
+     /// permissions.
+     pub fn store(&self, path: &std::path::Path) -> std::io::Result<()> {
+-        let tmp = path.with_extension(format!("properties.{}.tmp", std::process::id()));
++        let tmp = path.with_extension(format!("properties.{}.tmp", horizon_core::process_id()));
+         let mut options = std::fs::OpenOptions::new();
+         options.write(true).create(true).truncate(true);
+         #[cfg(unix)]
+diff --git a/crates/horizon-system/src/lib.rs b/crates/horizon-system/src/lib.rs
+index f0cf3e32e335b3f746c9711c993ef4be450570f3..fed7a7962259f47344c357af4fce037291c00122 100644
+--- a/crates/horizon-system/src/lib.rs
++++ b/crates/horizon-system/src/lib.rs
+@@ -12,6 +12,16 @@ use std::sync::OnceLock;
+ 
+ pub mod scrub;
+ 
++/// The current CafeOS process identity supplied by WUT.
++#[cfg(target_os = "cafe")]
++pub fn process_id() -> u32 {
++    unsafe extern "C" {
++        fn OSGetUPID() -> u32;
++    }
++    // SAFETY: OSGetUPID takes no arguments and returns the caller's process ID.
++    unsafe { OSGetUPID() }
++}
++
+ /// What `program args` prints, trimmed, when it succeeds and prints something. On Windows the
+ /// program opens no console window: a GUI launcher or a game started without one would flash a
+ /// terminal for every probe.
+diff --git a/crates/horizon-world/src/level/data/cache.rs b/crates/horizon-world/src/level/data/cache.rs
+index 9d4ddfa951d8598e22444c71937dfe70fecb06f4..9e278a1c8d393d6e3e47c7c34003010de4a2e634 100644
+--- a/crates/horizon-world/src/level/data/cache.rs
++++ b/crates/horizon-world/src/level/data/cache.rs
+@@ -865,7 +865,7 @@ fn write_snapshot(
+     let path = dir.join(file_name);
+     let tmp = dir.join(format!(
+         "{file_name}.tmp-{}-{}",
+-        std::process::id(),
++        horizon_core::process_id(),
+         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+     ));
+     let result = (|| {
+diff --git a/crates/horizon-world/src/region.rs b/crates/horizon-world/src/region.rs
+index 15fbc4791a74325178d3976625ee3d37ab14afba..d10661e58c82c344e2dcfb96471a09feecd71576 100644
+--- a/crates/horizon-world/src/region.rs
++++ b/crates/horizon-world/src/region.rs
+@@ -567,7 +567,7 @@ impl RegionWriter {
+         let (temporary, file) = loop {
+             let path = parent.join(format!(
+                 ".horizon-{}-{}.tmp",
+-                std::process::id(),
++                horizon_core::process_id(),
+                 NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+             ));
+             match OpenOptions::new()
+diff --git a/wiiu/loading_app/Cargo.lock b/wiiu/loading_app/Cargo.lock
+index ce852748317c1701d75338cc20809dd98f0d09ee..9292be239ba4b109d0103ce1c8183a5d5a821d94 100644
+--- a/wiiu/loading_app/Cargo.lock
++++ b/wiiu/loading_app/Cargo.lock
+@@ -1457,6 +1457,7 @@ dependencies = [
+ name = "horizon-core"
+ version = "0.1.0"
+ dependencies = [
++ "horizon-system",
+  "libm",
+  "log",
+  "portable-atomic",
