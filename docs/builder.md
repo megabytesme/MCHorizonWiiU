@@ -100,7 +100,9 @@ Inspect an RPX against the measured Aroma loader budget before hardware use.
 The command prints the stored and decompressed code sizes, verifies the code
 span against the RPL file info, and exits unsuccessfully if the estimated
 allocation exceeds the 67,096,512-byte contiguous heap observed on hardware.
-A passing estimate still needs a console boot test.
+The Nightly builder runs this check before writing its successful build
+receipt and saves the measurements in `code-heap.json`. A passing estimate
+still needs a console boot test.
 
 ```sh
 python3 wiiu/builder/build.py inspect-code-heap "$candidate_output/HorizonWiiU.rpx"

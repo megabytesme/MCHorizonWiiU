@@ -53,7 +53,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "verify-output":
-            core.verify_outputs(core.parse_json(args.record.read_bytes()), args.record.resolve().parent)
+            record = core.parse_json(args.record.read_bytes())
+            directory = args.record.resolve().parent
+            core.verify_outputs(record, directory)
+            if "code_heap" in record:
+                actual = rpx.read_code_heap(directory / native.HOSTED_PACKAGES[0])
+                if actual != record["code_heap"]:
+                    raise ValueError("Aroma code heap report differs from the RPX")
+                rpx.require_aroma_fit(actual)
             print("RPX and WUHB hashes verified.")
         elif args.command == "inspect-code-heap":
             report = rpx.read_code_heap(args.rpx)

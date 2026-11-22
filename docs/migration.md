@@ -12,4 +12,4 @@ The [MCHorizonUWP reference](https://github.com/megabytesme/MCHorizonUWP/tree/f6
 
 GitHub branch renames kept the legacy fork and port histories separate. For active port development, use a checkout that tracks the new `origin/main` and follow [CONTRIBUTING.md](../CONTRIBUTING.md). Use a separate checkout or worktree for the legacy fork, especially when it contains local changes. An administrator can select `archive/legacy-full-horizon` as the default if the old project needs to be restored.
 
-The [public-source workflow](../.github/workflows/builder-ci.yml) validates changes on `main`. The [catalog and release procedure](catalog.md) covers signing and publication.
+Run the [host validation checks](../CONTRIBUTING.md#source-and-validation) for changes on `main`. The [catalog and release procedure](catalog.md) covers signing and publication.

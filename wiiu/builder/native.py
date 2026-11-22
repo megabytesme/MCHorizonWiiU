@@ -249,11 +249,12 @@ def build_lock(directory):
         yield
 
 
-BUILD_SETTINGS = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC",
-                  "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
+BUILD_SETTINGS = {"SOURCE_DATE_EPOCH": "0", "LC_ALL": "C", "TZ": "UTC"}
+LEGACY_BUILD_SETTINGS = {**BUILD_SETTINGS, "CARGO_PROFILE_RELEASE_OPT_LEVEL": "s"}
 
 
-def compile_game(directory, source, manifest, tools, sysroot, packages, embedded):
+def compile_game(directory, source, manifest, tools, sysroot, packages, embedded, *,
+                 settings=LEGACY_BUILD_SETTINGS):
     commands = {name: entry["path"] for name, entry in tools["files"].items()}
     jobs = str(os.cpu_count() or 1)
     target = directory / "cargo-target"
@@ -262,7 +263,7 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     variables = {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME",
                  "DEVKITPRO", "DEVKITPPC", "SYSTEMROOT"}
     env = {k: v for k, v in os.environ.items() if k in variables}
-    env.update(BUILD_SETTINGS)
+    env.update(settings)
     env.update(embedded)
     cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
     prefixes = (
@@ -327,7 +328,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
     launcher = client_input(recipe) if integrated else None
     packages = HOSTED_PACKAGES if integrated else GAME_PACKAGES
     identity = {
-        "recipe": recipe_hash, "toolchain": tools, "environment": BUILD_SETTINGS, "workspace_layout": 2,
+        "recipe": recipe_hash, "toolchain": tools, "environment": LEGACY_BUILD_SETTINGS, "workspace_layout": 2,
         "resources": resources_hash, "assembly": str(assembly.resolve()),
     }
     if hosted:
@@ -372,7 +373,7 @@ def build_game(recipe, recipe_hash, assembly, inputs, build_root, resources_hash
             "recipe": recipe, "assembled_tree": recipe["native"]["tree"], "build_tree": staged,
             "workspace_patch_sha256": lock["workspace_patch_sha256"], "toolchain": tools,
             "toolchain_spec_sha256": recipe["inputs_sha256"], "resources_inventory_sha256": resources_hash,
-            "environment": BUILD_SETTINGS, "commands": commands,
+            "environment": LEGACY_BUILD_SETTINGS, "commands": commands,
             "outputs": artifacts(directory, packages),
             "assembly": "passed", "build": "passed", "cemu": "not-run", "hardware": "not-run",
         }

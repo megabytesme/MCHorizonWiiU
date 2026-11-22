@@ -14,7 +14,7 @@ Use the [builder guide](docs/builder.md) to reconstruct the exact Horizon source
 - Record the exact Horizon commit and patch input and output trees for each source change.
 - Bump the client, patch, builder or toolchain version for the component that changed. Update the [compatibility catalog](docs/catalog.md) with its reviewed Git pin and SHA-256.
 - Tests should distinguish host, Cafe build, emulator and physical hardware outcomes. Associate runtime results with the exact RPX SHA-256 and state what the test exercised.
-- Run the applicable host checks below before committing. The public-source workflow runs on pushes to `main` and on pull requests. It verifies source reconstruction and stages source archives for validation.
+- Run the applicable host checks below before committing. For native releases, also verify exact source reconstruction and both independently built packages.
 
 ```sh
 python3 -B -m unittest discover -s wiiu/builder -v

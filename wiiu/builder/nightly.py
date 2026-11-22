@@ -1,7 +1,9 @@
 """Prepare the pinned hosted Nightly candidate outside the active release recipe."""
 import json
+import tomllib
 
 import native
+import rpx
 import source
 from core import (ROOT, TARGET, artifacts, client_input, discard_unverified_outputs,
                   digest, fields, file_digest, isolated, parse_json, pattern, verify_source,
@@ -138,7 +140,11 @@ def assemble(upstream, inputs, output, base, base_fingerprint, build=False, reso
         packages = native.HOSTED_PACKAGES
         discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
-        commands = native.compile_game(directory, staged, manifest, tools, sysroot, packages, embedded)
+        commands = native.compile_game(directory, staged, manifest, tools, sysroot, packages, embedded,
+                                       settings=native.BUILD_SETTINGS)
+        code_heap = rpx.read_code_heap(directory / packages[0])
+        write_record(directory / "code-heap.json", code_heap)
+        rpx.require_aroma_fit(code_heap)
         _, _, confirmed = stage(directory, upstream, inputs, toolchain, read_recipe(base_fingerprint))
         if confirmed != receipt or client_input(base) != launcher:
             raise ValueError("hosted Nightly inputs changed during compilation")
@@ -148,6 +154,8 @@ def assemble(upstream, inputs, output, base, base_fingerprint, build=False, reso
             "toolchain_version": base["toolchain"], "toolchain_spec_sha256": base["inputs_sha256"],
             "toolchain": tools, "launcher": launcher, "embedded_build": embedded,
             "environment": native.BUILD_SETTINGS, "commands": commands,
+            "cargo_release_profile": tomllib.loads(manifest.read_text())["profile"]["release"],
+            "code_heap": code_heap,
             "resources_inventory_sha256": resources_hash, "outputs": artifacts(directory, packages),
             "assembly": "passed", "build": "passed", "cemu": "not-run", "hardware": "not-run",
         })

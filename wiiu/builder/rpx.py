@@ -78,8 +78,8 @@ def read_code_heap(path):
         raise ValueError("RPX code span disagrees with the declared Cafe text size")
 
     # The largest code section alone caused the measured physical failure.
-    # Count the whole mapped span and round it to a Cafe cache line to
-    # account for section gaps and any trailing alignment.
+    # Budget the whole mapped span and round up to a conservative 64-byte
+    # boundary to account for section gaps and any trailing alignment.
     needed = ((declared + 63) & -64) + CAFE_ALLOCATION_OVERHEAD
     return {
         "rpx_bytes": size,
