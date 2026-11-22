@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify and build a local Horizon Wii U port recipe."""
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import sys
 import core
 import native
 import nightly
+import rpx
 import source
 
 
@@ -46,11 +48,17 @@ def main(argv=None):
     resources.add_argument("--output", type=Path, required=True)
     verify = commands.add_parser("verify-output")
     verify.add_argument("record", type=Path)
+    code_heap = commands.add_parser("inspect-code-heap", help="measure the RPX against the observed Aroma code heap")
+    code_heap.add_argument("rpx", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "verify-output":
             core.verify_outputs(core.parse_json(args.record.read_bytes()), args.record.resolve().parent)
             print("RPX and WUHB hashes verified.")
+        elif args.command == "inspect-code-heap":
+            report = rpx.read_code_heap(args.rpx)
+            print(json.dumps(report, indent=2), flush=True)
+            rpx.require_aroma_fit(report)
         elif args.command == "inventory-resources":
             print(core.inspect_resources(args.root, args.output))
         else:

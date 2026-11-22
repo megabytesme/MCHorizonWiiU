@@ -96,6 +96,16 @@ The local directory contains `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and
 `build-record.json`. The recipe records its own candidate versions.
 The active `build-hosted` command still uses the 0.7.0 release recipe.
 
+Inspect an RPX against the measured Aroma loader budget before hardware use.
+The command prints the stored and decompressed code sizes, verifies the code
+span against the RPL file info, and exits unsuccessfully if the estimated
+allocation exceeds the 67,096,512-byte contiguous heap observed on hardware.
+A passing estimate still needs a console boot test.
+
+```sh
+python3 wiiu/builder/build.py inspect-code-heap "$candidate_output/HorizonWiiU.rpx"
+```
+
 ### Prepare Minecraft 26.3 for November 20
 
 Use the November 20 preparer with a disposable copy of the staged source.
