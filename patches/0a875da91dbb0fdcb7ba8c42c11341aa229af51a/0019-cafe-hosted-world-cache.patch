@@ -1,0 +1,138 @@
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index c8d3c88a29969df4c84efcb763d59aa1bf0f696c..d5e76b7e88d4221df4883bfea6ecf3cedd473e9d 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -416,6 +416,10 @@ impl Sprites {
+             return;
+         }
+         self.pixels.clear();
++        // The final size is known. Avoid the transient old and new Vec
++        // allocations that incremental growth needs on the shared Cafe heap.
++        #[cfg(target_os = "cafe")]
++        self.pixels.reserve_exact(self.native.len() * size as usize * size as usize * 4);
+         // Only the frame each layer shows first is made at the layers' size. Animations keep
+         // their frames as decoded (shared, not copied); the animator makes them at its own edge
+         // and charges what it builds first (`gfx::animate`).
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 1e461a4454899a19483938b32a27d180f46cc6fc..b57222d32973d5bf3f9eec81b0bd19e70bb8c13b 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -270,7 +270,10 @@ pub(super) fn load_core(
+                 // A launch that names a world: its data preload needs only the
+                 // block registry and the biomes, so it starts here rather than
+                 // after the block models and facts (~250 ms later).
+-                if let Some(folder) = launch_world {
++                // Cafe loads this data on demand when the world opens. The
++                // speculative preload otherwise overlaps model and sprite
++                // construction on the same constrained heap.
++                if let Some(folder) = launch_world.filter(|_| !cfg!(target_os = "cafe")) {
+                     world_loading::preload_launch_world(
+                         folder,
+                         root,
+diff --git a/crates/horizon-client/src/game/world/world_loading.rs b/crates/horizon-client/src/game/world/world_loading.rs
+index 201ac3b360b1f0b941c4bf2810a9aaefea49569e..20170e6b8066a06a72087fe1fc55b03a1a26da3f 100644
+--- a/crates/horizon-client/src/game/world/world_loading.rs
++++ b/crates/horizon-client/src/game/world/world_loading.rs
+@@ -432,6 +432,45 @@ enum Preload {
+ 
+ static PRELOAD: std::sync::Mutex<Preload> = std::sync::Mutex::new(Preload::Idle);
+ 
++#[cfg(target_os = "cafe")]
++static CAFE_PRELOAD_WORKERS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
++    std::sync::Mutex::new(Vec::new());
++
++#[cfg(target_os = "cafe")]
++fn retain_cafe_preload(thread: std::thread::JoinHandle<()>) {
++    let mut workers = CAFE_PRELOAD_WORKERS.lock().unwrap_or_else(|e| e.into_inner());
++    workers.retain(|worker| !worker.is_finished());
++    workers.push(thread);
++}
++
++fn forget_cached_world_data() {
++    horizon_client::vanillagen::forget_shared_data();
++    horizon_client::structure_blocks::forget_loot_data();
++    super::lan::sync::forget_sync_data();
++    super::lan::sync::forget_server_sources();
++    horizon_threads::release_free_memory();
++}
++
++/// The hosted client returns to Night in this process. Stop asynchronous
++/// cache producers before releasing their cached world and server resources.
++#[cfg(target_os = "cafe")]
++pub(super) fn release_cafe_world_data() {
++    let preload = std::mem::replace(
++        &mut *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()),
++        Preload::Idle,
++    );
++    if let Preload::Started { thread, .. } = preload {
++        let _ = thread.join();
++    }
++    let workers = std::mem::take(
++        &mut *CAFE_PRELOAD_WORKERS.lock().unwrap_or_else(|e| e.into_inner()),
++    );
++    for worker in workers {
++        let _ = worker.join();
++    }
++    forget_cached_world_data();
++}
++
+ /// Each frame of the title: read what every world opening loads and keeps
+ /// for the rest of the process (the worldgen bundle, the loot tables and the
+ /// registries the server sends) on a helper thread while the player is on the
+@@ -492,11 +531,7 @@ pub(super) fn preload_world_data(
+         Preload::Started { thread, left } => {
+             let left = *left.get_or_insert_with(std::time::Instant::now);
+             if left.elapsed() >= PRELOAD_KEPT && thread.is_finished() {
+-                horizon_client::vanillagen::forget_shared_data();
+-                horizon_client::structure_blocks::forget_loot_data();
+-                super::lan::sync::forget_sync_data();
+-                super::lan::sync::forget_server_sources();
+-                horizon_threads::release_free_memory();
++                forget_cached_world_data();
+                 *preload = Preload::Idle;
+                 log::info!("Horizon: preloaded world data dropped, no world opened");
+             }
+@@ -579,7 +614,14 @@ pub(super) fn preload_launch_world(
+ 
+ /// A world opens: what `preload_world_data` read is the world's from now on.
+ pub(super) fn world_data_used() {
+-    *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()) = Preload::Used;
++    let _previous = std::mem::replace(
++        &mut *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()),
++        Preload::Used,
++    );
++    #[cfg(target_os = "cafe")]
++    if let Preload::Started { thread, .. } = _previous {
++        retain_cafe_preload(thread);
++    }
+ }
+ 
+ /// A server's world opens: the loot tables its first placed block or broken
+@@ -603,8 +645,12 @@ pub(super) fn preload_server_loot(resources: &std::path::Path, item_data: &Arc<I
+                 item_data.defaults(),
+             );
+         });
+-    if let Err(e) = spawned {
+-        log::warn!("Horizon: loot preload: {e}");
++    match spawned {
++        Ok(_thread) => {
++            #[cfg(target_os = "cafe")]
++            retain_cafe_preload(_thread);
++        }
++        Err(e) => log::warn!("Horizon: loot preload: {e}"),
+     }
+ }
+ 
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index db0289ccaf998e7b9c21efff931e45721d306bd7..42369b8eb002384a93f162c8e0fd8d2465e18ad7 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -973,6 +973,8 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+         driven.and(drained)
+     });
+     narrator::stop();
++    world_loading::release_cafe_world_data();
++    horizon_client_platform::cafe_memory::report("hosted.after_world_cache");
+     result.map(|()| outcome)
+ }
+ 

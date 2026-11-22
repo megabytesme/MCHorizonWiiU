@@ -1,0 +1,382 @@
+diff --git a/crates/horizon-items/src/blocks.rs b/crates/horizon-items/src/blocks.rs
+index f0bf529d89a3053d345aaffbda681f1ef5478f30..f8653e1332f9dd095f4e585837a6e51fd38ec303 100644
+--- a/crates/horizon-items/src/blocks.rs
++++ b/crates/horizon-items/src/blocks.rs
+@@ -2,6 +2,7 @@
+ //! (`gameplay-facts.json`), indexed by registry state ID.
+ mod decode;
+ use crate::Result;
++pub use horizon_world::level::data::GameplayProjection;
+ use horizon_world::{
+     level::{Behaviours, GameplayStateSource},
+     registry::{BlockRegistry, BlockStateId},
+@@ -186,115 +187,6 @@ impl StateFacts {
+         })
+     }
+ }
+-/// Compact, owned behaviour inputs retained until the normal behaviour startup stage.
+-/// No borrowed gameplay JSON or process-wide cache survives the fact loader.
+-pub struct GameplayProjection {
+-    flags: u16,
+-    emission: u64,
+-    dampening: u64,
+-    hardness: f64,
+-    push: Arc<str>,
+-    volume: f64,
+-    pitch: f64,
+-    place: Arc<str>,
+-    break_sound: Arc<str>,
+-    fall: Arc<str>,
+-}
+-
+-impl GameplayProjection {
+-    fn from_entry(entry: &decode::Entry<'_>, strings: &mut HashMap<String, Arc<str>>) -> Self {
+-        fn intern(strings: &mut HashMap<String, Arc<str>>, value: &str) -> Arc<str> {
+-            if let Some(existing) = strings.get(value) {
+-                return Arc::clone(existing);
+-            }
+-            let value_arc: Arc<str> = Arc::from(value);
+-            strings.insert(value.to_owned(), Arc::clone(&value_arc));
+-            value_arc
+-        }
+-        const FLAGS: [&str; 11] = [
+-            "replaceable",
+-            "random_ticks",
+-            "solid_render",
+-            "liquid",
+-            "block_entity",
+-            "ignited_by_lava",
+-            "can_occlude",
+-            "full_collision",
+-            "skylight_down",
+-            "requires_tool",
+-            "shape_occlusion",
+-        ];
+-        Self {
+-            flags: FLAGS.iter().enumerate().fold(0, |flags, (i, name)| {
+-                flags | ((u16::from(entry.flag(name))) << i)
+-            }),
+-            emission: entry.unsigned("emission"),
+-            dampening: entry.unsigned("dampening"),
+-            hardness: entry.number("hardness"),
+-            push: intern(strings, entry.text("push")),
+-            volume: entry.sound_number("volume"),
+-            pitch: entry.sound_number("pitch"),
+-            place: intern(strings, entry.sound_id("place")),
+-            break_sound: intern(strings, entry.sound_id("break")),
+-            fall: intern(strings, entry.sound_id("fall")),
+-        }
+-    }
+-}
+-
+-impl GameplayStateSource for GameplayProjection {
+-    fn flag(&self, name: &str) -> bool {
+-        const FLAGS: [&str; 11] = [
+-            "replaceable",
+-            "random_ticks",
+-            "solid_render",
+-            "liquid",
+-            "block_entity",
+-            "ignited_by_lava",
+-            "can_occlude",
+-            "full_collision",
+-            "skylight_down",
+-            "requires_tool",
+-            "shape_occlusion",
+-        ];
+-        FLAGS
+-            .iter()
+-            .position(|field| *field == name)
+-            .is_some_and(|index| self.flags & (1 << index) != 0)
+-    }
+-    fn unsigned(&self, name: &str) -> u64 {
+-        match name {
+-            "emission" => self.emission,
+-            "dampening" => self.dampening,
+-            _ => 0,
+-        }
+-    }
+-    fn number(&self, name: &str) -> f64 {
+-        if name == "hardness" {
+-            self.hardness
+-        } else {
+-            0.0
+-        }
+-    }
+-    fn text(&self, name: &str) -> &str {
+-        if name == "push" { &self.push } else { "" }
+-    }
+-    fn sound_number(&self, name: &str) -> f64 {
+-        match name {
+-            "volume" => self.volume,
+-            "pitch" => self.pitch,
+-            _ => 1.0,
+-        }
+-    }
+-    fn sound_id(&self, name: &str) -> &str {
+-        match name {
+-            "place" => &self.place,
+-            "break" => &self.break_sound,
+-            "fall" => &self.fall,
+-            _ => "",
+-        }
+-    }
+-}
+-
+ pub struct BlockFacts {
+     pub states: Vec<StateFacts>,
+     pub air: BlockStateId,
+@@ -330,7 +222,7 @@ impl BlockFacts {
+             let mut strings = HashMap::new();
+             Ok(entries
+                 .iter()
+-                .map(|entry| GameplayProjection::from_entry(entry, &mut strings))
++                .map(|entry| GameplayProjection::from_source(entry, &mut strings))
+                 .collect())
+         })
+     }
+diff --git a/crates/horizon-world/src/level/data.rs b/crates/horizon-world/src/level/data.rs
+index d63b41f63ce55ee9182cfd11c2aabd8c402e3c46..b38b47db3adccfaf6c682784160547ddb438d879 100644
+--- a/crates/horizon-world/src/level/data.rs
++++ b/crates/horizon-world/src/level/data.rs
+@@ -17,6 +17,9 @@ use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
+ #[path = "data/cache.rs"]
+ mod cache;
+ pub(super) use cache::set_dir as set_cache_dir;
++#[path = "data/gameplay_projection.rs"]
++mod gameplay_projection;
++pub use gameplay_projection::GameplayProjection;
+ 
+ /// Per-state flags read from vanilla accessors over an empty level.
+ pub mod state_flags {
+@@ -687,11 +690,22 @@ fn build_with_behaviour_json(
+     root: &Path,
+     behaviour: &Value,
+ ) -> io::Result<Behaviours> {
+-    let gameplay = read_json(&root.join("gameplay-facts.json"))?;
+-    let gameplay_states = gameplay["states"]
+-        .as_array()
+-        .ok_or_else(|| fail("missing gameplay states"))?;
+-    build_with_gameplay(registry, root, behaviour, gameplay_states)
++    let path = root.join("gameplay-facts.json");
++    #[cfg(target_os = "cafe")]
++    {
++        let file = fs::File::open(&path)?;
++        let states = gameplay_projection::streamed::read(io::BufReader::new(file))
++            .map_err(|e| invalid(format!("{}: {e}", path.display())))?;
++        build_with_gameplay(registry, root, behaviour, &states)
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        let gameplay = read_json(&path)?;
++        let states = gameplay["states"]
++            .as_array()
++            .ok_or_else(|| fail("missing gameplay states"))?;
++        build_with_gameplay(registry, root, behaviour, states)
++    }
+ }
+ 
+ fn build_with_gameplay<G: GameplayStateSource>(
+diff --git a/crates/horizon-world/src/level/data/gameplay_projection.rs b/crates/horizon-world/src/level/data/gameplay_projection.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..517389ff90070d3de3b0420fa9351f984eb818ce
+--- /dev/null
++++ b/crates/horizon-world/src/level/data/gameplay_projection.rs
+@@ -0,0 +1,197 @@
++//! Compact gameplay fields consumed by the behaviour table.
++use super::GameplayStateSource;
++use std::{collections::HashMap, sync::Arc};
++
++const FLAGS: [&str; 11] = [
++    "replaceable",
++    "random_ticks",
++    "solid_render",
++    "liquid",
++    "block_entity",
++    "ignited_by_lava",
++    "can_occlude",
++    "full_collision",
++    "skylight_down",
++    "requires_tool",
++    "shape_occlusion",
++];
++
++/// Compact, owned behaviour inputs retained until the normal behaviour startup stage.
++/// No borrowed gameplay JSON or process-wide cache survives the fact loader.
++pub struct GameplayProjection {
++    flags: u16,
++    emission: u64,
++    dampening: u64,
++    hardness: f64,
++    push: Arc<str>,
++    volume: f64,
++    pitch: f64,
++    place: Arc<str>,
++    break_sound: Arc<str>,
++    fall: Arc<str>,
++}
++
++impl GameplayProjection {
++    /// Copy compact behaviour fields from the client's typed facts or one raw JSON row.
++    pub fn from_source(
++        entry: &impl GameplayStateSource,
++        strings: &mut HashMap<String, Arc<str>>,
++    ) -> Self {
++        fn intern(strings: &mut HashMap<String, Arc<str>>, value: &str) -> Arc<str> {
++            if let Some(existing) = strings.get(value) {
++                return Arc::clone(existing);
++            }
++            let value_arc: Arc<str> = Arc::from(value);
++            strings.insert(value.to_owned(), Arc::clone(&value_arc));
++            value_arc
++        }
++        Self {
++            flags: FLAGS.iter().enumerate().fold(0, |flags, (i, name)| {
++                flags | ((u16::from(entry.flag(name))) << i)
++            }),
++            emission: entry.unsigned("emission"),
++            dampening: entry.unsigned("dampening"),
++            hardness: entry.number("hardness"),
++            push: intern(strings, entry.text("push")),
++            volume: entry.sound_number("volume"),
++            pitch: entry.sound_number("pitch"),
++            place: intern(strings, entry.sound_id("place")),
++            break_sound: intern(strings, entry.sound_id("break")),
++            fall: intern(strings, entry.sound_id("fall")),
++        }
++    }
++}
++
++impl GameplayStateSource for GameplayProjection {
++    fn flag(&self, name: &str) -> bool {
++        FLAGS
++            .iter()
++            .position(|field| *field == name)
++            .is_some_and(|index| self.flags & (1 << index) != 0)
++    }
++    fn unsigned(&self, name: &str) -> u64 {
++        match name {
++            "emission" => self.emission,
++            "dampening" => self.dampening,
++            _ => 0,
++        }
++    }
++    fn number(&self, name: &str) -> f64 {
++        if name == "hardness" {
++            self.hardness
++        } else {
++            0.0
++        }
++    }
++    fn text(&self, name: &str) -> &str {
++        if name == "push" { &self.push } else { "" }
++    }
++    fn sound_number(&self, name: &str) -> f64 {
++        match name {
++            "volume" => self.volume,
++            "pitch" => self.pitch,
++            _ => 1.0,
++        }
++    }
++    fn sound_id(&self, name: &str) -> &str {
++        match name {
++            "place" => &self.place,
++            "break" => &self.break_sound,
++            "fall" => &self.fall,
++            _ => "",
++        }
++    }
++}
++
++#[cfg(any(target_os = "cafe", test))]
++pub(super) mod streamed {
++    use super::GameplayProjection;
++    use serde::{
++        Deserialize, Deserializer,
++        de::{SeqAccess, Visitor},
++    };
++    use serde_json::Value;
++    use std::{collections::HashMap, fmt, io::Read};
++
++    #[derive(Deserialize)]
++    struct Gameplay {
++        #[serde(deserialize_with = "project_states")]
++        states: Vec<GameplayProjection>,
++    }
++
++    fn project_states<'de, D: Deserializer<'de>>(
++        deserializer: D,
++    ) -> Result<Vec<GameplayProjection>, D::Error> {
++        struct States;
++        impl<'de> Visitor<'de> for States {
++            type Value = Vec<GameplayProjection>;
++
++            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++                f.write_str("an array of gameplay state facts")
++            }
++
++            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
++                let mut fields = Vec::new();
++                let mut strings = HashMap::new();
++                // Drop each JSON row before decoding the next. Geometry and
++                // other client-only data don't enter the worldgen projection.
++                while let Some(row) = seq.next_element::<Value>()? {
++                    fields.push(GameplayProjection::from_source(&row, &mut strings));
++                }
++                Ok(fields)
++            }
++        }
++        deserializer.deserialize_seq(States)
++    }
++
++    pub(in crate::level::data) fn read(
++        reader: impl Read,
++    ) -> serde_json::Result<Vec<GameplayProjection>> {
++        let json: Gameplay = serde_json::from_reader(reader)?;
++        Ok(json.states)
++    }
++
++    #[cfg(test)]
++    mod tests {
++        use super::*;
++        use crate::level::GameplayStateSource;
++
++        #[test]
++        fn file_projection_preserves_behaviour_fields_and_defaults() {
++            let input = br#"{"version":12,"states":[
++              {"replaceable":true,"block_entity":false,"emission":12,"dampening":4,
++               "hardness":0.5,"push":"destroy","ignored":{"shape":[0,1,2]},
++               "sound":{"volume":0.7,"pitch":2,"place":{"id":"test:place"},
++                        "break":{"id":"test:break"},"fall":{"id":"test:fall"}}},
++              {"replaceable":"yes","emission":-1,"sound":{"volume":null}},
++              {}
++            ]}"#;
++            let states = read(&input[..]).unwrap();
++            assert_eq!(states.len(), 3);
++            let expected: Value = serde_json::from_slice(input).unwrap();
++            for (source, output) in expected["states"].as_array().unwrap().iter().zip(states) {
++                for name in super::super::FLAGS {
++                    assert_eq!(output.flag(name), source.flag(name));
++                }
++                for name in ["emission", "dampening", "other"] {
++                    assert_eq!(output.unsigned(name), source.unsigned(name));
++                }
++                assert_eq!(output.number("hardness"), source.number("hardness"));
++                assert_eq!(output.text("push"), source.text("push"));
++                for name in ["volume", "pitch"] {
++                    assert_eq!(output.sound_number(name), source.sound_number(name));
++                }
++                for name in ["place", "break", "fall"] {
++                    assert_eq!(output.sound_id(name), source.sound_id(name));
++                }
++            }
++            for bad in [
++                &br#"{}"#[..],
++                &br#"{"states":{}}"#[..],
++                &br#"{"states":[{"ignored":[1,]}]}"#[..],
++            ] {
++                assert!(read(bad).is_err());
++            }
++        }
++    }
++}
