@@ -67,22 +67,42 @@ Night, reopen, and verification of the persisted fixture change.
 | --- | ---: |
 | Ready world frame | 474.344 s |
 | Mods/content root | 13.104 s |
-| UI load, including atlas | 45.280 s |
+| UI load | 45.280 s |
+| UI atlas, inside UI load | 45.253 s |
 | Core load | 237.467 s |
 | Block models and sprites, inside core load | 224.227 s |
+| Block models and sprites begins to model baking begins | 206.730 s |
+| Model baking | 7.396 s |
 | Integrated-server open world | 24.550 s |
 | Recipe synchronization, overlaps server startup | 27.068 s |
 
 Several spans overlap. The resource archive initially missed the process's
 open-file cache, then opened successfully and passed root, source and
-entry validation. The 224-second composite span locates the largest
-observed cost in model and sprite preparation. It does not identify the
-split between SD reads, PNG decoding, model work and contention. Serial
-capture is missing 2 minutes 27 seconds during loading. The 11.39 FPS
-sample with 120 loaded chunks and 1,000 pending was taken during streaming.
-The reported pending count combines the streaming queue, pending renderer
-uploads and remote backlog. It is not a measure of any one queue or a
-stationary frame-rate result.
+entry validation. Within the largest observed span, 206.730 seconds passed
+before model baking began. The preceding path includes sprite-cache
+fingerprinting, cache reads, initial sprite preparation and connected-texture
+rule discovery. Separate phase timing is needed to assign the time to those
+operations. The loose vanilla texture tree had 4,182 files. The cache's
+directory fingerprint can enumerate and stat the loose files even when
+resource payloads are served by the prepared archive. Serial capture is
+missing 2 minutes 27 seconds during loading.
+
+The 11.39 FPS sample was taken during streaming at distance 12, with 120
+client chunks loaded. Of the 1,000 reported pending jobs, 999 were renderer
+uploads and one was queued in the streaming pipeline. Active generation,
+lighting and meshing were zero in that sample. The mesher's admission check
+computes remaining room in sections but applies it to a list of columns
+before submitting a job for each section. A tall enough batch can exceed the
+intended section limit. The upload queue is visible in the sample and the
+admission mismatch is visible in the source. The trace alone cannot assign
+how much of the backlog or frame latency came from that mismatch.
+
+Later streaming samples recorded up to 334 resident client columns, 422
+server columns, 1,213 pending mesh uploads and 378,959,005 bytes of peak
+live Rust allocations. A late sample held 2,146 native terrain sections in
+57,795,648 bytes of vertex allocations. The camera moved during this
+capture. Frame-time percentiles for a warmed and stationary world remain
+unmeasured.
 
 RC 17 was linked with the AX implementation enabled. The stock mixer has
 separate TV and GamePad routes in the AX voice device mix. Audible gameplay
