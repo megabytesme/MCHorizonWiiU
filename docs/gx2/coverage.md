@@ -7,6 +7,31 @@ Baseline port `cf2ac8cbbad809a878e59aa4b20288a551294283`, hosted tree
 `build-hosted` staging tree. The corresponding port files and older
 [checkpoint](../../wiiu/RENDERER_CHECKPOINT.md) can differ from the hosted inputs.
 
+## RC 17 corrections to the historical matrix
+
+The physical reference is RC 17, assembled tree
+`bba7f65ff2134994021e530dc6b04e889a03cd6b`. Source observations below apply
+to that exact assembly. Physical observation covered basic terrain and HUD,
+controller movement, and the missing block-selection outline. It did not
+individually verify the other passes.
+
+| Stock stage | RC 17 shared input and native submission | Remaining verification or implementation |
+| --- | --- | --- |
+| Camera and terrain projection | `TerrainProjection::new` uses the frame camera, yaw, pitch, bob, spin and FOV. The section origin is relative to the camera in f64, and each output uses its own aspect. | Match per-output projection and frustum rejection at section edges. The retained-section draw loop currently submits every section. |
+| Stock lightmap and modifiers | `stock_lightmap_pixels` produces the 16×16 texture from frame sky, darkness, gamma, night vision, block flicker and boss modifiers. Cafe updates the texture only when the pixels change. The vertex shader samples it using baked light coordinates. | Compare light ramps, dimensions and effect transitions on both outputs. The old missing-lightmap row describes the historical build above. |
+| Solid and cutout sections | The native path maps compact indexed section buffers from `mesh.solid` and submits those same buffers to both outputs. GX2 applies the fog, alpha cutoff and depth state. | Count tested, visible and rejected sections separately per output. Compare identical warmed views before and after moving state binds out of the section loop or removing waits. |
+| Selection, hand and crumbling | `Frame` provides outline and hand geometry and the stock render contract includes crumbling. The Cafe draw loop does not submit these passes. | Use the original frame data and stock depth policies. The outlined block was observed missing on the physical console. |
+| Liquids and translucent geometry | `mesh.translucent` is detected but not uploaded. The stock solid path alone cannot verify liquid or glass coverage, blending, depth or ordering. | Reuse stock geometry, split depth/write and blend state, and compare sorted surfaces from matching cameras. Animation and UV repeat still need native validation. |
+| Entities, particles and atmospheric effects | The frame carries entities, some block entities, effects and sky data. The Cafe path draws the clear/fog background and HUD but skips native submission for the remaining world passes. | Test each effect independently against identical stock scenes. Current hardware evidence cannot establish the cost of unimplemented passes. |
+
+HZP already records CPU frame pacing, TV and GamePad submission, flip waits,
+terrain waits and draw counts. The MCP `renderer` field is null on Cafe
+because it describes the optional desktop renderer. Keep HZP as the
+measurement source and label CPU spans separately from GPU execution time.
+The [physical baseline](physical-rc17-rc18.md) documents the initial
+streaming sample and serial capture gap.
+
+
 ## How a frame reaches GX2
 
 1. `wiiu/host/cafe_host.c::main` initializes entropy, memory, ProcUI and WHB.

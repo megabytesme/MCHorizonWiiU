@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "a3b8adf93fb9dffb1de3407b7f29511c55038bfd9bfd230d4842d76790b020b8",
-  "output_tree": "bba7f65ff2134994021e530dc6b04e889a03cd6b",
+  "output_tree": "b463d2ea314e619a20062424402a618a33c2711e",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -154,12 +154,18 @@
       "sha256": "f27ee13c2ec56c95b1f5e71397b945d354a0e8e6a15a80b8ba2cefd847436f7e",
       "input_tree": "2c86e0530e3f7f5a860b9d5ff44f6601c4b3685c",
       "output_tree": "bba7f65ff2134994021e530dc6b04e889a03cd6b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0025-cafe-save-persistence.patch",
+      "sha256": "75dafc5579f99a8b69ccff560c4ddf5bb7e519b2002f2925747eebbd1289090c",
+      "input_tree": "bba7f65ff2134994021e530dc6b04e889a03cd6b",
+      "output_tree": "b463d2ea314e619a20062424402a618a33c2711e"
     }
   ],
   "candidate": {
-    "builder": "0.7.0-rc.3",
-    "client": "0.8.0-rc.17",
-    "patch": "0.5.0-rc.17"
+    "builder": "0.7.0-rc.4",
+    "client": "0.8.0-rc.18",
+    "patch": "0.5.0-rc.18"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

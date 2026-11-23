@@ -1,0 +1,719 @@
+diff --git a/crates/horizon-client/src/game/administration/command_harness.rs b/crates/horizon-client/src/game/administration/command_harness.rs
+index b7ddbecd7af1ce666bf6dbf470dda831ce4a9b43..33526fa9a46b5d6bf1e6923739c6c0596f2c3d2b 100644
+--- a/crates/horizon-client/src/game/administration/command_harness.rs
++++ b/crates/horizon-client/src/game/administration/command_harness.rs
+@@ -1002,7 +1002,7 @@ impl Game<'_> {
+                     let (state, raw) = self.harness_owner(|g| {
+                         g.load_stats();
+                         if !g.stats.loaded { return Err("merchant stats not loaded".into()); }
+-                        g.save_stats();
++                        g.save_stats()?;
+                         let uuid = g.level.player_uuid.ok_or("merchant stats UUID")?;
+                         let path = super::stats::player_json(&g.world_root, "stats", uuid);
+                         let raw = std::fs::read_to_string(path)?;
+diff --git a/crates/horizon-client/src/game/interface/advancements/mod.rs b/crates/horizon-client/src/game/interface/advancements/mod.rs
+index e464ce7b9405c7f81d5d0a18913555990347b3b8..cb5bbff51674d5d11d97be2f2728e1e41045771c 100644
+--- a/crates/horizon-client/src/game/interface/advancements/mod.rs
++++ b/crates/horizon-client/src/game/interface/advancements/mod.rs
+@@ -439,8 +439,8 @@ impl Game<'_> {
+         self.advancement_tree();
+         let progress = self
+             .adv_path()
+-            .and_then(|p| std::fs::read_to_string(p).ok())
+-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
++            .and_then(|p| horizon_client::save::read_durable_io(&p).ok())
++            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+             .map(|v| Progress::from_json(&v))
+             .unwrap_or_default();
+         // The known recipes are the player's own (`recipeBook`), not the
+@@ -458,20 +458,19 @@ impl Game<'_> {
+             self.grant_rewards(&tree.list[index]);
+         }
+     }
+-    pub(super) fn save_advancements(&self) {
++    pub(super) fn save_advancements(&self) -> horizon_client::Result<()> {
+         if !self.adv.loaded || self.remote.is_some() || self.no_player_here() {
+-            return;
++            return Ok(());
+         }
+         let Some(path) = self.adv_path() else {
+-            return;
++            return Ok(());
+         };
+         let json = self
+             .adv
+             .progress
+             .to_json(&self.adv.tree, horizon_world::DATA_VERSION);
+-        if let Err(e) = super::stats::write_player_json(&path, &json) {
+-            log::warn!("{e}");
+-        }
++        super::stats::write_player_json(&path, &json)?;
++        Ok(())
+     }
+     /// The player as predicates see it.
+     /// The predicate view of a command target.
+diff --git a/crates/horizon-client/src/game/interface/stats.rs b/crates/horizon-client/src/game/interface/stats.rs
+index ca2c3691730dfb431963d05a42c623ad42b3b2f1..d908950ea42355eea9e1f45f42545fcbafddf117 100644
+--- a/crates/horizon-client/src/game/interface/stats.rs
++++ b/crates/horizon-client/src/game/interface/stats.rs
+@@ -126,13 +126,14 @@ impl Game<'_> {
+         }
+     }
+     /// `ServerStatsCounter.save`.
+-    pub(super) fn save_stats(&self) {
+-        if !self.stats.loaded || self.remote.is_some() || self.no_player_here() {
+-            return;
+-        }
+-        if let Some(path) = self.stats_path() {
+-            self.stats.write(&path);
++    pub(super) fn save_stats(&self) -> horizon_client::Result<()> {
++        if self.stats.loaded && self.remote.is_none() && !self.no_player_here()
++            && let Some(path) = self.stats_path()
++        {
++            self.stats.try_write(&path)
++                .map_err(|err| format!("could not save the statistics file {}: {err}", path.display()))?;
+         }
++        Ok(())
+     }
+     /// `ServerPlayer.awardStat`: `n` more of the statistic `ty` (a bare type
+     /// such as `used`) and `key`, unless a native mod cancels the award.
+diff --git a/crates/horizon-client/src/game/network/lan/mod.rs b/crates/horizon-client/src/game/network/lan/mod.rs
+index 1513a3df9f413d8362cf87dfe556a14c49eee406..3d7d6bb8afe931d1522051a156ba573f62ede9f5 100644
+--- a/crates/horizon-client/src/game/network/lan/mod.rs
++++ b/crates/horizon-client/src/game/network/lan/mod.rs
+@@ -1665,9 +1665,9 @@ impl Game<'_> {
+         };
+         let tree = self.advancement_tree();
+         let path = super::stats::player_json(&self.world_root, "advancements", uuid);
+-        let saved = std::fs::read_to_string(path)
++        let saved = horizon_client::save::read_durable_io(&path)
+             .ok()
+-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
++            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+         let Some(host) = self.lan.as_mut() else {
+             return;
+         };
+diff --git a/crates/horizon-client/src/game/world/autosave.rs b/crates/horizon-client/src/game/world/autosave.rs
+index e8dea809bc9afb5a5a27e2c7a5419ca0335fe197..e22c44fb49ff36aa541606809203d6b364c77123 100644
+--- a/crates/horizon-client/src/game/world/autosave.rs
++++ b/crates/horizon-client/src/game/world/autosave.rs
+@@ -54,8 +54,15 @@ impl Game<'_> {
+         self.save_wandering_trader();
+         self.save_portal_arrivals();
+         if !self.keep_owner_files {
+-            self.save_stats();
+-            self.save_advancements();
++            let records = [self.save_stats(), self.save_advancements()];
++            for result in records {
++                #[cfg(target_os = "cafe")]
++                result?;
++                #[cfg(not(target_os = "cafe"))]
++                if let Err(err) = result {
++                    log::warn!("{err}");
++                }
++            }
+         }
+         self.save_scoreboard();
+         self.save_bossbars();
+diff --git a/crates/horizon-client/src/save.rs b/crates/horizon-client/src/save.rs
+index 3b6e99e8fb333c7d3c11e3987e9cab9f6cbbc30a..9dada9a88819a10cc075372b9080c7d820ca730d 100644
+--- a/crates/horizon-client/src/save.rs
++++ b/crates/horizon-client/src/save.rs
+@@ -3042,7 +3042,11 @@ pub fn read_dat(path: &Path) -> Option<Tag> {
+ }
+ /// `read_dat`, with why the file did not read.
+ fn try_read_dat(path: &Path) -> std::result::Result<Tag, DatIssue> {
+-    let bytes = fs::read(path).map_err(|e| match e.kind() {
++    #[cfg(target_os = "cafe")]
++    let bytes = horizon_world::cafe_persistence::read(path, &dat_backup(path));
++    #[cfg(not(target_os = "cafe"))]
++    let bytes = fs::read(path);
++    let bytes = bytes.map_err(|e| match e.kind() {
+         std::io::ErrorKind::NotFound => DatIssue::Missing,
+         _ => DatIssue::Unreadable(e.to_string()),
+     })?;
+@@ -3170,6 +3174,40 @@ pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+ 
+ /// [`write_durable`], keeping the operating system's error (its kind and code).
+ pub fn write_durable_io(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
++    #[cfg(target_os = "cafe")]
++    {
++        horizon_world::cafe_persistence::replace(path, &durable_backup(path), bytes, false)
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        write_durable_host(path, bytes)
++    }
++}
++
++/// Read a whole-file save, including a Cafe save interrupted at publication.
++pub fn read_durable_io(path: &Path) -> std::io::Result<Vec<u8>> {
++    #[cfg(target_os = "cafe")]
++    {
++        horizon_world::cafe_persistence::read(path, &durable_backup(path))
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        fs::read(path)
++    }
++}
++
++#[cfg(target_os = "cafe")]
++fn durable_backup(path: &Path) -> PathBuf {
++    horizon_world::cafe_persistence::sibling(path, ".horizon-prev")
++}
++
++#[cfg(target_os = "cafe")]
++fn dat_backup(path: &Path) -> PathBuf {
++    horizon_world::cafe_persistence::sibling(path, "_old")
++}
++
++#[cfg(not(target_os = "cafe"))]
++fn write_durable_host(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+     if let Some(dir) = path.parent() {
+         fs::create_dir_all(dir)?;
+     }
+@@ -3180,6 +3218,7 @@ pub fn write_durable_io(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+     sync_folder(path)
+ }
+ 
++#[cfg(not(target_os = "cafe"))]
+ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+     use std::io::Write;
+     let mut file = fs::File::create(path)?;
+@@ -3189,6 +3228,7 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+ 
+ /// The folder of `path` synced, so that a rename into it is on the disk (POSIX; Windows has
+ /// no folder handle to sync, and its rename is journaled by NTFS).
++#[cfg(not(target_os = "cafe"))]
+ fn sync_folder(path: &Path) -> std::io::Result<()> {
+     #[cfg(unix)]
+     if let Some(dir) = path.parent() {
+@@ -3218,13 +3258,27 @@ fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
+     )
+     .map_err(|e| e.to_string())?;
+     let compressed = Compression::Gzip.encode(&bytes)?;
++    #[cfg(target_os = "cafe")]
++    {
++        let _ = durable; // Flush the stage on Cafe for both ordinary and durable saves.
++        horizon_world::cafe_persistence::replace(path, &dat_backup(path), &compressed, true)?;
++        Ok(())
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        publish_dat_host(path, &compressed, durable)
++    }
++}
++
++#[cfg(not(target_os = "cafe"))]
++fn publish_dat_host(path: &Path, compressed: &[u8], durable: bool) -> Result<()> {
+     let file = path
+         .file_name()
+         .and_then(|n| n.to_str())
+         .unwrap_or("data.dat");
+     let temporary = path.with_file_name(format!("{file}_new"));
+     if durable {
+-        write_synced(&temporary, &compressed)?;
++        write_synced(&temporary, compressed)?;
+     } else {
+         fs::write(&temporary, compressed)?;
+     }
+diff --git a/crates/horizon-core/src/lib.rs b/crates/horizon-core/src/lib.rs
+index 18c24f0cb0c4298c803beec0e8d8a4012d50ecb7..b1fe4a05312ec2281db1600732db374c973bb868 100644
+--- a/crates/horizon-core/src/lib.rs
++++ b/crates/horizon-core/src/lib.rs
+@@ -47,7 +47,7 @@ pub mod use_animation;
+ pub mod version;
+ 
+ #[cfg(target_os = "cafe")]
+-pub use horizon_system::process_id;
++pub use horizon_system::{flush_cafe_volume, process_id};
+ pub use level_key::LevelKey;
+ #[cfg(not(target_os = "cafe"))]
+ pub use std::process::id as process_id;
+diff --git a/crates/horizon-gameplay/src/stats.rs b/crates/horizon-gameplay/src/stats.rs
+index bc81c4e237b34d5443e775e0f332954e4f09e01b..79e990ed6a6729cf10dcd811ba2879e87d82d129 100644
+--- a/crates/horizon-gameplay/src/stats.rs
++++ b/crates/horizon-gameplay/src/stats.rs
+@@ -146,9 +146,9 @@ impl Stats {
+     }
+     /// `ServerStatsCounter.parseLocal`: the counters of a stats file.
+     pub fn read(path: &Path) -> Self {
+-        let json = std::fs::read_to_string(path)
++        let json = horizon_client::save::read_durable_io(path)
+             .ok()
+-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
++            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+             .unwrap_or_default();
+         Self::from_json(&json)
+     }
+@@ -261,6 +261,10 @@ pub fn locate_player_json(world: &Path, dir: &str, uuid: [i32; 4], name: &str) -
+     if uuid_file.exists() {
+         return uuid_file;
+     }
++    #[cfg(target_os = "cafe")]
++    if horizon_client::save::read_durable_io(&uuid_file).is_ok() {
++        return uuid_file;
++    }
+     let file = format!("{name}.json");
+     if !valid_path_segment(&file) {
+         return uuid_file;
+diff --git a/crates/horizon-system/src/lib.rs b/crates/horizon-system/src/lib.rs
+index fed7a7962259f47344c357af4fce037291c00122..de4f59a1052daff768d830e52fcb30bf39a13f7a 100644
+--- a/crates/horizon-system/src/lib.rs
++++ b/crates/horizon-system/src/lib.rs
+@@ -22,6 +22,52 @@ pub fn process_id() -> u32 {
+     unsafe { OSGetUPID() }
+ }
+ 
++#[cfg(target_os = "cafe")]
++/// Commit directory updates on the Cafe volume that owns this filesystem path.
++pub fn flush_cafe_volume(path: &Path) -> std::io::Result<()> {
++    use std::{ffi::CString, io::{self, ErrorKind}, os::raw::c_char};
++
++    unsafe extern "C" {
++        fn FSAAddClient(attach: *const std::ffi::c_void) -> i32;
++        fn FSAFlushVolume(client: i32, path: *const c_char) -> i32;
++        fn FSADelClient(client: i32) -> i32;
++    }
++
++    let absolute = if path.is_absolute() {
++        path.to_owned()
++    } else {
++        std::env::current_dir()?.join(path)
++    };
++    let volume = absolute
++        .to_str()
++        .and_then(|path| path.strip_prefix("/vol/"))
++        .and_then(|rest| rest.split_once('/'))
++        .map(|(volume, _)| volume)
++        .filter(|volume| !volume.is_empty() && *volume != "." && *volume != "..")
++        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "save path has no Cafe volume"))?;
++    let volume = CString::new(format!("/vol/{volume}"))
++        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "invalid Cafe volume"))?;
++    // Staging has already mounted the volume through Cafe std. Use a dedicated
++    // FSA client so a storage error is returned without changing std's client state.
++    // SAFETY: A null attach pointer disables the optional async callback.
++    let client = unsafe { FSAAddClient(std::ptr::null()) };
++    if client < 0 {
++        return Err(io::Error::other(format!(
++            "Cafe volume flush client: {client}"
++        )));
++    }
++    // SAFETY: The path is NUL-terminated and the valid handle is owned here.
++    let status = unsafe { FSAFlushVolume(client, volume.as_ptr()) };
++    // SAFETY: The owned handle is closed exactly once after its final use.
++    let closed = unsafe { FSADelClient(client) };
++    if status != 0 || closed != 0 {
++        return Err(io::Error::other(format!(
++            "Cafe volume flush failed: flush={status}, close={closed}"
++        )));
++    }
++    Ok(())
++}
++
+ /// What `program args` prints, trimmed, when it succeeds and prints something. On Windows the
+ /// program opens no console window: a GUI launcher or a game started without one would flash a
+ /// terminal for every probe.
+diff --git a/crates/horizon-world/src/cafe_persistence.rs b/crates/horizon-world/src/cafe_persistence.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..74affdb190dd282fffe873a361033b6d08fcc451
+--- /dev/null
++++ b/crates/horizon-world/src/cafe_persistence.rs
+@@ -0,0 +1,295 @@
++//! Close and flush a complete replacement before publishing it on Cafe SD.
++//!
++//! Cafe FSRename requires an absent destination. Keep the old file under an
++//! adjacent recovery name until the staged file has been published. Readers
++//! recognize that recovery name if power was lost between the two renames.
++use std::{
++    ffi::OsString,
++    fs::{self, File},
++    io::{self, ErrorKind, Write},
++    path::{Path, PathBuf},
++    sync::{
++        Mutex,
++        atomic::{AtomicU32, Ordering},
++    },
++};
++
++static TRANSACTION: Mutex<()> = Mutex::new(());
++static NEXT_STAGE: AtomicU32 = AtomicU32::new(0);
++
++/// Append a suffix without changing the encoding or dropping an extension.
++pub fn sibling(path: &Path, suffix: &str) -> PathBuf {
++    let mut name = OsString::from(path.file_name().unwrap_or_default());
++    name.push(suffix);
++    path.with_file_name(name)
++}
++
++pub fn read(path: &Path, backup: &Path) -> io::Result<Vec<u8>> {
++    let _guard = TRANSACTION
++        .lock()
++        .map_err(|_| io::Error::other("Cafe save transaction lock poisoned"))?;
++    match fs::read(path) {
++        Err(err) if err.kind() == ErrorKind::NotFound => fs::read(backup),
++        result => result,
++    }
++}
++
++/// A staging directory is reserved with mkdir rather than create_new: Cafe
++/// std's latter API does a nonexclusive stat followed by a truncating open.
++struct Stage(PathBuf);
++
++impl Stage {
++    fn reserve(path: &Path) -> io::Result<Self> {
++        loop {
++            let id = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
++            let dir = sibling(path, &format!(".horizon-stage-{id}"));
++            match fs::create_dir(&dir) {
++                Ok(()) => return Ok(Self(dir)),
++                Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
++                Err(err) => return Err(err),
++            }
++        }
++    }
++}
++
++impl Drop for Stage {
++    fn drop(&mut self) {
++        // Only touch our own reservation. An interruption can leave a stage,
++        // which must never be used as a committed save or reused by a writer.
++        let _ = fs::remove_file(self.0.join("payload"));
++        let _ = fs::remove_dir(&self.0);
++    }
++}
++
++fn is_file(path: &Path) -> io::Result<bool> {
++    match fs::metadata(path) {
++        Ok(metadata) if metadata.is_file() => Ok(true),
++        Ok(_) => Err(io::Error::new(
++            ErrorKind::InvalidInput,
++            "save transaction path is not a regular file",
++        )),
++        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
++        Err(err) => Err(err),
++    }
++}
++
++#[cfg(target_os = "cafe")]
++pub fn replace(path: &Path, backup: &Path, bytes: &[u8], keep_backup: bool) -> io::Result<()> {
++    replace_and_flush(
++        path,
++        backup,
++        bytes,
++        keep_backup,
++        |from, to| fs::rename(from, to),
++        || horizon_core::flush_cafe_volume(path),
++    )
++}
++
++#[cfg(test)]
++fn replace_with(
++    path: &Path,
++    backup: &Path,
++    bytes: &[u8],
++    keep_backup: bool,
++    rename: impl Fn(&Path, &Path) -> io::Result<()>,
++) -> io::Result<()> {
++    replace_and_flush(path, backup, bytes, keep_backup, rename, || Ok(()))
++}
++
++fn replace_and_flush(
++    path: &Path,
++    backup: &Path,
++    bytes: &[u8],
++    keep_backup: bool,
++    rename: impl Fn(&Path, &Path) -> io::Result<()>,
++    flush: impl Fn() -> io::Result<()>,
++) -> io::Result<()> {
++    let _guard = TRANSACTION
++        .lock()
++        .map_err(|_| io::Error::other("Cafe save transaction lock poisoned"))?;
++    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
++        fs::create_dir_all(parent)?;
++    }
++    let stage = Stage::reserve(path)?;
++    let payload = stage.0.join("payload");
++    {
++        let mut file = File::create(&payload)?;
++        file.write_all(bytes)?;
++        file.sync_all()?;
++    }
++
++    let live = is_file(path)?;
++    let saved = is_file(backup)?;
++    if live {
++        if saved {
++            // The current file is still present and is the recovery source
++            // for this transaction. Do not unlink it.
++            fs::remove_file(backup)?;
++        }
++        rename(path, backup)?;
++        if let Err(err) = flush() {
++            let _ = rename(backup, path);
++            return Err(err);
++        }
++    }
++    if let Err(err) = rename(&payload, path) {
++        // Attempt to restore the live name. A failed rollback leaves the
++        // intact backup readable at the next open and returns the first error.
++        if live {
++            let _ = rename(backup, path);
++        }
++        return Err(err);
++    }
++    // File flush protects the payload and volume flush commits the directory
++    // changes. On failure leave both names available and surface the error.
++    flush()?;
++    if !keep_backup && (live || saved) {
++        fs::remove_file(backup)?;
++    }
++    fs::remove_dir(&stage.0)?;
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::atomic::AtomicUsize;
++
++    struct Scratch(PathBuf);
++
++    impl Scratch {
++        fn new() -> Self {
++            static NEXT: AtomicUsize = AtomicUsize::new(0);
++            let root = std::env::temp_dir().join(format!(
++                "horizon-cafe-saves-{}-{}",
++                std::process::id(),
++                NEXT.fetch_add(1, Ordering::Relaxed)
++            ));
++            fs::create_dir(&root).unwrap();
++            Self(root)
++        }
++    }
++
++    impl Drop for Scratch {
++        fn drop(&mut self) {
++            fs::remove_dir_all(&self.0).unwrap();
++        }
++    }
++
++    fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
++        if to.try_exists()? {
++            return Err(ErrorKind::AlreadyExists.into());
++        }
++        fs::rename(from, to)
++    }
++
++    #[test]
++    fn absent_and_repeated_replacement_preserve_the_previous_record() {
++        let root = Scratch::new();
++        let path = root.0.join("level.dat");
++        let backup = root.0.join("level.dat_old");
++        for n in 1..=3 {
++            replace_with(&path, &backup, &[n], true, no_replace).unwrap();
++            assert_eq!(read(&path, &backup).unwrap(), [n]);
++            if n > 1 {
++                assert_eq!(fs::read(&backup).unwrap(), [n - 1]);
++            }
++        }
++        assert_eq!(fs::read_dir(&root.0).unwrap().count(), 2);
++    }
++
++    #[test]
++    fn interrupted_replacement_loads_only_the_previous_complete_record() {
++        let root = Scratch::new();
++        let path = root.0.join("player.json");
++        let backup = sibling(&path, ".horizon-prev");
++        fs::write(&backup, b"previous").unwrap();
++        // A crash can leave abandoned payload bytes alongside the backup.
++        let stage = Stage::reserve(&path).unwrap();
++        fs::write(stage.0.join("payload"), b"partial").unwrap();
++        assert_eq!(read(&path, &backup).unwrap(), b"previous");
++        replace_with(&path, &backup, b"latest", false, no_replace).unwrap();
++        assert_eq!(read(&path, &backup).unwrap(), b"latest");
++        assert!(!backup.exists());
++        assert_eq!(fs::read(stage.0.join("payload")).unwrap(), b"partial");
++    }
++
++    #[test]
++    fn collision_leaves_foreign_staging_data_alone() {
++        let root = Scratch::new();
++        let path = root.0.join("weather.dat");
++        let backup = sibling(&path, "_old");
++        // Reserve the next consecutive IDs, including ones used by other tests.
++        for n in 0..256 {
++            let dir = sibling(&path, &format!(".horizon-stage-{n}"));
++            fs::create_dir(&dir).unwrap();
++            fs::write(dir.join("payload"), b"foreign").unwrap();
++        }
++        replace_with(&path, &backup, b"weather", true, no_replace).unwrap();
++        assert_eq!(fs::read(&path).unwrap(), b"weather");
++        for n in 0..256 {
++            let dir = sibling(&path, &format!(".horizon-stage-{n}"));
++            assert_eq!(fs::read(dir.join("payload")).unwrap(), b"foreign");
++        }
++    }
++
++    #[test]
++    fn failed_publish_rolls_back_or_leaves_readable_recovery() {
++        let root = Scratch::new();
++        let path = root.0.join("level.dat");
++        let backup = root.0.join("level.dat_old");
++        for fail_rollback in [false, true] {
++            fs::write(&path, b"original").unwrap();
++            let err = replace_with(&path, &backup, b"replacement", true, |from, to| {
++                if to == path && (from.ends_with("payload") || fail_rollback) {
++                    return Err(ErrorKind::PermissionDenied.into());
++                }
++                no_replace(from, to)
++            })
++            .unwrap_err();
++            assert_eq!(err.kind(), ErrorKind::PermissionDenied);
++            assert_eq!(path.exists(), !fail_rollback);
++            assert_eq!(read(&path, &backup).unwrap(), b"original");
++            assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);
++        }
++    }
++
++    #[test]
++    fn a_failed_directory_flush_does_not_report_success_or_discard_the_old_record() {
++        let root = Scratch::new();
++        let path = root.0.join("player.json");
++        let backup = sibling(&path, ".horizon-prev");
++        fs::write(&path, b"original").unwrap();
++        let calls = std::cell::Cell::new(0);
++        let err = replace_and_flush(&path, &backup, b"latest", false, no_replace, || {
++            calls.set(calls.get() + 1);
++            if calls.get() == 2 {
++                return Err(ErrorKind::StorageFull.into());
++            }
++            Ok(())
++        })
++        .unwrap_err();
++        assert_eq!(err.kind(), ErrorKind::StorageFull);
++        assert_eq!(fs::read(&backup).unwrap(), b"original");
++        assert_eq!(read(&path, &backup).unwrap(), b"latest");
++    }
++
++    #[test]
++    fn overlapping_writes_leave_a_complete_record_and_no_stages() {
++        let root = Scratch::new();
++        let path = root.0.join("stats.json");
++        let backup = sibling(&path, ".horizon-prev");
++        std::thread::scope(|scope| {
++            for n in 0..8 {
++                let (path, backup) = (&path, &backup);
++                scope.spawn(move || {
++                    replace_with(path, backup, &[n; 8192], false, no_replace).unwrap()
++                });
++            }
++        });
++        let bytes = read(&path, &backup).unwrap();
++        assert_eq!(bytes.len(), 8192);
++        assert!(bytes.iter().all(|byte| *byte == bytes[0]));
++        assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);
++    }
++}
+diff --git a/crates/horizon-world/src/lib.rs b/crates/horizon-world/src/lib.rs
+index d8cec134c132c16fd0aec54c462a552e522bd538..0c5031f0357f40d2b68140433537515cfd749003 100644
+--- a/crates/horizon-world/src/lib.rs
++++ b/crates/horizon-world/src/lib.rs
+@@ -36,6 +36,8 @@ pub mod collision_exclusions;
+ pub mod combat_rules;
+ pub mod component_durability;
+ pub mod component_patch;
++#[cfg(any(target_os = "cafe", test))]
++pub mod cafe_persistence;
+ pub mod compression;
+ pub mod conditions;
+ pub mod consumable;
+diff --git a/crates/horizon-world/src/region.rs b/crates/horizon-world/src/region.rs
+index d10661e58c82c344e2dcfb96471a09feecd71576..2e3ec900ab07b164a3fec1c17e096bae1744617a 100644
+--- a/crates/horizon-world/src/region.rs
++++ b/crates/horizon-world/src/region.rs
+@@ -112,6 +112,16 @@ fn position(region: ChunkPos, index: usize) -> ChunkPos {
+         region.z * 32 + (index / 32) as i32,
+     )
+ }
++/// Cafe FSSetPosFile rejects an offset beyond EOF. The caller owns the
++/// region lock, so extend with the standard library's zero-fill path before
++/// seeking. A payload write may then extend the file from that position.
++fn seek_for_write(file: &mut File, position: u64) -> io::Result<()> {
++    if cfg!(any(target_os = "cafe", test)) && file.metadata()?.len() < position {
++        file.set_len(position)?;
++    }
++    file.seek(SeekFrom::Start(position)).map(|_| ())
++}
++
+ fn external_path(directory: &Path, chunk: ChunkPos) -> PathBuf {
+     directory.join(format!("c.{}.{}.mcc", chunk.x, chunk.z))
+ }
+@@ -344,10 +354,16 @@ impl RegionFile {
+             data.extend_from_slice(&record.compressed);
+         }
+         data.resize(sectors * SECTOR, 0);
+-        let written = self
+-            .file
+-            .seek(SeekFrom::Start((start * SECTOR) as u64))
++        let position = (start * SECTOR) as u64;
++        let written = seek_for_write(&mut self.file, position)
+             .and_then(|_| self.file.write_all(&data));
++        #[cfg(target_os = "cafe")]
++        if let Err(err) = &written {
++            log::error!(
++                "region payload write failed: {} at {position}: {err}",
++                self.path.display()
++            );
++        }
+         if let Err(e) = written {
+             self.free(start, sectors);
+             return Err(e);
+@@ -632,8 +648,7 @@ impl RegionWriter {
+             file.write_all(&record.compressed)?;
+             file.sync_all()?;
+         }
+-        self.file
+-            .seek(SeekFrom::Start(u64::from(self.next_sector) * SECTOR as u64))?;
++        seek_for_write(&mut self.file, u64::from(self.next_sector) * SECTOR as u64)?;
+         let len = if external {
+             1
+         } else {
+@@ -692,6 +707,36 @@ impl Drop for RegionWriter {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn region_write_seek_zero_fills_a_short_header_and_keeps_truncation_valid() {
++        use std::io::{Read, Seek, Write};
++
++        let path = std::env::temp_dir().join(format!(
++            "horizon-region-seek-{}.tmp",
++            std::process::id()
++        ));
++        let mut file = OpenOptions::new()
++            .read(true)
++            .write(true)
++            .create_new(true)
++            .open(&path)
++            .unwrap();
++        file.write_all(b"header").unwrap();
++        seek_for_write(&mut file, HEADER as u64).unwrap();
++        assert_eq!(file.metadata().unwrap().len(), HEADER as u64);
++        file.write_all(b"payload").unwrap();
++        file.sync_all().unwrap();
++        file.set_len(HEADER as u64 + 4).unwrap();
++        file.rewind().unwrap();
++        let mut result = Vec::new();
++        file.read_to_end(&mut result).unwrap();
++        assert_eq!(&result[..6], b"header");
++        assert!(result[6..HEADER].iter().all(|&byte| byte == 0));
++        assert_eq!(&result[HEADER..], b"payl");
++        drop(file);
++        fs::remove_file(path).unwrap();
++    }
++
+     /// The pre-hint allocator: first fit from sector 0. The hint must keep
+     /// producing exactly its placements.
+     fn naive_first_fit(used: &[bool], count: usize) -> usize {
