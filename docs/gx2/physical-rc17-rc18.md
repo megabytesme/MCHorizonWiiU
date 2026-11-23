@@ -135,6 +135,25 @@ the stock registry and all five sand footstep files through the
 archive-backed lookup. AX delivery and speaker output still require a native
 validation run with that repair.
 
+## Extended RC 18 physical session
+
+The reopened fixture later showed the in-game death screen. On reconnection,
+the existing native HTTPS endpoint timed out and no fresh gameplay state or
+frame timing was available. Serial showed the client still had 637 columns
+at distance 12 while retained section buffers increased from 154,351,104
+to 226,485,888 allocation bytes. The upload backlog was 414 in the earlier
+sample and 560 in the final sample, after repeated allocation failures.
+The queue did not settle in the recorded interval.
+
+The last failure was a 379,840-byte, 64-byte-aligned allocation in the region
+writer's zlib compressor. The bulk heap had 5,867,396 bytes free in total and
+a largest aligned block of 280,044 bytes. The default-heap probe was
+unavailable. The codec reported `MemError`, panicked, and CafeOS recorded
+an illegal-instruction exception. This is a separate memory-pressure
+failure during the open session. The first manual Save & Quit and reopen
+still passed. The trace contains no second manual save or second durable
+save barrier. The console was left in its observed state.
+
 ## RC 17 performance evidence
 
 | Captured startup span | Duration |

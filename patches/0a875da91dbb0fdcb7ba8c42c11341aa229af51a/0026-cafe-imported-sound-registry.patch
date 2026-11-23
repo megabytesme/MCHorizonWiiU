@@ -1,0 +1,99 @@
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index 42cd7493..dcbfa87b 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -449,19 +449,29 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+     })
+ }
+ 
+-/// `path`'s bytes: from its prepared root's data file when that holds it,
+-/// where a file the data file doesn't have is missing (`NotFound`, without
+-/// asking the disk: a texture's `.mcmeta` or LabPBR maps, mostly absent);
+-/// else from the disk.
+-pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+-    match find(path) {
+-        Some((files, rel)) if holds_file(&rel) => files
+-            .read(&rel)
+-            .unwrap_or_else(|| Err(io::ErrorKind::NotFound.into())),
+-        _ => fs::read(path),
++/// Imported by `horizon-prepare sounds`, which can run after the archive was built.
++const SOUND_REGISTRY: &str = "assets/minecraft/sounds.json";
++
++fn read_prepared(path: &Path, max: u64) -> Option<io::Result<Vec<u8>>> {
++    let (files, relative) = find(path)?;
++    if !holds_file(&relative) {
++        return None;
++    }
++    let entry = files.read_head(&relative, max);
++    match entry {
++        None if relative != SOUND_REGISTRY => Some(Err(io::ErrorKind::NotFound.into())),
++        entry => entry,
+     }
+ }
+ 
++/// Read from the prepared archive when it owns the file. An ordinary archive
++/// miss stays missing, saving loose file lookups for optional texture and
++/// model data. The separately imported sound registry may appear on disk
++/// after the archive was written.
++pub fn read(path: &Path) -> io::Result<Vec<u8>> {
++    read_prepared(path, u64::MAX).unwrap_or_else(|| fs::read(path))
++}
++
+ /// The files under `dir` (a folder of a prepared root) and its subfolders, as
+ /// `/`-separated paths from `dir` in name order, from the root's data file
+ /// without listing the disk: empty when it holds none there. `None` when no
+@@ -505,16 +515,11 @@ pub fn files_under(dir: &Path) -> Option<Vec<String>> {
+ /// At most the first `max` bytes of `path`, from where [`read`] takes them:
+ /// a header, without reading the whole file.
+ pub fn read_head(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+-    match find(path) {
+-        Some((files, rel)) if holds_file(&rel) => files
+-            .read_head(&rel, max)
+-            .unwrap_or_else(|| Err(io::ErrorKind::NotFound.into())),
+-        _ => {
+-            let mut bytes = Vec::new();
+-            io::Read::read_to_end(&mut io::Read::take(File::open(path)?, max), &mut bytes)?;
+-            Ok(bytes)
+-        }
+-    }
++    read_prepared(path, max).unwrap_or_else(|| {
++        let mut bytes = Vec::new();
++        io::Read::read_to_end(&mut io::Read::take(File::open(path)?, max), &mut bytes)?;
++        Ok(bytes)
++    })
+ }
+ 
+ /// [`read`] as UTF-8 text.
+@@ -988,4 +993,32 @@ mod tests {
+         );
+         let _ = fs::remove_dir_all(&root);
+     }
++
++    #[test]
++    fn reads_loose_sound_registry_imported_after_pack() {
++        let root = root("late-sound-registry");
++        write(&root).unwrap();
++        let registry = root.join(SOUND_REGISTRY);
++        assert_eq!(read(&registry).unwrap_err().kind(), io::ErrorKind::NotFound);
++        assert!(open(&root).unwrap().read(SOUND_REGISTRY).is_none());
++
++        let sounds = br#"{"block.sand.step":{"sounds":["step/sand1"]}}"#;
++        fs::write(&registry, sounds).unwrap();
++        assert_eq!(read(&registry).unwrap(), sounds);
++        assert_eq!(read_head(&registry, 8).unwrap(), b"{\"block.");
++        let _ = fs::remove_dir_all(root);
++    }
++
++    #[test]
++    fn archived_sound_registry_stays_authoritative() {
++        let root = root("archived-sound-registry");
++        let registry = root.join(SOUND_REGISTRY);
++        let sounds = br#"{"block.sand.step":{"sounds":["step/sand1"]}}"#;
++        fs::write(&registry, sounds).unwrap();
++        write(&root).unwrap();
++        fs::write(&registry, b"later loose file").unwrap();
++        assert_eq!(read(&registry).unwrap(), sounds);
++        let _ = fs::remove_dir_all(root);
++    }
++
+ }

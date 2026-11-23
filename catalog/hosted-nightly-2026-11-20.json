@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "a3b8adf93fb9dffb1de3407b7f29511c55038bfd9bfd230d4842d76790b020b8",
-  "output_tree": "b463d2ea314e619a20062424402a618a33c2711e",
+  "output_tree": "100a09ec72dfa47c10ce6119d557b77232fbdcd8",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -160,12 +160,18 @@
       "sha256": "75dafc5579f99a8b69ccff560c4ddf5bb7e519b2002f2925747eebbd1289090c",
       "input_tree": "bba7f65ff2134994021e530dc6b04e889a03cd6b",
       "output_tree": "b463d2ea314e619a20062424402a618a33c2711e"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0026-cafe-imported-sound-registry.patch",
+      "sha256": "e04ad6728c4c2f4d9c8febba2d56da317ee41bdbfe7f0f15079586b5ef2fb482",
+      "input_tree": "b463d2ea314e619a20062424402a618a33c2711e",
+      "output_tree": "100a09ec72dfa47c10ce6119d557b77232fbdcd8"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.18",
-    "patch": "0.5.0-rc.18"
+    "client": "0.8.0-rc.19",
+    "patch": "0.5.0-rc.19"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
