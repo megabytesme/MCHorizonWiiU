@@ -1,0 +1,58 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index fa11a87..a3f8208 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -9350,11 +9350,12 @@ impl Game<'_> {
+                     }
+                 }
+                 WindowEvent::CursorMoved { position, .. } => {
+-                    if let Some(r) = &self.renderer {
+-                        let b = HudBatch::new(
+-                            [r.config.width, r.config.height],
+-                            self.settings.gui_scale_inputs(),
+-                        );
++                    #[cfg(target_os = "cafe")]
++                    let viewport = Some(self.cafe_viewport);
++                    #[cfg(not(target_os = "cafe"))]
++                    let viewport = self.renderer.as_ref().map(|r| [r.config.width, r.config.height]);
++                    if let Some(viewport) = viewport {
++                        let b = HudBatch::new(viewport, self.settings.gui_scale_inputs());
+                         let previous = self.cursor;
+                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
+                         if self.studio_mouse_dragged(b.width) {
+diff --git a/crates/horizon-client/src/game/interface/screens.rs b/crates/horizon-client/src/game/interface/screens.rs
+index 93c4f4c..1d2a0c3 100644
+--- a/crates/horizon-client/src/game/interface/screens.rs
++++ b/crates/horizon-client/src/game/interface/screens.rs
+@@ -603,14 +603,7 @@ impl Game<'_> {
+             .chain(added)
+     }
+     pub(super) fn pause_click(&mut self) -> Result<()> {
+-        let (w, h) = {
+-            let size = self
+-                .renderer
+-                .as_ref()
+-                .map_or([1, 1], |r| [r.config.width, r.config.height]);
+-            let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+-            (b.width, b.height)
+-        };
++        let (w, h) = self.gui_size();
+         let fallback;
+         let layout = match self.built_pause(w, h) {
+             Some(layout) => layout,
+@@ -655,14 +648,7 @@ impl Game<'_> {
+         Ok(())
+     }
+     pub(super) fn pause_key(&mut self, key: KeyCode) -> Result<()> {
+-        let (w, h) = {
+-            let size = self
+-                .renderer
+-                .as_ref()
+-                .map_or([1, 1], |r| [r.config.width, r.config.height]);
+-            let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+-            (b.width, b.height)
+-        };
++        let (w, h) = self.gui_size();
+         let fallback;
+         let layout = match self.built_pause(w, h) {
+             Some(layout) => layout,

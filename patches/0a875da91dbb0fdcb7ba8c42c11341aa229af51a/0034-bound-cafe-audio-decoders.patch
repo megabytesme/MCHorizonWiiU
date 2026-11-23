@@ -1,0 +1,1092 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index 10a2237..d6ff345 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -87,6 +87,26 @@ impl Resource {
+     pub fn bytes(bytes: Vec<u8>) -> Self {
+         Self(ResourceStorage::Bytes(bytes.into()))
+     }
++    /// Open a winning loose Ogg file directly. Prepared data archives do not
++    /// own Ogg payloads. Other source kinds keep their normal lookup path.
++    pub fn open_loose_ogg(&self) -> Option<io::Result<fs::File>> {
++        match &self.0 {
++            ResourceStorage::File { source, name } => source.open_loose_ogg(name),
++            ResourceStorage::Bytes(_) => None,
++        }
++    }
++
++    pub fn read_limited(&self, max: u64) -> io::Result<Vec<u8>> {
++        match &self.0 {
++            ResourceStorage::File { source, name } => source.read_limited(name, max),
++            ResourceStorage::Bytes(bytes) if bytes.len() as u64 <= max => Ok(bytes.to_vec()),
++            ResourceStorage::Bytes(_) => Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "resource exceeds the size limit",
++            )),
++        }
++    }
++
+     pub fn read(&self) -> io::Result<Vec<u8>> {
+         match &self.0 {
+             ResourceStorage::File { source, name } => source.read(name),
+@@ -376,6 +396,19 @@ impl ResourceSource {
+             prefix: format!("{directory}/"),
+         })))
+     }
++    fn open_loose_ogg(&self, name: &str) -> Option<io::Result<fs::File>> {
++        if !name.ends_with(".ogg") || !stays_inside(name) {
++            return None;
++        }
++        match self.0.as_ref() {
++            Storage::Directory(root) => Some(fs::File::open(root.join(name))),
++            #[cfg(not(target_arch = "wasm32"))]
++            Storage::Archive(_) => None,
++            Storage::Prefix { source, prefix } => source.open_loose_ogg(&format!("{prefix}{name}")),
++            Storage::Index(files, _) => files.get(name)?.open_loose_ogg(),
++        }
++    }
++
+     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
+         if !stays_inside(name) {
+             return Err(io::Error::new(
+diff --git a/crates/horizon-client-render/src/audio.rs b/crates/horizon-client-render/src/audio.rs
+index 603004a..c8af41a 100644
+--- a/crates/horizon-client-render/src/audio.rs
++++ b/crates/horizon-client-render/src/audio.rs
+@@ -5,6 +5,9 @@
+ //! (streams on a worker thread) and OpenAL Soft's mixing: mono sources panned
+ //! and attenuated, multi-channel buffers (stereo music and records) played
+ //! direct as OpenAL does.
++#[cfg(any(target_os = "cafe", test))]
++mod cafe_pcm;
++
+ use crate::Result;
+ use crate::sound_engine::{
+     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
+@@ -14,9 +17,9 @@ use crate::sound_events::{Sound, SoundRegistry};
+ #[cfg(feature = "audio")]
+ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+ use horizon_assets::resource_source::{Resource, ResourceSource};
+-use horizon_core::random::{LegacyRandom, RandomSource};
+ #[cfg(target_os = "cafe")]
+ use horizon_client_platform::cafe_audio::CafeAudio;
++use horizon_core::random::{LegacyRandom, RandomSource};
+ #[cfg(any(feature = "audio", test, target_os = "cafe"))]
+ use std::path::Path;
+ use std::{
+@@ -35,6 +38,8 @@ enum State {
+ /// An OpenAL source.
+ struct Channel {
+     samples: Option<(Arc<Vec<f32>>, u32, u16)>,
++    #[cfg(any(target_os = "cafe", test))]
++    stream: Option<cafe_pcm::Track>,
+     position: f64,
+     state: State,
+     gain: f32,
+@@ -409,13 +414,77 @@ impl MixerBackend {
+                 .is_ok_and(|mut m| m.push_mod_audio(mod_id, source, samples, rate, at))
+     }
+ }
++// The embedded mixer is reopened for each world. Do not leave the old world's
++// detached decoders filling PCM after the mixer and game have been released.
++#[cfg(any(target_os = "cafe", test))]
++#[derive(Default)]
++struct CafeDecodeWorkers {
++    stop: Arc<std::sync::atomic::AtomicBool>,
++    effects: Option<std::thread::JoinHandle<()>>,
++    streams: Vec<std::thread::JoinHandle<()>>,
++    pipes: Vec<std::sync::Weak<cafe_pcm::Pipe>>,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl CafeDecodeWorkers {
++    fn join(thread: std::thread::JoinHandle<()>) {
++        if thread.join().is_err() {
++            log::warn!("Horizon: Cafe sound decoder stopped unexpectedly");
++        }
++    }
++
++    fn reap_finished(&mut self) {
++        let mut index = 0;
++        while index < self.streams.len() {
++            if self.streams[index].is_finished() {
++                Self::join(self.streams.swap_remove(index));
++            } else {
++                index += 1;
++            }
++        }
++    }
++
++    fn open_stream(&mut self) -> Option<Arc<cafe_pcm::Pipe>> {
++        const MAX_STREAMS: usize = 4;
++        self.reap_finished();
++        // A completed producer can still have a tail queued in the mixer.
++        // Charge the ring until both its producer and channel let it go.
++        self.pipes.retain(|pipe| pipe.strong_count() != 0);
++        if self.pipes.len() >= MAX_STREAMS {
++            return None;
++        }
++        let pipe = cafe_pcm::Pipe::new();
++        self.pipes.push(Arc::downgrade(&pipe));
++        Some(pipe)
++    }
++
++    fn finish(&mut self, sender: &mut Option<DecodeSender>) {
++        self.stop.store(true, std::sync::atomic::Ordering::Release);
++        *sender = None;
++        let count = self.streams.len() + usize::from(self.effects.is_some());
++        for thread in self.streams.drain(..).chain(self.effects.take()) {
++            Self::join(thread);
++        }
++        if count > 0 {
++            log::info!("Horizon Cafe sound decoders joined: {count}");
++        }
++    }
++}
++
++#[cfg(not(target_os = "cafe"))]
++type DecodeSender = std::sync::mpsc::Sender<Decode>;
++#[cfg(target_os = "cafe")]
++type DecodeSender = std::sync::mpsc::SyncSender<Decode>;
++
+ /// The mixer side of the engine (`Backend`).
+ pub struct MixerBackend {
+     mixer: Arc<Mutex<Mixer>>,
+     root: ResourceSource,
+     cache: Arc<Mutex<SoundCache>>,
+     /// The decoder thread for static sounds, started with the first one.
+-    decoder: Option<std::sync::mpsc::Sender<Decode>>,
++    decoder: Option<DecodeSender>,
++    #[cfg(target_os = "cafe")]
++    decode_workers: CafeDecodeWorkers,
+     next: ChannelId,
+     live: bool,
+     /// Whose channels these are (`Channel::owner`).
+@@ -427,6 +496,8 @@ pub struct MixerBackend {
+ /// A splitscreen player's backend leaving: its camera and sounds go with it.
+ impl Drop for MixerBackend {
+     fn drop(&mut self) {
++        #[cfg(target_os = "cafe")]
++        self.decode_workers.finish(&mut self.decoder);
+         if self.owner == 0 {
+             return;
+         }
+@@ -454,11 +525,39 @@ type Samples = Option<(Arc<Vec<f32>>, u32, u16)>;
+ #[derive(Default)]
+ struct SoundCache {
+     entries: HashMap<String, (Samples, u64)>,
++    #[cfg(target_os = "cafe")]
++    live: Vec<(std::sync::Weak<Vec<f32>>, usize)>,
+     bytes: usize,
+     clock: u64,
+ }
++#[cfg(not(target_os = "cafe"))]
+ const CACHE_BYTES: usize = 64 << 20;
++#[cfg(target_os = "cafe")]
++const CACHE_BYTES: usize = 16 << 20;
++#[cfg(target_os = "cafe")]
++const EFFECT_PCM_BYTES: usize = 8 << 20;
++#[cfg(target_os = "cafe")]
++const LIVE_EFFECT_BYTES: usize = 24 << 20;
+ impl SoundCache {
++    #[cfg(target_os = "cafe")]
++    fn admit(&mut self, samples: &Samples) -> bool {
++        let Some((data, _, _)) = samples else {
++            return true;
++        };
++        let bytes = data.capacity() * size_of::<f32>();
++        loop {
++            self.live.retain(|(data, _)| data.strong_count() != 0);
++            let live: usize = self.live.iter().map(|(_, bytes)| *bytes).sum();
++            if live + bytes <= LIVE_EFFECT_BYTES {
++                self.live.push((Arc::downgrade(data), bytes));
++                return true;
++            }
++            if !self.evict_oldest() {
++                return false;
++            }
++        }
++    }
++
+     fn get(&mut self, key: &str) -> Option<Samples> {
+         self.clock += 1;
+         let entry = self.entries.get_mut(key)?;
+@@ -472,23 +571,35 @@ impl SoundCache {
+             self.bytes -= Self::size(&old);
+         }
+         while self.bytes > CACHE_BYTES && self.entries.len() > 1 {
+-            let Some(oldest) = self
+-                .entries
+-                .iter()
+-                .min_by_key(|(_, (_, used))| *used)
+-                .map(|(k, _)| k.clone())
+-            else {
++            if !self.evict_oldest() {
+                 break;
+-            };
+-            if let Some((gone, _)) = self.entries.remove(&oldest) {
+-                self.bytes -= Self::size(&gone);
+             }
+         }
+     }
++
++    fn evict_oldest(&mut self) -> bool {
++        let Some(oldest) = self
++            .entries
++            .iter()
++            .min_by_key(|(_, (_, used))| *used)
++            .map(|(key, _)| key.clone())
++        else {
++            return false;
++        };
++        let (gone, _) = self.entries.remove(&oldest).expect("selected cache entry");
++        self.bytes -= Self::size(&gone);
++        true
++    }
++
+     fn size(samples: &Samples) -> usize {
+-        samples
+-            .as_ref()
+-            .map_or(0, |(s, _, _)| s.len() * std::mem::size_of::<f32>())
++        samples.as_ref().map_or(0, |(s, _, _)| {
++            let count = if cfg!(target_os = "cafe") {
++                s.capacity()
++            } else {
++                s.len()
++            };
++            count * size_of::<f32>()
++        })
+     }
+ }
+ /// A static sound to decode for a channel waiting on it.
+@@ -671,12 +782,30 @@ fn probe_devices(default_seen: Option<String>, cards_seen: Option<String>) -> De
+         devices,
+     }
+ }
++#[cfg(any(not(target_os = "cafe"), test))]
+ fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
++    decode_while(resource, || true)
++}
++
++fn decode_while(
++    resource: &Resource,
++    keep_decoding: impl Fn() -> bool,
++) -> Option<(Vec<f32>, u32, u16)> {
+     use symphonia::core::{
+         audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
+         meta::MetadataOptions, probe::Hint,
+     };
+-    let file = std::io::Cursor::new(resource.read().ok()?);
++    if !keep_decoding() {
++        return None;
++    }
++    #[cfg(target_os = "cafe")]
++    let encoded = resource.read_limited(8 << 20).ok()?;
++    #[cfg(not(target_os = "cafe"))]
++    let encoded = resource.read().ok()?;
++    let file = std::io::Cursor::new(encoded);
++    if !keep_decoding() {
++        return None;
++    }
+     let stream = MediaSourceStream::new(Box::new(file), Default::default());
+     let mut hint = Hint::new();
+     hint.with_extension("ogg");
+@@ -698,6 +827,9 @@ fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
+     let mut samples = Vec::new();
+     let mut channels = 0u16;
+     while let Ok(packet) = format.next_packet() {
++        if !keep_decoding() {
++            return None;
++        }
+         if packet.track_id() != id {
+             continue;
+         }
+@@ -711,6 +843,18 @@ fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
+         if channels == 0 {
+             channels = frame_channels.min(2) as u16;
+         }
++        #[cfg(target_os = "cafe")]
++        {
++            let additional = decoded.samples().len() / frame_channels * frame_channels.min(2);
++            let wanted = samples.len().checked_add(additional)?;
++            if wanted > EFFECT_PCM_BYTES / size_of::<f32>() {
++                return None;
++            }
++            if wanted > samples.capacity() {
++                let capacity = wanted.next_multiple_of(16 * 1024);
++                samples.try_reserve_exact(capacity - samples.len()).ok()?;
++            }
++        }
+         if frame_channels <= 2 {
+             samples.extend_from_slice(decoded.samples());
+         } else {
+@@ -732,7 +876,7 @@ fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
+             }
+         }
+     }
+-    (channels != 0).then_some((samples, rate, channels))
++    (channels != 0 && keep_decoding()).then_some((samples, rate, channels))
+ }
+ /// A sound file without its variant number (`mob/creeper/say2.ogg` is `mob/creeper/say`): each
+ /// player's game picks its own variant of the same event.
+@@ -803,6 +947,8 @@ impl Backend for MixerBackend {
+             id,
+             Channel {
+                 samples: None,
++                #[cfg(any(target_os = "cafe", test))]
++                stream: None,
+                 position: 0.0,
+                 state: State::Initial,
+                 gain: 1.0,
+@@ -883,12 +1029,40 @@ impl Backend for MixerBackend {
+             return;
+         }
+         if sound.stream {
+-            // A streamed sound loops by restarting its stream.
+-            let mixer = self.mixer.clone();
+-            std::thread::spawn(move || {
+-                let samples = decode(&file).map(|(s, r, c)| (Arc::new(s), r, c));
+-                attach(&mixer, channel, samples, looping);
+-            });
++            #[cfg(target_os = "cafe")]
++            {
++                let Some(pipe) = self.decode_workers.open_stream() else {
++                    self.stop(channel);
++                    return;
++                };
++                let track = cafe_pcm::Track(pipe.clone());
++                let mut loops = looping;
++                self.with(channel, |c| {
++                    loops |= c.looping;
++                    c.stream = Some(track);
++                    c.state = State::Playing;
++                    c.position = 0.0;
++                });
++                let stop = self.decode_workers.stop.clone();
++                match std::thread::Builder::new()
++                    .name("Cafe streaming sound".into())
++                    .spawn(move || cafe_pcm::decode(file, pipe, stop, loops))
++                {
++                    Ok(worker) => self.decode_workers.streams.push(worker),
++                    Err(error) => {
++                        self.stop(channel);
++                        log::warn!("Horizon: Cafe could not start streaming audio: {error}");
++                    }
++                }
++            }
++            #[cfg(not(target_os = "cafe"))]
++            {
++                let mixer = self.mixer.clone();
++                std::thread::spawn(move || {
++                    let samples = decode(&file).map(|(s, r, c)| (Arc::new(s), r, c));
++                    attach(&mixer, channel, samples, looping);
++                });
++            }
+             return;
+         }
+         let key = format!("{namespace}:{path}");
+@@ -897,39 +1071,91 @@ impl Backend for MixerBackend {
+             attach(&self.mixer, channel, samples, looping);
+             return;
+         }
+-        let decoder = self.decoder.get_or_insert_with(|| {
++        if self.decoder.is_none() {
++            #[cfg(target_os = "cafe")]
++            let (send, receive) = std::sync::mpsc::sync_channel::<Decode>(64);
++            #[cfg(not(target_os = "cafe"))]
+             let (send, receive) = std::sync::mpsc::channel::<Decode>();
+             let (mixer, cache) = (self.mixer.clone(), self.cache.clone());
+-            std::thread::Builder::new()
++            #[cfg(target_os = "cafe")]
++            let stop = self.decode_workers.stop.clone();
++            let worker = std::thread::Builder::new()
+                 .name("sound decoder".into())
+                 .spawn(move || {
+                     for job in receive {
++                        #[cfg(target_os = "cafe")]
++                        if stop.load(std::sync::atomic::Ordering::Acquire) {
++                            break;
++                        }
+                         // Queued twice before the first decode finished.
+                         let cached = cache.lock().ok().and_then(|mut c| c.get(&job.key));
+                         let samples = cached.unwrap_or_else(|| {
+-                            let samples = decode(&job.file).map(|(s, r, c)| (Arc::new(s), r, c));
++                            #[cfg(target_os = "cafe")]
++                            let result = decode_while(&job.file, || {
++                                !stop.load(std::sync::atomic::Ordering::Acquire)
++                            });
++                            #[cfg(not(target_os = "cafe"))]
++                            let result = decode(&job.file);
++                            #[cfg(target_os = "cafe")]
++                            if stop.load(std::sync::atomic::Ordering::Acquire) {
++                                return None;
++                            }
++                            let samples = result.map(|(s, r, c)| (Arc::new(s), r, c));
+                             if let Ok(mut c) = cache.lock() {
++                                #[cfg(target_os = "cafe")]
++                                if !c.admit(&samples) {
++                                    return None;
++                                }
+                                 c.insert(job.key, samples.clone());
++                            } else {
++                                #[cfg(target_os = "cafe")]
++                                return None;
+                             }
+                             samples
+                         });
+                         attach(&mixer, job.channel, samples, job.looping);
+                     }
+-                })
+-                .expect("sound decoder thread");
+-            send
+-        });
+-        let _ = decoder.send(Decode {
++                });
++            let worker = match worker {
++                Ok(worker) => worker,
++                Err(error) => {
++                    self.stop(channel);
++                    log::warn!("Horizon: could not start sound decoder: {error}");
++                    return;
++                }
++            };
++            #[cfg(target_os = "cafe")]
++            {
++                self.decode_workers.effects = Some(worker);
++            }
++            #[cfg(not(target_os = "cafe"))]
++            drop(worker);
++            self.decoder = Some(send);
++        }
++        let decoder = self.decoder.as_ref().expect("decoder just initialized");
++        let job = Decode {
+             key,
+             file,
+             channel,
+             looping,
+-        });
++        };
++        #[cfg(target_os = "cafe")]
++        if decoder.try_send(job).is_err() {
++            self.stop(channel);
++        }
++        #[cfg(not(target_os = "cafe"))]
++        let _ = decoder.send(job);
+     }
+     /// `alSourceStop`: any state becomes stopped, an initial source too (a
+     /// sound still decoding then never starts).
+     fn stop(&mut self, channel: ChannelId) {
+-        self.with(channel, |c| c.state = State::Stopped);
++        self.with(channel, |c| {
++            c.state = State::Stopped;
++            #[cfg(any(target_os = "cafe", test))]
++            {
++                c.stream = None;
++            }
++        });
+     }
+     fn pause(&mut self, channel: ChannelId) {
+         self.with(channel, |c| {
+@@ -1043,13 +1269,28 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
+     let mut voices = std::mem::take(&mut mixer.voices);
+     voices.clear();
+     for (id, c) in &mut mixer.channels {
+-        let Some((_, source_rate, source_channels)) = &c.samples else {
++        let sample_format = c
++            .samples
++            .as_ref()
++            .map(|(_, rate, channels)| (*rate, *channels));
++        #[cfg(any(target_os = "cafe", test))]
++        let sample_format = if let Some(track) = &c.stream {
++            let format = track.0.format();
++            if track.0.finished_without_format() {
++                c.state = State::Stopped;
++                c.stream = None;
++            }
++            format
++        } else {
++            sample_format
++        };
++        let Some((source_rate, source_channels)) = sample_format else {
+             continue;
+         };
+         // OpenAL plays a multi-channel buffer direct: no panning and no distance attenuation
+         // (`CalcVoiceParams`' non-spatialized path, vanilla's HRTF-off stereo context). Vanilla's
+         // music and records are stereo. A mono buffer is the positional one.
+-        let direct = *source_channels > 1;
++        let direct = source_channels > 1;
+         if c.state != State::Playing {
+             continue;
+         }
+@@ -1113,7 +1354,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
+                 (gain, [left * gain, right * gain])
+             }
+         };
+-        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
++        let step = f64::from(source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
+         voices.push((*id, [left, right, gain], step));
+     }
+     // A mod's muffle: the sounds it doesn't exempt mix into a bus of their own first.
+@@ -1127,6 +1368,22 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
+         let Some(c) = mixer.channels.get_mut(&id) else {
+             continue;
+         };
++        #[cfg(any(target_os = "cafe", test))]
++        if let Some(track) = &c.stream {
++            let out = if muffling && !c.unmuffled {
++                &mut bus
++            } else {
++                &mut *data
++            };
++            if track
++                .0
++                .mix(out, channels, [left, right, gain], step, &mut c.position)
++            {
++                c.state = State::Stopped;
++                c.stream = None;
++            }
++            continue;
++        }
+         let Some((samples, _, source_channels)) = c.samples.clone() else {
+             continue;
+         };
+@@ -1607,6 +1864,8 @@ impl Audio {
+                 root: root.to_owned(),
+                 cache: Arc::default(),
+                 decoder: None,
++                #[cfg(target_os = "cafe")]
++                decode_workers: CafeDecodeWorkers::default(),
+                 next: 0,
+                 live,
+                 owner: 0,
+@@ -1653,7 +1912,11 @@ impl Audio {
+         let worker = std::thread::Builder::new()
+             .name("Cafe AX mixer".into())
+             .spawn(move || run_cafe_mixer(mixer, output, frames, rate, stop))?;
+-        Ok(Stream { _audio: audio, stop_worker, worker: Some(worker) })
++        Ok(Stream {
++            _audio: audio,
++            stop_worker,
++            worker: Some(worker),
++        })
+     }
+ 
+     #[cfg(all(not(feature = "audio"), not(target_os = "cafe")))]
+@@ -1793,6 +2056,8 @@ impl Audio {
+                 root: self.backend.root.clone(),
+                 cache: self.backend.cache.clone(),
+                 decoder: None,
++                #[cfg(target_os = "cafe")]
++                decode_workers: CafeDecodeWorkers::default(),
+                 next: (SHARED_CHANNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+                     << 40,
+                 live: self.backend.live,
+@@ -2066,7 +2331,17 @@ impl Audio {
+         self.backend.root = root.to_owned();
+         // A queued decode retains its old resource generation and cache. Dropping
+         // the sender lets it finish without populating the new generation's cache.
+-        self.backend.decoder = None;
++        #[cfg(target_os = "cafe")]
++        {
++            self.backend
++                .decode_workers
++                .finish(&mut self.backend.decoder);
++            self.backend.decode_workers = CafeDecodeWorkers::default();
++        }
++        #[cfg(not(target_os = "cafe"))]
++        {
++            self.backend.decoder = None;
++        }
+         self.backend.cache = Arc::new(Mutex::new(SoundCache::default()));
+     }
+     /// Reserve the seed of a local level request before its cancellable hooks run.
+@@ -2583,6 +2858,84 @@ mod tests {
+         assert_eq!(reopen.tries, Reopen::TRIES);
+     }
+ 
++    #[test]
++    fn cafe_decoder_shutdown_wakes_idle_worker_and_joins_active_worker() {
++        use std::sync::{atomic::Ordering, mpsc::channel};
++        let mut decoders = CafeDecodeWorkers::default();
++        #[cfg(target_os = "cafe")]
++        let (sender, receiver) = std::sync::mpsc::sync_channel::<Decode>(1);
++        #[cfg(not(target_os = "cafe"))]
++        let (sender, receiver) = channel::<Decode>();
++        let mut sender = Some(sender);
++        let (idle_done, idle_result) = channel();
++        decoders.effects = Some(std::thread::spawn(move || {
++            assert!(receiver.recv().is_err());
++            idle_done.send(()).unwrap();
++        }));
++        let stop = decoders.stop.clone();
++        let (active_done, active_result) = channel();
++        decoders.streams.push(std::thread::spawn(move || {
++            while !stop.load(Ordering::Acquire) {
++                std::thread::yield_now();
++            }
++            active_done.send(()).unwrap();
++        }));
++        decoders.finish(&mut sender);
++        assert!(sender.is_none());
++        assert!(decoders.streams.is_empty());
++        assert!(decoders.effects.is_none());
++        idle_result.try_recv().unwrap();
++        active_result.try_recv().unwrap();
++    }
++
++    #[test]
++    fn cafe_decoder_shutdown_joins_remaining_workers_after_a_failure() {
++        let mut decoders = CafeDecodeWorkers::default();
++        decoders
++            .streams
++            .push(std::thread::spawn(|| panic!("test worker")));
++        let mut sender = None;
++        decoders.finish(&mut sender);
++        assert!(decoders.streams.is_empty());
++
++        let mut next = CafeDecodeWorkers::default();
++        next.streams.push(std::thread::spawn(|| {}));
++        while !next.streams[0].is_finished() {
++            std::thread::yield_now();
++        }
++        next.reap_finished();
++        assert!(next.streams.is_empty());
++        assert!(!next.stop.load(std::sync::atomic::Ordering::Acquire));
++    }
++
++    #[test]
++    fn cafe_stream_admission_counts_queued_tails_without_live_workers() {
++        let mut decoders = CafeDecodeWorkers::default();
++        let mut tracks: Vec<_> = (0..4)
++            .map(|_| cafe_pcm::Track(decoders.open_stream().unwrap()))
++            .collect();
++        assert!(decoders.open_stream().is_none());
++        drop(tracks.pop());
++        let replacement = decoders.open_stream().unwrap();
++        assert!(decoders.open_stream().is_none());
++        drop(replacement);
++        assert!(decoders.open_stream().is_some());
++    }
++
++    #[test]
++    fn audio_decode_stops_before_using_cancelled_resources() {
++        let resource = Resource::bytes(vec![1, 2, 3]);
++        let calls = std::cell::Cell::new(0);
++        assert!(
++            decode_while(&resource, || {
++                calls.set(calls.get() + 1);
++                false
++            })
++            .is_none()
++        );
++        assert_eq!(calls.get(), 1);
++    }
++
+     #[test]
+     fn reload_isolates_pending_decodes_from_the_new_resource_cache() {
+         let source = ResourceSource::indexed(Default::default());
+@@ -2840,6 +3193,7 @@ mod tests {
+     fn channel(samples: Vec<f32>, linear: Option<f32>, at: [f32; 3], looping: bool) -> Channel {
+         Channel {
+             samples: Some((Arc::new(samples), 48_000, 1)),
++            stream: None,
+             position: 0.0,
+             state: State::Playing,
+             gain: 1.0,
+@@ -3237,6 +3591,8 @@ mod tests {
+             root: ResourceSource::indexed(Default::default()),
+             cache: Arc::default(),
+             decoder: None,
++            #[cfg(target_os = "cafe")]
++            decode_workers: CafeDecodeWorkers::default(),
+             next: (u64::from(owner)) << 40,
+             live: true,
+             owner,
+diff --git a/crates/horizon-client-render/src/audio/cafe_pcm.rs b/crates/horizon-client-render/src/audio/cafe_pcm.rs
+new file mode 100644
+index 0000000..114f8b4
+--- /dev/null
++++ b/crates/horizon-client-render/src/audio/cafe_pcm.rs
+@@ -0,0 +1,382 @@
++//! Bounded Cafe PCM transport. The decoder owns the producer and the channel
++//! owns cancellation. The mixer never waits for a producer or does file I/O.
++use horizon_assets::resource_source::Resource;
++use std::collections::VecDeque;
++use std::io::Cursor;
++use std::sync::{
++    Arc, Condvar, Mutex,
++    atomic::{AtomicBool, Ordering},
++};
++use std::time::Duration;
++use symphonia::core::{
++    audio::SampleBuffer,
++    codecs::DecoderOptions,
++    formats::FormatOptions,
++    io::{MediaSource, MediaSourceStream},
++    meta::MetadataOptions,
++    probe::Hint,
++};
++
++pub(super) const FRAME_CAPACITY: usize = 16_384;
++const COMPRESSED_ENTRY_LIMIT: u64 = 8 * 1024 * 1024;
++// Vorbis packets cannot exceed this block size per input channel.
++const MAX_PACKET_FRAMES: usize = 8192;
++const MAX_INPUT_CHANNELS: usize = 8;
++
++type StereoFrame = [f32; 2];
++
++struct Queued {
++    format: Option<(u32, u16)>,
++    frames: VecDeque<StereoFrame>,
++    peak_frames: usize,
++}
++
++pub(super) struct Pipe {
++    samples: Mutex<Queued>,
++    room: Condvar,
++    cancelled: AtomicBool,
++    finished: AtomicBool,
++}
++
++impl Pipe {
++    pub(super) fn new() -> Arc<Self> {
++        Arc::new(Self {
++            samples: Mutex::new(Queued {
++                format: None,
++                frames: VecDeque::with_capacity(FRAME_CAPACITY),
++                peak_frames: 0,
++            }),
++            room: Condvar::new(),
++            cancelled: AtomicBool::new(false),
++            finished: AtomicBool::new(false),
++        })
++    }
++
++    fn active(&self, stop: &AtomicBool) -> bool {
++        !stop.load(Ordering::Acquire) && !self.cancelled.load(Ordering::Acquire)
++    }
++
++    fn set_format(&self, rate: u32, channels: u16) -> bool {
++        let Ok(mut samples) = self.samples.lock() else {
++            return false;
++        };
++        *samples.format.get_or_insert((rate, channels)) == (rate, channels)
++    }
++
++    fn push(&self, mut input: &[StereoFrame], stop: &AtomicBool) -> bool {
++        let Ok(mut samples) = self.samples.lock() else {
++            return false;
++        };
++        while !input.is_empty() && self.active(stop) {
++            let write = input.len().min(FRAME_CAPACITY - samples.frames.len());
++            if write == 0 {
++                // The session token is shared by all workers. Keep the wait
++                // bounded even when cancellation races the notification.
++                let Ok((next, _)) = self.room.wait_timeout(samples, Duration::from_millis(8))
++                else {
++                    return false;
++                };
++                samples = next;
++                continue;
++            }
++            samples.frames.extend(&input[..write]);
++            samples.peak_frames = samples.peak_frames.max(samples.frames.len());
++            input = &input[write..];
++        }
++        input.is_empty()
++    }
++
++    pub(super) fn format(&self) -> Option<(u32, u16)> {
++        let samples = self.samples.try_lock().ok()?;
++        // Prime at least two DSP batches at typical source rates. A completed
++        // short clip can be consumed immediately.
++        if samples.frames.len() < 1024 && !self.finished() {
++            return None;
++        }
++        samples.format
++    }
++
++    pub(super) fn finished_without_format(&self) -> bool {
++        self.finished()
++            && self
++                .samples
++                .try_lock()
++                .is_ok_and(|samples| samples.format.is_none())
++    }
++
++    fn finished(&self) -> bool {
++        self.finished.load(Ordering::Acquire)
++    }
++
++    pub(super) fn mix(
++        &self,
++        out: &mut [f32],
++        output_channels: usize,
++        [left, right, gain]: [f32; 3],
++        step: f64,
++        position: &mut f64,
++    ) -> bool {
++        let Ok(mut samples) = self.samples.try_lock() else {
++            return false;
++        };
++        let channel_count = samples.format.map_or(1, |(_, channels)| channels);
++        for frame in out.chunks_mut(output_channels) {
++            let index = *position as usize;
++            let Some(next) = index.checked_add(1).and_then(|i| samples.frames.get(i)) else {
++                break;
++            };
++            let current = samples.frames[index];
++            let fraction = (*position - index as f64) as f32;
++            let l = current[0] + (next[0] - current[0]) * fraction;
++            let r = current[1] + (next[1] - current[1]) * fraction;
++            if output_channels >= 2 {
++                frame[0] += l * left;
++                frame[1] += r * right;
++            } else if channel_count == 1 {
++                frame[0] += l * gain;
++            } else {
++                frame[0] += (l + r) * 0.5 * gain;
++            }
++            *position += step;
++        }
++        let consumed = (*position as usize).min(samples.frames.len().saturating_sub(1));
++        if consumed != 0 {
++            samples.frames.drain(..consumed);
++            *position -= consumed as f64;
++            self.room.notify_one();
++        }
++        self.finished() && (*position as usize).saturating_add(1) >= samples.frames.len()
++    }
++}
++
++pub(super) struct Track(pub(super) Arc<Pipe>);
++
++impl Drop for Track {
++    fn drop(&mut self) {
++        self.0.cancelled.store(true, Ordering::Release);
++        self.0.room.notify_all();
++    }
++}
++
++struct Producer(Arc<Pipe>);
++
++impl Drop for Producer {
++    fn drop(&mut self) {
++        self.0.finished.store(true, Ordering::Release);
++        if let Ok(samples) = self.0.samples.lock() {
++            log::info!(
++                "Horizon Cafe PCM stream finished: peak_bytes={} queued_bytes={} limit_bytes={}",
++                samples.peak_frames * size_of::<StereoFrame>(),
++                samples.frames.len() * size_of::<StereoFrame>(),
++                FRAME_CAPACITY * size_of::<StereoFrame>(),
++            );
++        }
++    }
++}
++
++fn input(resource: &Resource) -> std::io::Result<Box<dyn MediaSource>> {
++    if let Some(file) = resource.open_loose_ogg() {
++        return file.map(|file| Box::new(file) as Box<dyn MediaSource>);
++    }
++    resource
++        .read_limited(COMPRESSED_ENTRY_LIMIT)
++        .map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn MediaSource>)
++}
++
++fn decode_once(resource: &Resource, output: &Pipe, stop: &AtomicBool) -> Option<bool> {
++    let file = input(resource).ok()?;
++    if !output.active(stop) {
++        return Some(false);
++    }
++    let stream = MediaSourceStream::new(file, Default::default());
++    let mut hint = Hint::new();
++    hint.with_extension("ogg");
++    let mut format = symphonia::default::get_probe()
++        .format(
++            &hint,
++            stream,
++            &FormatOptions::default(),
++            &MetadataOptions::default(),
++        )
++        .ok()?
++        .format;
++    let track = format.default_track()?;
++    let id = track.id;
++    let rate = track.codec_params.sample_rate.filter(|rate| *rate != 0)?;
++    let mut decoder = symphonia::default::get_codecs()
++        .make(&track.codec_params, &DecoderOptions::default())
++        .ok()?;
++    let mut projected = Vec::with_capacity(MAX_PACKET_FRAMES);
++    let mut produced = 0usize;
++    while output.active(stop) {
++        let packet = match format.next_packet() {
++            Ok(packet) => packet,
++            Err(symphonia::core::errors::Error::IoError(error))
++                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
++            {
++                break;
++            }
++            Err(_) => return None,
++        };
++        if packet.track_id() != id {
++            continue;
++        }
++        let decoded = decoder.decode(&packet).ok()?;
++        let spec = *decoded.spec();
++        let channels = spec.channels.count();
++        if !(1..=MAX_INPUT_CHANNELS).contains(&channels) || decoded.capacity() > MAX_PACKET_FRAMES {
++            return None;
++        }
++        if !output.set_format(rate, channels.min(2) as u16) {
++            return None;
++        }
++        let mut interleaved = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
++        interleaved.copy_interleaved_ref(decoded);
++        projected.clear();
++        projected.extend(
++            interleaved
++                .samples()
++                .chunks_exact(channels)
++                .map(|frame| match frame {
++                    [mono] => [*mono, *mono],
++                    [left, right] => [*left, *right],
++                    _ => {
++                        let left =
++                            frame.iter().step_by(2).sum::<f32>() / channels.div_ceil(2) as f32;
++                        let right =
++                            frame[1..].iter().step_by(2).sum::<f32>() / (channels / 2) as f32;
++                        [left, right]
++                    }
++                }),
++        );
++        if !output.push(&projected, stop) {
++            return Some(false);
++        }
++        produced = produced.saturating_add(projected.len());
++    }
++    Some(produced > 1 && output.active(stop))
++}
++
++pub(super) fn decode(resource: Resource, output: Arc<Pipe>, stop: Arc<AtomicBool>, looping: bool) {
++    let producer = Producer(output);
++    while producer.0.active(&stop) {
++        match decode_once(&resource, &producer.0, &stop) {
++            Some(true) if looping => {}
++            Some(_) => break,
++            None => {
++                log::warn!("Horizon: Cafe streaming sound decode failed");
++                break;
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn long_stream_backpressure_and_track_cancel_release_worker() {
++        let pipe = Pipe::new();
++        let track = Track(pipe.clone());
++        let stop = Arc::new(AtomicBool::new(false));
++        let producer = pipe.clone();
++        let worker = std::thread::spawn(move || {
++            assert!(producer.set_format(48_000, 2));
++            let packet = [[0.5, -0.5]; 256];
++            for _ in 0..100_000 {
++                if !producer.push(&packet, &stop) {
++                    return;
++                }
++            }
++            panic!("producer should have blocked and then received cancellation");
++        });
++        let deadline = std::time::Instant::now() + Duration::from_secs(2);
++        while pipe.samples.lock().unwrap().frames.len() < FRAME_CAPACITY {
++            assert!(std::time::Instant::now() < deadline);
++            std::thread::yield_now();
++        }
++        let mut out = [0.0; 16];
++        let mut position = 0.0;
++        assert!(!pipe.mix(&mut out, 2, [1.0; 3], 1.0, &mut position));
++        assert_eq!(&out[..2], &[0.5, -0.5]);
++        assert_eq!(pipe.samples.lock().unwrap().peak_frames, FRAME_CAPACITY);
++        drop(track);
++        worker.join().unwrap();
++        assert_eq!(Arc::strong_count(&pipe), 1);
++    }
++
++    #[test]
++    fn underrun_waits_without_advancing_and_end_releases_channel() {
++        let pipe = Pipe::new();
++        let mut out = [0.0; 16];
++        let mut position = 0.0;
++        assert!(!pipe.mix(&mut out, 2, [1.0; 3], 1.0, &mut position));
++        assert_eq!(out, [0.0; 16]);
++        assert_eq!(position, 0.0);
++        let stop = AtomicBool::new(false);
++        assert!(pipe.set_format(32_000, 1));
++        assert!(pipe.push(&[[0.25, 0.25]; 3], &stop));
++        pipe.finished.store(true, Ordering::Release);
++        assert_eq!(pipe.format(), Some((32_000, 1)));
++        assert!(pipe.mix(&mut out, 2, [1.0; 3], 1.0, &mut position));
++        assert_eq!(&out[..4], &[0.25; 4]);
++        assert_eq!(&out[4..], &[0.0; 12]);
++    }
++}
++
++#[cfg(test)]
++mod stock_track_tests {
++    use super::*;
++    use horizon_assets::resource_source::ResourceSource;
++    use std::{path::PathBuf, time::Instant};
++
++    #[test]
++    #[ignore = "requires prepared Minecraft 26.3 music"]
++    fn long_loose_ogg_reaches_mixer_with_bounded_pcm() {
++        let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"));
++        let name = std::env::var("HORIZON_TEST_TRACK").expect("relative Ogg path");
++        let resource = Resource::file(ResourceSource::directory(root), name);
++        assert!(resource.open_loose_ogg().expect("loose Ogg").is_ok());
++        let pipe = Pipe::new();
++        let worker_pipe = pipe.clone();
++        let track = Track(pipe.clone());
++        let worker = std::thread::spawn(move || {
++            decode(
++                resource,
++                worker_pipe,
++                Arc::new(AtomicBool::new(false)),
++                false,
++            );
++        });
++        let deadline = Instant::now() + Duration::from_secs(45);
++        let mut position = 0.0;
++        let mut nonzero_samples = 0;
++        let mut iterations = 0;
++        loop {
++            assert!(Instant::now() < deadline);
++            let mut out = [0.0; 2048];
++            let previous_peak = nonzero_samples;
++            let finished = pipe.mix(&mut out, 2, [1.0; 3], 1.0, &mut position);
++            nonzero_samples += out.iter().filter(|sample| sample.abs() > 1e-7).count();
++            iterations += 1;
++            if finished {
++                break;
++            }
++            if nonzero_samples == previous_peak {
++                if iterations % 16 == 0 {
++                    std::thread::sleep(Duration::from_micros(150));
++                } else {
++                    std::thread::yield_now();
++                }
++            }
++        }
++        worker.join().unwrap();
++        let peak = pipe.samples.lock().unwrap().peak_frames * size_of::<StereoFrame>();
++        eprintln!("long Ogg: nonzero_samples={nonzero_samples} peak_queued_pcm_bytes={peak}");
++        assert!(nonzero_samples > 5_000_000);
++        assert!(peak <= FRAME_CAPACITY * size_of::<StereoFrame>());
++        drop(track);
++        assert_eq!(Arc::strong_count(&pipe), 1);
++    }
++}

@@ -1,0 +1,1034 @@
+diff --git a/crates/horizon-client-render/src/gfx/capture.rs b/crates/horizon-client-render/src/gfx/capture.rs
+index 86b01ec..8072519 100644
+--- a/crates/horizon-client-render/src/gfx/capture.rs
++++ b/crates/horizon-client-render/src/gfx/capture.rs
+@@ -84,6 +84,8 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
+         sprite_layers: mesh.sprite_layers.clone(),
+         bounds: mesh.bounds,
+         keep: mesh.keep,
++        #[cfg(target_os = "cafe")]
++        cafe_upload_charge: None,
+     }
+ }
+ 
+diff --git a/crates/horizon-client-render/src/mesher.rs b/crates/horizon-client-render/src/mesher.rs
+index fc70d40..6335949 100644
+--- a/crates/horizon-client-render/src/mesher.rs
++++ b/crates/horizon-client-render/src/mesher.rs
+@@ -434,7 +434,11 @@ pub struct SectionMesh {
+     /// A far mesh was clipped around finer tiles or resident chunks. Keep
+     /// the previous GPU mesh while its replacements fade in.
+     pub keep: bool,
++    #[cfg(target_os = "cafe")]
++    #[doc(hidden)]
++    pub cafe_upload_charge: Option<crate::streaming::CafeUploadCharge>,
+ }
++
+ impl Default for SectionMesh {
+     fn default() -> Self {
+         Self {
+@@ -454,6 +458,8 @@ impl Default for SectionMesh {
+             sprite_layers: Vec::new(),
+             bounds: None,
+             keep: false,
++            #[cfg(target_os = "cafe")]
++            cafe_upload_charge: None,
+         }
+     }
+ }
+@@ -494,7 +500,12 @@ impl SectionMesh {
+         self.visibility = ALL_VISIBLE;
+         self.bounds = None;
+         self.keep = false;
++        #[cfg(target_os = "cafe")]
++        {
++            self.cafe_upload_charge = None;
++        }
+     }
++    /// Backing allocations held by this mesh while queued for upload or reuse.
+     pub(crate) fn capacity_bytes(&self) -> usize {
+         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()
+             + self.translucent.capacity() * std::mem::size_of::<TerrainVertex>()
+diff --git a/crates/horizon-client-render/src/presentation.rs b/crates/horizon-client-render/src/presentation.rs
+index e9675d3..0946cf4 100644
+--- a/crates/horizon-client-render/src/presentation.rs
++++ b/crates/horizon-client-render/src/presentation.rs
+@@ -15,7 +15,6 @@ use crate::{
+     sprites::SpriteAnimation,
+ };
+ 
+-
+ /// Surface operations used by Horizon's frame loop, independent of the GPU API.
+ pub trait PresentationBackend {
+     /// Active surface size in physical pixels.
+@@ -42,11 +41,24 @@ pub trait HudBackend {
+ /// Dynamic chunk-mesh lifecycle. Upload replaces the mesh for a section; a
+ /// backend reports allocation/conversion errors so Horizon can retain the CPU
+ /// mesh and retry it on a later frame.
++#[derive(Debug)]
++pub struct TerrainUploadDeferred;
++
++impl std::fmt::Display for TerrainUploadDeferred {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        out.write_str("terrain upload deferred by the residency budget")
++    }
++}
++
++impl std::error::Error for TerrainUploadDeferred {}
++
+ pub trait TerrainBackend {
+     /// Uploads a complete section replacement. On error, the caller keeps the
+     /// CPU mesh and may retry; the backend must not retain the borrowed mesh or
+     /// leave a partially installed section, and retrying the same key is safe.
+     fn upload_section(&mut self, key: SectionKey, mesh: &SectionMesh) -> Result<()>;
++    fn prepare_section_uploads(&mut self, _camera: SectionKey, _retry: &mut dyn FnMut(SectionKey)) {
++    }
+     fn clear_sections(&mut self, layout: ColumnLayout);
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>);
+ }
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 78cbb88..4203710 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -323,6 +323,8 @@ pub enum Done {
+     Decorated(i32, i32, Box<[Proto; 9]>, Vec<usize>, FinalWrites),
+     Lit(i32, i32, Vec<crate::chunk::Light>, u64),
+     Meshed(i32, i32, i32, SectionMesh, u64),
++    #[cfg(target_os = "cafe")]
++    MeshDeferred(i32, i32, i32, u64, bool),
+     Saved(Vec<((i32, i32), Proto)>),
+     /// A proto chunk back from `Job::LightView`, with its view.
+     LightView(i32, i32, Proto, Option<Chunk>),
+@@ -365,6 +367,8 @@ struct Shared {
+     /// Only workers use this pool; frames never wait for its lock. Retaining
+     /// cleared buffers avoids racing the renderer for the process heap.
+     meshes: Mutex<MeshPool>,
++    #[cfg(target_os = "cafe")]
++    upload_budget: cafe_upload_budget::Budget,
+     aborted: std::sync::atomic::AtomicBool,
+ }
+ #[derive(Default)]
+@@ -1112,6 +1116,22 @@ impl<G: ChunkGenerator> Jobs<G> {
+                     sy,
+                     recycled,
+                 );
++                #[cfg(target_os = "cafe")]
++                let mesh = {
++                    let mut mesh = mesh;
++                    let bytes = mesh.capacity_bytes();
++                    let Some(charge) = shared.upload_budget.reserve(bytes) else {
++                        let retry = bytes <= cafe_upload_budget::LIMIT;
++                        if !retry {
++                            log::warn!(
++                                "Horizon: section {x},{sy},{z} exceeds the Cafe mesh budget ({bytes} bytes)"
++                            );
++                        }
++                        return Some(Done::MeshDeferred(x, sy, z, seq, retry));
++                    };
++                    mesh.cafe_upload_charge = Some(charge);
++                    mesh
++                };
+                 Done::Meshed(x, sy, z, mesh, seq)
+             }
+         };
+@@ -1131,6 +1151,11 @@ pub struct WorkerContext {
+     pub part_tables: Arc<crate::mesher::part_tables::PartTables>,
+ }
+ mod bounded;
++#[cfg(any(target_os = "cafe", test))]
++mod cafe_upload_budget;
++#[cfg(target_os = "cafe")]
++#[doc(hidden)]
++pub use cafe_upload_budget::Charge as CafeUploadCharge;
+ mod dynamic_emission;
+ mod queue_census;
+ pub use queue_census::QueueCensus;
+@@ -1158,6 +1183,8 @@ impl Streaming {
+             context: RwLock::new(context.clone()),
+             done: Mailbox::default(),
+             meshes: Mutex::new(MeshPool::default()),
++            #[cfg(target_os = "cafe")]
++            upload_budget: cafe_upload_budget::Budget::default(),
+             aborted: std::sync::atomic::AtomicBool::new(false),
+         });
+         let light_tables = context.light.clone();
+@@ -1356,6 +1383,11 @@ impl Streaming {
+             }
+         }
+     }
++    #[cfg(target_os = "cafe")]
++    pub fn cafe_upload_bytes(&self) -> usize {
++        self.shared.upload_budget.used()
++    }
++
+     /// Give back meshes the renderer has copied: a worker frees them, ahead of
+     /// other jobs, as vanilla's compile task closes its mesh data on its own
+     /// thread once copied (`SectionRenderDispatcher.RenderSection.CompileTask.doTask`).
+@@ -1859,6 +1891,16 @@ impl Streaming {
+                     let snapshot = self.light_snapshots.remove(&(x, z)).unwrap_or(u64::MAX);
+                     self.apply_lit(world, x, z, sections, snapshot);
+                 }
++                #[cfg(target_os = "cafe")]
++                Done::MeshDeferred(x, sy, z, seq, retry) => {
++                    let key = (x, sy, z);
++                    if self.meshing.get(&key) == Some(&seq) {
++                        self.meshing.remove(&key);
++                        if retry && world.chunks.contains_key(&(x, z)) {
++                            world.dirty_sections.insert(key);
++                        }
++                    }
++                }
+                 Done::Meshed(x, sy, z, mesh, seq) => {
+                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
+                         resume.stale.push(((x, sy, z), mesh));
+@@ -2294,8 +2336,12 @@ impl Streaming {
+         // Meshes waiting for upload count too: when uploads fall behind (a
+         // low frame rate at a wide distance), meshing on held gigabytes of
+         // them until the system swapped.
+-        let mut room =
+-            (self.workers * 32).saturating_sub(self.meshing.len() + self.upload_backlog + uploads.len());
++        let mut room = (self.workers * 32)
++            .saturating_sub(self.meshing.len() + self.upload_backlog + uploads.len());
++        #[cfg(target_os = "cafe")]
++        if self.shared.upload_budget.used() >= cafe_upload_budget::LIMIT {
++            room = 0;
++        }
+         nearest_first(&mut candidates, room);
+         for (_, x, z, sections) in candidates.drain(..) {
+             if room == 0 {
+diff --git a/crates/horizon-client-render/src/streaming/cafe_upload_budget.rs b/crates/horizon-client-render/src/streaming/cafe_upload_budget.rs
+new file mode 100644
+index 0000000..9afdae2
+--- /dev/null
++++ b/crates/horizon-client-render/src/streaming/cafe_upload_budget.rs
+@@ -0,0 +1,67 @@
++//! Byte budget shared by native mesh workers and the pending upload queue.
++use std::sync::{
++    Arc,
++    atomic::{AtomicUsize, Ordering},
++};
++
++pub(crate) const LIMIT: usize = 24 * 1024 * 1024;
++
++#[derive(Default)]
++pub(crate) struct Budget(Arc<AtomicUsize>);
++
++impl Budget {
++    pub(crate) fn used(&self) -> usize {
++        self.0.load(Ordering::Relaxed)
++    }
++
++    pub(crate) fn reserve(&self, bytes: usize) -> Option<Charge> {
++        self.0
++            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
++                used.checked_add(bytes).filter(|&total| total <= LIMIT)
++            })
++            .ok()?;
++        Some(Charge {
++            used: Arc::clone(&self.0),
++            bytes,
++        })
++    }
++}
++
++pub struct Charge {
++    used: Arc<AtomicUsize>,
++    bytes: usize,
++}
++
++impl Drop for Charge {
++    fn drop(&mut self) {
++        self.used.fetch_sub(self.bytes, Ordering::Relaxed);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn charges_follow_ownership_across_threads_until_disposed() {
++        let budget = Budget::default();
++        let held = budget.reserve(LIMIT - 256).unwrap();
++        let full = std::thread::scope(|threads| {
++            threads
++                .spawn(|| {
++                    assert!(budget.reserve(257).is_none());
++                    budget.reserve(256).unwrap()
++                })
++                .join()
++                .unwrap()
++        });
++        assert_eq!(budget.used(), LIMIT);
++        assert!(budget.reserve(1).is_none());
++        drop(held);
++        assert_eq!(budget.used(), 256);
++        assert!(budget.reserve(usize::MAX).is_none());
++        drop(full);
++        assert_eq!(budget.used(), 0);
++        assert!(budget.reserve(LIMIT).is_some());
++    }
++}
+diff --git a/crates/horizon-client/src/game/runtime/memory.rs b/crates/horizon-client/src/game/runtime/memory.rs
+index 839258d..2ac4efe 100644
+--- a/crates/horizon-client/src/game/runtime/memory.rs
++++ b/crates/horizon-client/src/game/runtime/memory.rs
+@@ -445,10 +445,10 @@ impl Game<'_> {
+         );
+         if let Some(native) = native {
+             log::info!(
+-                "Horizon terrain mesh memory: sample_ms={sample} pending={} gx2_sections={} gx2_vertex_payload_bytes={} gx2_quads={} gx2_vertices={} gx2_vertex_allocation_bytes={} gx2_shared_index_allocation_bytes={} rust_upload_scratch_bytes={}",
++                "Horizon terrain mesh memory: sample_ms={sample} pending={} gx2_sections={} gx2_vertex_payload_bytes={} gx2_quads={} gx2_vertices={} gx2_vertex_allocation_bytes={} gx2_shared_index_allocation_bytes={} rust_upload_scratch_bytes={} queued_cpu_bytes={}",
+                 self.pending_uploads.len(), native.sections, native.vertex_payload_bytes, native.quads,
+                 native.vertices, native.vertex_allocation_bytes, native.shared_index_allocation_bytes,
+-                native.rust_upload_scratch_bytes,
++                native.rust_upload_scratch_bytes, self.streaming.cafe_upload_bytes(),
+             );
+         }
+     }
+diff --git a/crates/horizon-client/src/game/world/world_update.rs b/crates/horizon-client/src/game/world/world_update.rs
+index 0875b82..be803d7 100644
+--- a/crates/horizon-client/src/game/world/world_update.rs
++++ b/crates/horizon-client/src/game/world/world_update.rs
+@@ -153,7 +153,9 @@ impl Game<'_> {
+ 
+     pub(in crate::game) fn update_world_inner(
+         &mut self,
+-        #[cfg(target_os = "cafe")] mut cafe: Option<&mut dyn horizon_client::presentation::TerrainBackend>,
++        #[cfg(target_os = "cafe")] mut cafe: Option<
++            &mut dyn horizon_client::presentation::TerrainBackend,
++        >,
+     ) {
+         if let Err(e) = horizon_client::spans::time("poll_remote", || self.poll_remote()) {
+             log::warn!("Horizon: {e}");
+@@ -216,6 +218,21 @@ impl Game<'_> {
+         self.streaming
+             .extra
+             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
++        #[cfg(target_os = "cafe")]
++        if let Some(backend) = cafe.as_deref_mut() {
++            let centre = self.streaming.center;
++            let bottom = f64::from(self.world.bottom_y());
++            let y = self
++                .player
++                .as_ref()
++                .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
++            let world = &mut self.world;
++            backend.prepare_section_uploads((centre.0, y, centre.1), &mut |key| {
++                if world.chunks.contains_key(&(key.0, key.2)) {
++                    world.dirty_sections.insert(key);
++                }
++            });
++        }
+         self.streaming.upload_backlog = self.pending_uploads.len();
+         let plan = horizon_client::spans::time("streaming_plan", || {
+             let mut step = self.streaming.begin_plan_update(&mut self.world);
+@@ -351,13 +368,19 @@ impl Game<'_> {
+                 if let Some(backend) = cafe.as_deref_mut() {
+                     return backend.upload_section(key, mesh);
+                 }
+-                self.renderer.as_mut().expect("desktop terrain renderer").upload(key, mesh);
++                self.renderer
++                    .as_mut()
++                    .expect("desktop terrain renderer")
++                    .upload(key, mesh);
+                 Ok(())
+             };
+             let g = &self.settings.horizon;
+             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
+             // The meshes, once copied, are freed by a worker (`Streaming::free`).
+-            if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
++            if !native
++                && !budgeted
++                && self.pending_uploads.is_empty()
++                && uploads.len() <= AUTO_UPLOADS_AT_ONCE
+             {
+                 let mut spent = Vec::with_capacity(uploads.len());
+                 horizon_client::spans::time("upload", || {
+@@ -432,11 +455,15 @@ impl Game<'_> {
+                         break;
+                     }
+                     let (key, mesh) = pending.pop().expect("checked above");
+-                    if let Err(error) = upload(key, &mesh) {
+-                        log::warn!("Horizon: section {key:?} upload failed: {error}");
+-                        retry.push((key, mesh));
+-                    } else {
+-                        spent.push((key, mesh));
++                    match upload(key, &mesh) {
++                        Err(error)
++                            if !error
++                                .is::<horizon_client::presentation::TerrainUploadDeferred>() =>
++                        {
++                            log::warn!("Horizon: section {key:?} upload failed: {error}");
++                            retry.push((key, mesh));
++                        }
++                        _ => spent.push((key, mesh)),
+                     }
+                     count += 1;
+                     bytes += size;
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index dde4201..1bdd3de 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -32,7 +32,10 @@ int horizon_gx2_terrain_section_create(HorizonGx2TerrainSection **out,
+ /* Upload before drawing a new frame, after the preceding WHB finish. */
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_wait_idle(void);
++int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
++/* Caller has completed every submitted use of this section. */
++void horizon_gx2_terrain_section_destroy_after_wait(HorizonGx2TerrainSection *section);
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *terrain,
+                             HorizonGx2TerrainSection *section,
+                             uint32_t target_width, uint32_t target_height,
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index b8764c5..aa95076 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -86,14 +86,35 @@ fail:
+    return result;
+ }
+ 
+-void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section)
++int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes)
++{
++   if (!bytes || count % 4) return -1;
++   *bytes = 0;
++   if (!count) return 0;
++   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++   const uint32_t alignment = GX2RGetBufferAlignment(flags);
++   const uint64_t payload = (uint64_t)sizeof(HorizonTerrainVertex) * count;
++   if (!alignment || payload > UINT32_MAX - (alignment - 1)) return -1;
++   GX2RBuffer layout = { .flags = flags, .elemSize = sizeof(HorizonTerrainVertex), .elemCount = count };
++   *bytes = GX2RGetBufferAllocationSize(&layout);
++   return *bytes < payload ? -1 : 0;
++}
++
++void horizon_gx2_terrain_section_destroy_after_wait(HorizonGx2TerrainSection *section)
+ {
+    if (!section) return;
+-   if (GX2RBufferExists(&section->buffer)) GX2DrawDone();
+    terrain_buffer_release(&section->buffer);
+    free(section);
+ }
+ 
++void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section)
++{
++   if (!section) return;
++   if (GX2RBufferExists(&section->buffer)) GX2DrawDone();
++   horizon_gx2_terrain_section_destroy_after_wait(section);
++}
++
+ static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count)
+ {
+    uint32_t remaining = vertex_count / 4;
+diff --git a/wiiu/loading_app/memory.c b/wiiu/loading_app/memory.c
+index 377b12f..6f38420 100644
+--- a/wiiu/loading_app/memory.c
++++ b/wiiu/loading_app/memory.c
+@@ -143,6 +143,17 @@ void horizon_wiiu_memory_alloc_failure(uint32_t bytes, uint32_t align, uint32_t
+    }
+ }
+ 
++/* Leave room for the region writer, heaps shared with native libraries,
++ * and textures that are outside the terrain vertex residency meter. */
++int horizon_wiiu_memory_can_upload_terrain(uint32_t bytes)
++{
++   const uint32_t reserve = 48u * 1024 * 1024;
++   if (!bulk_heap) return 1;
++   const uint32_t free = MEMGetTotalFreeSizeForExpHeap(bulk_heap);
++   const uint32_t largest = MEMGetAllocatableSizeForExpHeapEx(bulk_heap, 64);
++   return free >= reserve && bytes <= free - reserve && bytes <= largest;
++}
++
+ void horizon_wiiu_memory_report_display_surfaces(void)
+ {
+    const GX2ColorBuffer *tv = WHBGfxGetTVColourBuffer();
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index c5d1ba8..34a4d50 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -8,13 +8,9 @@
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
+ use horizon_client::chunk::ColumnLayout;
+-use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_client::gfx::SectionKey;
+ use horizon_client::graphics::PresentMode;
+-use horizon_client::hud::{
+-    Rect,
+-    cit_glint::GlintTextures,
+-};
++use horizon_client::hud::{Rect, cit_glint::GlintTextures};
+ use horizon_client::mesher::{SectionMesh, TerrainVertex};
+ use horizon_client::sprites::SpriteAnimation;
+ use horizon_client::{
+@@ -25,6 +21,7 @@ use horizon_client::{
+     gfx::{Frame, panorama},
+     presentation::{HudBackend, PresentationBackend, TerrainBackend},
+ };
++use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_optifine::cit::Factor;
+ use horizon_wiiu_gx2_terrain::{
+     IndexedTerrainVertex, TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
+@@ -36,7 +33,7 @@ use std::{
+     marker::PhantomData,
+     mem::MaybeUninit,
+     ptr::NonNull,
+-    time::Instant,
++    time::{Duration, Instant},
+ };
+ 
+ // Set HORIZON_WIIU_PROFILE_GX2=1 in the build environment to enable the
+@@ -213,6 +210,9 @@ extern "C" {
+     fn horizon_gx2_terrain_lightmap(terrain: *mut c_void, rgba: *const u8) -> i32;
+     fn horizon_gx2_terrain_wait_idle();
+     fn horizon_gx2_terrain_section_destroy(section: *mut c_void);
++    fn horizon_gx2_terrain_section_destroy_after_wait(section: *mut c_void);
++    fn horizon_gx2_terrain_section_estimate(count: u32, bytes: *mut u32) -> i32;
++    fn horizon_wiiu_memory_can_upload_terrain(bytes: u32) -> i32;
+     fn horizon_gx2_terrain_draw(
+         terrain: *mut c_void,
+         section: *mut c_void,
+@@ -450,6 +450,15 @@ fn panorama_vertices(
+     }))
+ }
+ 
++mod terrain_residency;
++use terrain_residency::{RESIDENT_VERTEX_BYTES, RETIRE_BATCH_BYTES};
++
++#[derive(Clone, Copy)]
++struct DeferredTerrain {
++    bytes: usize,
++    bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
++}
++
+ struct TerrainSection {
+     bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+     native: NonNull<c_void>,
+@@ -552,6 +561,15 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_generation: Option<u64>,
+     terrain_min_y: Option<i32>,
+     sections: HashMap<SectionKey, TerrainSection>,
++    terrain_resident_bytes: usize,
++    terrain_retired_bytes: usize,
++    retired_terrain: Vec<TerrainSection>,
++    deferred_terrain: HashMap<SectionKey, DeferredTerrain>,
++    terrain_camera: SectionKey,
++    terrain_views: [Option<TerrainProjection>; 2],
++    next_terrain_retry: Option<Instant>,
++    terrain_allocation_backoff: Option<Instant>,
++    terrain_evictions: u32,
+     translucent_terrain_omitted: HashSet<SectionKey>,
+     generation: Option<u64>,
+     atlas_revision: Option<u64>,
+@@ -601,6 +619,15 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_generation: None,
+             terrain_min_y: None,
+             sections: HashMap::new(),
++            terrain_resident_bytes: 0,
++            terrain_retired_bytes: 0,
++            retired_terrain: Vec::new(),
++            deferred_terrain: HashMap::new(),
++            terrain_camera: (0, 0, 0),
++            terrain_views: [None, None],
++            next_terrain_retry: None,
++            terrain_allocation_backoff: None,
++            terrain_evictions: 0,
+             translucent_terrain_omitted: HashSet::new(),
+             generation: None,
+             atlas_revision: None,
+@@ -1097,8 +1124,8 @@ impl TerrainProjection {
+     fn new(frame: &Frame<'_>, min_y: i32, aspect: f32) -> Self {
+         let near = 0.05f32;
+         let far = frame.depth_far.max(near + 1.0);
+-        let view = frame.bob * frame.spin
+-            * horizon_client::camera::view_matrix(frame.yaw, frame.pitch);
++        let view =
++            frame.bob * frame.spin * horizon_client::camera::view_matrix(frame.yaw, frame.pitch);
+         Self {
+             camera: frame.camera.to_array(),
+             min_y,
+@@ -1239,6 +1266,13 @@ fn log_unsupported_world_pass(name: &str) {
+ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+     fn terrain_buffer_census(&self) -> Option<CafeTerrainBuffers> {
+         let terrain = self.terrain.as_ref()?;
++        if self.terrain_evictions != 0 || !self.deferred_terrain.is_empty() {
++            unsafe {
++                OSReport(c"Horizon terrain residency: resident_bytes=%u retired_bytes=%u deferred=%u evictions=%u limit_bytes=%u\n".as_ptr(),
++                    self.terrain_resident_bytes as u32, self.terrain_retired_bytes as u32,
++                    self.deferred_terrain.len() as u32, self.terrain_evictions, RESIDENT_VERTEX_BYTES as u32);
++            }
++        }
+         let mut census = CafeTerrainBuffers {
+             sections: self.sections.len(),
+             shared_index_allocation_bytes: unsafe {
+@@ -1315,7 +1349,8 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 artwork.terrain_layers,
+             )?;
+             let layer_bytes = layout.layer_bytes()?;
+-            if layer_bytes.checked_mul(layout.layers as usize) != Some(artwork.terrain_pixels.len()) {
++            if layer_bytes.checked_mul(layout.layers as usize) != Some(artwork.terrain_pixels.len())
++            {
+                 return Err("GX2 terrain atlas source length differs from the layer layout".into());
+             }
+             artwork.terrain_pixels.pack();
+@@ -1347,7 +1382,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             });
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
+-            self.sections.clear();
++            self.clear_native_sections();
+             self.translucent_terrain_omitted.clear();
+         }
+         Ok(())
+@@ -1370,6 +1405,81 @@ fn cit_factor(factor: Factor) -> u32 {
+     }
+ }
+ 
++impl Gx2LoadingPresenter<'_> {
++    fn section_info(mesh: &SectionMesh) -> Option<DeferredTerrain> {
++        let count = u32::try_from(mesh.solid.len()).ok()?;
++        let mut bytes = 0;
++        if unsafe { horizon_gx2_terrain_section_estimate(count, &mut bytes) } != 0 {
++            return None;
++        }
++        Some(DeferredTerrain {
++            bytes: bytes as usize,
++            bounds: horizon_wiiu_gx2_terrain::TerrainBounds::from_vertices(&mesh.solid),
++        })
++    }
++
++    fn section_rank(
++        &self,
++        key: SectionKey,
++        bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
++    ) -> terrain_residency::Priority {
++        let visible = bounds.is_none_or(|bounds| {
++            self.terrain_views.iter().any(Option::is_none)
++                || self.terrain_views.iter().flatten().any(|view| {
++                    view.clip_rows(view.section_origin(key))
++                        .may_intersect(bounds)
++                })
++        });
++        terrain_residency::priority(key, self.terrain_camera, visible)
++    }
++
++    fn retire_section(&mut self, removed: TerrainSection) {
++        self.terrain_resident_bytes -= removed.allocation_bytes as usize;
++        self.terrain_retired_bytes += removed.allocation_bytes as usize;
++        self.retired_terrain.push(removed);
++    }
++
++    fn finish_retired_after_wait(&mut self) {
++        for section in self.retired_terrain.drain(..) {
++            let section = std::mem::ManuallyDrop::new(section);
++            unsafe { horizon_gx2_terrain_section_destroy_after_wait(section.native.as_ptr()) };
++        }
++        self.terrain_retired_bytes = 0;
++    }
++
++    fn flush_retired(&mut self) {
++        if self.retired_terrain.is_empty() {
++            return;
++        }
++        let _wait = Span::new(Stage::TerrainWait);
++        unsafe { horizon_gx2_terrain_wait_idle() };
++        self.finish_retired_after_wait();
++    }
++
++    fn clear_native_sections(&mut self) {
++        self.retired_terrain
++            .extend(self.sections.drain().map(|(_, section)| section));
++        self.terrain_resident_bytes = 0;
++        self.deferred_terrain.clear();
++        self.terrain_views = [None, None];
++        self.next_terrain_retry = None;
++        self.terrain_allocation_backoff = None;
++        self.flush_retired();
++    }
++
++    fn defer_native_section(&mut self, key: SectionKey, info: DeferredTerrain) {
++        if info.bytes <= RESIDENT_VERTEX_BYTES {
++            self.deferred_terrain.insert(key, info);
++        }
++    }
++}
++
++impl Drop for Gx2LoadingPresenter<'_> {
++    fn drop(&mut self) {
++        self.clear_native_sections();
++    }
++}
++
+ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+     fn upload_section(
+         &mut self,
+@@ -1379,15 +1489,92 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         if !mesh.solid.len().is_multiple_of(4) {
+             return Err("Horizon solid section mesh is not quad aligned".into());
+         }
+-        let atlas = self
+-            .terrain_atlas
+-            .as_ref()
+-            .ok_or("GX2 terrain atlas is not prepared")?;
+         if self.terrain_min_y.is_none() {
+             return Err("GX2 terrain section layout is not prepared".into());
+         }
+         let vertex_count =
+             u32::try_from(mesh.solid.len()).map_err(|_| "GX2 section vertex count overflow")?;
++        let info = Self::section_info(mesh).ok_or("GX2 section allocation estimate overflow")?;
++        if info.bytes == 0 {
++            if let Some(old) = self.sections.remove(&key) {
++                self.retire_section(old)
++            }
++            self.deferred_terrain.remove(&key);
++            set_translucent_terrain_omitted(
++                &mut self.translucent_terrain_omitted,
++                key,
++                !mesh.translucent.is_empty(),
++            );
++            return Ok(());
++        }
++        if self
++            .terrain_allocation_backoff
++            .is_some_and(|retry| retry > Instant::now())
++        {
++            self.defer_native_section(key, info);
++            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++        }
++        let old_bytes = self
++            .sections
++            .get(&key)
++            .map_or(0, |section| section.allocation_bytes as usize);
++        let need = (self.terrain_resident_bytes - old_bytes)
++            .saturating_add(info.bytes)
++            .saturating_sub(RESIDENT_VERTEX_BYTES);
++        if info.bytes > RESIDENT_VERTEX_BYTES {
++            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++        }
++        if need != 0 {
++            let rank = self.section_rank(key, info.bounds);
++            let mut candidates: Vec<_> = self
++                .sections
++                .iter()
++                .filter(|(k, _)| **k != key)
++                .map(|(&key, section)| {
++                    (
++                        self.section_rank(key, section.bounds),
++                        section.allocation_bytes as usize,
++                    )
++                })
++                .filter(|(current, _)| *current > rank)
++                .collect();
++            candidates.sort_unstable_by_key(|(current, _)| std::cmp::Reverse(*current));
++            let Some(victims) = terrain_residency::victims(rank, need, candidates) else {
++                self.defer_native_section(key, info);
++                return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++            };
++            for key in victims {
++                if let Some(old) = self.sections.remove(&key) {
++                    self.defer_native_section(
++                        key,
++                        DeferredTerrain {
++                            bytes: old.allocation_bytes as usize,
++                            bounds: old.bounds,
++                        },
++                    );
++                    self.retire_section(old);
++                    self.terrain_evictions = self.terrain_evictions.saturating_add(1);
++                }
++            }
++        }
++        // Preserve the current section if its replacement cannot coexist with
++        // it for this upload. Retired buffers count until GX2 has finished.
++        if self.terrain_resident_bytes + self.terrain_retired_bytes + info.bytes
++            > RESIDENT_VERTEX_BYTES
++            || self.terrain_retired_bytes >= RETIRE_BATCH_BYTES
++        {
++            self.flush_retired();
++        }
++        // A single replacement may briefly coexist with the old allocation
++        // out of the headroom reserve. The published residency remains capped.
++        if unsafe { horizon_wiiu_memory_can_upload_terrain(info.bytes as u32) } == 0 {
++            self.defer_native_section(key, info);
++            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++        }
++        let atlas = self
++            .terrain_atlas
++            .as_ref()
++            .ok_or("GX2 terrain atlas is not prepared")?;
+         let _upload = Span::new(Stage::TerrainUpload);
+         let mut upload = TerrainUpload {
+             atlas,
+@@ -1410,6 +1597,18 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         if let Some(error) = upload.error {
+             return Err(error.into());
+         }
++        if code == -2 {
++            unsafe {
++                OSReport(
++                    c"GX2 indexed section allocation failed bytes=%u (uploads backing off)\n"
++                        .as_ptr(),
++                    info.bytes as u32,
++                )
++            };
++            self.terrain_allocation_backoff = Some(Instant::now() + Duration::from_millis(300));
++            self.defer_native_section(key, info);
++            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++        }
+         if code != 0 {
+             return Err(format!("GX2 indexed section upload failed ({code})").into());
+         }
+@@ -1420,15 +1619,22 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         );
+         // Publish only after the upload succeeds. The previous section can
+         // still be drawn if allocation, mapping or conversion fails.
+-        self.sections.insert(
+-            key,
+-            TerrainSection {
+-                native,
+-                vertex_count,
+-                allocation_bytes,
+-                bounds: horizon_wiiu_gx2_terrain::TerrainBounds::from_vertices(&mesh.solid),
+-            },
+-        );
++        let section = TerrainSection {
++            native,
++            vertex_count,
++            allocation_bytes,
++            bounds: info.bounds,
++        };
++        if allocation_bytes as usize != info.bytes {
++            return Err(
++                "GX2 reported a different allocation size from the checked estimate".into(),
++            );
++        }
++        self.terrain_resident_bytes += allocation_bytes as usize;
++        if let Some(old) = self.sections.insert(key, section) {
++            self.retire_section(old)
++        }
++        self.deferred_terrain.remove(&key);
+         set_translucent_terrain_omitted(
+             &mut self.translucent_terrain_omitted,
+             key,
+@@ -1437,16 +1643,68 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         Ok(())
+     }
+ 
++    fn prepare_section_uploads(&mut self, camera: SectionKey, retry: &mut dyn FnMut(SectionKey)) {
++        self.terrain_camera = camera;
++        if self.deferred_terrain.is_empty() {
++            return;
++        }
++        let now = Instant::now();
++        if self.next_terrain_retry.is_some_and(|time| time > now)
++            || self
++                .terrain_allocation_backoff
++                .is_some_and(|time| time > now)
++        {
++            return;
++        }
++        self.next_terrain_retry = Some(now + Duration::from_millis(300));
++        let free = RESIDENT_VERTEX_BYTES.saturating_sub(self.terrain_resident_bytes);
++        let worst = self
++            .sections
++            .iter()
++            .map(|(&key, section)| self.section_rank(key, section.bounds))
++            .max();
++        let mut ready: Vec<_> = self
++            .deferred_terrain
++            .iter()
++            .filter_map(|(&key, info)| {
++                let rank = self.section_rank(key, info.bounds);
++                (info.bytes <= free || worst.is_some_and(|worst| rank < worst))
++                    .then_some((rank, info.bytes))
++            })
++            .collect();
++        ready.sort_unstable();
++        for ((_, _, key), bytes) in ready.into_iter().take(8) {
++            if unsafe { horizon_wiiu_memory_can_upload_terrain(bytes as u32) } != 0 {
++                self.deferred_terrain.remove(&key);
++                retry(key);
++            }
++        }
++    }
++
+     fn clear_sections(&mut self, layout: ColumnLayout) {
+         self.terrain_min_y = Some(layout.min_y());
+-        self.sections.clear();
++        self.clear_native_sections();
+         self.translucent_terrain_omitted.clear();
+     }
+ 
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
+         let removed: HashSet<_> = columns.collect();
+-        self.sections
++        let expired: Vec<_> = self
++            .sections
++            .keys()
++            .copied()
++            .filter(|(x, _, z)| removed.contains(&(*x, *z)))
++            .collect();
++        for key in expired {
++            if let Some(old) = self.sections.remove(&key) {
++                self.retire_section(old)
++            }
++        }
++        self.deferred_terrain
+             .retain(|(x, _, z), _| !removed.contains(&(*x, *z)));
++        if self.terrain_retired_bytes >= RETIRE_BATCH_BYTES {
++            self.flush_retired()
++        }
+         retain_translucent_terrain_omissions(&mut self.translucent_terrain_omitted, &removed);
+     }
+ }
+@@ -1462,7 +1720,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+     }
+     fn release_surface(&mut self) {
+-        self.sections.clear();
++        self.clear_native_sections();
+         self.translucent_terrain_omitted.clear();
+         self.terrain = None;
+         self.hud = None;
+@@ -1530,7 +1788,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         return -1;
+                     }
+                 }
+-            } else if let Some(terrain) = draw.presenter.terrain.as_ref() {
++            } else if let Some(terrain) = draw
++                .presenter
++                .terrain
++                .as_ref()
++                .map(|terrain| terrain.native)
++            {
+                 let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+                 // Wait once before drawing all retained section buffers;
+                 // projection uniforms change per draw, geometry buffers do not.
+@@ -1538,6 +1801,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 {
+                     let _wait = Span::new(Stage::TerrainWait);
+                     unsafe { horizon_gx2_terrain_wait_idle() };
++                    if index == 0 {
++                        draw.presenter.finish_retired_after_wait()
++                    }
+                 }
+                 if let Some(start) = wait_start {
+                     draw.profile.terrain_wait_ns = draw
+@@ -1549,6 +1815,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let projection = draw
+                     .terrain_min_y
+                     .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
++                draw.presenter.terrain_views[index] = projection;
++                let projection = draw.presenter.terrain_views[index].as_ref();
+                 let (fog_color, fog_ranges) = horizon_client::gfx::fog_uniform(draw.frame);
+                 if let Some(start) = projection_start {
+                     draw.profile.projection_ns =
+@@ -1557,14 +1825,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+                 for (&key, section) in &draw.presenter.sections {
+-                    let Some(projection) = projection.as_ref() else {
++                    let Some(projection) = projection else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+                     };
+                     let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     let origin = projection.section_origin(key);
+                     let clip_rows = projection.clip_rows(origin);
+-                    if section.bounds.is_some_and(|bounds| !clip_rows.may_intersect(bounds)) {
++                    if section
++                        .bounds
++                        .is_some_and(|bounds| !clip_rows.may_intersect(bounds))
++                    {
+                         continue;
+                     }
+                     indices += section.vertex_count as usize / 4 * 6;
+@@ -1578,7 +1849,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let submit_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     if unsafe {
+                         horizon_gx2_terrain_draw(
+-                            terrain.native.as_ptr(),
++                            terrain.as_ptr(),
+                             section.native.as_ptr(),
+                             width,
+                             height,
+diff --git a/wiiu/loading_host/terrain_residency.rs b/wiiu/loading_host/terrain_residency.rs
+new file mode 100644
+index 0000000..d4f923f
+--- /dev/null
++++ b/wiiu/loading_host/terrain_residency.rs
+@@ -0,0 +1,71 @@
++//! Admission policy for the shared TV and GamePad indexed geometry.
++pub(super) const RESIDENT_VERTEX_BYTES: usize = 128 * 1024 * 1024;
++pub(super) const RETIRE_BATCH_BYTES: usize = 2 * 1024 * 1024;
++pub(super) type Key = (i32, i32, i32);
++pub(super) type Priority = (bool, u64, Key);
++
++pub(super) fn priority(key: Key, camera: Key, visible: bool) -> Priority {
++    let axis = |a: i32, b: i32| (i64::from(a) - i64::from(b)).unsigned_abs();
++    let distance = axis(key.0, camera.0)
++        .saturating_pow(2)
++        .saturating_add(axis(key.1, camera.1).saturating_pow(2))
++        .saturating_add(axis(key.2, camera.2).saturating_pow(2));
++    (!visible, distance, key)
++}
++
++/// The caller supplies its least important residents first. Evict only if
++/// enough space can be recovered without sacrificing a more important mesh.
++pub(super) fn victims(
++    candidate: Priority,
++    need: usize,
++    least_important_first: impl IntoIterator<Item = (Priority, usize)>,
++) -> Option<Vec<Key>> {
++    if need == 0 {
++        return Some(Vec::new());
++    }
++    let mut proposed = Vec::new();
++    let mut freed = 0usize;
++    for (rank, bytes) in least_important_first {
++        if rank <= candidate {
++            break;
++        }
++        proposed.push(rank.2);
++        freed = freed.saturating_add(bytes);
++        if freed >= need {
++            return Some(proposed);
++        }
++    }
++    None
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn visible_near_updates_evict_invisible_or_far_residents() {
++        let camera = (4, 8, 3);
++        let visible = priority((2, 8, 3), camera, true);
++        let hidden = priority((4, 8, 3), camera, false);
++        let far = priority((-5, 5, 3), camera, true);
++        assert_eq!(
++            victims(visible, 800, [(hidden, 700), (far, 500)]),
++            Some(vec![hidden.2, far.2])
++        );
++        assert_eq!(victims(hidden, 1, [(far, 800)]), None);
++        assert_eq!(victims(visible, 1201, [(hidden, 700), (far, 500)]), None);
++    }
++
++    #[test]
++    fn lowering_residency_for_a_larger_replacement_keeps_its_better_neighbours() {
++        let camera = (0, 0, 0);
++        let best = priority((0, 0, 0), camera, true);
++        let replacement = priority((0, 0, 1), camera, true);
++        let worst = priority((3, 0, 2), camera, false);
++        assert_eq!(victims(replacement, 256, [(worst, 255), (best, 256)]), None);
++        assert_eq!(
++            victims(replacement, 255, [(worst, 255), (best, 256)]),
++            Some(vec![worst.2])
++        );
++    }
++}

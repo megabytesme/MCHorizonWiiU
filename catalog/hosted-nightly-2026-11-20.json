@@ -8,8 +8,8 @@
     "inventory_sha256": "a959d259ed1d49f69e53a9fa3355c19fa3bbf4be9ce7235fc44dbbb41016f8d8"
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
-  "cargo_lock_sha256": "a3b8adf93fb9dffb1de3407b7f29511c55038bfd9bfd230d4842d76790b020b8",
-  "output_tree": "61417bbf8658b0a60a3daec8bf75d7b46ff910cf",
+  "cargo_lock_sha256": "91edb8041298e7e364716a0bc58fea9285362039be3078d264aed9433ddba643",
+  "output_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -208,12 +208,36 @@
       "sha256": "8f295b80b9b7abc064c54e20efd996bcdd559bd377ce5d493827099262acff9d",
       "input_tree": "21da4d482ccf24f67ad630c24beb2a96f9dd60b9",
       "output_tree": "61417bbf8658b0a60a3daec8bf75d7b46ff910cf"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0034-bound-cafe-audio-decoders.patch",
+      "sha256": "1db66c5c34069356f1aaa934219342dcbc24f349159049aef49de54a3247e6d2",
+      "input_tree": "61417bbf8658b0a60a3daec8bf75d7b46ff910cf",
+      "output_tree": "dcdafbd44e96874837b3d9132c1a4b629337f903"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0035-bound-cafe-terrain-residency.patch",
+      "sha256": "0d2592fb15e9a5976b5878ac167fb48efbe523a4976e8dae4e151c8dd1154179",
+      "input_tree": "dcdafbd44e96874837b3d9132c1a4b629337f903",
+      "output_tree": "d51a13328b39040047f6e5f300db9fffc8f5e5d7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0036-reduce-cafe-save-compression-pressure.patch",
+      "sha256": "8015ddcd22b7a35b5513a0f2cfc5bcf32c25e681aaec9031e48760b7c3cec1f6",
+      "input_tree": "d51a13328b39040047f6e5f300db9fffc8f5e5d7",
+      "output_tree": "9c2c314ff9773278f480c3b78f3e52878ec5a0fe"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0037-use-the-cafe-viewport-for-pause-input.patch",
+      "sha256": "b47368bffa2b383b71a9da58fea5d48471358d74214197284b27a6353a549f44",
+      "input_tree": "9c2c314ff9773278f480c3b78f3e52878ec5a0fe",
+      "output_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.19",
-    "patch": "0.5.0-rc.19"
+    "client": "0.8.0-rc.20",
+    "patch": "0.5.0-rc.20"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

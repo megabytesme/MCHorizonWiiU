@@ -1,0 +1,132 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index c8d1333..890b769 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2951,6 +2951,7 @@ dependencies = [
+  "serde_json",
+  "sha2",
+  "xxhash-rust",
++ "zlib-rs",
+ ]
+ 
+ [[package]]
+diff --git a/crates/horizon-client/src/save/compression_pool.rs b/crates/horizon-client/src/save/compression_pool.rs
+index e82f32d..ab621ba 100644
+--- a/crates/horizon-client/src/save/compression_pool.rs
++++ b/crates/horizon-client/src/save/compression_pool.rs
+@@ -48,6 +48,9 @@ static POOL: OnceLock<CompressionPool> = OnceLock::new();
+ 
+ pub fn pool() -> &'static CompressionPool {
+     POOL.get_or_init(|| {
++        #[cfg(target_os = "cafe")]
++        let workers = 0;
++        #[cfg(not(target_os = "cafe"))]
+         let workers = std::env::var("HORIZON_SAVE_THREADS")
+             .ok()
+             .and_then(|v| v.trim().parse::<usize>().ok())
+diff --git a/crates/horizon-world/Cargo.toml b/crates/horizon-world/Cargo.toml
+index a6e078f..afa5376 100644
+--- a/crates/horizon-world/Cargo.toml
++++ b/crates/horizon-world/Cargo.toml
+@@ -18,6 +18,7 @@ horizon-core = { path = "../horizon-core" }
+ horizon-assets = { path = "../horizon-assets" }
+ horizon-threads = { path = "../horizon-threads" }
+ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
++zlib-rs = { version = "=0.6.8", default-features = false, features = ["rust-allocator"] }
+ lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
+ xxhash-rust = { version = "0.8.19", features = ["xxh32"] }
+ 
+diff --git a/crates/horizon-world/src/compression.rs b/crates/horizon-world/src/compression.rs
+index 060b8a4..4209e15 100644
+--- a/crates/horizon-world/src/compression.rs
++++ b/crates/horizon-world/src/compression.rs
+@@ -112,6 +112,9 @@ impl Compression {
+                 encoder.write_all(bytes)?;
+                 encoder.finish()
+             }
++            #[cfg(target_os = "cafe")]
++            Self::Zlib => cafe_zlib(bytes),
++            #[cfg(not(target_os = "cafe"))]
+             Self::Zlib => {
+                 let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Level::default());
+                 encoder.write_all(bytes)?;
+@@ -122,6 +125,67 @@ impl Compression {
+     }
+ }
+ 
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_zlib(bytes: &[u8]) -> io::Result<Vec<u8>> {
++    use zlib_rs::{DeflateConfig, ReturnCode};
++    thread_local! {
++        static OUTPUT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
++    }
++    // Smaller deflate tables reduce the demand on the shared Cafe heap. The
++    // public slice API returns MemError from initialization; the flate2
++    // streaming constructor panics on the same failure.
++    let config = DeflateConfig {
++        mem_level: 6,
++        ..DeflateConfig::default()
++    };
++    let capacity = bytes
++        .len()
++        .checked_add(bytes.len() / 16 + 1024)
++        .ok_or(io::ErrorKind::FileTooLarge)?;
++    OUTPUT.with_borrow_mut(|buffer| {
++        if buffer.capacity() < capacity {
++            buffer
++                .try_reserve_exact(capacity - buffer.len())
++                .map_err(|_| io::ErrorKind::OutOfMemory)?;
++        }
++        buffer.resize(capacity, 0);
++        let (compressed, status) = zlib_rs::compress_slice(buffer, bytes, config);
++        match status {
++            ReturnCode::Ok => {
++                let mut output = Vec::new();
++                output
++                    .try_reserve_exact(compressed.len())
++                    .map_err(|_| io::ErrorKind::OutOfMemory)?;
++                output.extend_from_slice(compressed);
++                Ok(output)
++            }
++            ReturnCode::MemError => Err(io::ErrorKind::OutOfMemory.into()),
++            other => Err(io::Error::other(format!("Cafe deflate failed: {other:?}"))),
++        }
++    })
++}
++
++#[cfg(test)]
++#[test]
++fn cafe_zlib_reuses_output_and_preserves_the_region_stream() {
++    let mut state = 0x1234abcdu32;
++    for length in [0, 1, 8192, 1 << 20, 912] {
++        let input: Vec<_> = (0..length)
++            .map(|_| {
++                state ^= state << 13;
++                state ^= state >> 17;
++                state ^= state << 5;
++                state as u8
++            })
++            .collect();
++        let actual = cafe_zlib(&input).unwrap();
++        assert_eq!(
++            Compression::Zlib.decode(&actual, input.len()).unwrap(),
++            input
++        );
++    }
++}
++
+ thread_local! {
+     /// This thread's zlib inflater, reset for each chunk instead of a new
+     /// one (and its window) allocated every time.
+diff --git a/wiiu/loading_app/Cargo.lock b/wiiu/loading_app/Cargo.lock
+index 9292be2..6f6ad24 100644
+--- a/wiiu/loading_app/Cargo.lock
++++ b/wiiu/loading_app/Cargo.lock
+@@ -2005,6 +2005,7 @@ dependencies = [
+  "serde_json",
+  "sha2",
+  "xxhash-rust",
++ "zlib-rs",
+ ]
+ 
+ [[package]]
