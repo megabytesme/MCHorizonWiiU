@@ -1,0 +1,139 @@
+diff --git a/wiiu/audio/audio.c b/wiiu/audio/audio.c
+index 737057ff20e2673bad51ceffe03527216420ea16..2c67bfcd38258fc6bdd9f09e25a13da8feba10c9 100644
+--- a/wiiu/audio/audio.c
++++ b/wiiu/audio/audio.c
+@@ -27,6 +27,7 @@ void horizon_wiiu_audio_close(void *handle)
+ #else
+ 
+ #include <coreinit/cache.h>
++#include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
+ #include <coreinit/thread.h>
+ #include <sndcore2/core.h>
+@@ -44,12 +45,17 @@ void horizon_wiiu_audio_close(void *handle)
+ #define HORIZON_AUDIO_AX_PRIORITY 31u
+ #define HORIZON_AUDIO_MAX_OUTPUT_CHANNELS 6u
+ 
++enum { AUDIO_CALLBACK_SEEN = 1u, AUDIO_PCM_DELIVERED = 2u };
++
+ typedef struct HorizonWiiUAudio {
+    AXVoice *left_voice;
+    AXVoice *right_voice;
+    int16_t *left_ring;
+    int16_t *right_ring;
+    int16_t queue[HORIZON_AUDIO_QUEUE_FRAMES][HORIZON_AUDIO_MAX_FRAME_SAMPLES][2];
++   uint8_t non_silent[HORIZON_AUDIO_QUEUE_FRAMES];
++   uint32_t callback_milestones;
++   uint32_t reported_milestones;
+    uint32_t samples_per_frame;
+    uint32_t samples_per_second;
+    uint32_t ring_samples;
+@@ -86,7 +92,7 @@ static void write_ring(int16_t *ring, uint32_t start, const int16_t *stereo,
+    DCFlushRange(ring, ring_samples * sizeof(*ring));
+ }
+ 
+-static void configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
++static AXResult configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
+                             AXDeviceType device, uint32_t output_channel)
+ {
+    AXVoiceOffsets offsets = {
+@@ -106,9 +112,10 @@ static void configure_voice(AXVoice *voice, int16_t *samples, uint32_t count,
+    AXSetVoiceOffsets(voice, &offsets);
+    AXSetVoiceSrcType(voice, AX_VOICE_SRC_TYPE_LINEAR);
+    AXSetVoiceSrcRatio(voice, 1.0f);
+-   AXSetVoiceDeviceMix(voice, device, 0, mix);
++   AXResult status = AXSetVoiceDeviceMix(voice, device, 0, mix);
+    AXSetVoiceVe(voice, &envelope);
+    AXSetVoiceState(voice, AX_VOICE_STATE_PLAYING);
++   return status;
+ }
+ 
+ static void audio_frame_callback(void)
+@@ -141,9 +148,14 @@ static void audio_frame_callback(void)
+               audio->ring_samples);
+    write_ring(audio->right_ring, write_at, stereo, 1, audio->samples_per_frame,
+               audio->ring_samples);
++   uint32_t milestones = __atomic_load_n(&audio->callback_milestones, __ATOMIC_RELAXED);
++   uint32_t next = milestones | AUDIO_CALLBACK_SEEN;
+    if (read != write) {
++      if (audio->non_silent[read % HORIZON_AUDIO_QUEUE_FRAMES]) next |= AUDIO_PCM_DELIVERED;
+       __atomic_store_n(&audio->queue_read, read + 1u, __ATOMIC_RELEASE);
+    }
++   if (next != milestones)
++      __atomic_store_n(&audio->callback_milestones, next, __ATOMIC_RELEASE);
+    audio->ring_cursor = (audio->ring_cursor + audio->samples_per_frame) % audio->ring_samples;
+ 
+    __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_RELEASE);
+@@ -217,21 +229,25 @@ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+    audio->left_voice = AXAcquireVoice(HORIZON_AUDIO_AX_PRIORITY, NULL, NULL);
+    audio->right_voice = AXAcquireVoice(HORIZON_AUDIO_AX_PRIORITY, NULL, NULL);
+    if (audio->left_voice == NULL || audio->right_voice == NULL) {
++      OSReport("Horizon AX voice allocation failed: left=%u right=%u\n",
++               audio->left_voice != NULL, audio->right_voice != NULL);
+       close_partial(audio);
+       free(audio);
+       return NULL;
+    }
+-   configure_voice(audio->left_voice, audio->left_ring, audio->ring_samples,
+-                   AX_DEVICE_TYPE_TV, 0);
+-   configure_voice(audio->right_voice, audio->right_ring, audio->ring_samples,
+-                   AX_DEVICE_TYPE_TV, 1);
+-   configure_voice(audio->left_voice, audio->left_ring, audio->ring_samples,
+-                   AX_DEVICE_TYPE_DRC, 0);
+-   configure_voice(audio->right_voice, audio->right_ring, audio->ring_samples,
+-                   AX_DEVICE_TYPE_DRC, 1);
++   AXResult tv_left = configure_voice(audio->left_voice, audio->left_ring,
++                                       audio->ring_samples, AX_DEVICE_TYPE_TV, 0);
++   AXResult tv_right = configure_voice(audio->right_voice, audio->right_ring,
++                                        audio->ring_samples, AX_DEVICE_TYPE_TV, 1);
++   AXResult drc_left = configure_voice(audio->left_voice, audio->left_ring,
++                                        audio->ring_samples, AX_DEVICE_TYPE_DRC, 0);
++   AXResult drc_right = configure_voice(audio->right_voice, audio->right_ring,
++                                         audio->ring_samples, AX_DEVICE_TYPE_DRC, 1);
+ 
+    __atomic_store_n(&sAudio, audio, __ATOMIC_RELEASE);
+-   if (AXRegisterAppFrameCallback(audio_frame_callback) != AX_RESULT_SUCCESS) {
++   AXResult callback = AXRegisterAppFrameCallback(audio_frame_callback);
++   if (callback != AX_RESULT_SUCCESS) {
++      OSReport("Horizon AX callback registration failed: result=%d\n", (int)callback);
+       __atomic_store_n(&sAudio, NULL, __ATOMIC_RELEASE);
+       while (__atomic_load_n(&sCallbacksActive, __ATOMIC_ACQUIRE) != 0) {
+          OSSleepTicks(1);
+@@ -241,6 +257,8 @@ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+       return NULL;
+    }
+    audio->callback_registered = TRUE;
++   OSReport("Horizon AX ready: voices=2 rate=%u frames=%u tv_mix=%d,%d drc_mix=%d,%d\n",
++            *rate, *frames, (int)tv_left, (int)tv_right, (int)drc_left, (int)drc_right);
+    return audio;
+ }
+ 
+@@ -250,16 +268,27 @@ void horizon_wiiu_audio_submit(void *handle, const float *stereo, uint32_t frame
+    if (audio == NULL || stereo == NULL || frames != audio->samples_per_frame) {
+       return;
+    }
++   if (audio->reported_milestones != (AUDIO_CALLBACK_SEEN | AUDIO_PCM_DELIVERED)) {
++      uint32_t seen = __atomic_load_n(&audio->callback_milestones, __ATOMIC_ACQUIRE);
++      uint32_t newly_seen = seen & ~audio->reported_milestones;
++      if (newly_seen & AUDIO_CALLBACK_SEEN) OSReport("Horizon AX first frame callback\n");
++      if (newly_seen & AUDIO_PCM_DELIVERED) OSReport("Horizon AX first nonzero PCM delivered to DSP rings\n");
++      audio->reported_milestones = seen;
++   }
+    const uint32_t write = __atomic_load_n(&audio->queue_write, __ATOMIC_RELAXED);
+    const uint32_t read = __atomic_load_n(&audio->queue_read, __ATOMIC_ACQUIRE);
+    if (write - read >= HORIZON_AUDIO_QUEUE_FRAMES) {
+       return;
+    }
+-   int16_t (*block)[2] = audio->queue[write % HORIZON_AUDIO_QUEUE_FRAMES];
++   uint32_t slot = write % HORIZON_AUDIO_QUEUE_FRAMES;
++   int16_t (*block)[2] = audio->queue[slot];
++   uint16_t signal = 0;
+    for (uint32_t i = 0; i < frames; ++i) {
+       block[i][0] = float_to_pcm16(stereo[i * 2u]);
+       block[i][1] = float_to_pcm16(stereo[i * 2u + 1u]);
++      signal |= (uint16_t)block[i][0] | (uint16_t)block[i][1];
+    }
++   audio->non_silent[slot] = signal != 0;
+    __atomic_store_n(&audio->queue_write, write + 1u, __ATOMIC_RELEASE);
+ }
+ 

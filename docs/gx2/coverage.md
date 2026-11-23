@@ -31,6 +31,22 @@ measurement source and label CPU spans separately from GPU execution time.
 The [physical baseline](physical-rc17-rc18.md) documents the initial
 streaming sample and serial capture gap.
 
+## RC 19 terrain changes
+
+The pinned RC 19 tree `21da4d482ccf24f67ad630c24beb2a96f9dd60b9` changes
+three parts of the existing terrain path. The first two remain independent
+of the visibility of any particular frame.
+
+| Stage | RC 19 source | Verification |
+| --- | --- | --- |
+| Indexed vertex upload | The indexed buffer uses 28 bytes per vertex. It preserves float positions, packed light and atlas UVs and stores tint and cutout in one normalized byte attribute. The diagnostic triangle list still uses its expanded format. | Host packing and native buffer lifecycle tests cover the layout. Compare the same terrain, alpha-cut foliage and lighting on both outputs. |
+| Mesh admission and upload | The Cafe scheduler charges its limit in sections, including completed meshes waiting to enter the upload queue. Deferred sections stay dirty for later admission in camera order. | Host tests cover burst admission, partial columns and camera changes. Track the queue as terrain becomes visible during repeated movement. |
+| Opaque and cutout visibility | The native path tests retained mesh bounds against each output's own projection and counts culled sections separately from submitted draws. Retained geometry stays resident for later views. | Host projection tests cover view differences, negative coordinates and conservative edge inclusion. HZP is the source for per-output counts and CPU submission times. Capture matched stationary and rotating hardware views before comparing performance. |
+
+The new terrain path does not add the selection outline, hand, crumbling,
+translucent terrain, animated terrain, world entities or atmospheric passes.
+The table below records those stages against the historical baseline.
+
 
 ## How a frame reaches GX2
 

@@ -1,0 +1,252 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 453990ab5e22eaa556cebd2d5bac90034a5411ee..084b080b88f9023690fd97aaf7eb8859068a6fa0 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -7,7 +7,7 @@ extern crate alloc;
+ use alloc::vec::Vec;
+ use horizon_terrain_data::TerrainVertex;
+ 
+-/// The native 40-byte GX2 terrain vertex shared by both submission paths.
++/// Expanded float terrain vertex for the triangle-list diagnostic.
+ /// Position includes the origin passed to [`expand_quads_into`]. The indexed
+ /// presenter keeps it section-relative and supplies the section origin at draw.
+ #[repr(C)]
+@@ -20,6 +20,22 @@ pub struct TerrainGpuVertex {
+ }
+ const _: () = assert!(core::mem::size_of::<TerrainGpuVertex>() == 40);
+ 
++/// Mapped indexed vertex for GX2. The color stream fetches four UNORM bytes:
++/// the original RGB channels followed by the cutout flag. Position, packed
++/// light and atlas UVs retain the float representation used by the shader.
++#[repr(C)]
++#[derive(Clone, Copy, Debug)]
++pub struct IndexedTerrainVertex {
++    pub position: [f32; 4],
++    pub uv: [f32; 2],
++    pub color_cutout: [u8; 4],
++}
++const _: () = {
++    assert!(core::mem::size_of::<IndexedTerrainVertex>() == 28);
++    assert!(core::mem::offset_of!(IndexedTerrainVertex, uv) == 16);
++    assert!(core::mem::offset_of!(IndexedTerrainVertex, color_cutout) == 24);
++};
++
+ /// Four affine clip-space rows uploaded to the GX2 vertex shader. The xyz
+ /// terms multiply section-local positions; w is the camera-relative origin.
+ #[derive(Clone, Copy, Debug, Default)]
+@@ -385,7 +401,7 @@ impl TerrainAtlasLayout {
+     pub fn write_quad_vertices(
+         &self,
+         source: &[TerrainVertex],
+-        output: &mut [core::mem::MaybeUninit<TerrainGpuVertex>],
++        output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
+     ) -> Result<(), &'static str> {
+         if source.len() % 4 != 0 || source.len() != output.len() {
+             return Err("GX2 terrain quad vertex count mismatch");
+@@ -393,11 +409,14 @@ impl TerrainAtlasLayout {
+         for (&source, dest) in source.iter().zip(output) {
+             let mut vertex = source;
+             self.remap_vertex(&mut vertex)?;
+-            let mut vertex_gpu = gpu_vertex(vertex, [0.0; 3]);
+-            // W is unused by the affine clip rows. Retain the exact packed light
+-            // without growing the native 40-byte vertex or touching the UVs.
+-            vertex_gpu.position[3] = f32::from(vertex.light);
+-            dest.write(vertex_gpu);
++            let [x, y, z] = vertex.pos;
++            let [r, g, b, _] = vertex.rgba();
++            let cutout = if vertex.layer & 0x8000 == 0 { u8::MAX } else { 0 };
++            dest.write(IndexedTerrainVertex {
++                position: [x, y, z, f32::from(vertex.light)],
++                uv: vertex.uv(),
++                color_cutout: [r, g, b, cutout],
++            });
+         }
+         Ok(())
+     }
+@@ -433,13 +452,6 @@ mod indexed_vertex_tests {
+     use super::*;
+     use core::mem::MaybeUninit;
+ 
+-    fn bits(vertex: TerrainGpuVertex) -> [u32; 10] {
+-        let [x, y, z, w] = vertex.position.map(f32::to_bits);
+-        let [r, g, b] = vertex.color.map(f32::to_bits);
+-        let [u, v] = vertex.uv.map(f32::to_bits);
+-        [x, y, z, w, r, g, b, u, v, vertex.cutout.to_bits()]
+-    }
+-
+     #[test]
+     fn indexing_maps_the_same_triangle_vertices_as_the_expanded_path() {
+         let atlas = TerrainAtlas::from_layers(&[0; 32], 2, 2).unwrap().layout;
+@@ -476,8 +488,12 @@ mod indexed_vertex_tests {
+                 let indexed = unsafe { output[index].assume_init() };
+                 assert_eq!(indexed.position[3], f32::from(source[index].light));
+                 expanded[i].position[3] = f32::from(source[index].light);
+-                assert_eq!(bits(indexed), bits(expanded[i]));
+-                assert_eq!(indexed.cutout, if index < 4 { 0.0 } else { 1.0 });
++                let [r, g, b, cutout] = indexed.color_cutout.map(|v| f32::from(v) / 255.0);
++                assert_eq!(indexed.position, expanded[i].position);
++                assert_eq!([r, g, b], expanded[i].color);
++                assert_eq!(indexed.uv.map(f32::to_bits), expanded[i].uv.map(f32::to_bits));
++                assert_eq!(cutout, expanded[i].cutout);
++                assert_eq!(cutout, if index < 4 { 0.0 } else { 1.0 });
+             }
+         }
+         let mut next = 0;
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 76c4c051f24af98c5fe4be9ecb3e4a7c5afcb2c2..7d1b569f8fefa9047fce456dbd9d569f2a9e242f 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -17,7 +17,9 @@
+ 
+ #include "terrain_buffers.h"
+ 
+-_Static_assert(sizeof(HorizonTerrainVertex) == 40, "terrain vertex ABI changed");
++_Static_assert(sizeof(HorizonTerrainVertex) == 28, "terrain vertex ABI changed");
++_Static_assert(offsetof(HorizonTerrainVertex, uv) == 16, "terrain UV offset changed");
++_Static_assert(offsetof(HorizonTerrainVertex, color_cutout) == 24, "terrain color offset changed");
+ struct HorizonGx2Terrain {
+    uint8_t *atlas_storage;
+    WHBGfxShaderGroup shader;
+@@ -147,9 +149,8 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+       result = -3; goto fail;
+    }
+    if (!WHBGfxInitShaderAttribute(&t->shader, "aPosition", 0, offsetof(HorizonTerrainVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
+-       !WHBGfxInitShaderAttribute(&t->shader, "aColor", 0, offsetof(HorizonTerrainVertex, color), GX2_ATTRIB_FORMAT_FLOAT_32_32_32) ||
++       !WHBGfxInitShaderAttribute(&t->shader, "aColor", 0, offsetof(HorizonTerrainVertex, color_cutout), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aUv", 0, offsetof(HorizonTerrainVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+-       !WHBGfxInitShaderAttribute(&t->shader, "aCutout", 0, offsetof(HorizonTerrainVertex, cutout), GX2_ATTRIB_FORMAT_FLOAT_32) ||
+        !WHBGfxInitFetchShader(&t->shader)) goto fail;
+    stage = "atlas surface";
+    result = create_texture(&t->texture, width, height, &t->atlas_storage);
+@@ -239,9 +240,8 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    GX2SetViewport(x, y, width, height, 0, 1); GX2SetScissor(x, y, width, height);
+    GX2SetFetchShader(&t->shader.fetchShader);
+    GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+-   GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color));
++   GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
+    GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
+-   GX2RSetAttributeBuffer(&s->buffer, 3, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, cutout));
+    GX2SetVertexTexture(&t->lightmap, t->lightmap_slot);
+    GX2SetVertexSampler(&t->lightmap_sampler, t->lightmap_slot);
+    GX2SetPixelTexture(&t->texture, t->sampler_slot); GX2SetPixelSampler(&t->sampler, t->sampler_slot);
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 4fb6fe0d8fb0399c88fa94c14bf6c9c76bfcdec7..dde4201711d802d905fdc45b6061a00cdb2b489d 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -4,9 +4,8 @@
+ 
+ typedef struct HorizonTerrainVertex {
+    float position[4];
+-   float color[3];
+    float uv[2];
+-   float cutout;
++   uint8_t color_cutout[4];
+ } HorizonTerrainVertex;
+ typedef struct HorizonGx2Terrain HorizonGx2Terrain;
+ typedef struct HorizonGx2TerrainSection HorizonGx2TerrainSection;
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index 9a272f1f0c5bdd9059dab17fae5bf130d08a007d..e17485ae83f8022b4719dbd818d87a5c628d0e6a 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -1,8 +1,7 @@
+ #version 330
+ layout(location = 0) in vec4 aPosition;
+-layout(location = 1) in vec3 aColor;
++layout(location = 1) in vec4 aColor;
+ layout(location = 2) in vec2 aUv;
+-layout(location = 3) in float aCutout;
+ uniform sampler2D uLightmap;
+ uniform vec4 uClipX;
+ uniform vec4 uClipY;
+@@ -22,9 +21,9 @@ void main() {
+     float packedLight = aPosition.w;
+     vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
+     vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
+-    vColor = aColor * textureLod(uLightmap, lightUv, 0.0).rgb;
++    vColor = aColor.rgb * textureLod(uLightmap, lightUv, 0.0).rgb;
+     vUv = aUv;
+-    vCutout = aCutout;
++    vCutout = aColor.a;
+     vec3 relative = local + uSectionOrigin.xyz;
+     vFogDistance = vec2(length(relative), max(length(relative.xz), abs(relative.y)));
+ }
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index f76f4ff14ccf35c7d65707f54dbae6268c37e8dd..6e902ce8310ac402494086130ac4f3e1200def53 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -164,7 +164,7 @@ static void check_upload_lifetimes(void)
+    float old_x = -1.5f, new_x = 4.5f;
+    HorizonGx2TerrainSection *original;
+    assert(horizon_gx2_terrain_section_create(&original, 4, fill, &old_x, &bytes) == 0);
+-   assert(sections == 1 && buffers == 1 && fills == 1 && bytes == 192 && !mapped);
++   assert(sections == 1 && buffers == 1 && fills == 1 && bytes == 128 && !mapped);
+ 
+    HorizonGx2TerrainSection *replacement = original;
+    assert(horizon_gx2_terrain_section_create(&replacement, 5, fill, &new_x, &bytes) == -1);
+@@ -188,7 +188,7 @@ static void check_upload_lifetimes(void)
+    assert(((HorizonTerrainVertex *)original->buffer.buffer)[0].position[0] == old_x);
+ 
+    assert(horizon_gx2_terrain_section_create(&replacement, 4, fill, &new_x, &bytes) == 0);
+-   assert(bytes == 192 && sections == 2 && buffers == 2 && !mapped);
++   assert(bytes == 128 && sections == 2 && buffers == 2 && !mapped);
+    horizon_gx2_terrain_section_destroy(original);
+    assert(sections == 1 && buffers == 1 && waits == 1);
+    assert(((HorizonTerrainVertex *)replacement->buffer.buffer)[0].position[0] == new_x);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index e9021589666395353f0dedf5b88c04bbef2abb56..c48f0bee7ed1d40172b9250ba25efdceaf329ca2 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -27,7 +27,7 @@ use horizon_client::{
+ };
+ use horizon_optifine::cit::Factor;
+ use horizon_wiiu_gx2_terrain::{
+-    TerrainAtlasLayout, TerrainClipRows, TerrainGpuVertex, terrain_view_rows,
++    IndexedTerrainVertex, TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
+ };
+ use horizon_wiiu_platform::hud::{CitSlot, horizon::HorizonPresenter};
+ use std::{
+@@ -206,7 +206,7 @@ extern "C" {
+     fn horizon_gx2_terrain_section_create(
+         out: *mut *mut c_void,
+         count: u32,
+-        fill: unsafe extern "C" fn(*mut c_void, *mut MaybeUninit<TerrainGpuVertex>, u32) -> i32,
++        fill: unsafe extern "C" fn(*mut c_void, *mut MaybeUninit<IndexedTerrainVertex>, u32) -> i32,
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
+@@ -469,7 +469,7 @@ struct TerrainUpload<'a> {
+ 
+ unsafe extern "C" fn fill_terrain_vertices(
+     context: *mut c_void,
+-    vertices: *mut MaybeUninit<TerrainGpuVertex>,
++    vertices: *mut MaybeUninit<IndexedTerrainVertex>,
+     count: u32,
+ ) -> i32 {
+     // SAFETY: the native upload borrows the context only for this call.
+@@ -478,7 +478,7 @@ unsafe extern "C" fn fill_terrain_vertices(
+     if vertices.is_null()
+         || !vertices.is_aligned()
+         || count != upload.source.len()
+-        || count > isize::MAX as usize / std::mem::size_of::<TerrainGpuVertex>()
++        || count > isize::MAX as usize / std::mem::size_of::<IndexedTerrainVertex>()
+     {
+         upload.error = Some("GX2 terrain vertex mapping is invalid");
+         return -1;
+@@ -1250,7 +1250,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             census.vertex_allocation_bytes += section.allocation_bytes as usize;
+         }
+         census.quads = census.vertices / 4;
+-        census.vertex_payload_bytes = census.vertices * std::mem::size_of::<TerrainGpuVertex>();
++        census.vertex_payload_bytes = census.vertices * std::mem::size_of::<IndexedTerrainVertex>();
+         Some(census)
+     }
+ 
+@@ -1415,7 +1415,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         let native = NonNull::new(native).ok_or("GX2 section returned a null resource")?;
+         cafe_profile::count(
+             Counter::UploadBytes,
+-            mesh.solid.len() * std::mem::size_of::<TerrainGpuVertex>(),
++            mesh.solid.len() * std::mem::size_of::<IndexedTerrainVertex>(),
+         );
+         // Publish only after the upload succeeds. The previous section can
+         // still be drawn if allocation, mapping or conversion fails.

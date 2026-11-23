@@ -1,0 +1,183 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 084b080b88f9023690fd97aaf7eb8859068a6fa0..6261fadbd652734d8e5daced719d1e78c6dca319 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -36,6 +36,31 @@ const _: () = {
+     assert!(core::mem::offset_of!(IndexedTerrainVertex, color_cutout) == 24);
+ };
+ 
++/// A local-space bound measured from the actual retained mesh. Block models
++/// can extend beyond the nominal coordinates of their 16-block section.
++#[derive(Clone, Copy, Debug)]
++pub struct TerrainBounds {
++    min: [f32; 3],
++    max: [f32; 3],
++}
++
++impl TerrainBounds {
++    pub fn from_vertices(vertices: &[TerrainVertex]) -> Option<Self> {
++        let first = vertices.first()?.pos;
++        let mut bounds = Self { min: first, max: first };
++        for vertex in vertices {
++            for (axis, position) in vertex.pos.into_iter().enumerate() {
++                if !position.is_finite() {
++                    return None;
++                }
++                bounds.min[axis] = bounds.min[axis].min(position);
++                bounds.max[axis] = bounds.max[axis].max(position);
++            }
++        }
++        Some(bounds)
++    }
++}
++
+ /// Four affine clip-space rows uploaded to the GX2 vertex shader. The xyz
+ /// terms multiply section-local positions; w is the camera-relative origin.
+ #[derive(Clone, Copy, Debug, Default)]
+@@ -44,6 +69,30 @@ pub struct TerrainClipRows {
+ }
+ 
+ impl TerrainClipRows {
++    /// Conservatively reject a bound wholly outside a homogeneous clip plane.
++    /// Use the same affine rows as the shader, including the output aspect and
++    /// the camera pose. The wider -W near plane is safe for forward-Z cameras
++    /// with a zero-based depth range.
++    pub fn may_intersect(&self, bounds: TerrainBounds) -> bool {
++        let [x, y, z, w] = self.rows;
++        for (axis, sign) in [(x, 1.0), (x, -1.0), (y, 1.0), (y, -1.0), (z, 1.0), (z, -1.0)] {
++            let mut maximum = w[3] + sign * axis[3];
++            let mut error = w[3].abs() + axis[3].abs();
++            for i in 0..3 {
++                let coefficient = w[i] + sign * axis[i];
++                let support = if coefficient < 0.0 { bounds.min[i] } else { bounds.max[i] };
++                maximum += coefficient * support;
++                error += (w[i].abs() + axis[i].abs()) * bounds.min[i].abs().max(bounds.max[i].abs());
++            }
++            // Bound the f32 dot product rounding on both CPU and shader.
++            // Unordered/non-finite values fall through to submission.
++            if maximum.is_finite() && maximum < -8.0 * f32::EPSILON * error.max(1.0) {
++                return false;
++            }
++        }
++        true
++    }
++
+     pub fn transform(&self, position: [f32; 3]) -> [f32; 4] {
+         self.rows
+             .map(|row| row[0] * position[0] + row[1] * position[1] + row[2] * position[2] + row[3])
+@@ -124,6 +173,57 @@ pub fn terrain_clip_rows(
+ mod clip_rows_tests {
+     use super::{terrain_clip_rows, TerrainClipRows};
+ 
++    fn bounds(min: [f32; 3], max: [f32; 3]) -> super::TerrainBounds {
++        super::TerrainBounds { min, max }
++    }
++
++    fn projection(aspect: f32) -> TerrainClipRows {
++        super::terrain_view_rows(
++            [
++                [1.0, 0.0, 0.0, 0.0],
++                [0.0, 1.0, 0.0, 0.0],
++                [0.0, 0.0, 1.0, 0.0],
++                [0.0, 0.0, 0.0, 1.0],
++            ],
++            1.0,
++            aspect,
++            -100.0 / 99.95,
++            -5.0 / 99.95,
++        )
++    }
++
++    #[test]
++    fn clip_rejects_only_wholly_outside_retained_bounds() {
++        let clip = projection(1.0);
++        assert!(clip.may_intersect(bounds([-1.0, -1.0, -3.0], [1.0, 1.0, -2.0])));
++        assert!(clip.may_intersect(bounds([-3.0, 0.0, -2.0], [-2.0, 1.0, -2.0])));
++        assert!(clip.may_intersect(bounds([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])));
++        assert!(!clip.may_intersect(bounds([-4.0, 0.0, -2.0], [-3.0, 1.0, -2.0])));
++        assert!(!clip.may_intersect(bounds([-1.0, -1.0, 1.0], [1.0, 1.0, 2.0])));
++        assert!(!clip.may_intersect(bounds([-1.0, -1.0, -120.0], [1.0, 1.0, -110.0])));
++    }
++
++    #[test]
++    fn narrow_gamepad_view_and_wide_tv_view_can_disagree() {
++        let local = bounds([-0.25, 0.0, 0.0], [0.25, 0.25, 0.25]);
++        let origin = [3.0, 0.0, -2.0];
++        assert!(projection(2.0).with_origin(origin).may_intersect(local));
++        assert!(!projection(1.0).with_origin(origin).may_intersect(local));
++    }
++
++    #[test]
++    fn mesh_bounds_include_overhanging_models_and_reject_invalid_geometry() {
++        use super::{TerrainBounds, TerrainVertex};
++        let vertex = |pos| TerrainVertex::new(pos, [0.0; 2], 0, 0, 0);
++        let bound = TerrainBounds::from_vertices(&[
++            vertex([-0.5, 0.0, 0.0]),
++            vertex([16.25, 18.0, 16.0]),
++        ]).unwrap();
++        assert_eq!(bound.min, [-0.5, 0.0, 0.0]);
++        assert_eq!(bound.max, [16.25, 18.0, 16.0]);
++        assert!(TerrainBounds::from_vertices(&[vertex([f32::NAN, 0.0, 0.0])]).is_none());
++    }
++
+     #[test]
+     fn posed_view_projects_the_local_position_and_section_origin() {
+         let view = [
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index c48f0bee7ed1d40172b9250ba25efdceaf329ca2..c5d1ba8154c8229a7862b8617f339959dfa5bdfb 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -451,6 +451,7 @@ fn panorama_vertices(
+ }
+ 
+ struct TerrainSection {
++    bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+     native: NonNull<c_void>,
+     vertex_count: u32,
+     allocation_bytes: u32,
+@@ -1425,6 +1426,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                 native,
+                 vertex_count,
+                 allocation_bytes,
++                bounds: horizon_wiiu_gx2_terrain::TerrainBounds::from_vertices(&mesh.solid),
+             },
+         );
+         set_translucent_terrain_omitted(
+@@ -1553,8 +1555,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.profile.projection_ns.saturating_add(elapsed_ns(start));
+                 }
+                 let mut indices = 0usize;
++                let mut sections_drawn = 0usize;
+                 for (&key, section) in &draw.presenter.sections {
+-                    indices += section.vertex_count as usize / 4 * 6;
+                     let Some(projection) = projection.as_ref() else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+@@ -1562,6 +1564,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     let origin = projection.section_origin(key);
+                     let clip_rows = projection.clip_rows(origin);
++                    if section.bounds.is_some_and(|bounds| !clip_rows.may_intersect(bounds)) {
++                        continue;
++                    }
++                    indices += section.vertex_count as usize / 4 * 6;
++                    sections_drawn += 1;
+                     let [x, y, z] = origin.map(|value| value as f32);
+                     let section_origin = [x, y, z, 0.0];
+                     if let Some(start) = projection_start {
+@@ -1604,14 +1611,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     }
+                 }
+                 cafe_profile::count(Counter::Indices, indices);
++                cafe_profile::count(Counter::SectionDraws, sections_drawn);
+             }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;
+             };
+-            if !draw.frame.title && draw.presenter.terrain.is_some() {
+-                cafe_profile::count(Counter::SectionDraws, draw.presenter.sections.len());
+-            }
+             cafe_profile::count(Counter::HudVertices, draw.frame.hud.vertices.len());
+             let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             if let Err(error) = unsafe {

@@ -1,0 +1,273 @@
+diff --git a/crates/horizon-client-render/src/assets.rs b/crates/horizon-client-render/src/assets.rs
+index 04b264007b6b02ee52555d3995897d23a604ae17..8fe4e46a357085d17b412ae314707ed1183641f7 100644
+--- a/crates/horizon-client-render/src/assets.rs
++++ b/crates/horizon-client-render/src/assets.rs
+@@ -399,14 +399,20 @@ impl RenderAssets {
+         draws: bool,
+         parsed: Option<crate::model_library::ParsedModels>,
+     ) -> Result<Self> {
++        use crate::spans::startup;
+         let registry = assets.registry;
+-        let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
+-        for name in MATERIALS {
+-            sprites.insert(&format!("minecraft:block/{name}"))?;
+-        }
+-        if draws {
+-            for id in root.runtime_block_sprites() {
+-                sprites.insert(id)?;
++        let mut sprites = startup::time("core.sprite_cache_open", || {
++            crate::sprites::Sprites::with_disk_cache(root)
++        });
++        {
++            let _step = startup::step("core.initial_sprites");
++            for name in MATERIALS {
++                sprites.insert(&format!("minecraft:block/{name}"))?;
++            }
++            if draws {
++                for id in root.runtime_block_sprites() {
++                    sprites.insert(id)?;
++                }
+             }
+         }
+         // A server draws no block and no item: its block models (about 24 MB
+@@ -422,7 +428,9 @@ impl RenderAssets {
+         // Connected-texture rules find their faces by sprite layer: what they match by name keeps a
+         // layer of its own, decided before the models insert their textures.
+         let ctm_rules = if draws {
+-            horizon_optifine::ctm::load(root.source())
++            startup::time("core.connected_texture_rules", || {
++                horizon_optifine::ctm::load(root.source())
++            })
+         } else {
+             Vec::new()
+         };
+@@ -512,14 +520,18 @@ impl RenderAssets {
+         if draws {
+             emissive = crate::native_emissive::load_optifine(root.source(), &mut sprites);
+         }
+-        sprites.save_disk_cache();
+-        if draws {
+-            sprites.finish();
+-        } else {
+-            sprites.finish_without_pixels();
+-        }
+-        // `finish` grows the buffer by doubling: keep only the bytes in use.
+-        sprites.pixels.shrink_to_fit();
++        startup::time("core.sprite_cache_save", || sprites.save_disk_cache());
++        startup::time("core.sprite_atlas_finish", || {
++            if draws {
++                sprites.finish();
++            } else {
++                sprites.finish_without_pixels();
++            }
++            // `finish` grows the buffer by doubling: keep only the bytes in use.
++            sprites.pixels.shrink_to_fit();
++        });
++        #[cfg(target_os = "cafe")]
++        horizon_core::prepared_files::log_io_totals("block_models_sprites");
+         let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+         Ok(Self {
+             sprite_size: sprites.size,
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index b942b2009d70a63ea43eb92a3fa939a93695f2ee..0a1254d969c546e7b37a178bfb8264d61e3c7ea8 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -1252,6 +1252,7 @@ impl HudAtlas {
+         full: bool,
+         mod_image: bool,
+     ) -> Result<Self> {
++        let discovery = crate::spans::startup::step("ui.atlas_discovery");
+         let textures = "assets/minecraft/textures";
+         let mut files = Vec::new();
+         for folder in folders {
+@@ -1477,6 +1478,8 @@ impl HudAtlas {
+         };
+         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
+         let chunk = files.len().div_ceil(threads).max(1);
++        drop(discovery);
++        let decoding = crate::spans::startup::step("ui.atlas_decode");
+         let decoded: Vec<_> = std::thread::scope(|scope| {
+             let handles: Vec<_> = files
+                 .chunks(chunk)
+@@ -1489,6 +1492,8 @@ impl HudAtlas {
+                 .flat_map(|h| h.join().unwrap_or_default())
+                 .collect()
+         });
++        drop(decoding);
++        let assemble = crate::spans::startup::step("ui.atlas_assemble");
+         let mut flags = HashMap::new();
+         let mut gui_sizes = HashMap::new();
+         let mut animated: Vec<String> = Vec::new();
+@@ -1709,6 +1714,8 @@ impl HudAtlas {
+         let white = sprites["horizon/white"];
+         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
+         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
++        drop(assemble);
++        let _font = crate::spans::startup::step("ui.atlas_font");
+         let font = crate::font::Font::load_over(
+             root,
+             defaults,
+diff --git a/crates/horizon-client-render/src/sprite_cache.rs b/crates/horizon-client-render/src/sprite_cache.rs
+index d7d9ea025c7eff5dc84c56fead1c40e3790ae4d6..0f0682edd7f695598448e18d1178306858a8546b 100644
+--- a/crates/horizon-client-render/src/sprite_cache.rs
++++ b/crates/horizon-client-render/src/sprite_cache.rs
+@@ -37,28 +37,49 @@ pub(crate) struct SpriteCache {
+     fingerprint: u64,
+     entries: HashMap<String, Decoded>,
+     dirty: bool,
++    #[cfg(target_os = "cafe")]
++    cache_hits: std::sync::atomic::AtomicU32,
++    #[cfg(target_os = "cafe")]
++    cache_misses: std::sync::atomic::AtomicU32,
+ }
+ 
+ impl SpriteCache {
+     /// The cache of `root`: its stored entries when still valid, else empty.
+     /// `None` when the textures cannot be fingerprinted (no caching then).
+     pub fn open(root: &ResourceRoot) -> Option<Self> {
+-        let fingerprint = root.source().fingerprint_under("assets", &["textures"])?;
++        use crate::spans::startup;
++        let fingerprint = startup::time("core.sprite_cache_fingerprint", || {
++            root.source().fingerprint_under("assets", &["textures"])
++        })?;
+         fs::create_dir_all(root.cache()).ok()?;
+         let path = root.cache().join(FILE);
+-        let entries = fs::read(&path)
++        let entries = startup::time("core.sprite_cache_read", || fs::read(&path))
+             .ok()
+-            .and_then(|bytes| parse(&bytes, fingerprint))
++            .and_then(|bytes| startup::time("core.sprite_cache_parse", || parse(&bytes, fingerprint)))
+             .unwrap_or_default();
+         Some(Self {
+             path,
+             fingerprint,
+             entries,
+             dirty: false,
++            #[cfg(target_os = "cafe")]
++            cache_hits: std::sync::atomic::AtomicU32::new(0),
++            #[cfg(target_os = "cafe")]
++            cache_misses: std::sync::atomic::AtomicU32::new(0),
+         })
+     }
+     pub fn get(&self, name: &str) -> Option<&Decoded> {
+-        self.entries.get(name)
++        let entry = self.entries.get(name);
++        #[cfg(target_os = "cafe")]
++        {
++            let count = if entry.is_some() {
++                &self.cache_hits
++            } else {
++                &self.cache_misses
++            };
++            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        }
++        entry
+     }
+     pub fn insert(&mut self, name: &str, decoded: Decoded) {
+         self.entries.insert(name.to_owned(), decoded);
+@@ -66,6 +87,14 @@ impl SpriteCache {
+     }
+     /// Write new entries; a failure only costs the next launch the decoding.
+     pub fn save(&mut self) {
++        #[cfg(target_os = "cafe")]
++        log::info!(
++            "Horizon sprite cache: hits={} misses={} entries={} dirty={}",
++            self.cache_hits.load(std::sync::atomic::Ordering::Relaxed),
++            self.cache_misses.load(std::sync::atomic::Ordering::Relaxed),
++            self.entries.len(),
++            self.dirty
++        );
+         if !self.dirty {
+             return;
+         }
+diff --git a/crates/horizon-client/src/game/runtime/resource_tables.rs b/crates/horizon-client/src/game/runtime/resource_tables.rs
+index ee73abfa5fdaaa46c4ce33d6a4e0366c7020865b..4c43f41aab9e4bf15fcc7f9bc07b462d55b107e2 100644
+--- a/crates/horizon-client/src/game/runtime/resource_tables.rs
++++ b/crates/horizon-client/src/game/runtime/resource_tables.rs
+@@ -168,6 +168,8 @@ impl UiResources {
+             let atlas = startup::time("ui.atlas", || {
+                 HudAtlas::build_over_with_image(root, root, mod_image)
+             });
++            #[cfg(target_os = "cafe")]
++            horizon_core::prepared_files::log_io_totals("ui_atlas");
+             let panorama = panorama
+                 .join()
+                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index dcbfa87b2bdb99ef076873e7138888d702ac4622..c9d662005819f073842bb5ebb9106ead8986bdbf 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -41,6 +41,52 @@ macro_rules! prepared_trace {
+     ($($arg:tt)*) => {{}};
+ }
+ 
++#[cfg(target_os = "cafe")]
++mod cafe_io {
++    use crate::AtomicU64;
++    use std::sync::atomic::Ordering::Relaxed;
++
++    pub(super) static ARCHIVE_OPENS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static DISK_FALLBACKS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static ENTRY_HITS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static ENTRY_MISSES: AtomicU64 = AtomicU64::new(0);
++    pub(super) static READS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static SMALL_READS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static READ_BYTES: AtomicU64 = AtomicU64::new(0);
++
++    pub(super) fn count(counter: &AtomicU64) {
++        counter.fetch_add(1, Relaxed);
++    }
++
++    pub(super) fn read(bytes: usize) {
++        count(&READS);
++        if bytes <= 4096 {
++            count(&SMALL_READS);
++        }
++        READ_BYTES.fetch_add(bytes as u64, Relaxed);
++    }
++
++    pub(super) fn log_totals(stage: &str) {
++        log::info!(
++            "Horizon prepared I/O: stage={stage} archive_opens={} disk_fallbacks={} entry_hits={} entry_misses={} reads={} small_reads={} read_bytes={}",
++            ARCHIVE_OPENS.load(Relaxed),
++            DISK_FALLBACKS.load(Relaxed),
++            ENTRY_HITS.load(Relaxed),
++            ENTRY_MISSES.load(Relaxed),
++            READS.load(Relaxed),
++            SMALL_READS.load(Relaxed),
++            READ_BYTES.load(Relaxed),
++        );
++    }
++}
++
++/// Emit process-wide prepared resource I/O counts at a startup phase boundary.
++/// The read counters describe successful archive reads through this adapter.
++#[cfg(target_os = "cafe")]
++pub fn log_io_totals(stage: &str) {
++    cafe_io::log_totals(stage);
++}
++
+ /// The file, in the prepared folder's root.
+ pub const FILE_NAME: &str = "horizon-data.bin";
+ /// The file it checks its preparation against.
+@@ -516,6 +562,8 @@ pub fn files_under(dir: &Path) -> Option<Vec<String>> {
+ /// a header, without reading the whole file.
+ pub fn read_head(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+     read_prepared(path, max).unwrap_or_else(|| {
++        #[cfg(target_os = "cafe")]
++        cafe_io::count(&cafe_io::DISK_FALLBACKS);
+         let mut bytes = Vec::new();
+         io::Read::read_to_end(&mut io::Read::take(File::open(path)?, max), &mut bytes)?;
+         Ok(bytes)
+@@ -724,7 +772,10 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+     let _held = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+     let mut file = file;
+     file.seek(io::SeekFrom::Start(offset))?;
+-    file.read_exact(buf)
++    file.read_exact(buf)?;
++    #[cfg(target_os = "cafe")]
++    cafe_io::read(buf.len());
++    Ok(())
+ }
+ 
+ #[cfg(test)]

@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "a3b8adf93fb9dffb1de3407b7f29511c55038bfd9bfd230d4842d76790b020b8",
-  "output_tree": "100a09ec72dfa47c10ce6119d557b77232fbdcd8",
+  "output_tree": "21da4d482ccf24f67ad630c24beb2a96f9dd60b9",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -166,6 +166,42 @@
       "sha256": "e04ad6728c4c2f4d9c8febba2d56da317ee41bdbfe7f0f15079586b5ef2fb482",
       "input_tree": "b463d2ea314e619a20062424402a618a33c2711e",
       "output_tree": "100a09ec72dfa47c10ce6119d557b77232fbdcd8"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0027-cafe-ax-output-milestones.patch",
+      "sha256": "c6d6e7c8c9bb8b444663051fe9ef0ead1370c64e1ea50c979d885ac4c8eba8b1",
+      "input_tree": "100a09ec72dfa47c10ce6119d557b77232fbdcd8",
+      "output_tree": "159dfe1c8389035e6abc55722e0a51656347ea85"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0028-cafe-packed-gx2-vertex-color.patch",
+      "sha256": "ec481a13bb933e2ceb3a46162d05eceadea53d4271c13d5a7afcd96808ac3c78",
+      "input_tree": "159dfe1c8389035e6abc55722e0a51656347ea85",
+      "output_tree": "dcf13d33ec20192daf948798a24425562710e2b1"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0029-bound-cafe-section-upload-backlog.patch",
+      "sha256": "e0504a09bdc394a0025de0b44584db7188199a39fe2ed6bbee4a51fea71cc50d",
+      "input_tree": "dcf13d33ec20192daf948798a24425562710e2b1",
+      "output_tree": "bee61108c7ca48ae6b6527f5a373a9d8a98304fc"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0030-cull-invisible-cafe-sections.patch",
+      "sha256": "396777366620ace6b01f049a7f26695beef27a09fe878440ee4d9523ea2fa345",
+      "input_tree": "bee61108c7ca48ae6b6527f5a373a9d8a98304fc",
+      "output_tree": "3ac9834d424fc13c44ae1a1a79cb7e7a2f60a504"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0031-profile-cafe-resource-preparation.patch",
+      "sha256": "881e57b17e489a8accb7b532e8cddf627800a1208574eed98c381a51d400918d",
+      "input_tree": "3ac9834d424fc13c44ae1a1a79cb7e7a2f60a504",
+      "output_tree": "72e078f314d240eac414d96147e2000f49e6dd5f"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0032-test-cafe-camera-and-streaming-transitions.patch",
+      "sha256": "7e15728763276843cfbae00e60f4afcaf41ed56b26b645e6ea89d9833cc52e95",
+      "input_tree": "72e078f314d240eac414d96147e2000f49e6dd5f",
+      "output_tree": "21da4d482ccf24f67ad630c24beb2a96f9dd60b9"
     }
   ],
   "candidate": {
