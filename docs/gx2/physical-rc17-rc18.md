@@ -84,7 +84,56 @@ save again returned to Night and left MCP reachable. Both sessions finished
 with 234,880,920 bytes free in the GX2 bulk heap. Live Rust allocations after
 the two game drops were 44,416,253 and 44,452,519 bytes. First world entry
 took 911.213 seconds and reopening took 826.288 seconds in this Cemu
-interpreter run. The physical save and reopen gate remains pending.
+interpreter run.
+
+## Exact RC 18 physical acceptance
+
+The verified RC 18 WUHB passed the Aroma loader and entered Night on TV and
+GamePad. The console's public CA matched its displayed SHA-256 fingerprint.
+GamePad-approved native HTTPS MCP confirmed the client version and prepared
+Minecraft 26.3 resources before a separate gameplay grant.
+
+The disposable fixture rendered on both outputs and responded to GamePad
+input. After terrain streaming and server ticks had advanced, the test
+changed the player position and requested Save & Quit through MCP. Serial
+reported the save barrier complete and Night returned. The bulk heap
+recovered to 234,880,920 bytes free, and native MCP still returned version
+information in Night. The fixture reopened at the exact saved position. The
+owner left the reopened fixture running. No filesystem fatal, out-of-range
+seek, or fatal memory condition was observed in the capture through
+verification. The physical save and reopen gate passed.
+
+| RC 18 hardware startup span | First entry | Reopen in the same process |
+| --- | ---: | ---: |
+| First original game frame with world ready | 472.381 s | 461.281 s |
+| UI atlas | 44.923 s | 46.116 s |
+| Core total | 235.982 s | 234.599 s |
+| Block models and sprites, inside core | 222.808 s | 223.128 s |
+| Model baking, inside block models and sprites | 6.234 s | 6.098 s |
+| World preload | 80.906 s | 58.493 s |
+| Integrated-server world open | 24.016 s | 24.271 s |
+| Recipe synchronization | 26.761 s | 27.156 s |
+
+Spans overlap. Model baking began more than 206 seconds into the composite
+block-model and sprite span on first entry. On reopen that span still took
+223 seconds. The largest phase remains in the warm path and needs
+instrumented hardware timing below the composite span.
+
+At distance 12 the first session's streaming sample showed 12.38 FPS,
+172 client chunks and 656 renderer uploads pending. A reopen sample showed
+26.74 FPS, 637 client chunks and 532 renderer uploads pending. The camera
+moved during the test. These samples establish the streaming workload,
+while steady-state frame-time percentiles remain unmeasured.
+
+Neither TV nor GamePad speakers played footsteps in the hardware test.
+MCP counted sand footstep events with an empty decoder and mixer. The RC 18
+startup log reported an empty sound registry. The verified prepared archive
+omits `assets/minecraft/sounds.json` and the runtime treats ordinary archive
+misses as definitive. That masks the separately imported loose registry,
+even though the loose Ogg files exist. A focused host repair test recovered
+the stock registry and all five sand footstep files through the
+archive-backed lookup. AX delivery and speaker output still require a native
+validation run with that repair.
 
 ## RC 17 performance evidence
 
