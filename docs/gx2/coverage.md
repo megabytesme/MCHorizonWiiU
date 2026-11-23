@@ -33,9 +33,10 @@ streaming sample and serial capture gap.
 
 ## RC 19 terrain changes
 
-The pinned RC 19 tree `21da4d482ccf24f67ad630c24beb2a96f9dd60b9` changes
-three parts of the existing terrain path. The first two remain independent
-of the visibility of any particular frame.
+The RC 19 terrain patches first assembled as tree
+`21da4d482ccf24f67ad630c24beb2a96f9dd60b9`. They change three parts of the
+existing terrain path. The first two remain independent of the visibility
+of any particular frame.
 
 | Stage | RC 19 source | Verification |
 | --- | --- | --- |

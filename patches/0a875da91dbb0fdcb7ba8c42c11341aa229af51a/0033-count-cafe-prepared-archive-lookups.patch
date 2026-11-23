@@ -1,0 +1,53 @@
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index c9d66200..da39b193 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -370,7 +370,11 @@ fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>>
+         None
+     } else {
+         match PreparedFiles::open(root) {
+-            Ok(files) => files.map(Arc::new),
++            Ok(files) => files.map(|files| {
++                #[cfg(target_os = "cafe")]
++                cafe_io::count(&cafe_io::ARCHIVE_OPENS);
++                Arc::new(files)
++            }),
+             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+             Err(e) => {
+                 eprintln!("Horizon: {} not used: {e}", root.join(FILE_NAME).display());
+@@ -504,6 +508,12 @@ fn read_prepared(path: &Path, max: u64) -> Option<io::Result<Vec<u8>>> {
+         return None;
+     }
+     let entry = files.read_head(&relative, max);
++    #[cfg(target_os = "cafe")]
++    cafe_io::count(if entry.is_some() {
++        &cafe_io::ENTRY_HITS
++    } else {
++        &cafe_io::ENTRY_MISSES
++    });
+     match entry {
+         None if relative != SOUND_REGISTRY => Some(Err(io::ErrorKind::NotFound.into())),
+         entry => entry,
+@@ -515,7 +525,11 @@ fn read_prepared(path: &Path, max: u64) -> Option<io::Result<Vec<u8>>> {
+ /// model data. The separately imported sound registry may appear on disk
+ /// after the archive was written.
+ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+-    read_prepared(path, u64::MAX).unwrap_or_else(|| fs::read(path))
++    read_prepared(path, u64::MAX).unwrap_or_else(|| {
++        #[cfg(target_os = "cafe")]
++        cafe_io::count(&cafe_io::DISK_FALLBACKS);
++        fs::read(path)
++    })
+ }
+ 
+ /// The files under `dir` (a folder of a prepared root) and its subfolders, as
+@@ -768,6 +782,9 @@ fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+ #[cfg(not(any(unix, windows)))]
+ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+     use std::io::Seek;
++    if buf.is_empty() {
++        return Ok(());
++    }
+     static LOCK: Mutex<()> = Mutex::new(());
+     let _held = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+     let mut file = file;
