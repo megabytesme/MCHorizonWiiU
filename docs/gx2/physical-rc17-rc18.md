@@ -152,7 +152,8 @@ unavailable. The codec reported `MemError`, panicked, and CafeOS recorded
 an illegal-instruction exception. This is a separate memory-pressure
 failure during the open session. The first manual Save & Quit and reopen
 still passed. The trace contains no second manual save or second durable
-save barrier. The console was left in its observed state.
+save barrier. CafeOS later reported an automatic power-down and a transition
+to standby. The serial continuation preserved both records without a gap.
 
 ## RC 17 performance evidence
 
