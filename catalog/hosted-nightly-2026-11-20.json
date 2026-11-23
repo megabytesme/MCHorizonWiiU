@@ -8,7 +8,7 @@
     "inventory_sha256": "a959d259ed1d49f69e53a9fa3355c19fa3bbf4be9ce7235fc44dbbb41016f8d8"
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
-  "cargo_lock_sha256": "91edb8041298e7e364716a0bc58fea9285362039be3078d264aed9433ddba643",
+  "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
   "output_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699",
   "series": [
     {
