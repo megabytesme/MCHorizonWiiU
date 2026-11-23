@@ -61,6 +61,31 @@ truncation. See the [WUT probe](../../wiiu/fs/probe) for the independent
 primitive checks. Release acceptance requires a physical save, return to
 Night, reopen, and verification of the persisted fixture change.
 
+## Exact RC 18 emulator acceptance
+
+Two isolated native builds matched for RPX, WUHB, Cargo lock and source and
+build receipts. The WUHB contains the exact RPX. The Aroma code-heap
+estimate, including compressed relocations, leaves 13,167,104 bytes of
+headroom. The assembled source tree is
+`b463d2ea314e619a20062424402a618a33c2711e`. The RPX SHA-256 is
+`3417cec7f12389e715266c115ad31e9bf701e1b8c0586515658e3b900a025792`.
+
+Cemu ran this exact build with the disposable fixture at distance 12. The
+initial test moved the player while the server still reported terrain
+loading. Save & Quit returned to Night, but reopening and direct NBT
+inspection both showed the previous player position. The cause of the
+early-input discrepancy remains unverified.
+
+The completed retry waited for the world clock and terrain streaming to
+advance, then moved the player. Both displays showed gameplay. The first
+save completed, Night and HTTPS MCP returned, and the saved NBT record
+contained the new position. Reopening reported that same position. A second
+save again returned to Night and left MCP reachable. Both sessions finished
+with 234,880,920 bytes free in the GX2 bulk heap. Live Rust allocations after
+the two game drops were 44,416,253 and 44,452,519 bytes. First world entry
+took 911.213 seconds and reopening took 826.288 seconds in this Cemu
+interpreter run. The physical save and reopen gate remains pending.
+
 ## RC 17 performance evidence
 
 | Captured startup span | Duration |
@@ -106,5 +131,8 @@ unmeasured.
 
 RC 17 was linked with the AX implementation enabled. The stock mixer has
 separate TV and GamePad routes in the AX voice device mix. Audible gameplay
-was absent in the physical observation. That observation alone cannot
-distinguish source events, PCM delivery, AX routing and output volume.
+was absent in the physical observation. The MCP sample recorded a sand
+footstep and ambient events while reporting zero decoded clips and zero
+active mixer channels. Stock audio files were present on the SD and game
+volume categories were enabled. Successful voice allocation, callback
+delivery and output from each speaker still require separate checks.
