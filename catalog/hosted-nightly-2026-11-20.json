@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "feb8ec29686d09a44cb6616284bde1ebf18492ad",
+  "output_tree": "518a0b8ee1d83e6e3ef259699725a95914076707",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -418,6 +418,12 @@
       "sha256": "24cc7e7dadd9560098bdef80c90a143fafca61056c2345f53df413a6a866c1c6",
       "input_tree": "c4a11dd3605e7c32686bad2c9d912caec1caaf93",
       "output_tree": "feb8ec29686d09a44cb6616284bde1ebf18492ad"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0069-skip-unused-gx2-terrain-stream-bindings.patch",
+      "sha256": "6f540d169a2eb65c0f16d806d0d4bff55395373afa4254a85559528d6eacdc0c",
+      "input_tree": "feb8ec29686d09a44cb6616284bde1ebf18492ad",
+      "output_tree": "518a0b8ee1d83e6e3ef259699725a95914076707"
     }
   ],
   "candidate": {

@@ -199,7 +199,9 @@ comparison and retain matching output captures outside the timed window.
    conditions using `cafe_performance` for the independent A/B readings.
    Use an empty `gx2-profile.enable` marker for the candidate's normal
    binding and a marker containing `2` for the matched per-section reference.
-   Keep the world and resolution identical for the two binding arms. Follow
+   For the RC 28 terrain stream comparison, marker `3` restores the two
+   redundant buffer binds while keeping per-pass state binding. Keep the
+   world and resolution identical within each comparison. Follow
    the [capture setup](benchmarks.md) for collection and decoding.
 3. Exercise the existing RC 21 distance-12 regression setup. Verify terrain
    convergence, GamePad touch and controls, audible AX playback, foreground
@@ -235,6 +237,15 @@ and 678 µs of CPU submission time. Binding once per pass took 354 and
 readbacks using the split binding API. Completion waits were outside the
 timed spans. The result qualifies the command reduction on this fixture.
 Matched world frame time and hardware benefit remain pending.
+
+The pinned WHB fetch shader reads all three indexed terrain attributes
+from stream 0 at byte offsets 0, 24 and 16. RC 28 binds only that stream
+per draw. In a second forced-interpreter fixture, all eight output
+comparisons matched their expected pixels with three draws and 30 indices
+per output in each arm. The legacy arm bound all three streams on each
+draw. Across both outputs, 128 draws took 117–169 µs of submission time
+with the redundant binds and 88–109 µs with a single bind per draw.
+The isolated result leaves the physical timing impact open.
 
 ## Hosted benchmark
 

@@ -1,0 +1,138 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index d624a0f4c2c338fe14638862e8051ec0f44510db..de4a71b59751ed7a95df2448fa9eb71815dd008e 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -41,6 +41,7 @@ struct HorizonGx2Terrain {
+    GX2RBuffer quad_indices;
+    uint32_t quad_index_allocation_bytes;
+    int shader_loaded;
++   bool legacy_attributes;
+ };
+ static const GX2RResourceFlags texture_flags = GX2R_RESOURCE_BIND_TEXTURE |
+    GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+@@ -159,6 +160,11 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+        !WHBGfxInitShaderAttribute(&t->shader, "aColor", 0, offsetof(HorizonTerrainVertex, color_cutout), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aUv", 0, offsetof(HorizonTerrainVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+        !WHBGfxInitFetchShader(&t->shader)) goto fail;
++   // All three vertex inputs read the interleaved buffer at stream zero.
++   if (t->shader.numAttributes != 3 || t->shader.attributes[0].buffer != 0 ||
++       t->shader.attributes[1].buffer != 0 || t->shader.attributes[2].buffer != 0) {
++      result = -3; goto fail;
++   }
+    stage = "atlas surface";
+    result = create_texture(&t->texture, width, height, &t->atlas_storage);
+    if (result) goto fail;
+@@ -321,6 +327,11 @@ int horizon_gx2_terrain_bind(HorizonGx2Terrain *t, uint32_t target_width, uint32
+    return 0;
+ }
+ 
++void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool enabled)
++{
++   terrain->legacy_attributes = enabled;
++}
++
+ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                                   const float clip_rows[16], const float section_origin[4])
+ {
+@@ -332,8 +343,10 @@ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSectio
+       GX2SetVertexUniformReg(t->clip_offsets[row], 4, &clip_rows[row * 4]);
+    GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
+    GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+-   GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
+-   GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
++   if (t->legacy_attributes) {
++      GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
++      GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
++   }
+    if (translucent)
+       GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
+                       s->sorted_indices.elemCount, 0, 0, 1);
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 225b0d4410fdbee1193b9eee599c4dce3b364991..e7bd76ee25f7e7bde3881bfa77cbf63ba481f197 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -54,6 +54,8 @@ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_
+ /* Draw a bound vertex stream made of canonical four-vertex quads. */
+ void horizon_gx2_terrain_draw_quads(HorizonGx2Terrain *terrain, uint32_t vertex_count);
+ void horizon_gx2_terrain_wait_idle(void);
++/* Restore redundant stream writes for matched measurements on the render thread. */
++void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool enabled);
+ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ /* Caller has completed every submitted use of this section. */
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 352d88fa449084b9fa7b02f30964df90eeacfee0..b9f39cbe234103fa5abec979f08d1bbcef3c661c 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -50,7 +50,7 @@ static ProfileFrame ring[CAPACITY], current;
+ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+-static bool recording, legacy_pacing, legacy_terrain_bindings;
++static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+@@ -73,10 +73,12 @@ void horizon_gx2_profile_init(void)
+    const int mode = fgetc(marker);
+    legacy_pacing = mode == '1';
+    legacy_terrain_bindings = mode == '2';
++   legacy_terrain_attributes = mode == '3';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
++   if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -89,6 +91,11 @@ bool horizon_gx2_profile_legacy_terrain_bindings(void)
+    return legacy_terrain_bindings;
+ }
+ 
++bool horizon_gx2_profile_legacy_terrain_attributes(void)
++{
++   return legacy_terrain_attributes;
++}
++
+ bool horizon_gx2_profile_begin(uint32_t phase)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 726b4dce931fe715103e4a70de692506f6b0ee79..d57297631ae3a8a957b561c96994f7f3c305ee60 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -20,6 +20,7 @@ enum {
+ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
++bool horizon_gx2_profile_legacy_terrain_attributes(void);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 07437754acc3805f3cd0c08f209cf947219ffdc3..e50ee0b63dddc8050f99a8535cf144082ffb541a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -216,6 +216,8 @@ extern "C" {
+         context: *mut c_void,
+     ) -> i32;
+     fn horizon_gx2_terrain_set_sprite_grid(terrain: *mut c_void, columns: u32, cell_size: u32) -> i32;
++    fn horizon_gx2_terrain_set_legacy_attributes(terrain: *mut c_void, enabled: bool);
++    fn horizon_gx2_profile_legacy_terrain_attributes() -> bool;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+     fn horizon_gx2_terrain_section_create(
+@@ -1455,6 +1457,12 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             {
+                 return Err("GX2 terrain rejected its sprite grid".into());
+             }
++            unsafe {
++                horizon_gx2_terrain_set_legacy_attributes(
++                    native.as_ptr(),
++                    horizon_gx2_profile_legacy_terrain_attributes(),
++                );
++            }
+             self.terrain = Some(terrain);
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
