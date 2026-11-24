@@ -247,6 +247,23 @@ draw. Across both outputs, 128 draws took 117–169 µs of submission time
 with the redundant binds and 88–109 µs with a single bind per draw.
 The isolated result leaves the physical timing impact open.
 
+## Gameplay GPU timing probe
+
+The physical [RC 26 timing trials](physical-rc26.md#physical-gpu-timing-probe)
+qualified the top and bottom cycle counter on isolated raster loads. RC 28
+adds opt-in sampling for the hosted gameplay path with `4` in
+`gx2-profile.enable`. Each output is bracketed after its WHB clear and before
+its scan copy. The reader checks completion at the existing WHB frame fence
+and adds no waits. Unverified retirement or an invalid counter pair disables
+the probe for that process. A forced-interpreter fixture exercised the
+normal paired present function and confirmed rejection of Cemu's sentinel.
+
+When valid, serial reports the per-output spans in raw ticks, the nominal
+27 MHz clock and the HZP3 sequence once every two seconds. Intermittent CPU
+submission can leave GPU idle time between the markers. The spans still
+need physical gameplay, foreground and scale-transition trials before use
+as a DRS input.
+
 ## Hosted benchmark
 
 Open **Settings → Benchmark** in Night, choose a scenario, then use

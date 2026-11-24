@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "de0a4e11a44f8283cc9d28de28bf6e6c7ea165c5",
+  "output_tree": "ad7a0a4d2ae0f7074d0ff1dd5f414e0ee25c20f7",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -430,6 +430,12 @@
       "sha256": "27cf3089fe1c9032274bbd05b4747ca013be3a031c54a2cd60885b350200b213",
       "input_tree": "518a0b8ee1d83e6e3ef259699725a95914076707",
       "output_tree": "de0a4e11a44f8283cc9d28de28bf6e6c7ea165c5"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0071-sample-gx2-gameplay-pipeline-spans.patch",
+      "sha256": "9e84e6137a10e3055ca9cdb1f778696158124640a056ba883f3c2136c1aaa8c6",
+      "input_tree": "de0a4e11a44f8283cc9d28de28bf6e6c7ea165c5",
+      "output_tree": "ad7a0a4d2ae0f7074d0ff1dd5f414e0ee25c20f7"
     }
   ],
   "candidate": {

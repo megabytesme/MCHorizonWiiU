@@ -1,0 +1,164 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index b382142..0ea5795 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,4 +1,5 @@
+ #include "gx2_profile.h"
++#include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/time.h>
+ #include <gx2/event.h>
+@@ -30,6 +31,21 @@ enum {
+ #define ROOT "/vol/external01/wiiu/apps/HorizonWiiU/"
+ #define CAPTURE ROOT "gx2-profile.hzp"
+ 
++// WUT exports these Cafe APIs without prototypes. The aligned 64-bit
++// destination and 27 MHz counter were qualified in the separate hardware probe.
++extern void GX2SampleTopGPUCycle(uint64_t *destination);
++extern void GX2SampleBottomGPUCycle(uint64_t *destination);
++
++typedef struct {
++   _Alignas(64) uint64_t value;
++} GpuCycleSlot;
++
++_Static_assert(sizeof(GpuCycleSlot) == 64, "isolate GPU sample cache lines");
++
++static GpuCycleSlot gpu_slots[2][2];
++static bool gpu_cycle_probe;
++static OSTime gpu_before, gpu_report_at;
++
+ typedef struct {
+    uint32_t sequence, phase, start_hi, start_lo, loop_ticks, pacing_ticks;
+    uint32_t stages[STAGES], counters[COUNTERS];
+@@ -74,11 +90,13 @@ void horizon_gx2_profile_init(void)
+    legacy_pacing = mode == '1';
+    legacy_terrain_bindings = mode == '2';
+    legacy_terrain_attributes = mode == '3';
++   gpu_cycle_probe = mode == '4';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+    if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
++   if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -96,6 +114,59 @@ bool horizon_gx2_profile_legacy_terrain_attributes(void)
+    return legacy_terrain_attributes;
+ }
+ 
++bool horizon_gx2_profile_gpu_begin(void)
++{
++   if (!gpu_cycle_probe || !recording || current.phase != PLAYING_PHASE) return false;
++   gpu_before = GX2GetLastSubmittedTimeStamp();
++   return true;
++}
++
++void horizon_gx2_profile_gpu_marker(uint32_t target, bool end)
++{
++   GpuCycleSlot *slot = &gpu_slots[target][end];
++   slot->value = UINT64_MAX;
++   DCFlushRange(slot, sizeof(*slot));
++   if (end) GX2SampleBottomGPUCycle(&slot->value);
++   else GX2SampleTopGPUCycle(&slot->value);
++}
++
++static uint64_t gpu_slot_read(GpuCycleSlot *slot)
++{
++   DCInvalidateRange(slot, sizeof(*slot));
++   return *(volatile uint64_t *)&slot->value;
++}
++
++void horizon_gx2_profile_gpu_finish(uint32_t outputs)
++{
++   // WHB has already flushed and called GX2DrawDone for the presented frame.
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   if (submitted <= gpu_before || GX2GetRetiredTimeStamp() < submitted) {
++      // Leave the static slots alone for the rest of this process.
++      gpu_cycle_probe = false;
++      OSReport("Horizon GX2 GPU samples unavailable: submission not verified retired\n");
++      return;
++   }
++   if (outputs != 3) return;
++
++   uint64_t spans[2];
++   for (unsigned target = 0; target < 2; ++target) {
++      const uint64_t top = gpu_slot_read(&gpu_slots[target][0]);
++      const uint64_t bottom = gpu_slot_read(&gpu_slots[target][1]);
++      if (!top || bottom == UINT64_MAX || bottom <= top) {
++         gpu_cycle_probe = false;
++         OSReport("Horizon GX2 GPU samples unavailable: invalid GPU cycle pair\n");
++         return;
++      }
++      spans[target] = bottom - top;
++   }
++
++   const OSTime now = OSGetSystemTime();
++   if (now < gpu_report_at) return;
++   gpu_report_at = now + OSMillisecondsToTicks(2000);
++   OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu\n",
++            total, (unsigned long long)spans[0], (unsigned long long)spans[1]);
++}
++
+ bool horizon_gx2_profile_begin(uint32_t phase)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 969ce96..1577d2d 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -21,6 +21,9 @@ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
++bool horizon_gx2_profile_gpu_begin(void);
++void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
++void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 528652f..ea921a5 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -159,6 +159,7 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxBeginRender();
+    const OSTime flip_wait = OSGetTime() - wait_start;
+    horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
++   const bool gpu_sample = horizon_gx2_profile_gpu_begin();
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
+@@ -166,9 +167,11 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxBeginRenderTV();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_TV, stage_stamp);
++   if (gpu_sample) horizon_gx2_profile_gpu_marker(0, false);
+    if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+        horizon_swkbd_draw(0) != 0) result = -2;
+    else last_outputs |= 1u;
++   if (gpu_sample) horizon_gx2_profile_gpu_marker(0, true);
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stage_stamp);
+@@ -180,9 +183,11 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxBeginRenderDRC();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_DRC, stage_stamp);
++   if (gpu_sample) horizon_gx2_profile_gpu_marker(1, false);
+    if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+        horizon_swkbd_draw(1) != 0) result = -3;
+    else last_outputs |= 2u;
++   if (gpu_sample) horizon_gx2_profile_gpu_marker(1, true);
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderDRC();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stage_stamp);
+@@ -195,6 +200,7 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
++   if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
+    if (result == 0) {
+       ++completed_presents;
+       horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
