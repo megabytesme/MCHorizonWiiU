@@ -94,6 +94,12 @@ same-binary comparison, set the marker's first byte to ASCII `1` to
 restore the previous 16 ms Poll sleep. Use the empty marker for normal WHB
 pacing. Both leave the established save and WaitUntil delays in place.
 
+The RC 28 source also writes `gx2-profile-session.hzp` after a hosted
+session with presented gameplay returns to Night. The snapshot is taken
+after teardown and before Night can overwrite that gameplay in the ring.
+The unchanged final capture still describes the newest rows at application
+close. Collect the session checkpoint before subsequent test sessions.
+
 ```powershell
 python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summary
 ```

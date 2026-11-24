@@ -1,0 +1,57 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 424d219c9b519c73667831a37f0e4e2eca206ef6..6262ad96706c39ef79a2d51d2b506abd8e03bdb3 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -4,6 +4,10 @@ use std::sync::{Mutex, OnceLock};
+ 
+ use super::{CafeLoadingStatus, CafeRunOutcome, Gx2LoadingPresenter, LoadingHost, CAFE_APP_ROOT};
+ 
++unsafe extern "C" {
++    fn horizon_gx2_profile_checkpoint_session();
++}
++
+ #[path = "night_mcp.rs"]
+ pub(super) mod mcp;
+ 
+@@ -188,6 +192,9 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         log::error!("Cafe did not restore the launcher working directory: {error}");
+     }
+     horizon_client_platform::cafe_memory::report("hosted.after_game_drop");
++    // The foreground thread still owns the recorder. Save the last played
++    // session before Night's presentation cadence can fill the ring again.
++    unsafe { horizon_gx2_profile_checkpoint_session() };
+     result
+ }
+ 
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 352d88fa449084b9fa7b02f30964df90eeacfee0..2043eee99bab009d8d6f33d5917aba1b3b948530 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -268,6 +268,17 @@ static void flush_to(const char *path, const char *temporary)
+    OSReport("Horizon GX2 capture complete: frames=%u total=%u path=%s\n", info.count, total, path);
+ }
+ 
++void horizon_gx2_profile_checkpoint_session(void)
++{
++   static uint32_t previous_session_presents;
++   const uint32_t presents = phase_frames[PLAYING_PHASE];
++   if (presents == previous_session_presents) return;
++   previous_session_presents = presents;
++   flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
++   previous_phase = 0;
++   previous_output.phase = 0;
++}
++
+ void horizon_gx2_profile_flush(void)
+ {
+    flush_to(CAPTURE, CAPTURE ".tmp");
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 726b4dce931fe715103e4a70de692506f6b0ee79..4e93f5cf4fc5da8fd403d4d34d615b5c361f1d3b 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -32,4 +32,5 @@ void horizon_gx2_profile_world(uint32_t requested, uint32_t effective,
+ void horizon_gx2_profile_sorted_index_bytes(uint32_t bytes);
+ void horizon_gx2_profile_finish(void);
+ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
++void horizon_gx2_profile_checkpoint_session(void);
+ void horizon_gx2_profile_flush(void);
