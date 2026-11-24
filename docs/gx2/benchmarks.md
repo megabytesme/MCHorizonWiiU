@@ -177,7 +177,7 @@ data or authentication material.
 
 ## Live Cafe measurements
 
-The RC 21 game-status response includes `cafe_performance` after a completed
+The internal Cafe `status` response includes `cafe_performance` after a completed
 two-second window. The session-relative end timestamp, window length and
 sample age accompany each response. Loading, title, gameplay and menus use
 separate windows. A phase transition clears the previous sample until the new
@@ -189,8 +189,14 @@ one hosted session. `span_ms` is the elapsed window, `paired_hz` is the paired
 submission rate, and output, worker and flip counters count events within
 that window. `partial` is the count of paired submissions with omitted work.
 CPU time is averaged per built frame. Pacing and world records appear when
-their samples are available. Authenticated `cafe_performance` still returns
-the complete JSON window.
+their samples are available.
+
+The RC 26 source also returns the complete JSON window and `cafe_graphics`
+from the existing authenticated `game_state` tool. The HTTPS path keeps its
+existing GamePad consent and scopes. Set
+`MCHORIZON_CEMU_REQUIRE_CAFE_PERFORMANCE=1` for the disposable Cemu HTTPS
+gameplay suite to require paired gameplay submissions and world dimensions
+in that response.
 
 | Field | Measurement |
 |---|---|

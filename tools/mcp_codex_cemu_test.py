@@ -135,6 +135,27 @@ def run_game(invoke, window, client_name):
         play_and_save(invoke, window, client_name, index, Path(evidence) if evidence else None)
 
 
+def wait_for_cafe_performance(invoke):
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        reply = invoke("game_state")
+        game = json.loads(reply["content"][0]["text"])
+        window = game.get("cafe_performance")
+        outputs = window.get("world_resolution") if window else None
+        if outputs and window["phase"] == "gameplay" and window["paired_submissions"]:
+            assert window["window_ms"] >= 2000
+            assert window["partial_paired_submissions"] + window["complete_paired_submissions"] == (
+                window["paired_submissions"]
+            )
+            assert outputs["effective_scale"] in range(50, 101)
+            assert isinstance(outputs["dynamic_timing_available"], bool)
+            assert all(len(outputs[name]) == 2 and min(outputs[name]) > 0 for name in ("tv", "gamepad"))
+            print("Authenticated game_state returned Cafe cadence and both world resolutions.", flush=True)
+            return game
+        time.sleep(2)
+    raise RuntimeError("Authenticated game_state returned no paired Cafe gameplay window")
+
+
 def play_and_save(invoke, window, client_name, index, evidence):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -212,6 +233,9 @@ def play_and_save(invoke, window, client_name, index, evidence):
             time.sleep(0.5)
         else:
             print(f"Cemu did not record both display screenshots for session {index}.", flush=True)
+
+    if os.environ.get("MCHORIZON_CEMU_REQUIRE_CAFE_PERFORMANCE") == "1":
+        game = wait_for_cafe_performance(invoke)
 
     quit_reply = invoke("game_quit")
     # Launcher read tools remain callable while the original game saves.

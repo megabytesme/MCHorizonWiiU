@@ -1,0 +1,56 @@
+diff --git a/crates/horizon-client/src/game/runtime/agent/mod.rs b/crates/horizon-client/src/game/runtime/agent/mod.rs
+index 23b27c5addabb55324781b547b2094d27d472206..bfff9a4b9e2d66ca41e8f9fc75bf0977bd2aaf98 100644
+--- a/crates/horizon-client/src/game/runtime/agent/mod.rs
++++ b/crates/horizon-client/src/game/runtime/agent/mod.rs
+@@ -587,6 +587,8 @@ impl Game<'_> {
+         self.repro
+             .fill_summary(&mut input, self.input_trace.events());
+         state["input"] = input;
++        #[cfg(target_os = "cafe")]
++        self.add_cafe_state(&mut state);
+         state
+     }
+ 
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 98472cad88d4506e9eea6acf9a843915592cb51a..17f00bb5c8635843a7758a73a2742682c1b82531 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1545,6 +1545,21 @@ impl Game<'_> {
+         json!({ "ok": true, "players": players })
+     }
+ 
++    #[cfg(target_os = "cafe")]
++    pub(super) fn add_cafe_state(&self, state: &mut Value) {
++        let sample = self.cafe_performance.latest.as_ref();
++        state["cafe_performance"] =
++            json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
++        let graphics = &self.settings.horizon;
++        state["cafe_graphics"] = json!({
++            "preset": graphics.preset.name(),
++            "configured_scale": graphics.resolution_scale,
++            "dynamic_resolution": graphics.dynamic_resolution,
++            "dynamic_timing_available": false,
++            "target_fps": graphics.target_fps,
++        });
++    }
++
+     pub(super) fn control_status(&self) -> Value {
+         let player = self.player.as_ref().map(|p| {
+             json!({
+@@ -1733,15 +1748,7 @@ impl Game<'_> {
+             let sample = self.cafe_performance.latest.as_ref();
+             status["fps"] = json!(sample.map(|sample| sample.paired_fps()));
+             status["frames"] = json!(self.cafe_performance.presented);
+-            status["cafe_performance"] =
+-                json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
+-            status["cafe_graphics"] = json!({
+-                "preset": self.settings.horizon.preset.name(),
+-                "configured_scale": self.settings.horizon.resolution_scale,
+-                "dynamic_resolution": self.settings.horizon.dynamic_resolution,
+-                "dynamic_timing_available": false,
+-                "target_fps": self.settings.horizon.target_fps,
+-            });
++            self.add_cafe_state(&mut status);
+         }
+         status["lod"] = lod;
+         // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
