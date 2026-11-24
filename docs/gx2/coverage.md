@@ -48,6 +48,19 @@ The new terrain path does not add the selection outline, hand, crumbling,
 translucent terrain, animated terrain, world entities or atmospheric passes.
 The table below records those stages against the historical baseline.
 
+## RC 20 terrain ownership
+
+The hosted Nightly patch series keeps the 28-byte indexed layout and the
+separate TV and GamePad frustum tests. Geometry uses one shared pool of
+resident sections. Visibility controls draw submission and helps rank eviction
+candidates across both views.
+
+| Allocation | Lifetime and limits | Verification |
+| --- | --- | --- |
+| Completed CPU meshes | A 24 MiB byte budget covers completed meshes through the worker mailbox, pending upload queue and return to the mesh pool. Individual meshing jobs in progress remain count limited. | Host tests cover concurrent reservations and release. Cemu recorded at most 2,167,516 queued CPU bytes in the three-session ownership run. |
+| Native vertex backing | Published indexed vertex buffers are capped at 128 MiB. Admission checks both the total bulk-heap reserve and the largest contiguous block. Lower-priority sections can regenerate when their view priority rises. | A 2 MiB native stress build stayed within its diagnostic cap and evicted resident sections at render distance 12. The fixture saved and returned to Night while the admission queue was deferring meshes. |
+| GPU retirement | Superseded and removed buffers wait for GPU completion in batches. The next existing terrain wait can retire a batch. World exit clears residents, pending retirement and deferred keys before releasing the surface. | The 2 MiB stress save and all three sessions of the regular test recovered 234,880,920 free bulk-heap bytes in Cemu. Hardware still needs a sustained distance-12 run with both outputs. |
+
 
 ## How a frame reaches GX2
 
