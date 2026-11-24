@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "128e4ccd37c0d2dd36ca5d71c7a55cc4146bf699",
+  "output_tree": "ed1a17dc74e6f6d7b9612e2c498eb31367af294c",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -256,6 +256,12 @@
       "sha256": "70a7e4401d09b9c663f548800d85f175a51989feee601681888cfff8c7815cad",
       "input_tree": "234d0e0c1f1c154717acc23ffe41f517413d11f7",
       "output_tree": "128e4ccd37c0d2dd36ca5d71c7a55cc4146bf699"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0042-route-cafe-controller-focus-without-desktop-window.patch",
+      "sha256": "b8df632c15268a02a17d5317d4e0fe98a048d3c4e620260ade9a9848678cecb2",
+      "input_tree": "128e4ccd37c0d2dd36ca5d71c7a55cc4146bf699",
+      "output_tree": "ed1a17dc74e6f6d7b9612e2c498eb31367af294c"
     }
   ],
   "candidate": {

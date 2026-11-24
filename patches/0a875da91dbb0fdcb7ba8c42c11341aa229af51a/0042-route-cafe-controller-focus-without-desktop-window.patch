@@ -1,0 +1,64 @@
+diff --git a/crates/horizon-client/src/game/interface/pad_menu.rs b/crates/horizon-client/src/game/interface/pad_menu.rs
+index df497fd3ece9a96ca5869a71a7fda702e9a7f43a..240aa71d363c2ac21685220b5bab64b8919de599 100644
+--- a/crates/horizon-client/src/game/interface/pad_menu.rs
++++ b/crates/horizon-client/src/game/interface/pad_menu.rs
+@@ -352,12 +352,14 @@ impl Game<'_> {
+     }
+ 
+     pub(super) fn gui_batch(&self) -> Option<HudBatch> {
+-        self.renderer.as_ref().map(|r| {
+-            HudBatch::new(
+-                [r.config.width, r.config.height],
+-                self.settings.gui_scale_inputs(),
+-            )
+-        })
++        #[cfg(target_os = "cafe")]
++        let viewport = self.cafe_viewport;
++        #[cfg(not(target_os = "cafe"))]
++        let viewport = self
++            .renderer
++            .as_ref()
++            .map(|r| [r.config.width, r.config.height])?;
++        Some(HudBatch::new(viewport, self.settings.gui_scale_inputs()))
+     }
+ 
+     /// Focus drives the open screen: every menu but inventories and
+@@ -569,12 +571,18 @@ impl Game<'_> {
+         self.pad.menu.glide = Some((self.cursor, to, Instant::now()));
+     }
+ 
++    fn pad_window_id(&self) -> Option<WindowId> {
++        #[cfg(target_os = "cafe")]
++        return Some(WindowId::dummy());
++        #[cfg(not(target_os = "cafe"))]
++        self.window.as_ref().map(|window| window.id())
++    }
++
+     /// Send the window a pointer move to `at` (GUI pixels), as the mouse would.
+     fn pad_pointer_to(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
+-        let (Some(window), Some(batch)) = (self.window.as_ref(), self.gui_batch()) else {
++        let (Some(id), Some(batch)) = (self.pad_window_id(), self.gui_batch()) else {
+             return;
+         };
+-        let id = window.id();
+         let at = (
+             at.0.clamp(0.0, batch.width - 1.0),
+             at.1.clamp(0.0, batch.height - 1.0),
+@@ -594,7 +602,7 @@ impl Game<'_> {
+     }
+ 
+     fn pad_pointer_button(&mut self, event_loop: &dyn EventLoopCtl, right: bool, pressed: bool) {
+-        let Some(id) = self.window.as_ref().map(|w| w.id()) else {
++        let Some(id) = self.pad_window_id() else {
+             return;
+         };
+         self.pad.menu.held[usize::from(right)] = pressed;
+@@ -695,7 +703,7 @@ impl Game<'_> {
+     fn pad_wheel(&mut self, event_loop: &dyn EventLoopCtl, x: f32, y: f32) {
+         // Another row can scroll under the armed button's rect.
+         self.pad.menu.armed = None;
+-        let Some(id) = self.window.as_ref().map(|w| w.id()) else {
++        let Some(id) = self.pad_window_id() else {
+             return;
+         };
+         self.pad_synthetic_event(
