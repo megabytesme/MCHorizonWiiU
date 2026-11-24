@@ -311,3 +311,22 @@ released, and Night returned to its reports screen with 234,880,920 free
 GX2 bulk-heap bytes. The result verifies entry, timing and failure teardown.
 Standard Village report generation and cancellation during a timed route
 remain open on the candidate.
+
+## RC 27 package verification
+
+Two isolated `build_cafe_game_isolated.sh --hosted-nightly` build directories
+produced matching RC 27 files from port commit
+`ac10de0c707ba0e4d121a532c0828a3cdd4619af` and assembled engine tree
+`c4a11dd3605e7c32686bad2c9d912caec1caaf93`. Both passed package verification.
+The WUHB contains the 37,490,077-byte RPX at offset 512.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| RPX | `fe252df4c48190a81cb5c0e2916aaa053aa7f64c37dee60cb052094af3395838` |
+| WUHB | `1bc6379335fcd92fcc780b6393a36af2da3feaa163f5e8597e89dd1cce2b5306` |
+
+The Aroma code-heap receipt estimates 12,952,640 bytes of headroom against
+the measured contiguous allocation baseline. The exact RPX reached Night's
+Profiles screen on both outputs in forced-interpreter Cemu. RC 27 remained
+a local package. Physical acceptance covered RC 26 and the standalone GX2
+probes. The newer RC 28 assembly passed the Cafe cross-check.
