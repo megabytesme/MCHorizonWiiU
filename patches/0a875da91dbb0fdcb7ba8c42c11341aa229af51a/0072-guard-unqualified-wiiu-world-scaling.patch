@@ -1,0 +1,179 @@
+diff --git a/crates/horizon-client-render/src/graphics.rs b/crates/horizon-client-render/src/graphics.rs
+index a9f9c1d74a78fec8a3e26bb177ab5c40cf293f1f..3c931a792b86c8c1759725e89193653deb08cfc3 100644
+--- a/crates/horizon-client-render/src/graphics.rs
++++ b/crates/horizon-client-render/src/graphics.rs
+@@ -5,8 +5,19 @@
+ use std::{fs, path::Path};
+ 
+ pub const FILE: &str = "horizon-graphics.txt";
+-/// Cafe renders directly at 100% and scales down its world surfaces.
++/// Cafe's saved world scale ranges up to its direct-rendering resolution.
+ pub const RESOLUTION_SCALE_MAX: u32 = if cfg!(target_os = "cafe") { 100 } else { 200 };
++
++/// Fixed scaling is restricted to disposable diagnostic runs pending Wii U qualification.
++/// The setting and presenter share this process-wide decision.
++#[cfg(target_os = "cafe")]
++pub fn cafe_experimental_world_scaling() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        Path::new("/vol/external01/wiiu/apps/HorizonWiiU/gx2-world-scale-experimental.enable")
++            .is_file()
++    })
++}
+ /// Written beside it before a window's HDR output is switched on, naming the graphics driver it
+ /// starts on ([`hdr_marker_text`]), and removed once the first HDR frame is presented. Found at
+ /// the next start, it means HDR output took the game down there: HDR output is held back on
+diff --git a/crates/horizon-client-render/src/graphics_ui.rs b/crates/horizon-client-render/src/graphics_ui.rs
+index ab3e4a434d263070fa60df66fffad5a42ceb0c0f..f4c5c794f8095abda5f6b66b476b829e22589b86 100644
+--- a/crates/horizon-client-render/src/graphics_ui.rs
++++ b/crates/horizon-client-render/src/graphics_ui.rs
+@@ -1184,11 +1184,21 @@ impl Item {
+     /// world, and UI Brightness nothing to change where HDR output shows a `shaders/` pack's
+     /// picture, the HUD in it, at paper white.
+     pub(crate) fn blocked(self, s: &Settings, out: &EffectiveOutput) -> Option<&'static str> {
++        #[cfg(target_os = "cafe")]
++        match self {
++            Item::Horizon(H::ResolutionScale) if !crate::graphics::cafe_experimental_world_scaling() => {
++                return Some("Wii U world scaling is awaiting hardware validation. The world is rendered at 100%.");
++            }
++            Item::Horizon(H::DynamicResolution | H::TargetFps) => {
++                return Some("Automatic resolution is awaiting Wii U gameplay timing validation.");
++            }
++            _ => {}
++        }
+         #[cfg(target_os = "cafe")]
+         if matches!(
+             self,
+             Item::Horizon(
+-                H::ResolutionScale | H::DynamicResolution | H::TargetFps | H::Antialiasing
++                H::Antialiasing
+                 | H::Upscaling | H::UpscalingSharpness | H::FrameGeneration | H::Hdr
+                 | H::HdrCalibrate | H::HdrBlackLevel | H::HdrPeak | H::HdrPaperWhite
+                 | H::HdrUiBrightness | H::HdrColorBoost | H::HdrLook | H::ShaderPacks
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 4672103fade28358edd6f0a941b127dc15650f8d..3750cab2929daacf869d20e1cc2c27a2751e12a7 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -7989,10 +7989,9 @@ impl Game<'_> {
+         elapsed: Duration,
+         backend: &mut dyn CafeGameBackend,
+     ) -> Result<bool> {
+-        backend.set_world_resolution_scale(frame_autotune::world_scale(
+-            &self.settings.horizon,
+-            &self.dynamic_resolution,
+-        ));
++        // Cafe uses the saved fixed scale for diagnostics. Automatic changes stay
++        // disabled until the offscreen renderer and gameplay timing are qualified.
++        backend.set_world_resolution_scale(self.settings.horizon.resolution_scale);
+         let mut built = false;
+         let block_entities = backend.block_entity_sections();
+         let rendered = self.render_to(
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 53ce4fa6f3d2472fd0ef6c01c88c434d3c3f3b79..f65bd893be120abe50ac4eaea889bb73aac3e76d 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1554,10 +1554,13 @@ impl Game<'_> {
+         state["cafe_performance"] =
+             json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
+         let graphics = &self.settings.horizon;
++        let experimental_scaling = horizon_client::graphics::cafe_experimental_world_scaling();
+         state["cafe_graphics"] = json!({
+             "preset": graphics.preset.name(),
+             "configured_scale": graphics.resolution_scale,
++            "scaling_mode": if experimental_scaling { "experimental_fixed" } else { "direct_fallback" },
+             "dynamic_resolution": graphics.dynamic_resolution,
++            "dynamic_resolution_active": false,
+             "dynamic_timing_available": false,
+             "target_fps": graphics.target_fps,
+         });
+@@ -1652,6 +1655,7 @@ impl Game<'_> {
+                     "terrain_camera": frames.terrain_camera,
+                     "omitted_pass_mask": frames.omitted_pass_mask,
+                     "partial_frames": frames.partial_frames,
++                "requested_scale": frames.world_resolution.map(|r| r.requested_scale),
+                 "effective_scale": frames.world_resolution.map(|r| r.effective_scale),
+                 "tv_world_width": frames.world_resolution.map(|r| r.dimensions[0][0]),
+                 "tv_world_height": frames.world_resolution.map(|r| r.dimensions[0][1]),
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index c6d28268f56203d3fa17212bc12e1c5613eec0e3..869e082fcf8e2b3b95058b62673c1904d22ff480 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1863,7 +1863,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         if frame.title {
+             self.world_scale.release();
+         } else {
+-            self.world_scale.prepare(self.requested_world_scale, targets);
++            self.world_scale.prepare(
++                self.requested_world_scale,
++                targets,
++                horizon_client::graphics::cafe_experimental_world_scaling(),
++            );
+             if let Some(world) = self.world_scale.resolution() {
+                 cafe_profile::world_resolution(
+                     world.requested_scale, world.effective_scale, world.dimensions, world.surface_bytes,
+diff --git a/wiiu/loading_host/world_scale.rs b/wiiu/loading_host/world_scale.rs
+index 468624a5c83edc949c985c8dd7e9977238712150..9e3110bbcd8230acff3fb952c0449182f87f403b 100644
+--- a/wiiu/loading_host/world_scale.rs
++++ b/wiiu/loading_host/world_scale.rs
+@@ -21,7 +21,7 @@ unsafe extern "C" {
+ #[derive(Default)]
+ pub(super) struct WorldScale {
+     native: Option<NonNull<c_void>>,
+-    request: Option<(u32, [[u32; 2]; 2])>,
++    request: Option<(u32, [[u32; 2]; 2], bool)>,
+     resolution: Option<WorldResolution>,
+ }
+ 
+@@ -30,9 +30,14 @@ impl WorldScale {
+         self.resolution
+     }
+ 
+-    pub(super) fn prepare(&mut self, requested_scale: u32, viewports: [[u32; 4]; 2]) {
++    pub(super) fn prepare(
++        &mut self,
++        requested_scale: u32,
++        viewports: [[u32; 4]; 2],
++        experimental_scaling: bool,
++    ) {
+         let base = viewports.map(|[_, _, w, h]| [w, h]);
+-        let request = Some((requested_scale, base));
++        let request = Some((requested_scale, base, experimental_scaling));
+         if self.request == request {
+             return;
+         }
+@@ -47,7 +52,9 @@ impl WorldScale {
+             surface_bytes: 0,
+         };
+         let percent = requested_scale.clamp(50, 100);
+-        if percent < 100 {
++        let mut mode = c"direct";
++        if percent < 100 && experimental_scaling {
++            mode = c"direct_allocation_fallback";
+             let dimensions = base.map(|size| size.map(|n| scaled_dimension(n, percent)));
+             let native = unsafe {
+                 horizon_gx2_world_scale_create(
+@@ -57,19 +64,23 @@ impl WorldScale {
+             };
+             self.native = NonNull::new(native);
+             if self.native.is_some() {
++                mode = c"experimental_fixed";
+                 resolution.effective_scale = percent;
+                 resolution.dimensions = dimensions;
+             }
++        } else if percent < 100 {
++            mode = c"direct_unqualified_fallback";
+         }
+         self.resolution = Some(resolution);
+         let [[tv_w, tv_h], [drc_w, drc_h]] = resolution.dimensions;
+         unsafe {
+             OSReport(
+-                c"Horizon GX2 world resolution requested_scale=%u effective_scale=%u tv=%ux%u drc=%ux%u surface_bytes=%u\n".as_ptr(),
++                c"Horizon GX2 world resolution requested_scale=%u effective_scale=%u tv=%ux%u drc=%ux%u surface_bytes=%u mode=%s\n".as_ptr(),
+                 resolution.requested_scale,
+                 resolution.effective_scale,
+                 tv_w, tv_h, drc_w, drc_h,
+                 resolution.surface_bytes,
++                mode.as_ptr(),
+             );
+         }
+     }

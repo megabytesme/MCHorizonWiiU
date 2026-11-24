@@ -247,6 +247,37 @@ draw. Across both outputs, 128 draws took 117–169 µs of submission time
 with the redundant binds and 88–109 µs with a single bind per draw.
 The isolated result leaves the physical timing impact open.
 
+## Temporary direct rendering on Wii U
+
+RC 29 keeps the saved resolution and the other preset values. An ordinary
+Cafe launch uses native-size world rendering for both outputs until offscreen
+rendering has passed hardware validation. The resolution report records the
+requested and effective scale, actual dimensions and allocation size. Serial
+uses `mode=direct_unqualified_fallback` when a lower saved scale is held back.
+The Graphics screen explains the 100% fallback and leaves the saved scale
+intact. Automatic resolution and its FPS control remain inactive.
+
+For a disposable fixed-scale test, create a file named
+`sd:/wiiu/apps/HorizonWiiU/gx2-world-scale-experimental.enable` before launching
+the application. This enables the Resolution Scale control and the original
+offscreen path without changing the preset or activating DRS. The test can
+select 50%, 75% or 100% with the other scene settings held fixed. Remove the
+marker before starting ordinary gameplay. Authenticated `cafe_graphics`
+reports the scaling mode and whether automatic resolution is active.
+
+The prepared `storage-v5` probe remains the first physical diagnostic. Its
+eight arms compare direct and scaled controls, depth-off, no color clear,
+context retention, a GPU-only copy, and state reset after clearing. The
+exact RPX `1599550c…` matched all 16 Cemu stills. Only a hardware run can
+determine whether any of these changes recovers the scaled pattern.
+
+The [independent offscreen reference](../../wiiu/diagnostics/gx2-offscreen-reference/README.md)
+is ready for the same hardware session if `storage-v5` still shows green.
+It samples a known WHB GamePad target into the TV and exercises a manually
+allocated color-only target with a dedicated context. RPX `38514e9c…`
+passed 40 RGB comparisons across 10 Cemu stills. It performs no CPU
+framebuffer readback.
+
 ## Gameplay GPU timing probe
 
 The physical [RC 26 timing trials](physical-rc26.md#physical-gpu-timing-probe)

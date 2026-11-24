@@ -82,7 +82,7 @@ fn native_scale_preserves_native_hud_extent_and_retires_surfaces() {
     let viewports = [[1, 2, 1280, 719], [0, 0, 854, 480]];
     let clear = [0.0, 0.0, 0.0, 1.0];
     let mut scale = world_scale::WorldScale::default();
-    scale.prepare(100, viewports);
+    scale.prepare(100, viewports, false);
     assert!(scale.bind(0, viewports[0], &clear).is_none());
     assert_eq!(CREATES.load(SeqCst), 0);
     assert_eq!(
@@ -90,7 +90,16 @@ fn native_scale_preserves_native_hud_extent_and_retires_surfaces() {
         [[1280, 719], [854, 480]]
     );
 
-    scale.prepare(75, viewports);
+    scale.prepare(75, viewports, false);
+    let unqualified = scale.resolution().unwrap();
+    assert_eq!(unqualified.requested_scale, 75);
+    assert_eq!(unqualified.effective_scale, 100);
+    assert_eq!(unqualified.dimensions, [[1280, 719], [854, 480]]);
+    assert_eq!(unqualified.surface_bytes, 0);
+    assert!(scale.bind(0, viewports[0], &clear).is_none());
+    assert_eq!(CREATES.load(SeqCst), 0);
+
+    scale.prepare(75, viewports, true);
     let active = scale.resolution().unwrap();
     assert_eq!(active.dimensions, [[960, 539], [641, 360]]);
     assert_eq!(active.effective_scale, 75);
@@ -102,24 +111,24 @@ fn native_scale_preserves_native_hud_extent_and_retires_surfaces() {
     assert_eq!(RESTORES.load(SeqCst), 2);
     assert_eq!(COMPOSITES.load(SeqCst), 1);
 
-    scale.prepare(75, viewports);
+    scale.prepare(75, viewports, true);
     assert_eq!(CREATES.load(SeqCst), 1);
     assert_eq!(DESTROYS.load(SeqCst), 0);
 
     FAIL.store(true, SeqCst);
-    scale.prepare(50, viewports);
+    scale.prepare(50, viewports, true);
     let fallback = scale.resolution().unwrap();
     assert_eq!(fallback.requested_scale, 50);
     assert_eq!(fallback.effective_scale, 100);
     assert_eq!(fallback.dimensions, [[1280, 719], [854, 480]]);
     assert_eq!(fallback.surface_bytes, 0);
     assert_eq!(DESTROYS.load(SeqCst), 1);
-    scale.prepare(50, viewports);
+    scale.prepare(50, viewports, true);
     assert_eq!(CREATES.load(SeqCst), 2);
 
     scale.release();
     FAIL.store(false, SeqCst);
-    scale.prepare(50, viewports);
+    scale.prepare(50, viewports, true);
     assert_eq!(
         scale.resolution().unwrap().dimensions,
         [[640, 360], [427, 240]]
@@ -143,7 +152,7 @@ fn check_target_fps(target_fps: u32) {
     let mut targets = world_scale::WorldScale::default();
     let viewports = [[0, 0, 1280, 720], [0, 0, 854, 480]];
     let floor = 75;
-    targets.prepare(controller.scale(floor), viewports);
+    targets.prepare(controller.scale(floor), viewports, true);
 
     for _ in 0..100 {
         assert_eq!(
@@ -160,7 +169,7 @@ fn check_target_fps(target_fps: u32) {
     let mut changes = Vec::new();
     for _ in 0..1000 {
         if let Some(scale) = controller.observe(Some(8.0), 16.0, floor, target_fps, Pace::Quick) {
-            targets.prepare(scale, viewports);
+            targets.prepare(scale, viewports, true);
             changes.push(targets.resolution().unwrap().effective_scale);
         }
     }
@@ -185,7 +194,7 @@ fn check_target_fps(target_fps: u32) {
         if let Some(scale) =
             controller.observe(Some(gpu_ms), frame_ms, floor, target_fps, Pace::Quick)
         {
-            targets.prepare(scale, viewports);
+            targets.prepare(scale, viewports, true);
             changes.push(targets.resolution().unwrap().effective_scale);
         }
     }

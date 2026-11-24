@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "ad7a0a4d2ae0f7074d0ff1dd5f414e0ee25c20f7",
+  "output_tree": "eeecab2a4ba25dffdd237a6126d9ab2c41daf525",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -436,12 +436,18 @@
       "sha256": "9e84e6137a10e3055ca9cdb1f778696158124640a056ba883f3c2136c1aaa8c6",
       "input_tree": "de0a4e11a44f8283cc9d28de28bf6e6c7ea165c5",
       "output_tree": "ad7a0a4d2ae0f7074d0ff1dd5f414e0ee25c20f7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0072-guard-unqualified-wiiu-world-scaling.patch",
+      "sha256": "42ea6ef70efd4d21237e8962c4008ba3e34279990d5d3862285c814ac6b0d95b",
+      "input_tree": "ad7a0a4d2ae0f7074d0ff1dd5f414e0ee25c20f7",
+      "output_tree": "eeecab2a4ba25dffdd237a6126d9ab2c41daf525"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.28",
-    "patch": "0.5.0-rc.28"
+    "client": "0.8.0-rc.29",
+    "patch": "0.5.0-rc.29"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
