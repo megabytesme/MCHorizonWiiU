@@ -1,0 +1,843 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index cdb3144d32e12082f2598cf8f6403dafb5d74b29..9e060ac0327063990cd4dab1398e8a61553bc226 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -16,6 +16,8 @@ use horizon_bench::{App, Frames, Kind, Report};
+ use serde_json::Value;
+ 
+ use crate::control::Request;
++#[cfg(any(target_os = "cafe", test))]
++use crate::presentation::WorldResolution;
+ 
+ pub const SEED: i64 = 1234;
+ /// The world the benchmark creates under `saves/`, replaced on every run.
+@@ -24,6 +26,18 @@ pub const WORLD: &str = "horizon-benchmark";
+ const MARKER: &str = "horizon-benchmark.txt";
+ const MARKER_CONTENT: &str = "Created by horizon-client --benchmark; replaced by the next run.\n";
+ const DIAGNOSTIC_SCENARIO: &str = "cafe-diagnostic-village";
++#[cfg(any(target_os = "cafe", test))]
++pub const CAFE_STATIONARY_SCENARIO: &str = "cafe-stationary";
++#[cfg(any(target_os = "cafe", test))]
++const STATIONARY_SCALE_FILE: &str = "horizon-benchmark-stationary-scale.txt";
++#[cfg(any(target_os = "cafe", test))]
++const STATIONARY_WARMUP: Duration = Duration::from_secs(5);
++#[cfg(any(target_os = "cafe", test))]
++const STATIONARY_SECONDS: f64 = 30.0;
++#[cfg(any(target_os = "cafe", test))]
++const STATIONARY_MIN_INTERVALS: u64 = 10;
++#[cfg(any(target_os = "cafe", test))]
++const STATIONARY_MIN_FRACTION: f64 = 0.8;
+ 
+ /// The hosted launcher and diagnostic runner agree on the scratch owner's marker.
+ #[cfg(any(target_os = "cafe", test))]
+@@ -126,6 +140,9 @@ pub enum Scenario {
+     Scenes(Vec<Scene>),
+     /// A 512-block flight, then held at its end.
+     Travel,
++    /// Cafe-only diagnostic at a fixed camera after the ordinary readiness gate.
++    #[cfg(any(target_os = "cafe", test))]
++    CafeStationary,
+     /// The flight with the switch's B applied, then its two values interleaved B A A B.
+     Ab(&'static Switch),
+ }
+@@ -135,6 +152,8 @@ impl Scenario {
+         match name {
+             "standard" => Ok(Scenario::Scenes(SCENES.to_vec())),
+             "travel" => Ok(Scenario::Travel),
++            #[cfg(any(target_os = "cafe", test))]
++            CAFE_STATIONARY_SCENARIO => Ok(Scenario::CafeStationary),
+             name if name.starts_with("ab:") => SWITCHES
+                 .iter()
+                 .find(|s| s.name == &name[3..])
+@@ -276,38 +295,73 @@ impl Drop for HostedRun {
+ }
+ 
+ #[cfg(any(target_os = "cafe", test))]
+-fn cafe_village_diagnostic(game_dir: &Path, scenario: &str) -> bool {
++fn matches_file(path: &Path, expected: &[u8]) -> bool {
+     use std::fs::{File, symlink_metadata};
+     use std::io::Read;
+ 
+-    fn matches_file(path: &Path, expected: &[u8]) -> bool {
+-        if !symlink_metadata(path)
+-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected.len() as u64)
+-        {
+-            return false;
+-        }
+-        let Ok(file) = File::open(path) else {
+-            return false;
+-        };
+-        let mut content = Vec::new();
+-        file.take(expected.len() as u64 + 1)
+-            .read_to_end(&mut content)
+-            .is_ok()
+-            && content == expected
++    if !symlink_metadata(path)
++        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected.len() as u64)
++    {
++        return false;
+     }
++    let Ok(file) = File::open(path) else {
++        return false;
++    };
++    let mut content = Vec::new();
++    file.take(expected.len() as u64 + 1)
++        .read_to_end(&mut content)
++        .is_ok()
++        && content == expected
++}
+ 
+-    scenario == "village"
+-        && game_dir
+-            .file_name()
+-            .is_some_and(|name| name == ".benchmark-run")
+-        && symlink_metadata(game_dir).is_ok_and(|metadata| metadata.is_dir())
++#[cfg(any(target_os = "cafe", test))]
++fn owned_cafe_workspace(game_dir: &Path) -> bool {
++    game_dir
++        .file_name()
++        .is_some_and(|name| name == ".benchmark-run")
++        && std::fs::symlink_metadata(game_dir).is_ok_and(|metadata| metadata.is_dir())
+         && matches_file(&game_dir.join(CAFE_WORKSPACE_MARKER), CAFE_WORKSPACE_OWNER)
++}
++
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_village_diagnostic(game_dir: &Path, scenario: &str) -> bool {
++    scenario == "village"
++        && owned_cafe_workspace(game_dir)
+         && matches_file(
+             &game_dir.join(VILLAGE_DIAGNOSTIC_MARKER),
+             VILLAGE_DIAGNOSTIC_CONTENT,
+         )
+ }
+ 
++/// Read a fixed scale override from Night's owned stationary scratch directory.
++#[cfg(any(target_os = "cafe", test))]
++pub fn cafe_stationary_scale(game_dir: &Path) -> Result<u32, String> {
++    use std::fs::{File, symlink_metadata};
++    use std::io::{ErrorKind, Read};
++
++    if !owned_cafe_workspace(game_dir) {
++        return Err("the Cafe stationary diagnostic needs an owned benchmark workspace".into());
++    }
++    let path = game_dir.join(STATIONARY_SCALE_FILE);
++    let invalid = || format!("{STATIONARY_SCALE_FILE} must contain 50, 75 or 100");
++    match symlink_metadata(&path) {
++        Ok(metadata) if metadata.is_file() && metadata.len() <= 5 => {}
++        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(100),
++        Ok(_) => return Err(invalid()),
++        Err(error) => return Err(error.to_string()),
++    }
++    let mut value = Vec::new();
++    File::open(path)
++        .and_then(|file| file.take(6).read_to_end(&mut value))
++        .map_err(|error| error.to_string())?;
++    match value.as_slice() {
++        b"50" | b"50\n" | b"50\r\n" => Ok(50),
++        b"75" | b"75\n" | b"75\r\n" => Ok(75),
++        b"100" | b"100\n" | b"100\r\n" => Ok(100),
++        _ => Err(invalid()),
++    }
++}
++
+ /// Counts Cafe frame attempts in the measurement window and times adjacent
+ /// submissions that both drew terrain on both outputs.
+ #[cfg(any(target_os = "cafe", test))]
+@@ -321,6 +375,41 @@ pub struct CafeFlightCoverage {
+     eligible_interval_time: Duration,
+     ineligible_run: u64,
+     longest_ineligible_run: u64,
++    stationary_targets: Option<CafeStationaryTargets>,
++    stationary_target_mismatches: u64,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct CafeStationaryTargets {
++    pub resolution: WorldResolution,
++    pub displays: [[u32; 2]; 2],
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl CafeStationaryTargets {
++    fn matches_scale(self, scale: u32) -> bool {
++        matches!(scale, 50 | 75 | 100)
++            && self.resolution.requested_scale == scale
++            && self.resolution.effective_scale == scale
++            && self
++                .resolution
++                .dimensions
++                .into_iter()
++                .flatten()
++                .all(|size| size > 0)
++            && self.displays.into_iter().flatten().all(|size| size > 0)
++    }
++
++    fn json(self) -> Value {
++        serde_json::json!({
++            "requested_scale": self.resolution.requested_scale,
++            "effective_scale": self.resolution.effective_scale,
++            "world_dimensions": self.resolution.dimensions,
++            "displays": self.displays,
++            "world_surface_bytes": self.resolution.surface_bytes,
++        })
++    }
+ }
+ 
+ #[cfg(any(target_os = "cafe", test))]
+@@ -330,12 +419,42 @@ impl CafeFlightCoverage {
+         start: Instant,
+         paired: bool,
+         gameplay_terrain: bool,
++    ) -> Option<Duration> {
++        self.observe_frame(start, paired, gameplay_terrain, paired && gameplay_terrain)
++    }
++
++    pub fn observe_stationary(
++        &mut self,
++        start: Instant,
++        paired: bool,
++        gameplay_terrain: bool,
++        scale: u32,
++        targets: Option<CafeStationaryTargets>,
++    ) -> Option<Duration> {
++        let eligible = paired
++            && gameplay_terrain
++            && targets.is_some_and(|targets| {
++                targets.matches_scale(scale)
++                    && *self.stationary_targets.get_or_insert(targets) == targets
++            });
++        if paired && gameplay_terrain && !eligible {
++            self.stationary_target_mismatches += 1;
++        }
++        self.observe_frame(start, paired, gameplay_terrain, eligible)
++    }
++
++    fn observe_frame(
++        &mut self,
++        start: Instant,
++        paired: bool,
++        gameplay_terrain: bool,
++        eligible: bool,
+     ) -> Option<Duration> {
+         self.host_frames += 1;
+         self.paired_frames += u64::from(paired);
++        self.terrain_paired_frames += u64::from(paired && gameplay_terrain);
+         let previous = self.previous_terrain_start.take();
+-        if paired && gameplay_terrain {
+-            self.terrain_paired_frames += 1;
++        if eligible {
+             self.previous_terrain_start = Some(start);
+             self.ineligible_run = 0;
+             previous.map(|previous| {
+@@ -361,6 +480,13 @@ impl CafeFlightCoverage {
+             "eligible_interval_ms": ms(self.eligible_interval_time),
+             "longest_ineligible_run_frames": self.longest_ineligible_run,
+         });
++        if let Some(targets) = self.stationary_targets {
++            reply["cafe_stationary_targets"] = targets.json();
++        }
++        if self.stationary_target_mismatches > 0 {
++            reply["cafe_flight_coverage"]["stationary_target_mismatches"] =
++                self.stationary_target_mismatches.into();
++        }
+     }
+ }
+ 
+@@ -571,6 +697,8 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+         Scenario::Travel => (HOLD_BLOCKS, None),
+         Scenario::Ab(_) => (2 * PAIRS, Some(WARMUP_SECONDS)),
+         Scenario::Scenes(_) => (1, Some(SETTLE.as_secs_f64())),
++        #[cfg(any(target_os = "cafe", test))]
++        Scenario::CafeStationary => (1, Some(STATIONARY_WARMUP.as_secs_f64())),
+     };
+     (c.repeats, c.warmup_s) = (Some(repeats), warmup);
+     if let Some(bytes) = renderer["gpu_allocated_bytes"].as_f64() {
+@@ -750,6 +878,8 @@ fn measure(
+             };
+             ab_blocks(control, switch, &plan, report, steady)?;
+         }
++        #[cfg(any(target_os = "cafe", test))]
++        Scenario::CafeStationary => stationary(control, report, steady)?,
+     }
+     Ok(())
+ }
+@@ -848,11 +978,22 @@ fn near(target: [f64; 3]) -> impl Fn(&Value) -> bool {
+ /// Flies the original camera route and returns the flight's frames.
+ fn fly(
+     control: &Control,
+-    (phase, start, end, pitch): Scene,
++    scene: Scene,
+     seconds: f64,
+     steady: &mut Vec<(Instant, Instant)>,
+     report: &mut Report,
+ ) -> Result<Frames, String> {
++    let reply = measure_flight(control, scene, seconds, steady, report)?;
++    frames_of(&reply, scene.0, 0)
++}
++
++fn measure_flight(
++    control: &Control,
++    (phase, start, end, pitch): Scene,
++    seconds: f64,
++    steady: &mut Vec<(Instant, Instant)>,
++    report: &mut Report,
++) -> Result<Value, String> {
+     control.progress(|| Progress::MeasuringScene(phase.to_owned()));
+     #[cfg(target_os = "cafe")]
+     log::info!("Cafe benchmark timing scene {phase}; seconds={seconds}");
+@@ -863,7 +1004,7 @@ fn fly(
+     ))?;
+     steady.push((begin, Instant::now()));
+     record_cafe_flight_coverage(report, phase, &flight);
+-    frames_of(&flight, phase, 0)
++    Ok(flight)
+ }
+ 
+ fn record_cafe_flight_coverage(report: &mut Report, phase: &str, reply: &Value) {
+@@ -950,14 +1091,7 @@ fn trip(
+     report: &mut Report,
+     steady: &mut Vec<(Instant, Instant)>,
+ ) -> Result<(), String> {
+-    for line in [
+-        "command gamerule advance_time false",
+-        "command gamerule advance_weather false",
+-        "command weather clear",
+-        "time 6000",
+-    ] {
+-        control.call(line)?;
+-    }
++    freeze_daylight(control)?;
+     let (from, to) = (TRAVEL_FROM, TRAVEL_TO);
+     load_scene(control, "travel", from, to, TRAVEL_PITCH, report)?;
+     let flight = fly(
+@@ -979,6 +1113,144 @@ fn trip(
+     Ok(())
+ }
+ 
++fn freeze_daylight(control: &Control) -> Result<(), String> {
++    for line in [
++        "command gamerule advance_time false",
++        "command gamerule advance_weather false",
++        "command weather clear",
++        "time 6000",
++    ] {
++        control.call(line)?;
++    }
++    Ok(())
++}
++
++#[cfg(any(target_os = "cafe", test))]
++fn stationary(
++    control: &Control,
++    report: &mut Report,
++    steady: &mut Vec<(Instant, Instant)>,
++) -> Result<(), String> {
++    let name = CAFE_STATIONARY_SCENARIO;
++    // Keep the Village starting view while the original Village benchmark
++    // continues to measure its complete traversal.
++    let (_, view, _, pitch) = SCENES[0];
++    freeze_daylight(control)?;
++    control.call("command gamerule random_tick_speed 0")?;
++    control.call("command gamerule spawn_mobs false")?;
++    load_scene(control, name, view, view, pitch, report)?;
++    control.settle(STATIONARY_WARMUP)?;
++    let before = control.call("status")?;
++    let targets = stationary_targets(&before)?;
++    #[cfg(target_os = "cafe")]
++    horizon_client_platform::cafe_memory::report("benchmark.stationary.before");
++    let flight = measure_flight(
++        control,
++        (name, view, view, pitch),
++        STATIONARY_SECONDS,
++        steady,
++        report,
++    )?;
++    verify_stationary_coverage(&flight, targets)?;
++    #[cfg(target_os = "cafe")]
++    horizon_client_platform::cafe_memory::report("benchmark.stationary.after");
++    let after = control.call("status")?;
++    if stationary_targets(&after)? != targets {
++        return Err("the stationary diagnostic changed scale or target dimensions".into());
++    }
++    // Retain the amount of streaming work observed during the fixed view.
++    // Reports with that work present need separate interpretation.
++    for key in ["generated_chunks", "meshed_sections"] {
++        if let Some((before, after)) = before[key].as_u64().zip(after[key].as_u64()) {
++            report.metric(
++                &format!("cafe.stationary.{key}"),
++                &[after.saturating_sub(before) as f64],
++            );
++        }
++    }
++    report.label = Some("Cafe GX2 Stationary Render Diagnostic / paired submissions".into());
++    report.conditions.backend = Some("gx2".into());
++    report.metric(
++        "cafe.stationary.fixed_scale",
++        &[f64::from(targets.resolution.effective_scale)],
++    );
++    let frames = frames_of(&flight, name, 0)?;
++    let blocks = std::slice::from_ref(&frames);
++    fps_metrics(report, name, blocks);
++    timing_metrics(report, name, blocks);
++    report.frames.push(frames);
++    Ok(())
++}
++
++#[cfg(any(target_os = "cafe", test))]
++fn stationary_targets(status: &Value) -> Result<CafeStationaryTargets, String> {
++    let renderer = &status["renderer"];
++    if renderer["backend"] != "gx2" || renderer["terrain_presented"] != true {
++        return Err("the stationary view must submit terrain on both GX2 outputs".into());
++    }
++    let field = |key: &str| {
++        renderer[key]
++            .as_u64()
++            .and_then(|value| u32::try_from(value).ok())
++            .ok_or("the stationary diagnostic lacks complete target metadata")
++    };
++    let targets = CafeStationaryTargets {
++        resolution: WorldResolution {
++            requested_scale: field("requested_scale")?,
++            effective_scale: field("effective_scale")?,
++            dimensions: [
++                [field("tv_world_width")?, field("tv_world_height")?],
++                [
++                    field("gamepad_world_width")?,
++                    field("gamepad_world_height")?,
++                ],
++            ],
++            surface_bytes: field("world_surface_bytes")?,
++        },
++        displays: [
++            [field("tv_width")?, field("tv_height")?],
++            [field("gamepad_width")?, field("gamepad_height")?],
++        ],
++    };
++    if targets.matches_scale(field("configured_scale")?) {
++        Ok(targets)
++    } else {
++        Err("the stationary diagnostic did not achieve its configured fixed scale".into())
++    }
++}
++
++#[cfg(any(target_os = "cafe", test))]
++fn verify_stationary_coverage(
++    flight: &Value,
++    expected: CafeStationaryTargets,
++) -> Result<(), String> {
++    let coverage = &flight["cafe_flight_coverage"];
++    let mismatches = coverage["stationary_target_mismatches"]
++        .as_u64()
++        .unwrap_or(0);
++    if mismatches != 0 {
++        return Err(format!(
++            "the stationary measurement changed or lost target metadata ({mismatches} mismatched submissions)"
++        ));
++    }
++    let elapsed = coverage["elapsed_ms"].as_f64().unwrap_or(0.0);
++    let eligible = coverage["eligible_interval_ms"].as_f64().unwrap_or(0.0);
++    let intervals = coverage["eligible_intervals"].as_u64().unwrap_or(0);
++    if elapsed < STATIONARY_SECONDS * 1000.0
++        || eligible < elapsed * STATIONARY_MIN_FRACTION
++        || eligible > elapsed
++        || intervals < STATIONARY_MIN_INTERVALS
++    {
++        return Err(format!(
++            "insufficient stationary coverage ({intervals} intervals, {eligible:.0}/{elapsed:.0} ms eligible)"
++        ));
++    }
++    if flight["cafe_stationary_targets"] != expected.json() {
++        return Err("the stationary measurement changed or lost target metadata".into());
++    }
++    Ok(())
++}
++
+ /// The state that matters: fly 512 blocks over terrain that loads and unloads, then hold at the end.
+ fn travel(
+     control: &Control,
+@@ -1394,6 +1666,257 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn stationary_scale_accepts_only_the_owned_diagnostic_settings() {
++        let test_dir = std::env::temp_dir().join(format!(
++            "horizon-benchmark-stationary-test-{}",
++            std::process::id()
++        ));
++        std::fs::create_dir(&test_dir).unwrap();
++        let workspace = test_dir.join(".benchmark-run");
++        std::fs::create_dir(&workspace).unwrap();
++        let config = workspace.join(STATIONARY_SCALE_FILE);
++        std::fs::write(&config, b"75").unwrap();
++        assert!(cafe_stationary_scale(&workspace).is_err());
++        std::fs::write(workspace.join(CAFE_WORKSPACE_MARKER), CAFE_WORKSPACE_OWNER).unwrap();
++        assert_eq!(cafe_stationary_scale(&workspace).unwrap(), 75);
++        std::fs::write(&config, b"50\r\n").unwrap();
++        assert_eq!(cafe_stationary_scale(&workspace).unwrap(), 50);
++        for invalid in [b"49".as_slice(), b"95", b"0100", b"75\n100", b""] {
++            std::fs::write(&config, invalid).unwrap();
++            assert!(cafe_stationary_scale(&workspace).is_err());
++        }
++        std::fs::remove_file(config).unwrap();
++        assert_eq!(cafe_stationary_scale(&workspace).unwrap(), 100);
++        std::fs::remove_dir_all(test_dir).unwrap();
++    }
++
++    fn stationary_status() -> Value {
++        serde_json::json!({
++            "renderer": {
++                "backend": "gx2",
++                "terrain_presented": true,
++                "configured_scale": 75,
++                "requested_scale": 75,
++                "effective_scale": 75,
++                "tv_width": 1920,
++                "tv_height": 1080,
++                "gamepad_width": 854,
++                "gamepad_height": 480,
++                "tv_world_width": 1440,
++                "tv_world_height": 810,
++                "gamepad_world_width": 641,
++                "gamepad_world_height": 360,
++                "world_surface_bytes": 11_378_688,
++            },
++        })
++    }
++
++    #[test]
++    fn stationary_diagnostic_rejects_missing_paired_terrain_submissions_and_fallback() {
++        let mut before = stationary_status();
++        before["renderer"]["terrain_presented"] = false.into();
++        assert!(
++            stationary_targets(&before)
++                .unwrap_err()
++                .contains("both GX2 outputs")
++        );
++        before["renderer"]["terrain_presented"] = true.into();
++        before["renderer"]["effective_scale"] = 100.into();
++        assert!(
++            stationary_targets(&before)
++                .unwrap_err()
++                .contains("configured fixed scale")
++        );
++        before["renderer"]["effective_scale"] = 75.into();
++        assert_eq!(
++            stationary_targets(&before)
++                .unwrap()
++                .resolution
++                .effective_scale,
++            75
++        );
++        before["renderer"]["gamepad_world_height"] = 0.into();
++        assert!(stationary_targets(&before).is_err());
++    }
++
++    #[test]
++    fn stationary_intervals_break_on_transient_scale_display_and_world_changes() {
++        let baseline = stationary_targets(&stationary_status()).unwrap();
++        let mut fallback = baseline;
++        fallback.resolution.effective_scale = 100;
++        let mut display_resize = baseline;
++        display_resize.displays[0][0] = 1280;
++        let mut world_resize = baseline;
++        world_resize.resolution.dimensions[1][0] = 640;
++
++        let start = Instant::now();
++        let mut coverage = CafeFlightCoverage::default();
++        for (i, (paired, targets, expected)) in [
++            (true, Some(baseline), None),
++            (true, Some(baseline), Some(20)),
++            (true, Some(fallback), None),
++            (true, Some(baseline), None),
++            (true, Some(baseline), Some(20)),
++            (true, Some(display_resize), None),
++            (true, Some(baseline), None),
++            (true, Some(baseline), Some(20)),
++            (true, Some(world_resize), None),
++            (true, Some(baseline), None),
++            (false, Some(baseline), None),
++            (true, Some(baseline), None),
++            (true, Some(baseline), Some(20)),
++            (true, None, None),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            let now = start + Duration::from_millis(i as u64 * 20);
++            assert_eq!(
++                coverage.observe_stationary(now, paired, true, 75, targets),
++                expected.map(Duration::from_millis)
++            );
++        }
++        let mut reply = serde_json::json!({});
++        coverage.append_to_reply(&mut reply, Duration::from_secs(30));
++        assert_eq!(reply["cafe_flight_coverage"]["eligible_intervals"], 4);
++        assert_eq!(reply["cafe_flight_coverage"]["eligible_interval_ms"], 80.0);
++        assert_eq!(
++            reply["cafe_flight_coverage"]["stationary_target_mismatches"],
++            4
++        );
++    }
++
++    #[test]
++    fn stationary_reports_require_stable_targets_and_sufficient_eligible_time() {
++        let targets = stationary_targets(&stationary_status()).unwrap();
++        let mut flight = serde_json::json!({
++            "cafe_stationary_targets": targets.json(),
++            "cafe_flight_coverage": {
++                "eligible_intervals": 100,
++                "eligible_interval_ms": 24_000.0,
++                "elapsed_ms": 30_000.0,
++            }
++        });
++        assert!(verify_stationary_coverage(&flight, targets).is_ok());
++        let coverage = &mut flight["cafe_flight_coverage"];
++        coverage["stationary_target_mismatches"] = 1.into();
++        assert!(
++            verify_stationary_coverage(&flight, targets)
++                .unwrap_err()
++                .contains("target metadata")
++        );
++        flight["cafe_flight_coverage"]["stationary_target_mismatches"] = 0.into();
++        flight["cafe_flight_coverage"]["eligible_interval_ms"] = 23_999.0.into();
++        assert!(
++            verify_stationary_coverage(&flight, targets)
++                .unwrap_err()
++                .contains("insufficient")
++        );
++        flight["cafe_flight_coverage"]["eligible_interval_ms"] = 24_000.0.into();
++        flight["cafe_flight_coverage"]["eligible_intervals"] = 9.into();
++        assert!(
++            verify_stationary_coverage(&flight, targets)
++                .unwrap_err()
++                .contains("insufficient")
++        );
++        flight["cafe_flight_coverage"]["eligible_intervals"] = 100.into();
++        flight["cafe_stationary_targets"]["displays"][0][0] = 1280.into();
++        assert!(
++            verify_stationary_coverage(&flight, targets)
++                .unwrap_err()
++                .contains("target metadata")
++        );
++    }
++
++    #[test]
++    fn stationary_diagnostic_freezes_scene_and_reports_a_fixed_camera_interval() {
++        use serde_json::json;
++        let (requests, game) = mpsc::channel::<Request>();
++        let control = Control::new(requests);
++        let mock_game = thread::spawn(move || {
++            let renderer = stationary_status()["renderer"].clone();
++            let targets = stationary_targets(&stationary_status()).unwrap();
++            let mut at_scene = false;
++            let mut checks = 0;
++            let mut measured = false;
++            let mut scene_commands = Vec::new();
++            for request in game {
++                let (first, _) = request.line.split_once(' ').unwrap_or((&request.line, ""));
++                let reply = match first {
++                    "status" => {
++                        if at_scene {
++                            checks += 1;
++                        }
++                        json!({
++                            "screen": "playing",
++                            "player": {"position": if at_scene { SCENES[0].1 } else { [0.0; 3] }},
++                            "chunks": 150,
++                            "pending_chunks": 0,
++                            "render_distance": 6,
++                            "meshed_sections": if measured { 99 } else { 98 },
++                            "generated_chunks": if checks > 1 { 150 } else { 149 },
++                            "renderer": renderer,
++                        })
++                    }
++                    "tp" => {
++                        at_scene = true;
++                        json!({"ok": true})
++                    }
++                    "fly" if request.line.ends_with(" raw") => {
++                        assert!(at_scene && checks > 2);
++                        assert_eq!(request.line, "fly -960 125 80 -960 125 80 30 35 raw");
++                        measured = true;
++                        json!({
++                            "frame_ms": vec![200.0; 126],
++                            "cpu_ms": vec![98.0; 126],
++                            "cafe_stationary_targets": targets.json(),
++                            "cafe_flight_coverage": {
++                                "host_frames": 127, "paired_frames": 127, "terrain_paired_frames": 127,
++                                "eligible_intervals": 126,
++                                "eligible_interval_ms": 25_200.0,
++                                "elapsed_ms": 30_000.0,
++                            }
++                        })
++                    }
++                    "command" | "time" => {
++                        scene_commands.push(request.line);
++                        json!({"ok": true})
++                    }
++                    _ => json!({"ok": true}),
++                };
++                request.reply.send(reply.to_string()).unwrap();
++            }
++            scene_commands
++        });
++        let mut report = Report::new(Kind::Game, App::default());
++        let mut steady = Vec::new();
++        stationary(&control, &mut report, &mut steady).unwrap();
++        drop(control);
++        assert_eq!(
++            mock_game.join().unwrap(),
++            [
++                "command gamerule advance_time false",
++                "command gamerule advance_weather false",
++                "command weather clear",
++                "time 6000",
++                "command gamerule random_tick_speed 0",
++                "command gamerule spawn_mobs false",
++            ]
++        );
++        assert!(report.label.as_deref().unwrap().contains("Stationary"));
++        assert_eq!(report.frames[0].phase, CAFE_STATIONARY_SCENARIO);
++        assert_eq!(report.frames[0].frames, 126);
++        assert_eq!(report.frames[0].gpu_p50_ms, None);
++        assert_eq!(report.metrics["cafe.stationary.fixed_scale"].mean, 75.0);
++        assert_eq!(report.metrics["cafe.stationary.meshed_sections"].mean, 1.0);
++        assert_eq!(
++            report.metrics["cafe.cafe-stationary.eligible_intervals"].mean,
++            126.0
++        );
++        assert_eq!(steady.len(), 1);
++    }
++
+     #[test]
+     fn cafe_flight_times_only_adjacent_paired_terrain_and_reports_coverage() {
+         let begin = Instant::now();
+@@ -1664,6 +2187,10 @@ mod tests {
+         assert_eq!(scenes("standard").len(), 4);
+         assert_eq!(scenes("ocean")[0].0, "ocean");
+         assert!(matches!(Scenario::parse("travel"), Ok(Scenario::Travel)));
++        assert!(matches!(
++            Scenario::parse(CAFE_STATIONARY_SCENARIO),
++            Ok(Scenario::CafeStationary)
++        ));
+         assert!(matches!(
+             Scenario::parse("ab:gpu-culling"),
+             Ok(Scenario::Ab(s)) if s.name == "gpu-culling"
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 3750cab2929daacf869d20e1cc2c27a2751e12a7..3feac998a69639ebb1a7dbe433733eaa304d22e9 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -11419,6 +11419,15 @@ fn run_with_loading(
+                 &mut early_settings,
+             );
+         }
++        if options.benchmark.as_deref() == Some(horizon_client::benchmark::CAFE_STATIONARY_SCENARIO)
++        {
++            let scale =
++                horizon_client::benchmark::cafe_stationary_scale(&std::env::current_dir()?)?;
++            if scale != 100 && !horizon_client::graphics::cafe_experimental_world_scaling() {
++                return Err("the stationary fixed-scale test needs experimental Cafe scaling".into());
++            }
++            early_settings.horizon.resolution_scale = scale;
++        }
+     }
+     options
+         .mods
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 29aec9eae878682a9d18a4d65a58ac0f1bdf8546..c847af074666c752fe513af0a4c811714baec181 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -888,7 +888,26 @@ impl CafeGameSession<'_> {
+                 state.omitted_pass_mask |= work.omitted_pass_mask;
+                 state.partial_frames += u64::from(work.omitted_pass_mask != 0);
+             }
+-            if let Some(interval) = state.coverage.observe(start, paired, gameplay_terrain) {
++            use horizon_client::benchmark::{CAFE_STATIONARY_SCENARIO, CafeStationaryTargets};
++            let interval =
++                if self.game.options.benchmark.as_deref() == Some(CAFE_STATIONARY_SCENARIO) {
++                    let targets = work
++                        .world_resolution
++                        .map(|resolution| CafeStationaryTargets {
++                            resolution,
++                            displays: state.display_sizes,
++                        });
++                    state.coverage.observe_stationary(
++                        start,
++                        paired,
++                        gameplay_terrain,
++                        self.game.settings.horizon.resolution_scale,
++                        targets,
++                    )
++                } else {
++                    state.coverage.observe(start, paired, gameplay_terrain)
++                };
++            if let Some(interval) = interval {
+                 self.game.frame_stats.record(interval.as_secs_f32() * 1000.0);
+                 self.game.frame_stats.record_cpu(
+                     end.duration_since(start)
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 0c240403e6446874465df573eb81242b2c7d1eff..c4faac74d72d0203f3d06baf8c00d6cafbe4984d 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -13,13 +13,17 @@ const LIST_ROWS: usize = 3;
+ const MICROSOFT_CLIENT_ID: &str = "331e08f8-172d-43b9-835a-3108c2fcdbf3";
+ const ACCOUNT_FIXTURE: bool = option_env!("HORIZON_NIGHT_ACCOUNT_FIXTURE").is_some();
+ 
+-const BENCHMARK_SCENES: [(&str, &str); 6] = [
++const BENCHMARK_SCENES: [(&str, &str); 7] = [
+     ("standard", "benchmark_standard"),
+     ("village", "benchmark_village"),
+     ("forest", "benchmark_forest"),
+     ("ocean", "benchmark_ocean"),
+     ("mountain", "benchmark_mountain"),
+     ("travel", "benchmark_travel"),
++    (
++        horizon_client::benchmark::CAFE_STATIONARY_SCENARIO,
++        "benchmark_stationary",
++    ),
+ ];
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -695,7 +699,12 @@ impl<G: GameFiles> LocalService<G> {
+             Command::Benchmark(scene) => {
+                 self.benchmark = Some(scene);
+                 self.show(Page::Home);
+-                self.message = night_online::tr("benchmark_start_help");
++                self.message =
++                    night_online::tr(if BENCHMARK_SCENES[scene].1 == "benchmark_stationary" {
++                        "benchmark_stationary_start_help"
++                    } else {
++                        "benchmark_start_help"
++                    });
+             }
+             Command::Online => {
+                 self.online.open();
+@@ -1291,7 +1300,11 @@ impl<G: GameFiles> LocalService<G> {
+                 {
+                     row(
+                         night_online::tr(key),
+-                        night_online::tr("benchmark_preset"),
++                        night_online::tr(if *key == "benchmark_stationary" {
++                            "benchmark_stationary_detail"
++                        } else {
++                            "benchmark_preset"
++                        }),
+                         if self.benchmark == Some(index) {
+                             SELECTED
+                         } else {
+diff --git a/wiiu/loading_app/src/night_online.rs b/wiiu/loading_app/src/night_online.rs
+index b7544fa1d0beff1b6006814736eeae8e40ed8f37..46f68a059e401b7ecdc6d2f43a1fe38df3e5377d 100644
+--- a/wiiu/loading_app/src/night_online.rs
++++ b/wiiu/loading_app/src/night_online.rs
+@@ -711,6 +711,9 @@ pub fn tr(key: &str) -> &'static str {
+         "benchmark_ocean" => "Ocean benchmark",
+         "benchmark_mountain" => "Mountain benchmark",
+         "benchmark_travel" => "Travel benchmark",
++        "benchmark_stationary" => "Stationary render diagnostic",
++        "benchmark_stationary_detail" => "Fixed view / 30-second measurement",
++        "benchmark_stationary_start_help" => "Select Start Game to run the stationary diagnostic.",
+         "benchmark_select" => "Choose an offline scenario. Press Minus during a run to cancel.",
+         "benchmark_start_help" => "Select Start Game to benchmark with Stock Full Performance.",
+         "benchmark_completed" => "Benchmark completed. Its report is available here.",

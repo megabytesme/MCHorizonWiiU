@@ -76,6 +76,27 @@ simulation and time of day where needed, using the same viewport resolution
 on the corresponding output. Screenshot capture is its own measured
 stage. Record mode, hash, settings and screenshot pairing for every run.
 
+## Stationary render diagnostic
+
+RC 30 adds **Stationary render diagnostic** to the Night benchmark menu.
+It uses the benchmark-owned world, seed 1234 and the Village starting
+camera. It fixes daylight and weather, disables random ticks and natural
+spawns, and applies the same terrain readiness checks as Village. It warms
+up for five seconds and measures a fixed view for 30 seconds.
+
+The default fixed resolution is 100%. For a controlled 75% or 50% test,
+write the integer to `horizon-benchmark-stationary-scale.txt` in Night's
+owned `.benchmark-run` directory and use the experimental world-scaling
+marker. The diagnostic requires matching requested and effective scale,
+stable world and display sizes and surface memory, at least ten eligible
+intervals and at least 80% eligible wall duration. It reports the paired
+coverage and samples native memory around the timed interval.
+
+Host tests cover transient fallback, display resizing, missing metadata
+and insufficient coverage. Automatic resolution remains inactive. Hosted
+and physical validation of the new scenario is pending. Village keeps its
+original route and acceptance rules.
+
 ## Capture format and interpretation
 
 On a hosted candidate, create an empty `gx2-profile.enable` at the SD app
