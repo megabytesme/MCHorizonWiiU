@@ -59,7 +59,14 @@ candidates across both views.
 | --- | --- | --- |
 | Completed CPU meshes | A 24 MiB byte budget covers completed meshes through the worker mailbox, pending upload queue and return to the mesh pool. Individual meshing jobs in progress remain count limited. | Host tests cover concurrent reservations and release. The exact RC 20 Cemu run recorded up to 2,475,640 queued CPU bytes and 63 pending uploads before saving. |
 | Native vertex backing | Published indexed vertex buffers are capped at 128 MiB. Admission checks for 48 MiB of bulk-heap reserve and the largest contiguous block. Lower-priority sections can regenerate when their view priority rises. | A 2 MiB native stress build evicted resident sections at render distance 12. The fixture saved and returned to Night while the admission queue was deferring meshes. The exact RC 20 Cemu sessions sampled up to 42 sections and 1,854,720 allocated vertex bytes while terrain was still streaming. |
-| GPU retirement | Superseded and removed buffers wait for GPU completion in batches. The next existing terrain wait can retire a batch. World exit clears residents, pending retirement and deferred keys before releasing the surface. | The 2 MiB stress save and all five sessions of the exact RC 20 Cemu run recovered 234,880,920 free bulk-heap bytes. Hardware still needs a sustained distance-12 run with both outputs. |
+| GPU retirement | Superseded and removed buffers wait for GPU completion in batches. The next existing terrain wait can retire a batch. World exit clears residents, pending retirement and deferred keys before releasing the surface. | The 2 MiB stress save, all five exact RC 20 Cemu sessions and both physical RC 20 sessions recovered 234,880,920 free bulk-heap bytes. Hardware reached the production cap and logged evictions without upload errors. |
+
+The physical stationary distance-12 view continued to prepare and upload
+terrain after the client reached 637 chunks. Its backlog remained near 60
+in most sampled windows. The indexed buffers remained within the 128 MiB
+cap. The sampled loop cadence slowed near cap while the MCP frame counter
+stayed unchanged. CPU/GPU cost attribution needs the native profile stages.
+See [RC 20 physical validation](../nightly-2026-11-20.md#rc-20-physical-save-audio-and-streaming).
 
 
 ## How a frame reaches GX2
