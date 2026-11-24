@@ -1,0 +1,304 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index cd9a7c3ada644a74ad1ff846ce1729f6f7374b3a..f1a514078a2b875b6205bc5af975b7e28cda53ca 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -308,6 +308,47 @@ fn cafe_village_diagnostic(game_dir: &Path, scenario: &str) -> bool {
+         )
+ }
+ 
++/// Counts Cafe frame attempts in the measurement window and times adjacent
++/// submissions that both drew terrain on both outputs.
++#[cfg(any(target_os = "cafe", test))]
++#[derive(Default)]
++pub struct CafeFlightCoverage {
++    previous_terrain_start: Option<Instant>,
++    host_frames: u64,
++    paired_frames: u64,
++    terrain_paired_frames: u64,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl CafeFlightCoverage {
++    pub fn observe(
++        &mut self,
++        start: Instant,
++        paired: bool,
++        gameplay_terrain: bool,
++    ) -> Option<Duration> {
++        self.host_frames += 1;
++        self.paired_frames += u64::from(paired);
++        let previous = self.previous_terrain_start.take();
++        if paired && gameplay_terrain {
++            self.terrain_paired_frames += 1;
++            self.previous_terrain_start = Some(start);
++            previous.map(|previous| start.duration_since(previous))
++        } else {
++            None
++        }
++    }
++
++    pub fn append_to_reply(&self, reply: &mut Value, elapsed: Duration) {
++        reply["cafe_flight_coverage"] = serde_json::json!({
++            "host_frames": self.host_frames,
++            "paired_frames": self.paired_frames,
++            "terrain_paired_frames": self.terrain_paired_frames,
++            "elapsed_ms": ms(elapsed),
++        });
++    }
++}
++
+ struct Control {
+     requests: Sender<Request>,
+     diagnostic: bool,
+@@ -674,7 +715,13 @@ fn measure(
+                 if control.diagnostic {
+                     wait_for_diagnostic_terrain(control, near(start), report, "before_flight")?;
+                 }
+-                let frames = fly(control, name, start, end, FLIGHT_SECONDS, pitch, steady)?;
++                let frames = fly(
++                    control,
++                    (name, start, end, pitch),
++                    FLIGHT_SECONDS,
++                    steady,
++                    report,
++                )?;
+                 fps_metrics(report, name, std::slice::from_ref(&frames));
+                 report.frames.push(frames);
+             }
+@@ -783,15 +830,13 @@ fn near(target: [f64; 3]) -> impl Fn(&Value) -> bool {
+     }
+ }
+ 
+-/// Flies the camera from `start` to `end` and returns the flight's frames.
++/// Flies the original camera route and returns the flight's frames.
+ fn fly(
+     control: &Control,
+-    phase: &str,
+-    start: [f64; 3],
+-    end: [f64; 3],
++    (phase, start, end, pitch): Scene,
+     seconds: f64,
+-    pitch: f64,
+     steady: &mut Vec<(Instant, Instant)>,
++    report: &mut Report,
+ ) -> Result<Frames, String> {
+     control.progress(|| Progress::MeasuringScene(phase.to_owned()));
+     #[cfg(target_os = "cafe")]
+@@ -802,9 +847,38 @@ fn fly(
+         "fly {x} {y} {z} {ex} {ey} {ez} {seconds} {pitch} raw"
+     ))?;
+     steady.push((begin, Instant::now()));
++    record_cafe_flight_coverage(report, phase, &flight);
+     frames_of(&flight, phase, 0)
+ }
+ 
++fn record_cafe_flight_coverage(report: &mut Report, phase: &str, reply: &Value) {
++    let Some(coverage) = reply["cafe_flight_coverage"].as_object() else {
++        return;
++    };
++    for key in [
++        "host_frames",
++        "paired_frames",
++        "terrain_paired_frames",
++        "elapsed_ms",
++    ] {
++        if let Some(value) = coverage.get(key).and_then(Value::as_f64) {
++            report.metric(&format!("cafe.{phase}.{key}"), &[value]);
++        }
++    }
++    let samples = reply["frame_ms"].as_array().map_or(0, Vec::len);
++    report.metric(
++        &format!("cafe.{phase}.paired_terrain_intervals"),
++        &[samples as f64],
++    );
++    #[cfg(target_os = "cafe")]
++    log::info!(
++        "Cafe benchmark terrain {phase}: host={} paired={} terrain={} intervals={samples}",
++        reply["cafe_flight_coverage"]["host_frames"],
++        reply["cafe_flight_coverage"]["paired_frames"],
++        reply["cafe_flight_coverage"]["terrain_paired_frames"],
++    );
++}
++
+ /// The frames of a `fly ... raw` or `bench ... raw` reply.
+ fn frames_of(reply: &Value, phase: &str, repeat: u32) -> Result<Frames, String> {
+     let series = |key: &str| -> Vec<f32> {
+@@ -866,12 +940,10 @@ fn trip(
+     load_scene(control, "travel", from, to, TRAVEL_PITCH, report)?;
+     let flight = fly(
+         control,
+-        "travel",
+-        from,
+-        to,
++        ("travel", from, to, TRAVEL_PITCH),
+         TRAVEL_SECONDS,
+-        TRAVEL_PITCH,
+         steady,
++        report,
+     )?;
+     let blocks = std::slice::from_ref(&flight);
+     fps_metrics(report, "travel", blocks);
+@@ -1218,6 +1290,46 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn cafe_flight_times_only_adjacent_paired_terrain_and_reports_coverage() {
++        let begin = Instant::now();
++        let mut coverage = CafeFlightCoverage::default();
++        // Terrain commands alone and paired blank frames cannot bridge a gap.
++        for (offset, paired, terrain, interval) in [
++            (0, true, true, None),
++            (16, false, true, None),
++            (32, true, true, None),
++            (48, true, false, None),
++            (64, true, true, None),
++            (81, true, true, Some(17)),
++        ] {
++            assert_eq!(
++                coverage.observe(begin + Duration::from_millis(offset), paired, terrain),
++                interval.map(Duration::from_millis)
++            );
++        }
++
++        let mut reply = serde_json::json!({ "frame_ms": [17.0] });
++        coverage.append_to_reply(&mut reply, Duration::from_millis(100));
++        let mut report = Report::new(Kind::Game, App::default());
++        record_cafe_flight_coverage(&mut report, "village", &reply);
++        for (key, expected) in [
++            ("host_frames", 6.0),
++            ("paired_frames", 5.0),
++            ("terrain_paired_frames", 4.0),
++            ("paired_terrain_intervals", 1.0),
++            ("elapsed_ms", 100.0),
++        ] {
++            assert_eq!(
++                report.metrics[&format!("cafe.village.{key}")].mean,
++                expected
++            );
++        }
++        assert_eq!(frames_of(&reply, "village", 0).unwrap().frames, 1);
++        reply["frame_ms"] = serde_json::json!([]);
++        assert!(frames_of(&reply, "village", 0).is_err());
++    }
++
+     #[test]
+     fn hosted_cancel_unblocks_a_pending_command_without_writing_a_result() {
+         let (requests, game) = mpsc::channel::<Request>();
+@@ -1318,7 +1430,19 @@ mod tests {
+                             ["-960", "125", "80", "-960", "125", "272", "12", "35"]
+                         );
+                         assert!(!diagnostic || scene_statuses >= 4);
+-                        json!({"frame_ms": [33.0, 36.0, 40.0], "cpu_ms": [21.0, 22.0, 25.0]})
++                        let mut reply = json!({
++                            "frame_ms": [33.0, 36.0, 40.0],
++                            "cpu_ms": [21.0, 22.0, 25.0]
++                        });
++                        if diagnostic {
++                            reply["cafe_flight_coverage"] = json!({
++                                "host_frames": 6,
++                                "paired_frames": 5,
++                                "terrain_paired_frames": 4,
++                                "elapsed_ms": 12017.0
++                            });
++                        }
++                        reply
+                     }
+                     _ => json!({"ok": true}),
+                 };
+@@ -1343,6 +1467,11 @@ mod tests {
+             "village"
+         };
+         assert_eq!(report.conditions.scenario.as_deref(), Some(expected));
++        if diagnostic {
++            assert_eq!(report.metrics["cafe.village.host_frames"].mean, 6.0);
++            assert_eq!(report.metrics["cafe.village.terrain_paired_frames"].mean, 4.0);
++            assert_eq!(report.metrics["cafe.village.paired_terrain_intervals"].mean, 3.0);
++        }
+         if diagnostic {
+             assert!(report.label.as_deref().unwrap().contains("Diagnostic"));
+             assert_eq!(
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 7bcd99ff70a5d7efa750f5af9c03d23cb66327a6..53ce4fa6f3d2472fd0ef6c01c88c434d3c3f3b79 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -103,7 +103,8 @@ impl Game<'_> {
+         };
+         flight.tick_ms.push(tick_ms);
+         let flight = &*flight;
+-        let t = (flight.started.elapsed().as_secs_f64() / flight.seconds).min(1.0);
++        let elapsed = flight.started.elapsed();
++        let t = (elapsed.as_secs_f64() / flight.seconds).min(1.0);
+         let (a, b) = (flight.from, flight.to);
+         let d = [b.x - a.x, b.y - a.y, b.z - a.z];
+         let at = Vec3::new(a.x + d[0] * t, a.y + d[1] * t, a.z + d[2] * t);
+@@ -128,6 +129,8 @@ impl Game<'_> {
+             summary["tick_ms_max"] = flight.tick_ms.iter().copied().fold(0.0, f32::max).into();
+             if flight.raw {
+                 self.add_raw_series(&mut summary);
++                #[cfg(target_os = "cafe")]
++                self.cafe_benchmark.coverage.append_to_reply(&mut summary, elapsed);
+             }
+             let _ = flight.reply.send(summary.to_string());
+         }
+@@ -197,7 +200,7 @@ impl Game<'_> {
+         self.frame_stats.reset();
+         #[cfg(target_os = "cafe")]
+         {
+-            self.cafe_benchmark.latest_start = None;
++            self.cafe_benchmark.coverage = Default::default();
+         }
+         if let Some(culler) = self.occlusion.asynchronous() {
+             culler.reset_stats();
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 8d38bafe70d201fba8bf841cf04aeb1a23af053a..b3e8c7cf611c8e5abab54236e6bd38cbd5cb69be 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -554,7 +554,7 @@ pub(super) struct BenchmarkFrames {
+     pub(super) partial_frames: u64,
+     pub(super) world_resolution: Option<horizon_client::presentation::WorldResolution>,
+     pub(super) display_sizes: [[u32; 2]; 2],
+-    pub(super) latest_start: Option<Instant>,
++    pub(super) coverage: horizon_client::benchmark::CafeFlightCoverage,
+ }
+ 
+ /// Cafe-owned driver for Horizon's original Game after a local title
+@@ -871,9 +871,9 @@ impl CafeGameSession<'_> {
+             if paired && phase == performance::Phase::Title {
+                 state.title_presented = true;
+             }
+-            state.terrain_presented = paired
+-                && phase == performance::Phase::Gameplay
++            let gameplay_terrain = phase == performance::Phase::Gameplay
+                 && work.terrain_sections.iter().all(|sections| *sections > 0);
++            state.terrain_presented = paired && gameplay_terrain;
+             state.terrain_camera = work.terrain_camera.filter(|_| state.terrain_presented);
+             state.terrain_sections = if state.terrain_presented {
+                 work.terrain_sections
+@@ -883,17 +883,15 @@ impl CafeGameSession<'_> {
+             if state.terrain_presented {
+                 state.omitted_pass_mask |= work.omitted_pass_mask;
+                 state.partial_frames += u64::from(work.omitted_pass_mask != 0);
+-                if let Some(previous) = state.latest_start.replace(start) {
+-                    self.game
+-                        .frame_stats
+-                        .record(start.duration_since(previous).as_secs_f32() * 1000.0);
+-                    self.game.frame_stats.record_cpu(
+-                        end.duration_since(start)
+-                            .saturating_sub(work.gpu_wait)
+-                            .as_secs_f32()
+-                            * 1000.0,
+-                    );
+-                }
++            }
++            if let Some(interval) = state.coverage.observe(start, paired, gameplay_terrain) {
++                self.game.frame_stats.record(interval.as_secs_f32() * 1000.0);
++                self.game.frame_stats.record_cpu(
++                    end.duration_since(start)
++                        .saturating_sub(work.gpu_wait)
++                        .as_secs_f32()
++                        * 1000.0,
++                );
+             }
+         }
+         let after = totals(&self.game, backend);

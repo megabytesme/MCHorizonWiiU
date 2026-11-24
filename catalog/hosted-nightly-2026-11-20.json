@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "1f405190dbff9428f2585cee478efc0d9fb0307c",
+  "output_tree": "72e190467ce50467cdb6bf87052cc7261b49dfc8",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -400,12 +400,18 @@
       "sha256": "213bcd826e561480aa8a6ea2037bf81df986d8662cf302a89f2c478a7e5ecffd",
       "input_tree": "7121481191e57a91d94edaa7908e7e1c53882615",
       "output_tree": "1f405190dbff9428f2585cee478efc0d9fb0307c"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0066-account-benchmark-terrain-coverage.patch",
+      "sha256": "cda290a85ab1a1269c5a3e76751d4cc7c296f695fe2722fc9865483020b3b193",
+      "input_tree": "1f405190dbff9428f2585cee478efc0d9fb0307c",
+      "output_tree": "72e190467ce50467cdb6bf87052cc7261b49dfc8"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.26",
-    "patch": "0.5.0-rc.26"
+    "client": "0.8.0-rc.27",
+    "patch": "0.5.0-rc.27"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
