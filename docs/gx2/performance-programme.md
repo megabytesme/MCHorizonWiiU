@@ -19,14 +19,47 @@ The single-core and multi-core paths did not complete gameplay acceptance.
 Physical RC 21 reached Night. Matched physical gameplay performance is
 pending, including a measured stock Full Performance baseline.
 
+The stock Full Performance saved-world replay used NSS-patched Cemu in
+forced interpreter mode and retained 54 gameplay submissions, all partial.
+Median host pacing was 2,943.249 ms, p95 was 3,197.168 ms, and p99/max was
+3,402.762 ms. The median frame submitted 8 section draws and 16,152 indices
+across both displays. Terrain was still streaming. The replay confirmed
+movement, durable save, audible AX PCM in the guest diagnostics, Night
+restoration and recovery of 234,880,920 bytes in the GX2 bulk heap. The
+archived distance-12 run supplies the separate RC 21 same-process reopen
+evidence. Short standalone fixtures overlapped loading in the stock replay,
+so its startup wall time is excluded from matched comparisons.
+
+## Full Performance on RC 21
+
+The pinned `graphics_preset.rs` also enables the stock sky, fog, weather and
+animated textures. The status below describes the assembled RC 21 renderer.
+
+| Stock setting | Value | Cafe path |
+| --- | --- | --- |
+| Render and simulation distance | 6 and 5 | Applies to client streaming and the integrated server view and simulation. |
+| Resolution scale and DRS | 75%, off | The world draws into the fitted WHB viewport at native resolution. RC 21 ignores the stored scale for GX2. |
+| Clouds | Off | The setting gates shared frame data. Cafe has no native cloud draw. |
+| Particles | Minimal (2) | Applies to shared particle preparation. Cafe has no native particle draw. |
+| Entity shadows and distance | Off and 50% | Settings reach shared preparation and entity distance reaches integrated tracking. Cafe omits the native entity passes. |
+| Biome blend, leaf cutout and opaque ice | 0, off, on | These reach the shared mesher used by native solid terrain. |
+| Mipmap levels | 0 | The native atlas has one point-sampled level at every setting. |
+| Weather radius | 3 | Caps the shared weather geometry. Cafe omits native precipitation. |
+| LOD and FXAA | 0 and off | These features are inactive in Cafe. |
+
+The existing Cemu harness defaults to distance 12 for streaming regression.
+Run `prepare --keep-fixture-distances` with separately prepared fixture files
+to retain the 6/5 reference settings. Use the same options-file hashes, seed,
+camera and resources in each matched run.
+
 ## Milestones
 
 | Work | Current status |
 | --- | --- |
-| Capture and live diagnostics | HZP2 extends the existing ring with output outcomes, observed flip progress, output surface sizes and GX2 submission spans. The existing `cafe_performance` authenticated status and serial windows remain available. |
-| Renderer parity | The [coverage inventory](coverage.md) tracks stock passes. Initial implementation targets the stock selection outline and preserves the same indexed solid terrain and HUD. |
-| Fixed scaling and DRS | The RC 21 world uses the fitted display rectangles at native resolution. Fixed native color/depth targets and an upscale before native HUD are in development. Automatic changes require a separately qualified timing signal. |
-| Benchmark | A hosted adaptation of the existing Horizon runner is in development. Benchmark results require a verified render workload and disclosure of omitted passes. |
+| Capture and live diagnostics | HZP2 extends the existing ring with output outcomes, observed flip progress, output surface sizes and GX2 submission spans. Authenticated `cafe_performance` status and serial windows retain host pacing tails, paired and partial counts, and effective world dimensions. |
+| Renderer parity | The [coverage inventory](coverage.md) tracks stock passes. Isolated interpreter diagnostics verify selection, crumbling, basic first-person geometry and native sorted translucent terrain on both outputs. The integrated candidate retains partial reporting for unsupported first-person materials and world passes. |
+| Fixed scaling and DRS | Fixed world scaling uses a bounded pair of native color/depth surfaces per display and composites before native-size HUD. Host tests drive the original controller through 75–100% on synthetic GPU samples. Without qualified GPU timing on Cafe, automatic mode holds the configured floor. |
+| Benchmark | Night calls the original runner for Standard, Village, Forest, Ocean, Mountain and Travel. The benchmark uses stock Full Performance with an owned disposable world and requires terrain on both outputs. Reports identify omitted passes and distinguish configured and effective dimensions. Host queue tests and the Cafe Rust check passed for the benchmark source. |
 | World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. Compare measured submission and waits on matched workloads before changing these paths. |
 
 Keep stock Full Performance, experimental Wii U tuning and distance-12
@@ -56,3 +89,31 @@ comparison and retain matching output captures outside the timed window.
 
 Keep emulator and hardware evidence separate. Private receipts, captures,
 logs, resources, fixtures and packages stay outside Git.
+
+## Capture cost
+
+The [native capture fixture](../../wiiu/diagnostics/gx2_profile/README.md)
+completed four forced-interpreter runs in off/on/on/off order. It recorded
+3 and 5 µs per loop inside recorder calls with capture disabled, and 14 and
+15 µs enabled. Whole-loop means were 16.80–16.90 ms with WHB pacing.
+Both enabled runs wrote a valid 126-record HZP2 capture. The decoder
+distinguished Night, loading, complete gameplay, partial gameplay and TV-only
+outcomes. This measures a clear-and-copy fixture. Matched in-game and
+physical capture overhead are pending.
+
+## Hosted benchmark
+
+Open **Settings → Benchmark** in Night, choose a scenario, then use
+**Start Game**. The run uses an offline profile, reads the selected
+installation's prepared resources and writes report files under its
+`benchmarks` directory. A marked `.benchmark-run` directory owns its scratch
+world. Minus cancels the benchmark and initiates the hosted save barrier
+before returning to Night. The standard version 1 report includes Cafe-specific
+metrics for the native world dimensions and partial passes. Desktop A/B
+switches and GPU timestamp metrics are unavailable in this launcher flow.
+
+For acceptance, check that the benchmark reaches its selected scene, submits
+terrain on both outputs, completes its route, writes a standard report and
+restores Night. Repeat with Minus during loading and timed gameplay. Record
+CPU mode, package and fixture hashes alongside the report. The focused host
+fixture exercises the report and pending-command cancellation independently.

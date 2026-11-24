@@ -1,5 +1,25 @@
 # Hosted GX2 renderer coverage
 
+## Current native candidate
+
+The [performance programme](performance-programme.md) records the exact
+RC 21 baseline and current validation. These changes are part of the hosted
+patch recipe. Host conversion tests and isolated Cemu fixtures cover the
+specific cases below. Hosted scene and physical acceptance remain separate.
+
+| Stage | Current Cafe implementation | Evidence and open checks |
+| --- | --- | --- |
+| Selection outline | Original frame edges, camera-relative projection and fog. Bounded per-output GX2 vertex storage and stock contrast ordering. | Both outputs passed occlusion and contrast pixel checks. Aim at full blocks, fences and hidden edges in hosted gameplay. |
+| Crumbling | Shared solid and translucent crack quads, original packed stage coordinates, the resident HUD atlas and separate multiply passes. | Both outputs passed independent stage, wrap, alpha and blend checks. Verify coplanar world faces and animated break progression in gameplay. |
+| First-person arm and items | Shared posed quads, hand projection, separate depth reset, resident GUI atlas and stock terrain lightmap. | Both outputs passed depth reset, atlas update and alpha checks. Verify both hands, bows, shields and maps in gameplay. Glint and special material coverage remains partial. |
+| Translucent terrain | Shared mesh classification and camera-sector sorting, per-output visibility, texture/tint alpha and stock classic depth policy. Counts sorted indices and CPU quad centers against shared terrain residency. | Both outputs passed blend, occlusion and discard pixels. Verify interacting water, glass and ice, motion and memory recovery in an actual world. |
+| World scaling | Separate fitted color/depth buffers at 50–99%, direct WHB at 100%, bilinear composition before native HUD. Hard 24 MiB surface budget. | Both outputs passed 100→75→50→95→75, margins, orientation, HUD color and budget rejection. Integrated touch and physical tuning are pending. |
+| Remaining stock stages | Terrain animation and mipmaps, world entities and block entities, sky and weather, particles, borders, special overlays and stock world post-processing still need native coverage. | See the detailed rows below for upstream inputs and acceptance scenes. HDR10, arbitrary shader packs, frame generation and desktop compute techniques are outside the stock target. |
+
+The checkpoint and historical matrices below describe their named earlier
+builds. Their missing outline, crumbling, hand and translucent terrain rows
+remain useful as references for those builds.
+
 Baseline port `cf2ac8cbbad809a878e59aa4b20288a551294283`, hosted tree
 `14592e87cc28b392b2a19a6f159766352ad46a0c`, upstream Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034`. Source references to

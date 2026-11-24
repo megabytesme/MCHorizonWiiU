@@ -1,0 +1,824 @@
+diff --git a/crates/horizon-client-render/src/graphics.rs b/crates/horizon-client-render/src/graphics.rs
+index 75e8e73001aa4385790dae494e7bb15619d4ee1f..a9f9c1d74a78fec8a3e26bb177ab5c40cf293f1f 100644
+--- a/crates/horizon-client-render/src/graphics.rs
++++ b/crates/horizon-client-render/src/graphics.rs
+@@ -5,6 +5,8 @@
+ use std::{fs, path::Path};
+ 
+ pub const FILE: &str = "horizon-graphics.txt";
++/// Cafe renders directly at 100% and scales down its world surfaces.
++pub const RESOLUTION_SCALE_MAX: u32 = if cfg!(target_os = "cafe") { 100 } else { 200 };
+ /// Written beside it before a window's HDR output is switched on, naming the graphics driver it
+ /// starts on ([`hdr_marker_text`]), and removed once the first HDR frame is presented. Found at
+ /// the next start, it means HDR output took the game down there: HDR output is held back on
+@@ -1166,7 +1168,7 @@ impl Graphics {
+                     }
+                 }
+                 "workers" => g.workers = number(g.workers).min(64),
+-                "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
++                "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, RESOLUTION_SCALE_MAX),
+                 "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
+                 "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
+                 "fxaa" => g.fxaa = flag(g.fxaa),
+diff --git a/crates/horizon-client-render/src/graphics_ui.rs b/crates/horizon-client-render/src/graphics_ui.rs
+index 24a577e296f396e8773bd081fbb4e3c953dddb1e..ab3e4a434d263070fa60df66fffad5a42ceb0c0f 100644
+--- a/crates/horizon-client-render/src/graphics_ui.rs
++++ b/crates/horizon-client-render/src/graphics_ui.rs
+@@ -9,7 +9,7 @@ use crate::{
+     graphics::{
+         EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrLook,
+         HdrMode, HdrSetup as Setup, LeafCullingMode, Overlay, Pacing, ParallelTickMode,
+-        ParticleCullingMode, PresentMode, Preset, Upscaling,
++        ParticleCullingMode, PresentMode, Preset, RESOLUTION_SCALE_MAX, Upscaling,
+     },
+     graphics_style::Cost,
+     lang,
+@@ -823,7 +823,9 @@ impl H {
+                 Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
+             }
+             H::Workers => Some(g.workers as f32 / max_workers() as f32),
+-            H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
++            H::ResolutionScale => {
++                Some((g.resolution_scale as f32 - 50.0) / (RESOLUTION_SCALE_MAX - 50) as f32)
++            }
+             H::TargetFps => Some((g.target_fps as f32 - 30.0) / 210.0),
+             H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
+             // Auto, then 10..480 by 10.
+@@ -1028,7 +1030,10 @@ impl H {
+                 g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
+             }
+             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
+-            H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
++            H::ResolutionScale => {
++                let steps = (RESOLUTION_SCALE_MAX - 50) / 5;
++                g.resolution_scale = 50 + (v * steps as f32).round() as u32 * 5;
++            }
+             H::TargetFps => g.target_fps = (30.0 + (v * 42.0).round() * 5.0) as u32,
+             H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
+             H::HdrPaperWhite => g.hdr_paper_white = crate::graphics::nits_at(v),
+diff --git a/crates/horizon-client-render/src/presentation.rs b/crates/horizon-client-render/src/presentation.rs
+index 0946cf4d2fd146d9aef799f17ef688b9cf575464..147c64283b03ab7107331667c10e7406b2be0fcd 100644
+--- a/crates/horizon-client-render/src/presentation.rs
++++ b/crates/horizon-client-render/src/presentation.rs
+@@ -15,6 +15,15 @@ use crate::{
+     sprites::SpriteAnimation,
+ };
+ 
++/// Effective world rendering dimensions on a dual-display backend, in TV and GamePad order.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct WorldResolution {
++    pub requested_scale: u32,
++    pub effective_scale: u32,
++    pub dimensions: [[u32; 2]; 2],
++    pub surface_bytes: u32,
++}
++
+ /// Surface operations used by Horizon's frame loop, independent of the GPU API.
+ pub trait PresentationBackend {
+     /// Active surface size in physical pixels.
+@@ -27,6 +36,10 @@ pub trait PresentationBackend {
+     fn recreate_surface(&mut self) -> Result<()>;
+     fn set_present_mode(&mut self, vsync: bool, mode: PresentMode);
+     fn set_gamma(&mut self, gamma: f32);
++    fn set_world_resolution_scale(&mut self, _percent: u32) {}
++    fn world_resolution(&self) -> Option<WorldResolution> {
++        None
++    }
+ }
+ 
+ /// CPU-supplied HUD resources and the texture limit needed when preparing them.
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index bab24aaddf66e972a0595943b561d975f86bcfbb..6612678524394e74bd909390bdac8a9c1e75f7fd 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -7900,6 +7900,10 @@ impl Game<'_> {
+         elapsed: Duration,
+         backend: &mut dyn CafeGameBackend,
+     ) -> Result<bool> {
++        backend.set_world_resolution_scale(frame_autotune::world_scale(
++            &self.settings.horizon,
++            &self.dynamic_resolution,
++        ));
+         let mut built = false;
+         let rendered = self.render_to(Some(backend.viewport_size()), |_, frame| {
+             built = true;
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index dd97ac95442dfba2b9cd6fd7e2ce180a30d7641c..2fc3dc4f173fda517861fc52ad8b59ab37526c6e 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -63,9 +63,22 @@ add_custom_command(
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
++set(WORLD_SCALE_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/world_scale_gfd.o")
++add_custom_command(
++   OUTPUT "${WORLD_SCALE_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/world_scale.vert"
++      -ps "${CMAKE_CURRENT_SOURCE_DIR}/world_scale.frag" -o world_scale.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common world_scale.gsh world_scale_gfd.o
++   DEPENDS world_scale.vert world_scale.frag
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
++set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++
+ add_library(horizon_wiiu_loading_host STATIC
+-   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c
+-   "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}" "${OUTLINE_GFD_OBJECT}")
++   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c
++   "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
++   "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index f004d7fac0d0e85a5d69045236d71c92499ea31a..fc26e163ccc6212c0a769fc38191bf05b032a467 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -21,7 +21,7 @@ use horizon_client::{
+         CafeScreenshot, CafeScreenshotOutput, CafeTerrainBuffers,
+     },
+     gfx::{Frame, panorama},
+-    presentation::{HudBackend, PresentationBackend, TerrainBackend},
++    presentation::{HudBackend, PresentationBackend, TerrainBackend, WorldResolution},
+ };
+ use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_optifine::cit::Factor;
+@@ -38,6 +38,9 @@ use std::{
+     time::{Duration, Instant},
+ };
+ 
++mod world_scale;
++use world_scale::WorldScale;
++
+ // Set HORIZON_WIIU_PROFILE_GX2=1 in the build environment to enable the
+ // five-second aggregate report. The default binary does no profiling work.
+ const GX2_PROFILE_ENABLED: bool = match option_env!("HORIZON_WIIU_PROFILE_GX2") {
+@@ -574,6 +577,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_camera: SectionKey,
+     terrain_views: [Option<TerrainProjection>; 2],
+     frame_work: CafeFrameWork,
++    world_scale: WorldScale,
++    requested_world_scale: u32,
+     terrain_ranks: Option<std::collections::BTreeMap<terrain_residency::Priority, usize>>,
+     next_terrain_retry: Option<Instant>,
+     terrain_allocation_backoff: Option<Instant>,
+@@ -635,6 +640,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_camera: (0, 0, 0),
+             terrain_views: [None, None],
+             frame_work: CafeFrameWork::default(),
++            world_scale: WorldScale::default(),
++            requested_world_scale: 100,
+             terrain_ranks: None,
+             next_terrain_retry: None,
+             terrain_allocation_backoff: None,
+@@ -1780,6 +1788,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+     }
+     fn release_surface(&mut self) {
++        self.world_scale.release();
+         self.clear_native_sections();
+         self.translucent_terrain_omitted.clear();
+         self.terrain = None;
+@@ -1801,6 +1810,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.gamma = gamma;
+     }
+ 
++    fn set_world_resolution_scale(&mut self, percent: u32) {
++        self.requested_world_scale = percent;
++    }
++
++    fn world_resolution(&self) -> Option<WorldResolution> {
++        self.world_scale.resolution()
++    }
++
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         self.last_frame_partial = false;
+         let mut unsupported: Vec<_> = if frame.title {
+@@ -1811,18 +1828,21 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         if !frame.title && !self.translucent_terrain_omitted.is_empty() {
+             unsupported.push((1 << 20, "translucent terrain"));
+         }
+-        if self
+-            .target_viewports()
+-            .iter()
+-            .any(|r| r[2] == 0 || r[3] == 0)
+-        {
++        let targets = self.target_viewports();
++        if targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+             return Err("Game frame viewport does not fit TV and DRC".into());
+         }
++        if frame.title {
++            self.world_scale.release();
++        } else {
++            self.world_scale.prepare(self.requested_world_scale, targets);
++        }
+         struct Draw<'a, 'frame, 'shader> {
+             presenter: &'a mut Gx2LoadingPresenter<'shader>,
+             frame: &'a Frame<'frame>,
+             terrain_min_y: Option<i32>,
+             targets: [[u32; 4]; 2],
++            clear: [f32; 4],
+             result: Result<(), &'static str>,
+             profile: Gx2ProfileDelta,
+         }
+@@ -1840,6 +1860,30 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let index = target as usize;
+             let rect = draw.targets[index];
+             let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
++            if !draw.frame.title && draw.presenter.terrain.is_some() {
++                // Wait once before drawing all retained section buffers;
++                // projection uniforms change per draw, geometry buffers do not.
++                let wait_start = Instant::now();
++                {
++                    let _wait = Span::new(Stage::TerrainWait);
++                    unsafe { horizon_gx2_terrain_wait_idle() };
++                    if index == 0 {
++                        draw.presenter.finish_retired_after_wait()
++                    }
++                }
++                draw.profile.terrain_wait_ns = draw
++                    .profile
++                    .terrain_wait_ns
++                    .saturating_add(elapsed_ns(wait_start));
++            }
++            let world_target = draw.presenter.world_scale.bind(target, rect, &draw.clear);
++            let (world_width, world_height, world_rect) = match &world_target {
++                Some(binding) => {
++                    let [w, h] = binding.size;
++                    (w, h, [0, 0, w, h])
++                }
++                None => (width, height, rect),
++            };
+             if draw.frame.title {
+                 if let Some(panorama) = draw.presenter.panorama.as_mut() {
+                     if let Err(error) = unsafe {
+@@ -1856,21 +1900,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 .map(|terrain| terrain.native)
+             {
+                 let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+-                // Wait once before drawing all retained section buffers;
+-                // projection uniforms change per draw, geometry buffers do not.
+-                let wait_start = Instant::now();
+-                {
+-                    let _wait = Span::new(Stage::TerrainWait);
+-                    unsafe { horizon_gx2_terrain_wait_idle() };
+-                    if index == 0 {
+-                        draw.presenter.finish_retired_after_wait()
+-                    }
+-                }
+-                draw.profile.terrain_wait_ns = draw
+-                    .profile
+-                    .terrain_wait_ns
+-                    .saturating_add(elapsed_ns(wait_start));
+-                let _terrain_span =
++                let terrain_span =
+                     Span::new([Stage::SolidTerrainTv, Stage::SolidTerrainDrc][index]);
+                 let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                 let projection = draw
+@@ -1915,12 +1945,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         horizon_gx2_terrain_draw(
+                             terrain.as_ptr(),
+                             section.native.as_ptr(),
+-                            width,
+-                            height,
+-                            rect[0],
+-                            rect[1],
+-                            rect[2],
+-                            rect[3],
++                            world_width,
++                            world_height,
++                            world_rect[0],
++                            world_rect[1],
++                            world_rect[2],
++                            world_rect[3],
+                             clip_rows.rows.as_ptr().cast(),
+                             section_origin.as_ptr(),
+                             fog_color.as_ptr(),
+@@ -1955,6 +1985,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 );
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
++                drop(terrain_span);
+ 
+                 // The current terrain pass stops at opaque and cutout surfaces.
+                 // Both outline phases fall here until translucent terrain draws.
+@@ -1967,14 +1998,21 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             &fallback
+                         }
+                     };
+-                    if let Err(error) =
+-                        draw.presenter.outline.draw(draw.frame, outline_projection, target, rect)
+-                    {
++                    if let Err(error) = draw.presenter.outline.draw(
++                        draw.frame,
++                        outline_projection,
++                        target,
++                        world_rect,
++                        rect[2],
++                    ) {
+                         draw.result = Err(error);
+                         return -1;
+                     }
+                 }
+             }
++            if let Some(world_target) = world_target {
++                world_target.composite();
++            }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;
+@@ -2097,13 +2135,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let ([r, g, b, _], _) = horizon_client::gfx::fog_uniform(frame);
+             [r, g, b, 1.0]
+         };
+-        let targets = self.target_viewports();
+         let terrain_min_y = self.terrain_min_y;
+         let mut draw = Draw {
+             presenter: self,
+             frame,
+             terrain_min_y,
+             targets,
++            clear,
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
+         };
+diff --git a/wiiu/loading_host/outline.rs b/wiiu/loading_host/outline.rs
+index d6bf38b0ffdf1c00c617328cc0e723dded0f7326..ce57ca34d6df9825bc4e555eec497e8ea42f1582 100644
+--- a/wiiu/loading_host/outline.rs
++++ b/wiiu/loading_host/outline.rs
+@@ -35,6 +35,7 @@ impl Outline {
+         projection: &TerrainProjection,
+         target: u32,
+         rect: [u32; 4],
++        output_width: u32,
+     ) -> Result<(), &'static str> {
+         if frame.outline.is_empty() {
+             return Ok(());
+@@ -42,6 +43,7 @@ impl Outline {
+ 
+         let [_, _, width, height] = rect;
+         let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
++        let raster_scale = width as f32 / output_width.max(1) as f32;
+         let edges = &frame.outline[..frame.outline.len().min(geometry::MAX_EDGES)];
+         self.vertices.clear();
+         let mut add_stroke = |argb, stroke_width| {
+@@ -52,7 +54,7 @@ impl Outline {
+                     projection.camera,
+                     |position| projection.clip.transform(position),
+                     [width, height],
+-                    stroke_width * scale,
++                    stroke_width * scale * raster_scale,
+                     argb,
+                 );
+             }
+@@ -68,7 +70,7 @@ impl Outline {
+         } else {
+             0x6600_0000
+         };
+-        let count = add_stroke(custom.unwrap_or(default), outline_width(width));
++        let count = add_stroke(custom.unwrap_or(default), outline_width(output_width));
+         if count == 0 {
+             return Ok(());
+         }
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7f1bd40d08a0807940269f625f5eee74c49425c
+--- /dev/null
++++ b/wiiu/loading_host/world_scale.c
+@@ -0,0 +1,234 @@
++#include "world_scale.h"
++
++#include <coreinit/memdefaultheap.h>
++#include <coreinit/memexpheap.h>
++#include <gx2/clear.h>
++#include <gx2/draw.h>
++#include <gx2/mem.h>
++#include <gx2/registers.h>
++#include <gx2/sampler.h>
++#include <gx2/surface.h>
++#include <gx2/texture.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <gx2r/surface.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_world_scale_gsh_start[];
++
++typedef struct {
++   GX2ColorBuffer color;
++   GX2DepthBuffer depth;
++   GX2Texture texture;
++} WorldTarget;
++
++typedef struct {
++   float position[2];
++   float uv[2];
++} CompositeVertex;
++
++struct HorizonGx2WorldScale {
++   WorldTarget outputs[2];
++   WHBGfxShaderGroup shader;
++   GX2RBuffer geometry;
++   GX2Sampler sampler;
++   uint32_t texture_slot;
++};
++
++static const GX2RResourceFlags color_flags = GX2R_RESOURCE_BIND_COLOR_BUFFER |
++   GX2R_RESOURCE_BIND_TEXTURE | GX2R_RESOURCE_USAGE_GPU_WRITE |
++   GX2R_RESOURCE_USAGE_GPU_READ | GX2R_RESOURCE_USAGE_FORCE_MEM2;
++static const GX2RResourceFlags depth_flags = GX2R_RESOURCE_BIND_DEPTH_BUFFER |
++   GX2R_RESOURCE_USAGE_GPU_WRITE | GX2R_RESOURCE_USAGE_FORCE_MEM2;
++
++static GX2Surface world_surface(uint32_t width, uint32_t height, GX2SurfaceFormat format)
++{
++   return (GX2Surface){
++      .dim = GX2_SURFACE_DIM_TEXTURE_2D,
++      .width = width,
++      .height = height,
++      .depth = 1,
++      .mipLevels = 1,
++      .format = format,
++      .aa = GX2_AA_MODE1X,
++      .tileMode = GX2_TILE_MODE_DEFAULT,
++   };
++}
++
++static bool preflight_targets(WorldTarget targets[2], const uint32_t dimensions[4])
++{
++   enum { SURFACE_BUDGET = 24 * 1024 * 1024, HEAP_RESERVE = 32 * 1024 * 1024 };
++   GX2Surface *surfaces[] = {&targets[0].color.surface, &targets[0].depth.surface,
++                            &targets[1].color.surface, &targets[1].depth.surface};
++   uint64_t bytes = 0;
++   for (uint32_t i = 0; i < 2; ++i) {
++      const uint32_t width = dimensions[i * 2], height = dimensions[i * 2 + 1];
++      if (!width || !height || width > 1920 || height > 1080) return false;
++      targets[i].color.surface = world_surface(width, height, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
++      targets[i].color.surface.use = GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE;
++      targets[i].depth.surface = world_surface(width, height, GX2_SURFACE_FORMAT_FLOAT_R32);
++      targets[i].depth.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
++   }
++   for (uint32_t i = 0; i < 4; ++i) {
++      GX2Surface *surface = surfaces[i];
++      GX2CalcSurfaceSizeAndAlignment(surface);
++      if (!surface->imageSize || !surface->alignment || surface->alignment > INT32_MAX)
++         return false;
++      bytes += (uint64_t)surface->imageSize + surface->alignment;
++   }
++   if (bytes > SURFACE_BUDGET) return false;
++
++   // WHB's forced MEM2 surfaces use the aligned default allocator. A small
++   // allocation finds the serving heap, which need not be MEM2's base heap.
++   void *probe = MEMAllocFromDefaultHeapEx(64, 64);
++   if (!probe) return false;
++   MEMHeapHandle heap = MEMFindContainHeap(probe);
++   MEMFreeToDefaultHeap(probe);
++   if (heap && heap->tag == MEM_EXPANDED_HEAP_TAG && (heap->flags & MEM_HEAP_FLAG_USE_LOCK)) {
++      const uint32_t free_bytes = MEMGetTotalFreeSizeForExpHeap(heap);
++      // Cemu 2.6 can report zero for this counter even after a successful probe.
++      // The size cap and the allocation results remain in effect in that case.
++      if (free_bytes) {
++         if (free_bytes < bytes + HEAP_RESERVE) return false;
++         for (uint32_t i = 0; i < 4; ++i) {
++            GX2Surface *surface = surfaces[i];
++            uint32_t largest = MEMGetAllocatableSizeForExpHeapEx(heap, (int32_t)surface->alignment);
++            if (largest < surface->imageSize) return false;
++         }
++      }
++   }
++   return true;
++}
++
++static bool create_target(WorldTarget *target)
++{
++   if (!GX2RCreateSurface(&target->color.surface, color_flags)) return false;
++   target->color.viewNumSlices = 1;
++   GX2InitColorBufferRegs(&target->color);
++
++   if (!GX2RCreateSurface(&target->depth.surface, depth_flags)) return false;
++   target->depth.viewNumSlices = 1;
++   target->depth.depthClear = 1.0f;
++   GX2InitDepthBufferRegs(&target->depth);
++
++   // The sampled image is the color surface itself. Only the color view owns it.
++   target->texture.surface = target->color.surface;
++   target->texture.viewNumMips = 1;
++   target->texture.viewNumSlices = 1;
++   target->texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
++   GX2InitTextureRegs(&target->texture);
++   return true;
++}
++
++void horizon_gx2_world_scale_destroy(HorizonGx2WorldScale *scale)
++{
++   if (!scale) return;
++   for (uint32_t i = 0; i < 2; ++i) {
++      WorldTarget *output = &scale->outputs[i];
++      if (output->depth.surface.image) GX2RDestroySurfaceEx(&output->depth.surface, depth_flags);
++      if (output->color.surface.image) GX2RDestroySurfaceEx(&output->color.surface, color_flags);
++   }
++   if (GX2RBufferExists(&scale->geometry)) GX2RDestroyBufferEx(&scale->geometry, 0);
++   WHBGfxFreeShaderGroup(&scale->shader);
++   free(scale);
++}
++
++HorizonGx2WorldScale *horizon_gx2_world_scale_create(const uint32_t dimensions[4],
++                                                    uint32_t *surface_bytes)
++{
++   HorizonGx2WorldScale *scale = calloc(1, sizeof(*scale));
++   if (!scale) return NULL;
++   *surface_bytes = 0;
++   if (!preflight_targets(scale->outputs, dimensions)) goto failure;
++   // Cafe clip space is Y-up. Texture row zero is at the top of the output.
++   static const CompositeVertex triangle[] = {
++      {{-1.0f,  1.0f}, {0.0f, 0.0f}},
++      {{-1.0f, -3.0f}, {0.0f, 2.0f}},
++      {{ 3.0f,  1.0f}, {2.0f, 0.0f}},
++   };
++   if (!WHBGfxLoadGFDShaderGroup(&scale->shader, 0, _binary_world_scale_gsh_start)) goto failure;
++   const GX2PixelShader *pixel = scale->shader.pixelShader;
++   if (pixel->samplerVarCount != 1 || !pixel->samplerVars || !pixel->samplerVars[0].name ||
++       strcmp(pixel->samplerVars[0].name, "uWorld") != 0 ||
++       pixel->samplerVars[0].type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D ||
++       pixel->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       scale->shader.vertexShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto failure;
++   scale->texture_slot = pixel->samplerVars[0].location;
++   if (!WHBGfxInitShaderAttribute(&scale->shader, "aPosition", 0,
++         offsetof(CompositeVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitShaderAttribute(&scale->shader, "aUv", 0,
++         offsetof(CompositeVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitFetchShader(&scale->shader)) goto failure;
++   scale->geometry.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++   scale->geometry.elemSize = sizeof(CompositeVertex);
++   scale->geometry.elemCount = 3;
++   if (!GX2RCreateBuffer(&scale->geometry)) goto failure;
++   void *vertices = GX2RLockBufferEx(&scale->geometry, 0);
++   if (!vertices) goto failure;
++   memcpy(vertices, triangle, sizeof(triangle));
++   GX2RUnlockBufferEx(&scale->geometry, 0);
++   GX2InitSampler(&scale->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
++
++   for (uint32_t i = 0; i < 2; ++i) {
++      if (!create_target(&scale->outputs[i])) goto failure;
++   }
++   for (uint32_t i = 0; i < 2; ++i) {
++      const WorldTarget *output = &scale->outputs[i];
++      *surface_bytes += output->color.surface.imageSize + output->depth.surface.imageSize;
++   }
++   return scale;
++
++failure:
++   horizon_gx2_world_scale_destroy(scale);
++   return NULL;
++}
++
++void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
++                                   const float clear[4])
++{
++   WorldTarget *output = &scale->outputs[target];
++   GX2ClearBuffersEx(&output->color, &output->depth, clear[0], clear[1], clear[2],
++                     clear[3], 1.0f, 0, GX2_CLEAR_FLAGS_DEPTH);
++   GX2SetColorBuffer(&output->color, GX2_RENDER_TARGET_0);
++   GX2SetDepthBuffer(&output->depth);
++   const uint32_t width = output->color.surface.width, height = output->color.surface.height;
++   GX2SetViewport(0, 0, width, height, 0.0f, 1.0f);
++   GX2SetScissor(0, 0, width, height);
++}
++
++void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
++                                  const uint32_t viewport[4], bool composite)
++{
++   GX2SetContextState(target == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
++   GX2SetColorBuffer(target == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer(),
++                     GX2_RENDER_TARGET_0);
++   GX2SetDepthBuffer(target == 0 ? WHBGfxGetTVDepthBuffer() : WHBGfxGetDRCDepthBuffer());
++   if (!composite) return;
++
++   // Order the render-target writes before sampling the same image.
++   WorldTarget *output = &scale->outputs[target];
++   GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE,
++                 output->color.surface.image, output->color.surface.imageSize);
++   const uint32_t x = viewport[0], y = viewport[1], width = viewport[2], height = viewport[3];
++   GX2SetViewport(x, y, width, height, 0.0f, 1.0f);
++   GX2SetScissor(x, y, width, height);
++   GX2SetShaderMode(scale->shader.pixelShader->mode);
++   GX2SetVertexShader(scale->shader.vertexShader);
++   GX2SetPixelShader(scale->shader.pixelShader);
++   GX2SetFetchShader(&scale->shader.fetchShader);
++   GX2RSetAttributeBuffer(&scale->geometry, 0, sizeof(CompositeVertex), 0);
++   GX2SetPixelTexture(&output->texture, scale->texture_slot);
++   GX2SetPixelSampler(&scale->sampler, scale->texture_slot);
++   GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
++   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
++}
+diff --git a/wiiu/loading_host/world_scale.frag b/wiiu/loading_host/world_scale.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff26785a90231f0425710c4ab49347744e6ace27
+--- /dev/null
++++ b/wiiu/loading_host/world_scale.frag
+@@ -0,0 +1,7 @@
++#version 330
++uniform sampler2D uWorld;
++in vec2 vUv;
++out vec4 fragColor;
++void main() {
++    fragColor = texture(uWorld, vUv);
++}
+diff --git a/wiiu/loading_host/world_scale.h b/wiiu/loading_host/world_scale.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4c469573a4a4778c17c10e9cc4e05b04609ec8e
+--- /dev/null
++++ b/wiiu/loading_host/world_scale.h
+@@ -0,0 +1,20 @@
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++typedef struct HorizonGx2WorldScale HorizonGx2WorldScale;
++
++/* All calls belong to the GX2 render thread. Creation and destruction occur
++ * between WHB frames, after WHBGfxFinishRender drained the previous draws. */
++HorizonGx2WorldScale *horizon_gx2_world_scale_create(const uint32_t dimensions[4],
++                                                    uint32_t *surface_bytes);
++void horizon_gx2_world_scale_destroy(HorizonGx2WorldScale *scale);
++
++/* With the selected WHB output active, clear and bind its offscreen target. */
++void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
++                                   const float clear[4]);
++
++/* Restore the WHB output. Upscale the world to the viewport on success. */
++void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
++                                  const uint32_t viewport[4], bool composite);
+diff --git a/wiiu/loading_host/world_scale.rs b/wiiu/loading_host/world_scale.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..468624a5c83edc949c985c8dd7e9977238712150
+--- /dev/null
++++ b/wiiu/loading_host/world_scale.rs
+@@ -0,0 +1,142 @@
++use horizon_client::presentation::WorldResolution;
++use std::{ffi::c_void, ptr::NonNull};
++
++unsafe extern "C" {
++    fn horizon_gx2_world_scale_create(
++        dimensions: *const u32,
++        surface_bytes: *mut u32,
++    ) -> *mut c_void;
++    fn horizon_gx2_world_scale_destroy(scale: *mut c_void);
++    fn horizon_gx2_world_scale_begin(scale: *mut c_void, target: u32, clear: *const f32);
++    fn horizon_gx2_world_scale_end(
++        scale: *mut c_void,
++        target: u32,
++        viewport: *const u32,
++        composite: bool,
++    );
++    fn OSReport(format: *const std::ffi::c_char, ...);
++}
++
++/// Owns the TV and GamePad world surfaces on the same thread as WHB.
++#[derive(Default)]
++pub(super) struct WorldScale {
++    native: Option<NonNull<c_void>>,
++    request: Option<(u32, [[u32; 2]; 2])>,
++    resolution: Option<WorldResolution>,
++}
++
++impl WorldScale {
++    pub(super) fn resolution(&self) -> Option<WorldResolution> {
++        self.resolution
++    }
++
++    pub(super) fn prepare(&mut self, requested_scale: u32, viewports: [[u32; 4]; 2]) {
++        let base = viewports.map(|[_, _, w, h]| [w, h]);
++        let request = Some((requested_scale, base));
++        if self.request == request {
++            return;
++        }
++        // The preceding WHB frame ended with GX2DrawDone. Release the old pair
++        // before allocating the replacement to avoid peaking at two live pairs.
++        self.release();
++        self.request = request;
++        let mut resolution = WorldResolution {
++            requested_scale,
++            effective_scale: 100,
++            dimensions: base,
++            surface_bytes: 0,
++        };
++        let percent = requested_scale.clamp(50, 100);
++        if percent < 100 {
++            let dimensions = base.map(|size| size.map(|n| scaled_dimension(n, percent)));
++            let native = unsafe {
++                horizon_gx2_world_scale_create(
++                    dimensions.as_flattened().as_ptr(),
++                    &mut resolution.surface_bytes,
++                )
++            };
++            self.native = NonNull::new(native);
++            if self.native.is_some() {
++                resolution.effective_scale = percent;
++                resolution.dimensions = dimensions;
++            }
++        }
++        self.resolution = Some(resolution);
++        let [[tv_w, tv_h], [drc_w, drc_h]] = resolution.dimensions;
++        unsafe {
++            OSReport(
++                c"Horizon GX2 world resolution requested_scale=%u effective_scale=%u tv=%ux%u drc=%ux%u surface_bytes=%u\n".as_ptr(),
++                resolution.requested_scale,
++                resolution.effective_scale,
++                tv_w, tv_h, drc_w, drc_h,
++                resolution.surface_bytes,
++            );
++        }
++    }
++
++    pub(super) fn release(&mut self) {
++        if let Some(native) = self.native.take() {
++            unsafe { horizon_gx2_world_scale_destroy(native.as_ptr()) };
++        }
++        self.request = None;
++        self.resolution = None;
++    }
++
++    pub(super) fn bind(
++        &self,
++        target: u32,
++        viewport: [u32; 4],
++        clear: &[f32; 4],
++    ) -> Option<WorldTarget<'_>> {
++        let native = self.native?;
++        let size = self.resolution?.dimensions[target as usize];
++        unsafe { horizon_gx2_world_scale_begin(native.as_ptr(), target, clear.as_ptr()) };
++        Some(WorldTarget {
++            native,
++            target,
++            viewport,
++            size,
++            composite: false,
++            _owner: self,
++        })
++    }
++}
++
++fn scaled_dimension(pixels: u32, percent: u32) -> u32 {
++    ((u64::from(pixels) * u64::from(percent) + 50) / 100).max(1) as u32
++}
++
++impl Drop for WorldScale {
++    fn drop(&mut self) {
++        self.release();
++    }
++}
++
++/// Restores the WHB output even if an intervening world pass fails.
++pub(super) struct WorldTarget<'a> {
++    native: NonNull<c_void>,
++    target: u32,
++    viewport: [u32; 4],
++    pub(super) size: [u32; 2],
++    composite: bool,
++    _owner: &'a WorldScale,
++}
++
++impl WorldTarget<'_> {
++    pub(super) fn composite(mut self) {
++        self.composite = true;
++    }
++}
++
++impl Drop for WorldTarget<'_> {
++    fn drop(&mut self) {
++        unsafe {
++            horizon_gx2_world_scale_end(
++                self.native.as_ptr(),
++                self.target,
++                self.viewport.as_ptr(),
++                self.composite,
++            );
++        }
++    }
++}
+diff --git a/wiiu/loading_host/world_scale.vert b/wiiu/loading_host/world_scale.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..367bd6f057c780855b6c2ff10dd3c09ebe854bc7
+--- /dev/null
++++ b/wiiu/loading_host/world_scale.vert
+@@ -0,0 +1,8 @@
++#version 330
++layout(location = 0) in vec2 aPosition;
++layout(location = 1) in vec2 aUv;
++out vec2 vUv;
++void main() {
++    gl_Position = vec4(aPosition, 0.0, 1.0);
++    vUv = aUv;
++}

@@ -1,0 +1,1539 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index 9723f6ed265a823db9d23ff8eea37b28f2227492..efd59206544313ded4f5a99a93f289ee6de001e3 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -176,7 +176,7 @@ pub fn start(requests: Sender<Request>, setup: Setup) {
+     thread::Builder::new()
+         .name("horizon-benchmark".into())
+         .spawn(move || {
+-            let control = Control(requests);
++            let control = Control::new(requests);
+             match run(&control, setup) {
+                 Ok(path) => println!("Horizon: benchmark report {}", path.display()),
+                 Err(e) => eprintln!("Horizon: benchmark failed: {e}"),
+@@ -186,21 +186,143 @@ pub fn start(requests: Sender<Request>, setup: Setup) {
+         .expect("spawn the benchmark thread");
+ }
+ 
+-struct Control(Sender<Request>);
++/// Status messages from the built-in benchmark driver to the Cafe host.
++pub enum Progress {
++    LoadingWorld,
++    LoadingScene(String),
++    MeasuringScene(String),
++    Holding,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++pub struct HostedRun {
++    progress: mpsc::Receiver<Progress>,
++    completed: mpsc::Receiver<Result<PathBuf, String>>,
++    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
++    worker: Option<thread::JoinHandle<()>>,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl HostedRun {
++    pub fn start(requests: Sender<Request>, setup: Setup) -> std::io::Result<Self> {
++        let (result, completed) = mpsc::sync_channel(1);
++        let (progress_tx, progress) = mpsc::channel();
++        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let control = Control {
++            requests,
++            progress: Some(progress_tx),
++            cancelled: Some(cancelled.clone()),
++        };
++        let worker = thread::Builder::new()
++            .name("horizon-benchmark".into())
++            .spawn(move || {
++                let _ = result.send(run(&control, setup));
++            })?;
++        Ok(Self {
++            completed,
++            progress,
++            cancelled,
++            worker: Some(worker),
++        })
++    }
++
++    pub fn progress(&self) -> Option<Progress> {
++        self.progress.try_iter().last()
++    }
++
++    pub fn completed(&self) -> Option<Result<PathBuf, String>> {
++        match self.completed.try_recv() {
++            Ok(result) => Some(result),
++            Err(mpsc::TryRecvError::Empty) => None,
++            Err(mpsc::TryRecvError::Disconnected) => Some(Err("benchmark worker stopped".into())),
++        }
++    }
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl Drop for HostedRun {
++    fn drop(&mut self) {
++        self.cancelled
++            .store(true, std::sync::atomic::Ordering::Relaxed);
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
++struct Control {
++    requests: Sender<Request>,
++    progress: Option<Sender<Progress>>,
++    cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
++}
+ 
+ impl Control {
++    fn new(requests: Sender<Request>) -> Self {
++        Self {
++            requests,
++            progress: None,
++            cancelled: None,
++        }
++    }
++
++    fn progress(&self, progress: impl FnOnce() -> Progress) {
++        if let Some(output) = &self.progress {
++            let _ = output.send(progress());
++        }
++    }
++
++    fn check_cancelled(&self) -> Result<(), String> {
++        if self
++            .cancelled
++            .as_ref()
++            .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Relaxed))
++        {
++            return Err("benchmark cancelled".into());
++        }
++        Ok(())
++    }
++
++    fn settle(&self, duration: Duration) -> Result<(), String> {
++        if self.cancelled.is_none() {
++            thread::sleep(duration);
++            return Ok(());
++        }
++        let deadline = Instant::now() + duration;
++        loop {
++            self.check_cancelled()?;
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            if remaining.is_zero() {
++                return Ok(());
++            }
++            thread::sleep(remaining.min(Duration::from_millis(100)));
++        }
++    }
++
+     fn call(&self, line: &str) -> Result<Value, String> {
++        self.check_cancelled()?;
+         let (reply, response) = mpsc::channel();
+-        self.0
++        self.requests
+             .send(Request {
+                 line: line.to_owned(),
+                 reply,
+             })
+             .map_err(|_| "the game has exited".to_owned())?;
+         // Flights and loads reply when they finish.
+-        let text = response
+-            .recv_timeout(LOAD_LIMIT)
+-            .map_err(|_| format!("{line}: no reply"))?;
++        let deadline = Instant::now() + LOAD_LIMIT;
++        let text = loop {
++            self.check_cancelled()?;
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            let interval = if self.cancelled.is_some() {
++                remaining.min(Duration::from_millis(100))
++            } else {
++                remaining
++            };
++            match response.recv_timeout(interval) {
++                Ok(text) => break text,
++                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
++                Err(_) => return Err(format!("{line}: no reply")),
++            }
++        };
+         let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+         match value.get("error").and_then(Value::as_str) {
+             Some(e) => Err(format!("{line}: {e}")),
+@@ -222,7 +344,7 @@ fn time_passes(control: &Control, scene: &str, report: &mut Report) -> Result<bo
+         .hardware
+         .gpu
+         .as_ref()
+-        .is_some_and(|g| g.backend == "metal")
++        .is_some_and(|g| matches!(g.backend.as_str(), "metal" | "gx2"))
+     {
+         return Ok(false);
+     }
+@@ -255,12 +377,19 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+     let pid = horizon_core::process_id();
+     report.conditions.load_avg_1m = horizon_bench::load_average();
+     report.conditions.power = horizon_bench::power_source().map(str::to_owned);
+-    let rss = RssSampler::start(pid);
++    let rss = (!cfg!(target_os = "cafe")).then(|| RssSampler::start(pid));
+ 
+     let title = poll(control, LOAD_LIMIT, |s| {
+-        s["screen"] == "title" && !s["renderer"].is_null()
++        s["screen"] == "title"
++            && !s["renderer"].is_null()
++            && (!cfg!(target_os = "cafe") || s["renderer"]["title_presented"] == true)
+     })?;
+     report.metric("startup.title_ms", &[ms(setup.started.elapsed())]);
++    #[cfg(target_os = "cafe")]
++    {
++        report.label = Some("Cafe GX2 / Stock Full Performance / paired submissions".into());
++        report.conditions.backend = Some("gx2".into());
++    }
+     let renderer = &title["renderer"];
+     report.hardware.gpu = Some(horizon_bench::Gpu {
+         name: text(&renderer["gpu"]),
+@@ -322,7 +451,52 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+     if let Some(bytes) = renderer["gpu_allocated_bytes"].as_f64() {
+         report.metric("memory.gpu_mb", &[bytes / f64::from(1 << 20)]);
+     }
+-    let samples = rss.stop();
++    let samples = rss.map_or_else(Vec::new, RssSampler::stop);
++    #[cfg(target_os = "cafe")]
++    {
++        for key in [
++            "partial_frames",
++            "omitted_pass_mask",
++            "configured_scale",
++            "entity_distance_percent",
++            "tv_width",
++            "tv_height",
++            "gamepad_width",
++            "gamepad_height",
++        ] {
++            if let Some(value) = renderer[key].as_f64() {
++                report.metric(&format!("cafe.{key}"), &[value]);
++            }
++        }
++        let omitted = renderer["omitted_pass_mask"].as_u64().unwrap_or(0);
++        // Stable bit positions supplied by loading_host::unsupported_world_passes.
++        let names = [
++            (0, "celestial"),
++            (1, "stars"),
++            (2, "clouds"),
++            (3, "weather"),
++            (4, "entities"),
++            (5, "block_entities"),
++            (6, "hand"),
++            (7, "outline"),
++            (8, "debug_lines"),
++            (9, "screen_effects"),
++            (10, "world_border"),
++            (11, "translucent_geometry"),
++            (12, "world_primitives"),
++            (13, "shadow"),
++            (15, "post_effects"),
++            (16, "skinned_entities"),
++            (17, "lightning"),
++            (18, "dynamic_and_emissive_lighting"),
++            (20, "translucent_terrain"),
++        ];
++        for (bit, name) in names {
++            if omitted & (1 << bit) != 0 {
++                report.metric(&format!("cafe.omitted.{name}"), &[1.0]);
++            }
++        }
++    }
+     if let Some(peak) = samples.iter().map(|s| s.1).max() {
+         report.metric("memory.rss_peak_mb", &[peak as f64 / f64::from(1 << 20)]);
+     }
+@@ -341,6 +515,8 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+     if let Ok(meta) = std::env::current_exe().and_then(std::fs::metadata) {
+         report.metric("game.binary_bytes", &[meta.len() as f64]);
+     }
++    control.check_cancelled()?;
++    #[cfg(not(target_os = "cafe"))]
+     crate::telemetry::keep_benchmark(&crate::logging::game_home(), &report);
+     let written = report
+         .write_to(&setup.game_dir.join("benchmarks"))
+@@ -376,6 +552,12 @@ fn measure(
+         _ => {}
+     }
+     replace_world(&setup.game_dir)?;
++    control.progress(|| Progress::LoadingWorld);
++    #[cfg(target_os = "cafe")]
++    log::info!(
++        "Cafe benchmark opening {WORLD}; scenario={}",
++        setup.scenario
++    );
+     control.call(&format!("open {WORLD} {SEED} creative"))?;
+     // The world opens on a worker: its folder may not exist yet when `open` replies.
+     std::fs::create_dir_all(setup.game_dir.join("saves").join(WORLD)).map_err(|e| e.to_string())?;
+@@ -397,7 +579,7 @@ fn measure(
+                 control.call("time 6000")?;
+                 load_scene(control, name, start, end, pitch, report)?;
+                 if !time_passes(control, name, report)? {
+-                    thread::sleep(SETTLE);
++                    control.settle(SETTLE)?;
+                 }
+                 let frames = fly(control, name, start, end, FLIGHT_SECONDS, pitch, steady)?;
+                 fps_metrics(report, name, std::slice::from_ref(&frames));
+@@ -463,6 +645,9 @@ fn load_scene(
+     pitch: f64,
+     report: &mut Report,
+ ) -> Result<(), String> {
++    control.progress(|| Progress::LoadingScene(name.to_owned()));
++    #[cfg(target_os = "cafe")]
++    log::info!("Cafe benchmark loading scene {name}");
+     let meshed = control.status()["meshed_sections"].as_f64().unwrap_or(0.0);
+     let generated = control.status()["generated_chunks"].as_f64().unwrap_or(0.0);
+     let [x, y, z] = start;
+@@ -511,6 +696,9 @@ fn fly(
+     pitch: f64,
+     steady: &mut Vec<(Instant, Instant)>,
+ ) -> Result<Frames, String> {
++    control.progress(|| Progress::MeasuringScene(phase.to_owned()));
++    #[cfg(target_os = "cafe")]
++    log::info!("Cafe benchmark timing scene {phase}; seconds={seconds}");
+     let ([x, y, z], [ex, ey, ez]) = (start, end);
+     let begin = Instant::now();
+     let flight = control.call(&format!(
+@@ -607,6 +795,7 @@ fn travel(
+     steady: &mut Vec<(Instant, Instant)>,
+ ) -> Result<(), String> {
+     trip(control, report, steady)?;
++    control.progress(|| Progress::Holding);
+     let mut blocks = Vec::new();
+     for repeat in 0..HOLD_BLOCKS {
+         let held = control.call(&format!("bench {BLOCK_SECONDS} raw"))?;
+@@ -683,10 +872,17 @@ fn ab_blocks(
+ /// Removes the previous run's world, never one the benchmark didn't create.
+ fn replace_world(game_dir: &Path) -> Result<(), String> {
+     let world = game_dir.join("saves").join(WORLD);
+-    if !world.exists() {
+-        return Ok(());
++    match std::fs::symlink_metadata(&world) {
++        Ok(metadata) if metadata.is_dir() => {}
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
++        _ => {
++            return Err(format!(
++                "{} is not a benchmark world directory",
++                world.display()
++            ));
++        }
+     }
+-    if !world.join(MARKER).exists() {
++    if !std::fs::symlink_metadata(world.join(MARKER)).is_ok_and(|metadata| metadata.is_file()) {
+         return Err(format!(
+             "{} exists and was not created by the benchmark: rename it",
+             world.display()
+@@ -702,6 +898,7 @@ fn poll(
+ ) -> Result<Value, String> {
+     let deadline = Instant::now() + limit;
+     while Instant::now() < deadline {
++        control.check_cancelled()?;
+         let status = control.status();
+         if ready(&status) {
+             return Ok(status);
+@@ -731,6 +928,7 @@ fn wait_loaded(control: &Control, near: impl Fn(&Value) -> bool) -> Result<Insta
+     let mut previous: Option<(Instant, f64)> = None;
+     let (mut first, mut moved, began) = (None, false, Instant::now());
+     while Instant::now() < deadline {
++        control.check_cancelled()?;
+         let s = control.status();
+         let now = Instant::now();
+         let position = &s["player"]["position"];
+@@ -738,6 +936,7 @@ fn wait_loaded(control: &Control, near: impl Fn(&Value) -> bool) -> Result<Insta
+             || !near(position)
+             || s["pending_chunks"] != 0
+             || s["screen"] == "title"
++            || (cfg!(target_os = "cafe") && s["renderer"]["terrain_presented"] != true)
+         {
+             (last, changed, previous, meshing) = (None, now, None, now);
+         } else {
+@@ -835,6 +1034,98 @@ impl RssSampler {
+ mod tests {
+     use super::*;
+ 
++    fn hosted_setup(path: PathBuf) -> Setup {
++        Setup {
++            scenario: "village".into(),
++            started: Instant::now(),
++            app: App::default(),
++            simulation_distance: 5,
++            vsync: true,
++            fps_cap: None,
++            offscreen: false,
++            game_dir: path,
++            set: None,
++            profile: false,
++        }
++    }
++
++    #[test]
++    fn hosted_cancel_unblocks_a_pending_command_without_writing_a_result() {
++        let (requests, game) = mpsc::channel::<Request>();
++        let directory = std::env::temp_dir().join(format!(
++            "horizon-benchmark-cancel-test-{}",
++            std::process::id()
++        ));
++        let benchmark = HostedRun::start(requests, hosted_setup(directory.clone())).unwrap();
++        let request = game.recv_timeout(Duration::from_secs(5)).unwrap();
++        assert_eq!(request.line, "status");
++        drop(benchmark);
++        assert!(request.reply.send("{}".into()).is_err());
++        assert!(!directory.join("benchmarks").exists());
++    }
++
++    #[test]
++    #[ignore = "daily"]
++    fn hosted_completion_returns_a_standard_report() {
++        let (requests, game) = mpsc::channel::<Request>();
++        let directory = std::env::temp_dir().join(format!(
++            "horizon-benchmark-completion-test-{}",
++            std::process::id()
++        ));
++        let benchmark = HostedRun::start(requests, hosted_setup(directory.clone())).unwrap();
++        let mock_game = thread::spawn(move || {
++            let mut loaded = false;
++            let mut position = [0.0; 3];
++            for request in game {
++                use serde_json::json;
++                let words: Vec<_> = request.line.split_ascii_whitespace().collect();
++                let reply = match words[0] {
++                    "status" => json!({
++                        "screen": if loaded { "playing" } else { "title" },
++                        "player": if loaded { json!({"position": position}) } else { Value::Null },
++                        "pending_chunks": 0,
++                        "renderer": {"backend": "metal", "size": [1280, 720]},
++                    }),
++                    "open" => {
++                        assert_eq!(&words[1..], [WORLD, "1234", "creative"]);
++                        loaded = true;
++                        json!({"ok": true})
++                    }
++                    "tp" => {
++                        position = [words[1], words[2], words[3]]
++                            .map(|coordinate| coordinate.parse().unwrap());
++                        json!({"ok": true})
++                    }
++                    "fly" if words.last() == Some(&"raw") => {
++                        assert_eq!(position, SCENES[0].1);
++                        assert_eq!(words[7].parse::<f64>().unwrap(), FLIGHT_SECONDS);
++                        json!({"frame_ms": [33.0, 36.0, 40.0], "cpu_ms": [21.0, 22.0, 25.0]})
++                    }
++                    _ => json!({"ok": true}),
++                };
++                let _ = request.reply.send(reply.to_string());
++            }
++        });
++        let deadline = Instant::now() + Duration::from_secs(15);
++        let path = loop {
++            if let Some(done) = benchmark.completed() {
++                break done.unwrap();
++            }
++            assert!(Instant::now() < deadline, "hosted benchmark did not finish");
++            thread::sleep(Duration::from_millis(10));
++        };
++        assert!(
++            matches!(benchmark.progress(), Some(Progress::MeasuringScene(scene)) if scene == "village")
++        );
++        let report = Report::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
++        assert_eq!(report.conditions.scenario.as_deref(), Some("village"));
++        assert_eq!(report.frames[0].frames, 3);
++        assert_eq!(report.frames[0].gpu_p50_ms, None);
++        drop(benchmark);
++        mock_game.join().unwrap();
++        std::fs::remove_dir_all(directory).unwrap();
++    }
++
+     #[test]
+     fn the_capture_commands_are_the_ones_the_game_parses() {
+         use crate::client_perf::request::{self, ProfileSide, Request, StartOptions};
+@@ -942,7 +1233,7 @@ mod tests {
+                 }
+             }
+         });
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         wait_loaded(&control, |_| true).expect("the scene loads");
+         assert!(
+             polls.load(std::sync::atomic::Ordering::SeqCst) > LATE,
+@@ -984,7 +1275,7 @@ mod tests {
+                 ..Default::default()
+             };
+             let mut report = Report::with_hardware(Kind::Game, App::default(), hardware);
+-            let control = Control(tx);
++            let control = Control::new(tx);
+             let timed = time_passes(&control, "forest", &mut report).expect("the wait runs");
+             drop(control);
+             (timed, server.join().unwrap(), report.metrics)
+@@ -1052,7 +1343,7 @@ mod tests {
+         let (tx, rx) = mpsc::channel::<Request>();
+         let server = trip_server(rx);
+         let mut report = Report::new(Kind::Game, App::default());
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         let mut steady = Vec::new();
+         travel(&control, &mut report, &mut steady).expect("the trip runs");
+         drop(control);
+@@ -1119,7 +1410,7 @@ mod tests {
+             }
+         });
+         let mut report = Report::new(Kind::Game, App::default());
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         let error = travel(&control, &mut report, &mut Vec::new()).unwrap_err();
+         assert!(error.contains("no such weather"), "{error}");
+         assert!(report.frames.is_empty());
+@@ -1142,7 +1433,7 @@ mod tests {
+             }
+             lines
+         });
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         apply_set(&control, "section-draws", "indirect").unwrap();
+         let error = apply_set(&control, "gpu-culling", "on").unwrap_err();
+         assert!(error.contains("not offered here"), "{error}");
+@@ -1224,7 +1515,7 @@ mod tests {
+         let (tx, rx) = mpsc::channel::<Request>();
+         let server = culling_server(rx, false, true, None);
+         let mut report = vulkan_report();
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         keeping_switch(&control, GPU_CULLING, || {
+             ab_blocks(
+                 &control,
+@@ -1277,7 +1568,7 @@ mod tests {
+     fn a_setting_that_was_on_is_on_again_after_the_run() {
+         let (tx, rx) = mpsc::channel::<Request>();
+         let server = culling_server(rx, true, true, None);
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         keeping_switch(&control, GPU_CULLING, || {
+             ab_blocks(
+                 &control,
+@@ -1298,7 +1589,7 @@ mod tests {
+         let (tx, rx) = mpsc::channel::<Request>();
+         // The 3rd block is A: the setting is off when it fails.
+         let server = culling_server(rx, true, true, Some(3));
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         let mut report = vulkan_report();
+         let error = keeping_switch(&control, GPU_CULLING, || {
+             ab_blocks(
+@@ -1323,7 +1614,7 @@ mod tests {
+     fn a_refused_switch_ends_the_run_with_the_games_reason_and_changes_nothing() {
+         let (tx, rx) = mpsc::channel::<Request>();
+         let server = culling_server(rx, false, false, None);
+-        let control = Control(tx);
++        let control = Control::new(tx);
+         let error = keeping_switch(&control, GPU_CULLING, || {
+             apply_set(&control, "gpu-culling", "on")
+         })
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 6612678524394e74bd909390bdac8a9c1e75f7fd..b08b1134df557cd567dd18ae7f7e743adc1b7edd 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -987,6 +987,8 @@ struct Game<'a> {
+     #[cfg(target_os = "cafe")]
+     cafe_frame_built: bool,
+     #[cfg(target_os = "cafe")]
++    cafe_benchmark: cafe::BenchmarkFrames,
++    #[cfg(target_os = "cafe")]
+     cafe_terrain_clear_pending: bool,
+     #[cfg(target_os = "cafe")]
+     cafe_terrain_remove_pending: Vec<(i32, i32)>,
+@@ -10361,7 +10363,12 @@ impl Game<'_> {
+                         log::warn!("Horizon: couldn't save the world icon: {error}");
+                     }
+                     if rendered {
++                        #[cfg(not(target_os = "cafe"))]
+                         self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
++                        #[cfg(target_os = "cafe")]
++                        if self.options.benchmark.is_none() {
++                            self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
++                        }
+                         if let Some((cpu, gpu)) = perf_times {
+                             self.record_perf_frame(
+                                 elapsed.as_secs_f32() * 1000.0,
+@@ -10571,6 +10578,8 @@ impl<'a> Game<'a> {
+             #[cfg(target_os = "cafe")]
+             cafe_frame_built: false,
+             #[cfg(target_os = "cafe")]
++            cafe_benchmark: Default::default(),
++            #[cfg(target_os = "cafe")]
+             cafe_terrain_clear_pending: true,
+             #[cfg(target_os = "cafe")]
+             cafe_terrain_remove_pending: Vec::new(),
+@@ -11284,6 +11293,12 @@ fn run_with_loading(
+     #[cfg(target_os = "cafe")]
+     {
+         early_settings.controller.cafe_face_swap = options.cafe_face_swap;
++        if options.benchmark.is_some() {
++            horizon_client::graphics::apply_preset(
++                horizon_client::graphics::Preset::FullPerformance,
++                &mut early_settings,
++            );
++        }
+     }
+     options
+         .mods
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index db4ae1b43543bed856dc621e6d248293b15a0404..622f65f517c76691ef47daf8fd41e2a481c13c1d 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -195,6 +195,10 @@ impl Game<'_> {
+     }
+     fn reset_frame_stats(&mut self) {
+         self.frame_stats.reset();
++        #[cfg(target_os = "cafe")]
++        {
++            self.cafe_benchmark.latest_start = None;
++        }
+         if let Some(culler) = self.occlusion.asynchronous() {
+             culler.reset_stats();
+         }
+@@ -216,7 +220,7 @@ impl Game<'_> {
+         self.poll_repro(event_loop);
+         self.poll_profile();
+         #[cfg(target_os = "cafe")]
+-        if self.cafe_hosted {
++        if self.cafe_hosted && self.options.benchmark.is_none() {
+             let (request, revoked) = horizon_client::control::poll_hosted_mcp(
+                 self.settings.extras.no_ai,
+                 self.pending_save.is_none(),
+@@ -1609,6 +1613,28 @@ impl Game<'_> {
+                 "gpu_reserved_bytes": memory.as_ref().map(|m| m.total_reserved_bytes),
+             })
+         });
++        #[cfg(target_os = "cafe")]
++        let renderer = renderer.or_else(|| {
++            self.options.benchmark.as_ref().map(|_| {
++                let frames = &self.cafe_benchmark;
++                let [tv, gamepad] = frames.display_sizes;
++                json!({
++                    "backend": "gx2",
++                    "gpu": "GX2",
++                    "size": tv,
++                    "tv_width": tv[0],
++                    "tv_height": tv[1],
++                    "gamepad_width": gamepad[0],
++                    "gamepad_height": gamepad[1],
++                    "configured_scale": self.settings.horizon.resolution_scale,
++                    "entity_distance_percent": self.settings.entity_distance * 100.0,
++                    "title_presented": frames.title_presented,
++                    "terrain_presented": frames.terrain_presented,
++                    "omitted_pass_mask": frames.omitted_pass_mask,
++                    "partial_frames": frames.partial_frames,
++                })
++            })
++        });
+         // The keyboard as the OS reports it (screens read Shift and Ctrl here).
+         let mut physical_keys: Vec<_> = self
+             .physical_keys
+diff --git a/crates/horizon-client/src/game/runtime/launch_options.rs b/crates/horizon-client/src/game/runtime/launch_options.rs
+index c56c4f1d732be77340172a026e34e64354d8ed75..8bf13207c43a4d1e8972ac3dbe48ab61a7cfcbdd 100644
+--- a/crates/horizon-client/src/game/runtime/launch_options.rs
++++ b/crates/horizon-client/src/game/runtime/launch_options.rs
+@@ -191,6 +191,20 @@ impl Options {
+         if !options.execution_role.is_client() {
+             return Err("the Cafe host only runs client sessions".into());
+         }
++        if options.benchmark.is_some() {
++            if options.benchmark_set.is_some()
++                || options.benchmark_profile
++                || options
++                    .benchmark
++                    .as_deref()
++                    .is_some_and(|name| name.starts_with("ab:"))
++                || options.world.is_some()
++                || options.quick_play.is_some()
++                || options.server.is_some()
++            {
++                return Err("Cafe benchmarks require a local scene or travel".into());
++            }
++        }
+         // Account input is supplied by the launcher's verified identity, in memory.
+         options.session_file = None;
+         options.session_stdin = false;
+diff --git a/crates/horizon-client/src/game/runtime/loading_window.rs b/crates/horizon-client/src/game/runtime/loading_window.rs
+index d7a126d97a59fed1d39e33d4789595b0ad3b793a..3dc59e456c5a31d8eb7eb59ff9df6202998a35ae 100644
+--- a/crates/horizon-client/src/game/runtime/loading_window.rs
++++ b/crates/horizon-client/src/game/runtime/loading_window.rs
+@@ -286,7 +286,7 @@ pub(super) fn start_game<'a>(
+     pack_error: Option<String>,
+     audio: Audio,
+     vanilla_root: PathBuf,
+-    started: Instant,
++    _started: Instant,
+     rest_loader: Option<WorldRestLoader>,
+     settings: Option<Settings>,
+     prepared: Option<GameCpuResources>,
+@@ -345,30 +345,9 @@ pub(super) fn start_game<'a>(
+     // After the mods: their templates are among the ids it lists.
+     game.preload_registries();
+     game.start_agent_control()?;
+-    if let Some(scenario) = game.options.benchmark.clone() {
+-        let control = game
+-            .control
+-            .get_or_insert_with(horizon_client::control::Server::local);
+-        horizon_client::benchmark::start(
+-            control.sender(),
+-            horizon_client::benchmark::Setup {
+-                scenario,
+-                started,
+-                app: horizon_bench::App {
+-                    name: "horizon-client".into(),
+-                    version: horizon_client::crash::version(),
+-                    commit: option_env!("HORIZON_COMMIT").map(str::to_owned),
+-                    mods: Vec::new(),
+-                },
+-                simulation_distance: game.settings.simulation_distance as u32,
+-                vsync: false,
+-                fps_cap: None,
+-                offscreen: game.options.offscreen,
+-                game_dir: std::env::current_dir()?,
+-                set: game.options.benchmark_set.clone(),
+-                profile: game.options.benchmark_profile,
+-            },
+-        );
++    #[cfg(not(target_os = "cafe"))]
++    if let Some((requests, setup)) = game.benchmark_setup(_started)? {
++        horizon_client::benchmark::start(requests, setup);
+     }
+     if let Some(directory) = std::env::var_os("HORIZON_BOAT_RIDER_FIXTURE") {
+         game.run_boat_rider_fixture(std::path::Path::new(&directory))?;
+@@ -478,3 +457,51 @@ pub(super) fn start_game<'a>(
+     }
+     Ok(Some(game))
+ }
++
++impl Game<'_> {
++    pub(super) fn benchmark_setup(
++        &mut self,
++        started: Instant,
++    ) -> Result<
++        Option<(
++            std::sync::mpsc::Sender<horizon_client::control::Request>,
++            horizon_client::benchmark::Setup,
++        )>,
++    > {
++        let Some(scenario) = self.options.benchmark.clone() else {
++            return Ok(None);
++        };
++        let control = self
++            .control
++            .get_or_insert_with(horizon_client::control::Server::local);
++        Ok(Some((
++            control.sender(),
++            horizon_client::benchmark::Setup {
++                scenario,
++                started,
++                app: horizon_bench::App {
++                    name: "horizon-client".into(),
++                    version: if cfg!(target_os = "cafe") {
++                        option_env!("HORIZON_NIGHT_CLIENT")
++                            .map_or_else(horizon_client::crash::version, str::to_owned)
++                    } else {
++                        horizon_client::crash::version()
++                    },
++                    commit: if cfg!(target_os = "cafe") {
++                        option_env!("HORIZON_NIGHT_UPSTREAM").map(str::to_owned)
++                    } else {
++                        option_env!("HORIZON_COMMIT").map(str::to_owned)
++                    },
++                    mods: Vec::new(),
++                },
++                simulation_distance: self.settings.simulation_distance as u32,
++                vsync: cfg!(target_os = "cafe"),
++                fps_cap: None,
++                offscreen: self.options.offscreen,
++                game_dir: std::env::current_dir()?,
++                set: self.options.benchmark_set.clone(),
++                profile: self.options.benchmark_profile,
++            },
++        )))
++    }
++}
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index ea5248c2b2ea46a640eccc6907eb1a0bdcf706ea..d3bf9c39edb7b7c32cc929f0330c29d6c9f23fd3 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -87,6 +87,10 @@ pub trait CafeGameBackend:
+         CafeFrameWork::default()
+     }
+ 
++    fn benchmark_display_sizes(&self) -> [[u32; 2]; 2] {
++        [[0; 2]; 2]
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         None
+     }
+@@ -350,10 +354,15 @@ impl<'resources> CafeLoadingSession<'resources> {
+         let entry_kind = match self.loading.menu.pending.as_ref() {
+             Some(PendingWorldEntry::Local { .. }) => CafeGameEntryKind::LocalWorld,
+             Some(PendingWorldEntry::Server { .. }) => CafeGameEntryKind::RemoteServer,
+-            None if cafe_control_title_requested(
+-                &self.loading.settings,
+-                cfg!(target_os = "cafe"),
+-            ) =>
++            None if self
++                .loading
++                .options
++                .as_ref()
++                .is_some_and(|options| options.benchmark.is_some())
++                || cafe_control_title_requested(
++                    &self.loading.settings,
++                    cfg!(target_os = "cafe"),
++                ) =>
+             {
+                 CafeGameEntryKind::TitleScreen
+             }
+@@ -464,7 +473,18 @@ impl<'resources> CafeLoadingSession<'resources> {
+             horizon_client::options_file::V::Bool(true),
+         );
+         game.settings.save(&Game::options_path());
++        #[cfg(target_os = "cafe")]
++        let benchmark = game
++            .benchmark_setup(self.loading.started)?
++            .map(|(requests, setup)| horizon_client::benchmark::HostedRun::start(requests, setup))
++            .transpose()?;
+         Ok(Some(CafeGameSession {
++            #[cfg(target_os = "cafe")]
++            benchmark,
++            #[cfg(target_os = "cafe")]
++            benchmark_status: None,
++            #[cfg(target_os = "cafe")]
++            next_benchmark_status: Instant::now(),
+             game,
+             entry_kind,
+             screenshot_worker: None,
+@@ -505,9 +525,25 @@ impl<'resources> CafeLoadingSession<'resources> {
+     }
+ }
+ 
++#[derive(Default)]
++pub(super) struct BenchmarkFrames {
++    pub(super) title_presented: bool,
++    pub(super) terrain_presented: bool,
++    pub(super) omitted_pass_mask: u32,
++    pub(super) partial_frames: u64,
++    pub(super) display_sizes: [[u32; 2]; 2],
++    pub(super) latest_start: Option<Instant>,
++}
++
+ /// Cafe-owned driver for Horizon's original Game after a local title
+ /// selection. It deliberately has no Winit window or WGPU renderer.
+ pub struct CafeGameSession<'resources> {
++    #[cfg(target_os = "cafe")]
++    benchmark: Option<horizon_client::benchmark::HostedRun>,
++    #[cfg(target_os = "cafe")]
++    benchmark_status: Option<horizon_client::benchmark::Progress>,
++    #[cfg(target_os = "cafe")]
++    next_benchmark_status: Instant,
+     game: Game<'resources>,
+     entry_kind: CafeGameEntryKind,
+     screenshot_worker: Option<std::thread::JoinHandle<()>>,
+@@ -516,6 +552,59 @@ pub struct CafeGameSession<'resources> {
+ }
+ 
+ impl CafeGameSession<'_> {
++    #[cfg(target_os = "cafe")]
++    pub fn cancel_benchmark(&mut self) {
++        self.benchmark = None;
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn benchmark_result(&mut self) -> Option<std::result::Result<PathBuf, String>> {
++        let result = self.benchmark.as_ref()?.completed()?;
++        self.benchmark = None;
++        Some(result)
++    }
++
++    #[cfg(target_os = "cafe")]
++    fn update_benchmark_status(&mut self, now: Instant) {
++        use horizon_client::benchmark::Progress;
++        use horizon_client::text::Text;
++
++        let Some(benchmark) = &self.benchmark else {
++            return;
++        };
++        if let Some(status) = benchmark.progress() {
++            self.benchmark_status = Some(status);
++            self.next_benchmark_status = now;
++        }
++        if now < self.next_benchmark_status {
++            return;
++        }
++        let Some(status) = &self.benchmark_status else {
++            return;
++        };
++        let (key, fallback, scene) = match status {
++            Progress::LoadingWorld => ("loading", "Benchmark: loading world", None),
++            Progress::LoadingScene(scene) => {
++                ("loading_scene", "Benchmark: loading %s", Some(scene))
++            }
++            Progress::MeasuringScene(scene) => {
++                ("measuring", "Benchmark: measuring %s", Some(scene))
++            }
++            Progress::Holding => ("holding", "Benchmark: measuring stationary view", None),
++        };
++        let args: Vec<Text> = scene
++            .into_iter()
++            .map(|name| Text::literal(name.clone()))
++            .collect();
++        self.game
++            .send_overlay_message(Text::translate_with_fallback(
++                &format!("horizon.benchmark.{key}"),
++                fallback,
++                &args,
++            ));
++        self.next_benchmark_status = now + Duration::from_secs(2);
++    }
++
+     #[cfg(target_os = "cafe")]
+     pub fn enable_hosted_return(&mut self) {
+         self.game.cafe_hosted = true;
+@@ -550,6 +639,7 @@ impl CafeGameSession<'_> {
+ 
+     #[cfg(target_os = "cafe")]
+     pub fn shutdown_hosted(&mut self) -> Result<()> {
++        self.cancel_benchmark();
+         self.game.pad_close_output();
+         let saved = self.game.save_for_exit();
+         self.game.finish_perf();
+@@ -652,6 +742,8 @@ impl CafeGameSession<'_> {
+             performance::Phase::Menu
+         };
+         let before = totals(&self.game, backend);
++        #[cfg(target_os = "cafe")]
++        self.update_benchmark_status(start);
+         self.game.cafe_performance.begin(phase, start, before);
+         if let Some(result) = self.game.cafe_screenshot_result.as_ref() {
+             match result.try_recv() {
+@@ -737,6 +829,33 @@ impl CafeGameSession<'_> {
+         let redraw = redraw.elapsed();
+         let work = backend.take_frame_work();
+         let end = Instant::now();
++        #[cfg(target_os = "cafe")]
++        if self.benchmark.is_some() {
++            let state = &mut self.game.cafe_benchmark;
++            state.display_sizes = backend.benchmark_display_sizes();
++            let paired = work.presented == [true; 2];
++            if paired && phase == performance::Phase::Title {
++                state.title_presented = true;
++            }
++            state.terrain_presented = paired
++                && phase == performance::Phase::Gameplay
++                && work.terrain_sections.iter().all(|sections| *sections > 0);
++            if state.terrain_presented {
++                state.omitted_pass_mask |= work.omitted_pass_mask;
++                state.partial_frames += u64::from(work.omitted_pass_mask != 0);
++                if let Some(previous) = state.latest_start.replace(start) {
++                    self.game
++                        .frame_stats
++                        .record(start.duration_since(previous).as_secs_f32() * 1000.0);
++                    self.game.frame_stats.record_cpu(
++                        end.duration_since(start)
++                            .saturating_sub(work.gpu_wait)
++                            .as_secs_f32()
++                            * 1000.0,
++                    );
++                }
++            }
++        }
+         let after = totals(&self.game, backend);
+         if self
+             .game
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index ef144432dbce1571a8d43f8e4e245c47603a3c6a..3e3b1b5225f93ab9a064e3d51e9b5acbf77c4025 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -7,6 +7,8 @@ pub struct CafeFrameWork {
+     pub gpu_wait: Duration,
+     pub uploaded_sections: u64,
+     pub uploaded_bytes: u64,
++    pub terrain_sections: [usize; 2],
++    pub omitted_pass_mask: u32,
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 0d68af39ad9ea3dc753933bde89bb73a86b6b77a..424d219c9b519c73667831a37f0e4e2eca206ef6 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -11,6 +11,7 @@ pub(super) mod mcp;
+ mod local_wire;
+ #[path = "night_menu.rs"]
+ mod night_menu;
++pub(super) use night_menu::BenchmarkOutcome;
+ #[path = "night_online.rs"]
+ mod night_online;
+ #[path = "night_store.rs"]
+@@ -175,7 +176,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         },
+         Err(()) => return FAILED,
+     };
+-    let _registration = mcp::prepare_game();
++    let _registration = launch.benchmark.is_none().then(mcp::prepare_game);
+     if std::env::set_current_dir(&launch.game).is_err() {
+         return RESOURCES;
+     }
+@@ -200,6 +201,7 @@ fn run(launch: night_menu::Launch) -> i32 {
+     };
+     let mut host = LoadingHost::new(&mut presenter);
+     host.hosted = true;
++    host.hosted_benchmark = launch.benchmark.is_some();
+     host.hosted_swap_ab = launch.swap_ab;
+     host.pad_blocked_until_neutral = true;
+     unsafe { super::OSReport(c"Horizon Wii U startup: hosted game entry\n".as_ptr()) };
+@@ -217,6 +219,9 @@ fn run(launch: night_menu::Launch) -> i32 {
+     if let Some(server) = launch.server {
+         options.extend(["--quickPlayMultiplayer".into(), server]);
+     }
++    if let Some(benchmark) = &launch.benchmark {
++        options.extend(["--benchmark".into(), benchmark.scenario.into()]);
++    }
+     let outcome = horizon_client::entry::run_hosted_cafe(
+         &mut host,
+         options,
+@@ -242,9 +247,50 @@ fn run(launch: night_menu::Launch) -> i32 {
+     {
+         return FAILED;
+     }
++    if let Some(benchmark) = launch.benchmark {
++        let mut outcome = host.hosted_benchmark_outcome;
++        let mut report = None;
++        if let Some(path) = &host.hosted_benchmark_report {
++            if let Err(error) = publish_benchmark(path, &benchmark.reports) {
++                log::error!("Cafe benchmark report remains in the isolated game folder: {error}");
++                outcome = BenchmarkOutcome::Failed;
++            } else {
++                report = path.file_name().and_then(|name| name.to_str());
++            }
++        }
++        local_service()
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .benchmark_finished(outcome, report);
++        return RETURNED;
++    }
+     if host.hosted_saved {
+         SAVED
+     } else {
+         RETURNED
+     }
+ }
++
++fn publish_benchmark(path: &Path, reports: &Path) -> std::io::Result<()> {
++    use std::fs;
++    use std::io::{Error, ErrorKind};
++
++    match fs::create_dir(reports) {
++        Ok(()) => {}
++        Err(error)
++            if error.kind() == ErrorKind::AlreadyExists
++                && fs::symlink_metadata(reports).is_ok_and(|metadata| metadata.is_dir()) => {}
++        Err(error) => return Err(error),
++    }
++    let name = path
++        .file_name()
++        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "missing report name"))?;
++    let destination = reports.join(name);
++    if fs::symlink_metadata(&destination).is_ok() {
++        return Err(Error::new(
++            ErrorKind::AlreadyExists,
++            "report already exists",
++        ));
++    }
++    fs::rename(path, destination)
++}
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 6fdd616443b77b9692d7d216128e10cc889534e6..1f970092c27dc7706a73989712e7271f160616cb 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -447,6 +447,9 @@ struct LoadingHost<'a> {
+     hosted_swap_ab: bool,
+     hosted_saved: bool,
+     hosted_exit_save_failed: bool,
++    hosted_benchmark: bool,
++    hosted_benchmark_outcome: hosted::BenchmarkOutcome,
++    hosted_benchmark_report: Option<std::path::PathBuf>,
+ }
+ 
+ impl<'a> LoadingHost<'a> {
+@@ -482,6 +485,9 @@ impl<'a> LoadingHost<'a> {
+             hosted_swap_ab: false,
+             hosted_saved: false,
+             hosted_exit_save_failed: false,
++            hosted_benchmark: false,
++            hosted_benchmark_outcome: hosted::BenchmarkOutcome::Cancelled,
++            hosted_benchmark_report: None,
+         }
+     }
+ 
+@@ -918,6 +924,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         let mut hosted_fault_close = false;
+         let mut hosted_confirm_held = false;
+         let mut hosted_cancel_held = true;
++        let mut benchmark_cancel_held = true;
+         let legacy_pacing = unsafe { horizon_gx2_profile_legacy_pacing() };
+         loop {
+             use horizon_client_platform::cafe_profile::{self, Phase, Span, Stage};
+@@ -1044,7 +1051,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     host_loop_iteration
+                 );
+             }
+-            if focused {
++            if focused && !self.hosted_benchmark {
+                 self.drain_mouse_input(session, game_session.as_mut());
+             } else {
+                 self.discard_mouse_input();
+@@ -1057,6 +1064,14 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             }
+ 
+             if !focused {
++                if self.hosted_benchmark {
++                    if let Some(game) = game_session.as_mut() {
++                        game.cancel_benchmark();
++                        hosted_fault_close = true;
++                    } else {
++                        break;
++                    }
++                }
+                 // WHBGfx frees foreground buffers on a ProcUI release. Keep
+                 // loader/menu services moving but do not touch GX2 or VPAD.
+                 self.discard_keyboard_input();
+@@ -1222,6 +1237,19 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 hosted_confirm_held = confirm_held;
+                 hosted_cancel_held = cancel_held;
+             }
++            if self.hosted_benchmark && fresh_buttons {
++                let cancel = pad.held(Button::Select);
++                if cancel && !benchmark_cancel_held {
++                    startup_report!("hosted benchmark cancelled");
++                    if let Some(game) = game_session.as_mut() {
++                        game.cancel_benchmark();
++                        hosted_fault_close = true;
++                    } else {
++                        break;
++                    }
++                }
++                benchmark_cancel_held = cancel;
++            }
+             if self.hosted && game_session.is_none()
+                 && cancel_startup && session.hosted_can_cancel()
+             {
+@@ -1231,8 +1259,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+ 
+             let swkbd_occupied = unsafe { horizon_wiiu_swkbd_input_occupied() != 0 };
+             let swkbd_open = unsafe { horizon_swkbd_is_open() != 0 };
+-            let mut native_input_this_frame =
+-                self.native_keyboard_active || swkbd_occupied || swkbd_open;
++            let mut native_input_this_frame = self.hosted_benchmark
++                || self.native_keyboard_active
++                || swkbd_occupied
++                || swkbd_open;
+             self.native_keyboard_active = swkbd_occupied || swkbd_open;
+             let history_overflowed = !self.button_history.push_poll(
+                 &button_history[..button_history_len],
+@@ -1608,6 +1638,21 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 }
+                 match game.frame(&event_loop, self.presenter) {
+                     Ok(_frame_drawn) => {
++                        if let Some(result) = game.benchmark_result() {
++                            match result {
++                                Ok(path) => {
++                                    self.hosted_benchmark_report = Some(path);
++                                    self.hosted_benchmark_outcome =
++                                        hosted::BenchmarkOutcome::Completed;
++                                }
++                                Err(error) => {
++                                    log::error!("Cafe benchmark failed: {error}");
++                                    self.hosted_benchmark_outcome =
++                                        hosted::BenchmarkOutcome::Failed;
++                                }
++                            }
++                            hosted_fault_close = true;
++                        }
+                         let world_ready = game.world_loading_complete();
+                         if !first_game_frame_returned {
+                             first_game_frame_returned = true;
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index a33e2433cfb0ab79a7ca9078334fef62f606c9c9..5dcf8bd4f9bed0f32a9adfa6a45642a6a6424486 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -13,6 +13,27 @@ const LIST_ROWS: usize = 3;
+ const MICROSOFT_CLIENT_ID: &str = "331e08f8-172d-43b9-835a-3108c2fcdbf3";
+ const ACCOUNT_FIXTURE: bool = option_env!("HORIZON_NIGHT_ACCOUNT_FIXTURE").is_some();
+ 
++const BENCHMARK_SCENES: [(&str, &str); 6] = [
++    ("standard", "benchmark_standard"),
++    ("village", "benchmark_village"),
++    ("forest", "benchmark_forest"),
++    ("ocean", "benchmark_ocean"),
++    ("mountain", "benchmark_mountain"),
++    ("travel", "benchmark_travel"),
++];
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum BenchmarkOutcome {
++    Completed,
++    Cancelled,
++    Failed,
++}
++
++pub struct BenchmarkLaunch {
++    pub scenario: &'static str,
++    pub reports: PathBuf,
++}
++
+ pub struct ResourcePin<'a> {
+     pub version: &'a str,
+     pub schema: u64,
+@@ -137,6 +158,7 @@ pub struct Launch {
+     pub swap_ab: bool,
+     pub swap_xy: bool,
+     pub identity: Option<Identity>,
++    pub benchmark: Option<BenchmarkLaunch>,
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -195,6 +217,7 @@ enum Page {
+     Confirm { profile: bool, index: usize },
+     Edit(Edit),
+     Report(usize, usize),
++    Benchmark(usize),
+ }
+ 
+ struct Item {
+@@ -231,6 +254,7 @@ enum Command {
+     EraseCharacter,
+     FinishEdit,
+     ClearTarget,
++    Benchmark(usize),
+ }
+ 
+ pub struct LocalService<G> {
+@@ -242,6 +266,7 @@ pub struct LocalService<G> {
+     about: &'static [(&'static str, &'static str)],
+     page: Page,
+     target: Target,
++    benchmark: Option<usize>,
+     commands: Vec<Command>,
+     items: Vec<Item>,
+     message: &'static str,
+@@ -277,6 +302,7 @@ impl<G: GameFiles> LocalService<G> {
+             preferences,
+             page: Page::Home,
+             target,
++            benchmark: None,
+             commands: Vec::new(),
+             items: Vec::new(),
+             message,
+@@ -343,15 +369,52 @@ impl<G: GameFiles> LocalService<G> {
+         }
+     }
+ 
+-    pub fn launch(&self) -> Result<Launch, u8> {
++    pub fn launch(&mut self) -> Result<Launch, u8> {
+         if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
+             return Err(2);
+         }
++        let game = self.game_dir(&self.preferences.instance);
++        if let Some(scene) = self.benchmark.take() {
++            let scratch = game.join(".benchmark-run");
++            let owner = scratch.join("horizon-benchmark-run.txt");
++            const MARKER: &[u8] = b"Horizon Night benchmark workspace v1\n";
++            match fs::create_dir(&scratch) {
++                Ok(()) => fs::write(&owner, MARKER).map_err(|_| 5_u8)?,
++                Err(error)
++                    if error.kind() == std::io::ErrorKind::AlreadyExists
++                        && plain(&scratch, true)
++                        && plain(&owner, false)
++                        && store::read_limited(&owner, MARKER.len() as u64)
++                            .is_ok_and(|value| value == MARKER) => {}
++                Err(_) => return Err(5),
++            }
++            return Ok(Launch {
++                resources: self.resource_dir(&game),
++                game: scratch,
++                player: "HorizonBench".into(),
++                world: None,
++                server: None,
++                swap_ab: self.preferences.settings.swap_ab,
++                swap_xy: self.preferences.settings.swap_xy,
++                identity: None,
++                benchmark: Some(BenchmarkLaunch {
++                    scenario: BENCHMARK_SCENES[scene].0,
++                    reports: game.join("benchmarks"),
++                }),
++            });
++        }
++        self.launch_game()
++    }
++
++    pub(super) fn launch_game(&self) -> Result<Launch, u8> {
++        if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
++            return Err(2);
++        }
++        let game = self.game_dir(&self.preferences.instance);
+         let identity = self.online.active();
+         if self.online.selected().is_some() && (identity.is_none() || ACCOUNT_FIXTURE) {
+             return Err(5);
+         }
+-        let game = self.game_dir(&self.preferences.instance);
+         let (world, server) = match &self.target {
+             Target::Menu => (None, None),
+             Target::World(id) if self.world(id).is_some_and(|w| w.unavailable.is_none()) => {
+@@ -379,9 +442,26 @@ impl<G: GameFiles> LocalService<G> {
+             swap_ab: self.preferences.settings.swap_ab,
+             swap_xy: self.preferences.settings.swap_xy,
+             identity: identity.map(Identity::duplicate),
++            benchmark: None,
+         })
+     }
+ 
++    pub fn benchmark_finished(&mut self, outcome: BenchmarkOutcome, report: Option<&str>) {
++        self.show(Page::Items(List::Reports, 0));
++        if outcome == BenchmarkOutcome::Completed {
++            if let Some(index) =
++                report.and_then(|name| self.items.iter().position(|item| item.key == name))
++            {
++                self.show(Page::Report(index, 0));
++            }
++        }
++        self.message = night_online::tr(match outcome {
++            BenchmarkOutcome::Completed => "benchmark_completed",
++            BenchmarkOutcome::Cancelled => "benchmark_cancelled",
++            BenchmarkOutcome::Failed => "benchmark_failed",
++        });
++    }
++
+     fn save(&mut self, next: Preferences) -> bool {
+         if self.store.commit(&next).is_err() {
+             self.message =
+@@ -591,7 +671,7 @@ impl<G: GameFiles> LocalService<G> {
+         let page = match &self.page {
+             Page::Items(List::Worlds | List::Servers, _) => Page::Library,
+             Page::Items(List::Instances, _) | Page::About(_) => Page::Versions,
+-            Page::Items(List::Reports, _) => Page::Settings,
++            Page::Items(List::Reports, _) | Page::Benchmark(_) => Page::Settings,
+             Page::Profile(_) => Page::Items(List::Profiles, 0),
+             Page::Server(_) => Page::Items(List::Servers, 0),
+             Page::Confirm { profile, index } => {
+@@ -612,6 +692,11 @@ impl<G: GameFiles> LocalService<G> {
+         let mut next = self.preferences.clone();
+         match command {
+             Command::Back => self.back(),
++            Command::Benchmark(scene) => {
++                self.benchmark = Some(scene);
++                self.show(Page::Home);
++                self.message = night_online::tr("benchmark_start_help");
++            }
+             Command::Online => {
+                 self.online.open();
+                 self.show(Page::Online);
+@@ -634,6 +719,7 @@ impl<G: GameFiles> LocalService<G> {
+                 let address = next.servers[index].address.clone();
+                 if self.save(next) {
+                     self.target = Target::Server(address);
++                    self.benchmark = None;
+                     self.show(Page::Home);
+                 }
+             }
+@@ -646,6 +732,7 @@ impl<G: GameFiles> LocalService<G> {
+                 next.server = None;
+                 if self.save(next) {
+                     self.target = Target::Menu;
++                    self.benchmark = None;
+                     self.show(Page::Home);
+                 }
+             }
+@@ -658,6 +745,7 @@ impl<G: GameFiles> LocalService<G> {
+                         return;
+                     }
+                     self.target = Target::World(id);
++                    self.benchmark = None;
+                     self.show(Page::Home);
+                 } else {
+                     self.message = "The selected world is no longer available.";
+@@ -666,6 +754,7 @@ impl<G: GameFiles> LocalService<G> {
+             Command::ClearTarget => {
+                 next.server = None;
+                 if self.save(next) {
++                    self.benchmark = None;
+                     self.target = Target::Menu;
+                     self.show(Page::Home);
+                 }
+@@ -826,6 +915,8 @@ impl<G: GameFiles> LocalService<G> {
+             )),
+             play_detail: Text::new(if status != ResourceStatus::Ready {
+                 status.text()
++            } else if let Some(scene) = self.benchmark {
++                night_online::tr(BENCHMARK_SCENES[scene].1)
+             } else if requires_account {
+                 online.map_or("", |(_, status)| status)
+             } else {
+@@ -837,8 +928,8 @@ impl<G: GameFiles> LocalService<G> {
+             }),
+             ready: u8::from(
+                 status == ResourceStatus::Ready
+-                    && !requires_account
+-                    && (!ACCOUNT_FIXTURE || online.is_none()),
++                    && (self.benchmark.is_some()
++                        || (!requires_account && (!ACCOUNT_FIXTURE || online.is_none()))),
+             ),
+             settings: (if self.preferences.settings.swap_ab {
+                 SWAP_AB
+@@ -895,7 +986,7 @@ impl<G: GameFiles> LocalService<G> {
+                 row(
+                     "Use game menu",
+                     "Clear the direct target",
+-                    if matches!(self.target, Target::Menu) {
++                    if matches!(self.target, Target::Menu) && self.benchmark.is_none() {
+                         SELECTED
+                     } else {
+                         ACTIVE
+@@ -921,6 +1012,16 @@ impl<G: GameFiles> LocalService<G> {
+                         Command::Toggle(flag),
+                     );
+                 }
++                row(
++                    night_online::tr("benchmark"),
++                    night_online::tr("benchmark_preset"),
++                    if status == ResourceStatus::Ready {
++                        ACTIVE
++                    } else {
++                        DISABLED
++                    },
++                    Command::Show(Page::Benchmark(0)),
++                );
+                 row(
+                     "Reports",
+                     "Existing benchmark results",
+@@ -1181,6 +1282,46 @@ impl<G: GameFiles> LocalService<G> {
+                     "Use the keyboard or choose a character with Left/Right.",
+                 )
+             }
++            Page::Benchmark(page) => {
++                for (index, (_, key)) in BENCHMARK_SCENES
++                    .iter()
++                    .enumerate()
++                    .skip(page * LIST_ROWS)
++                    .take(LIST_ROWS)
++                {
++                    row(
++                        night_online::tr(key),
++                        night_online::tr("benchmark_preset"),
++                        if self.benchmark == Some(index) {
++                            SELECTED
++                        } else {
++                            ACTIVE
++                        },
++                        Command::Benchmark(index),
++                    );
++                }
++                if (page + 1) * LIST_ROWS < BENCHMARK_SCENES.len() {
++                    row(
++                        night_online::tr("next"),
++                        "",
++                        ACTIVE,
++                        Command::Show(Page::Benchmark(page + 1)),
++                    );
++                }
++                if page > 0 {
++                    row(
++                        night_online::tr("previous"),
++                        "",
++                        ACTIVE,
++                        Command::Show(Page::Benchmark(page - 1)),
++                    );
++                }
++                row(night_online::tr("back"), "", ACTIVE, Command::Back);
++                (
++                    night_online::tr("benchmark"),
++                    night_online::tr("benchmark_select"),
++                )
++            }
+             Page::Report(index, page) => {
+                 if let Some(fields) = &report {
+                     for (label, value) in fields.iter().skip(page * 3).take(3) {
+diff --git a/wiiu/loading_app/src/night_online.rs b/wiiu/loading_app/src/night_online.rs
+index 1dd3d25fdee06d7a8aaf0630abe9ad14cd937986..b7544fa1d0beff1b6006814736eeae8e40ed8f37 100644
+--- a/wiiu/loading_app/src/night_online.rs
++++ b/wiiu/loading_app/src/night_online.rs
+@@ -703,6 +703,20 @@ pub fn tr(key: &str) -> &'static str {
+         "account" => "Microsoft account",
+         "accounts" => "Microsoft accounts",
+         "back" => "Back",
++        "benchmark" => "Benchmark",
++        "benchmark_preset" => "Stock Full Performance",
++        "benchmark_standard" => "Standard benchmark",
++        "benchmark_village" => "Village benchmark",
++        "benchmark_forest" => "Forest benchmark",
++        "benchmark_ocean" => "Ocean benchmark",
++        "benchmark_mountain" => "Mountain benchmark",
++        "benchmark_travel" => "Travel benchmark",
++        "benchmark_select" => "Choose an offline scenario. Press Minus during a run to cancel.",
++        "benchmark_start_help" => "Select Start Game to benchmark with Stock Full Performance.",
++        "benchmark_completed" => "Benchmark completed. Its report is available here.",
++        "benchmark_cancelled" => "Benchmark cancelled.",
++        "benchmark_failed" => "Benchmark failed. Check the game log for details.",
++        "previous" => "Previous",
+         "can_enable_later" => "You can enable PIN protection later",
+         "cancel" => "Cancel",
+         "change_pin" => "Change PIN",
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index 466942cc203bf013a1eeb647178ad7c1794c3784..135319b4ae03803938ab934e4e5756e177ee39f9 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -137,7 +137,7 @@ impl<G: GameFiles> LocalService<G> {
+             return Err("Select the requested installation in Night first.");
+         }
+         let mut launch = self
+-            .launch()
++            .launch_game()
+             .map_err(|_| "The selected installation or world is unavailable.")?;
+         // A remote launch never initiates a multiplayer connection on its own.
+         launch.server = None;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 00210bf1b1fd31621f37112a35a8f5fbac8b2492..907fa9358342890c243510fe826e5e3e4839748c 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1325,6 +1325,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         self.screenshot_result.take()
+     }
+ 
++    fn benchmark_display_sizes(&self) -> [[u32; 2]; 2] {
++        self.outputs
++    }
++
+     fn take_frame_work(&mut self) -> CafeFrameWork {
+         std::mem::take(&mut self.frame_work)
+     }
+@@ -1829,6 +1833,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+ 
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         self.last_frame_partial = false;
++        self.frame_work.terrain_sections = [0; 2];
++        self.frame_work.omitted_pass_mask = 0;
+         let mut unsupported: Vec<_> = if frame.title {
+             Vec::new()
+         } else {
+@@ -1997,6 +2003,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 );
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
++                draw.presenter.frame_work.terrain_sections[index] = sections_drawn;
+                 drop(terrain_span);
+ 
+                 let overlays = (|| -> Result<(), &'static str> {
+@@ -2204,6 +2211,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+         if !unsupported.is_empty() {
+             for (flag, name) in &unsupported {
++                self.frame_work.omitted_pass_mask |= *flag;
+                 if self.unsupported_logged & *flag == 0 {
+                     log_unsupported_world_pass(name);
+                     self.unsupported_logged |= *flag;

@@ -1,0 +1,585 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index ca30893ea60a60242541a3503a67e0c420fa7a77..dd97ac95442dfba2b9cd6fd7e2ce180a30d7641c 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ cmake_minimum_required(VERSION 3.13)
+ project(horizon_wiiu_loading_host C CXX)
+ find_program(POWERPC_OBJCOPY_EXECUTABLE powerpc-eabi-objcopy REQUIRED)
++find_program(CAFEGLSL_COMPILER_EXECUTABLE glslcompiler REQUIRED)
+ 
+ # Keep all generated files under the caller's binary tree. These are the
+ # existing HUD and panorama implementations; this target adds only the WHB
+@@ -33,8 +34,22 @@ add_custom_command(
+    DEPENDS horizon_gx2_terrain_shader "${CMAKE_CURRENT_BINARY_DIR}/gx2_terrain/terrain.gsh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(OUTLINE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/outline.gsh")
++set(OUTLINE_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/outline_gfd.o")
++add_custom_command(
++   OUTPUT "${OUTLINE_SHADER}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/outline.vert"
++           -ps "${CMAKE_CURRENT_SOURCE_DIR}/outline.frag" -o "${OUTLINE_SHADER}"
++   DEPENDS outline.vert outline.frag VERBATIM)
++add_custom_command(
++   OUTPUT "${OUTLINE_GFD_OBJECT}"
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common outline.gsh outline_gfd.o
++   DEPENDS "${OUTLINE_SHADER}"
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+-   PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   "${OUTLINE_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_custom_command(
+    OUTPUT "${PANORAMA_GFD_OBJECT}"
+@@ -49,7 +64,8 @@ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+-   loading_host.c gx2_profile.c swkbd_bridge.cpp "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}")
++   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c
++   "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}" "${OUTLINE_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 0d5f1c3d0dd99ae0305345aaf6c75a0d83fe7c04..f004d7fac0d0e85a5d69045236d71c92499ea31a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -7,6 +7,8 @@
+ 
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
++mod outline;
++
+ use horizon_client::chunk::ColumnLayout;
+ use horizon_client::gfx::SectionKey;
+ use horizon_client::graphics::PresentMode;
+@@ -560,6 +562,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     hud: Option<HorizonPresenter<'shader>>,
+     panorama: Option<Panorama<'shader>>,
+     terrain: Option<Terrain<'shader>>,
++    outline: outline::Outline,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+     terrain_generation: Option<u64>,
+     terrain_min_y: Option<i32>,
+@@ -620,6 +623,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             hud: None,
+             panorama: None,
+             terrain: None,
++            outline: outline::Outline::default(),
+             terrain_atlas: None,
+             terrain_generation: None,
+             terrain_min_y: None,
+@@ -1180,7 +1184,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+         ),
+         (frame.skin.is_some(), 1 << 16, "skinned entities"),
+         (!frame.hand.is_empty(), 1 << 6, "first-person hand"),
+-        (!frame.outline.is_empty(), 1 << 7, "block outline"),
+         (
+             !frame.debug_lines.is_empty()
+                 || !frame.debug_lines_on_top.is_empty()
+@@ -1247,7 +1250,6 @@ fn log_unsupported_world_pass(name: &str) {
+         "entities" => "Horizon GX2: skipped unsupported entities pass\n\0",
+         "block entities" => "Horizon GX2: skipped unsupported block-entities pass\n\0",
+         "first-person hand" => "Horizon GX2: skipped unsupported hand pass\n\0",
+-        "block outline" => "Horizon GX2: skipped unsupported block-outline pass\n\0",
+         "debug lines" => "Horizon GX2: skipped unsupported debug-lines pass\n\0",
+         "screen effects" => "Horizon GX2: skipped unsupported screen-effects pass\n\0",
+         "world border" => "Horizon GX2: skipped unsupported world-border pass\n\0",
+@@ -1781,6 +1783,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.clear_native_sections();
+         self.translucent_terrain_omitted.clear();
+         self.terrain = None;
++        self.outline = outline::Outline::default();
+         self.hud = None;
+         self.panorama = None;
+         self.panorama_identity = None;
+@@ -1952,6 +1955,25 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 );
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
++
++                // The current terrain pass stops at opaque and cutout surfaces.
++                // Both outline phases fall here until translucent terrain draws.
++                if !draw.frame.outline.is_empty() {
++                    let fallback;
++                    let outline_projection = match projection {
++                        Some(projection) => projection,
++                        None => {
++                            fallback = TerrainProjection::new(draw.frame, 0, aspect);
++                            &fallback
++                        }
++                    };
++                    if let Err(error) =
++                        draw.presenter.outline.draw(draw.frame, outline_projection, target, rect)
++                    {
++                        draw.result = Err(error);
++                        return -1;
++                    }
++                }
+             }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+diff --git a/wiiu/loading_host/outline.c b/wiiu/loading_host/outline.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..4007263ae7c988c271a629cf167387b8244a62c0
+--- /dev/null
++++ b/wiiu/loading_host/outline.c
+@@ -0,0 +1,136 @@
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <gx2/draw.h>
++#include <gx2/event.h>
++#include <gx2/registers.h>
++#include <gx2/shaders.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_outline_gsh_start[];
++
++typedef struct OutlineVertex {
++   float clip[4];
++   float fog_distance[2];
++   uint8_t rgba[4];
++} OutlineVertex;
++
++_Static_assert(sizeof(OutlineVertex) == 28, "outline vertex ABI changed");
++_Static_assert(offsetof(OutlineVertex, fog_distance) == 16, "outline fog offset changed");
++_Static_assert(offsetof(OutlineVertex, rgba) == 24, "outline color offset changed");
++
++typedef struct HorizonGx2Outline {
++   WHBGfxShaderGroup shader;
++   GX2RBuffer vertices[2];
++   uint32_t fog_color_offset;
++   uint32_t fog_ranges_offset;
++} HorizonGx2Outline;
++
++static bool uniform_offset(const GX2PixelShader *shader, const char *name, uint32_t *offset)
++{
++   const GX2UniformVar *var = GX2GetPixelUniformVar(shader, name);
++   if (!var || var->type != GX2_SHADER_VAR_TYPE_FLOAT4 || var->count != 1 || var->block >= 0)
++      return false;
++   *offset = var->offset;
++   return true;
++}
++
++static void release(HorizonGx2Outline *outline)
++{
++   for (unsigned i = 0; i < 2; ++i)
++      if (GX2RBufferExists(&outline->vertices[i])) GX2RDestroyBufferEx(&outline->vertices[i], 0);
++   if (outline->shader.vertexShader) WHBGfxFreeShaderGroup(&outline->shader);
++   free(outline);
++}
++
++int horizon_gx2_outline_create(HorizonGx2Outline **out, uint32_t capacity)
++{
++   if (!out || !capacity || capacity > UINT32_MAX / sizeof(OutlineVertex)) return -1;
++   *out = NULL;
++   HorizonGx2Outline *outline = calloc(1, sizeof(*outline));
++   if (!outline) return -2;
++
++   WHBGfxShaderGroup *shader = &outline->shader;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_outline_gsh_start) ||
++       !shader->vertexShader || !shader->pixelShader ||
++       shader->vertexShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       shader->pixelShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       !uniform_offset(shader->pixelShader, "uFogColor", &outline->fog_color_offset) ||
++       !uniform_offset(shader->pixelShader, "uFogRanges", &outline->fog_ranges_offset) ||
++       !WHBGfxInitShaderAttribute(shader, "aClip", 0, offsetof(OutlineVertex, clip), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aFogDistance", 0, offsetof(OutlineVertex, fog_distance), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aColor", 0, offsetof(OutlineVertex, rgba), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
++       !WHBGfxInitFetchShader(shader)) {
++      release(outline);
++      return -3;
++   }
++   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++   for (unsigned i = 0; i < 2; ++i) {
++      GX2RBuffer *buffer = &outline->vertices[i];
++      *buffer = (GX2RBuffer){ .flags = flags, .elemSize = sizeof(OutlineVertex), .elemCount = capacity };
++      if (!GX2RCreateBuffer(buffer)) {
++         release(outline);
++         return -2;
++      }
++   }
++   *out = outline;
++   return 0;
++}
++
++void horizon_gx2_outline_destroy(HorizonGx2Outline *outline)
++{
++   if (!outline) return;
++   GX2DrawDone();
++   release(outline);
++}
++
++int horizon_gx2_outline_draw(HorizonGx2Outline *outline, uint32_t target, const uint32_t rect[4],
++                             const OutlineVertex *vertices, uint32_t count, uint32_t secondary_count,
++                             const float fog_color[4], const float fog_ranges[4])
++{
++   if (!outline || target > 1 || !rect || !rect[2] || !rect[3] || !vertices ||
++       !count || count % 6 || secondary_count % 6 || secondary_count > count ||
++       !fog_color || !fog_ranges) return -1;
++   GX2RBuffer *buffer = &outline->vertices[target];
++   if (count > buffer->elemCount) return -1;
++   void *mapped = GX2RLockBufferEx(buffer, 0);
++   if (!mapped) return -2;
++   memcpy(mapped, vertices, count * sizeof(*vertices));
++   GX2RUnlockBufferEx(buffer, 0);
++
++   WHBGfxShaderGroup *shader = &outline->shader;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   GX2SetPixelUniformReg(outline->fog_color_offset, 4, fog_color);
++   GX2SetPixelUniformReg(outline->fog_ranges_offset, 4, fog_ranges);
++   GX2RSetAttributeBuffer(buffer, 0, sizeof(OutlineVertex), 0);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0);
++   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
++                      GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_MODE_INV_SRC_ALPHA, GX2_BLEND_COMBINE_MODE_ADD);
++   if (secondary_count) {
++      GX2SetDepthOnlyControl(TRUE, FALSE, GX2_COMPARE_FUNC_LEQUAL);
++      GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, secondary_count, 0, 1);
++   }
++   if (count > secondary_count) {
++      GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
++      GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count - secondary_count, secondary_count, 1);
++   }
++   return 0;
++}
+diff --git a/wiiu/loading_host/outline.frag b/wiiu/loading_host/outline.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..8db26821906661327d74d837cfd1f820267ab4cf
+--- /dev/null
++++ b/wiiu/loading_host/outline.frag
+@@ -0,0 +1,18 @@
++#version 330
++uniform vec4 uFogColor;
++uniform vec4 uFogRanges;
++in vec2 vFogDistance;
++in vec4 vColor;
++out vec4 fragColor;
++
++float linearFog(float distance, float start, float end) {
++    if (distance <= start) return 0.0;
++    if (distance >= end) return 1.0;
++    return (distance - start) / (end - start);
++}
++
++void main() {
++    float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
++                    linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
++    fragColor = vec4(mix(vColor.rgb, uFogColor.rgb, fog * uFogColor.a), vColor.a);
++}
+diff --git a/wiiu/loading_host/outline.rs b/wiiu/loading_host/outline.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6bf38b0ffdf1c00c617328cc0e723dded0f7326
+--- /dev/null
++++ b/wiiu/loading_host/outline.rs
+@@ -0,0 +1,118 @@
++//! GX2 block selection using the same world projection and fog as terrain.
++
++use crate::TerrainProjection;
++use horizon_client::gfx::{fog_uniform, outline_width, Frame};
++use std::{ffi::c_void, ptr::NonNull};
++
++#[path = "outline_vertices.rs"]
++mod geometry;
++
++unsafe extern "C" {
++    fn horizon_gx2_outline_create(out: *mut *mut c_void, capacity: u32) -> i32;
++    fn horizon_gx2_outline_destroy(outline: *mut c_void);
++    fn horizon_gx2_outline_draw(
++        outline: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        vertices: *const geometry::Vertex,
++        count: u32,
++        secondary_count: u32,
++        fog_color: *const f32,
++        fog_ranges: *const f32,
++    ) -> i32;
++}
++
++#[derive(Default)]
++pub(crate) struct Outline {
++    native: Option<NonNull<c_void>>,
++    vertices: Vec<geometry::Vertex>,
++}
++
++impl Outline {
++    pub(crate) fn draw(
++        &mut self,
++        frame: &Frame<'_>,
++        projection: &TerrainProjection,
++        target: u32,
++        rect: [u32; 4],
++    ) -> Result<(), &'static str> {
++        if frame.outline.is_empty() {
++            return Ok(());
++        }
++
++        let [_, _, width, height] = rect;
++        let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
++        let edges = &frame.outline[..frame.outline.len().min(geometry::MAX_EDGES)];
++        self.vertices.clear();
++        let mut add_stroke = |argb, stroke_width| {
++            for &edge in edges {
++                geometry::append_edge(
++                    &mut self.vertices,
++                    edge,
++                    projection.camera,
++                    |position| projection.clip.transform(position),
++                    [width, height],
++                    stroke_width * scale,
++                    argb,
++                );
++            }
++            self.vertices.len() as u32
++        };
++        let secondary = if frame.outline_high_contrast {
++            add_stroke(0xff00_0000, 7.0)
++        } else {
++            0
++        };
++        let default = if frame.outline_high_contrast {
++            0xff57_ffe1
++        } else {
++            0x6600_0000
++        };
++        let count = add_stroke(custom.unwrap_or(default), outline_width(width));
++        if count == 0 {
++            return Ok(());
++        }
++
++        let native = match self.native {
++            Some(native) => native,
++            None => {
++                let mut resource = std::ptr::null_mut();
++                let capacity = 2 * geometry::MAX_EDGES * geometry::VERTICES_PER_EDGE;
++                if unsafe { horizon_gx2_outline_create(&mut resource, capacity as u32) } != 0 {
++                    return Err("could not allocate the GX2 block outline");
++                }
++                let native = NonNull::new(resource).ok_or("missing GX2 block outline")?;
++                self.native = Some(native);
++                native
++            }
++        };
++        let (fog_color, fog_ranges) = fog_uniform(frame);
++        // The callback owns the active output and the pre-terrain wait has
++        // retired the last use of this output's backing. The upload copies
++        // the CPU scratch before the synchronous call returns.
++        if unsafe {
++            horizon_gx2_outline_draw(
++                native.as_ptr(),
++                target,
++                rect.as_ptr(),
++                self.vertices.as_ptr(),
++                count,
++                secondary,
++                fog_color.as_ptr(),
++                fog_ranges.as_ptr(),
++            )
++        } != 0
++        {
++            return Err("GX2 block outline draw failed");
++        }
++        Ok(())
++    }
++}
++
++impl Drop for Outline {
++    fn drop(&mut self) {
++        if let Some(native) = self.native.take() {
++            unsafe { horizon_gx2_outline_destroy(native.as_ptr()) };
++        }
++    }
++}
+diff --git a/wiiu/loading_host/outline.vert b/wiiu/loading_host/outline.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..02bf55fd1b85afa135173561992ad0e44fd569f9
+--- /dev/null
++++ b/wiiu/loading_host/outline.vert
+@@ -0,0 +1,12 @@
++#version 330
++layout(location = 0) in vec4 aClip;
++layout(location = 1) in vec2 aFogDistance;
++layout(location = 2) in vec4 aColor;
++out vec2 vFogDistance;
++out vec4 vColor;
++
++void main() {
++    gl_Position = aClip;
++    vFogDistance = aFogDistance;
++    vColor = aColor;
++}
+diff --git a/wiiu/loading_host/outline_vertices.rs b/wiiu/loading_host/outline_vertices.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..acb30d923bac4e5abe1bb8566104c1e01200a608
+--- /dev/null
++++ b/wiiu/loading_host/outline_vertices.rs
+@@ -0,0 +1,146 @@
++//! Selection strokes expanded to clip-space triangles for GX2.
++
++pub const MAX_EDGES: usize = 256;
++pub const VERTICES_PER_EDGE: usize = 6;
++
++#[repr(C)]
++#[derive(Clone, Copy)]
++pub struct Vertex {
++    pub clip: [f32; 4],
++    pub fog_distance: [f32; 2],
++    pub rgba: [u8; 4],
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<Vertex>() == 28);
++    assert!(std::mem::offset_of!(Vertex, fog_distance) == 16);
++    assert!(std::mem::offset_of!(Vertex, rgba) == 24);
++};
++
++fn fog_distance([x, y, z]: [f32; 3]) -> [f32; 2] {
++    [(x * x + y * y + z * z).sqrt(), x.hypot(z).max(y.abs())]
++}
++
++pub fn append_edge(
++    vertices: &mut Vec<Vertex>,
++    edge: [f64; 6],
++    camera: [f64; 3],
++    project: impl Fn([f32; 3]) -> [f32; 4],
++    [width, height]: [u32; 2],
++    stroke_width: f32,
++    argb: u32,
++) {
++    // Keep the reference line shader's perspective layering and view shrink.
++    let shrink = (1.0 - 1.0 / 4096.0) * (1.0 - 1.0 / 256.0);
++    let relative: [[f32; 3]; 2] = std::array::from_fn(|end| {
++        std::array::from_fn(|axis| (edge[end * 3 + axis] - camera[axis]) as f32)
++    });
++    let mut clip = relative.map(|position| project(position.map(|value| value * shrink)));
++    let mut fog = relative.map(fog_distance);
++    if !clip.iter().flatten().all(|value| value.is_finite()) {
++        return;
++    }
++
++    // Clip before dividing by W. The terrain projection maps the near plane
++    // to Z=0, so a segment crossing it has one visible endpoint at most.
++    if clip[0][2] < 0.0 && clip[1][2] < 0.0 {
++        return;
++    }
++    for i in 0..2 {
++        if clip[i][2] < 0.0 {
++            let other = 1 - i;
++            let t = clip[i][2] / (clip[i][2] - clip[other][2]);
++            for axis in [0, 1, 3] {
++                clip[i][axis] += (clip[other][axis] - clip[i][axis]) * t;
++            }
++            clip[i][2] = 0.0;
++            for axis in 0..2 {
++                fog[i][axis] += (fog[other][axis] - fog[i][axis]) * t;
++            }
++        }
++    }
++    if clip.iter().any(|position| position[3] <= 0.0) {
++        return;
++    }
++
++    let screen = [width as f32, height as f32];
++    let ndc = clip.map(|[x, y, _, w]| [x / w, y / w]);
++    let dx = (ndc[1][0] - ndc[0][0]) * screen[0];
++    let dy = (ndc[1][1] - ndc[0][1]) * screen[1];
++    let length = dx.hypot(dy);
++    if !length.is_finite() || length == 0.0 {
++        return;
++    }
++    let [a, r, g, b] = argb.to_be_bytes();
++    let perpendicular = [-dy / length, dx / length];
++    let corners: [Vertex; 4] = std::array::from_fn(|i| {
++        let end = i / 2;
++        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
++        let mut position = clip[end];
++        for axis in 0..2 {
++            position[axis] +=
++                perpendicular[axis] * stroke_width / screen[axis] * side * position[3];
++        }
++        Vertex {
++            clip: position,
++            fog_distance: fog[end],
++            rgba: [r, g, b, a],
++        }
++    });
++    vertices.extend([0, 1, 2, 2, 1, 3].map(|i| corners[i]));
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn projected_stroke_has_requested_pixel_width_and_stock_color() {
++        let mut vertices = Vec::new();
++        let x = 30_000_000.0;
++        append_edge(
++            &mut vertices,
++            [x - 0.5, 0.0, 0.5, x + 0.5, 0.0, 0.5],
++            [x, 0.0, 0.0],
++            |[x, y, z]| [x, y, z, 1.0],
++            [854, 480],
++            2.5,
++            0x6657_ffe1,
++        );
++        assert_eq!(vertices.len(), 6);
++        let pixel_width = (vertices[0].clip[1] - vertices[1].clip[1]) * 240.0;
++        assert!((pixel_width - 2.5).abs() < 0.00001);
++        assert!(vertices[2].clip[0] > vertices[0].clip[0]);
++        assert_eq!(vertices[0].rgba, [0x57, 0xff, 0xe1, 0x66]);
++    }
++
++    #[test]
++    fn clips_a_crossing_segment_and_skips_near_plane_rejections() {
++        let mut vertices = Vec::new();
++        let project = |[x, y, z]: [f32; 3]| [x, y, z - 0.05, z];
++        let camera = [0.0; 3];
++        let viewport = [1920, 1080];
++        append_edge(
++            &mut vertices,
++            [-0.1, 0.0, -0.1, 0.1, 0.0, 0.5],
++            camera,
++            project,
++            viewport,
++            2.5,
++            0xff00_0000,
++        );
++        assert_eq!(vertices.len(), 6);
++        assert_eq!(vertices[0].clip[2], 0.0);
++        assert!((vertices[0].clip[3] - 0.05).abs() < 0.00001);
++        append_edge(
++            &mut vertices,
++            [-0.1, 0.0, -0.1, 0.1, 0.0, 0.0],
++            camera,
++            project,
++            viewport,
++            2.5,
++            0xff00_0000,
++        );
++        assert_eq!(vertices.len(), 6);
++    }
++}

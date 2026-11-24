@@ -1,0 +1,516 @@
+diff --git a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+index d4fbb4848e7ba6e70c9b4692cc1859a456c76297..8abd6263e4544a061eded781eddc997cbac97387 100644
+--- a/crates/horizon-client-render/src/gfx.rs
++++ b/crates/horizon-client-render/src/gfx.rs
+@@ -611,7 +611,7 @@ pub fn fog_uniform(frame: &Frame) -> ([f32; 4], [f32; 4]) {
+     }
+ }
+ 
+-fn sky_open(frame: &Frame) -> bool {
++pub fn sky_open(frame: &Frame) -> bool {
+     !frame.sky_blocked
+ }
+ 
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index efd59206544313ded4f5a99a93f289ee6de001e3..48f89b29767b50cd8e6053780743595c1a6decf0 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -22,6 +22,7 @@ pub const SEED: i64 = 1234;
+ pub const WORLD: &str = "horizon-benchmark";
+ /// Written into the world so a later run only ever replaces its own world.
+ const MARKER: &str = "horizon-benchmark.txt";
++const MARKER_CONTENT: &str = "Created by horizon-client --benchmark; replaced by the next run.\n";
+ 
+ /// A straight flight over terrain: name, start, end, pitch (`tools/graphics_bench.py`'s paths).
+ type Scene = (&'static str, [f64; 3], [f64; 3], f64);
+@@ -458,6 +459,12 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+             "partial_frames",
+             "omitted_pass_mask",
+             "configured_scale",
++            "effective_scale",
++            "tv_world_width",
++            "tv_world_height",
++            "gamepad_world_width",
++            "gamepad_world_height",
++            "world_surface_bytes",
+             "entity_distance_percent",
+             "tv_width",
+             "tv_height",
+@@ -490,6 +497,9 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+             (17, "lightning"),
+             (18, "dynamic_and_emissive_lighting"),
+             (20, "translucent_terrain"),
++            (21, "sky_surfaces"),
++            (22, "crumbling_budget"),
++            (23, "outline_budget"),
+         ];
+         for (bit, name) in names {
+             if omitted & (1 << bit) != 0 {
+@@ -558,14 +568,19 @@ fn measure(
+         "Cafe benchmark opening {WORLD}; scenario={}",
+         setup.scenario
+     );
++    // Claim the new leaf before dispatching the asynchronous open. A cancelled
++    // request can leave a scratch directory that the next benchmark may reuse.
++    let saves = setup.game_dir.join("saves");
++    std::fs::create_dir_all(&saves).map_err(|e| e.to_string())?;
++    let world = saves.join(WORLD);
++    std::fs::create_dir(&world).map_err(|e| e.to_string())?;
++    let marker = world.join(MARKER);
++    if let Err(error) = std::fs::write(&marker, MARKER_CONTENT) {
++        let _ = std::fs::remove_file(marker);
++        let _ = std::fs::remove_dir(world);
++        return Err(error.to_string());
++    }
+     control.call(&format!("open {WORLD} {SEED} creative"))?;
+-    // The world opens on a worker: its folder may not exist yet when `open` replies.
+-    std::fs::create_dir_all(setup.game_dir.join("saves").join(WORLD)).map_err(|e| e.to_string())?;
+-    std::fs::write(
+-        setup.game_dir.join("saves").join(WORLD).join(MARKER),
+-        "Created by horizon-client --benchmark; replaced by the next run.\n",
+-    )
+-    .map_err(|e| e.to_string())?;
+     let loaded = wait_loaded(control, |_| true)?;
+     report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
+ 
+@@ -871,7 +886,13 @@ fn ab_blocks(
+ 
+ /// Removes the previous run's world, never one the benchmark didn't create.
+ fn replace_world(game_dir: &Path) -> Result<(), String> {
+-    let world = game_dir.join("saves").join(WORLD);
++    let saves = game_dir.join("saves");
++    match std::fs::symlink_metadata(&saves) {
++        Ok(metadata) if metadata.is_dir() => {}
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
++        _ => return Err(format!("{} is not a benchmark saves directory", saves.display())),
++    }
++    let world = saves.join(WORLD);
+     match std::fs::symlink_metadata(&world) {
+         Ok(metadata) if metadata.is_dir() => {}
+         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+@@ -882,7 +903,11 @@ fn replace_world(game_dir: &Path) -> Result<(), String> {
+             ));
+         }
+     }
+-    if !std::fs::symlink_metadata(world.join(MARKER)).is_ok_and(|metadata| metadata.is_file()) {
++    let marker = world.join(MARKER);
++    if !std::fs::symlink_metadata(&marker)
++        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MARKER_CONTENT.len() as u64)
++        || !std::fs::read_to_string(marker).is_ok_and(|owner| owner == MARKER_CONTENT)
++    {
+         return Err(format!(
+             "{} exists and was not created by the benchmark: rename it",
+             world.display()
+@@ -1646,6 +1671,9 @@ mod tests {
+         );
+         assert!(world.exists());
+         std::fs::write(world.join(MARKER), "").unwrap();
++        assert!(replace_world(&dir).is_err());
++        assert!(world.exists());
++        std::fs::write(world.join(MARKER), MARKER_CONTENT).unwrap();
+         replace_world(&dir).unwrap();
+         assert!(!world.exists());
+         replace_world(&dir).unwrap();
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 622f65f517c76691ef47daf8fd41e2a481c13c1d..27717ceec0e71c117c6cb407f38a910b42014c9f 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1632,6 +1632,12 @@ impl Game<'_> {
+                     "terrain_presented": frames.terrain_presented,
+                     "omitted_pass_mask": frames.omitted_pass_mask,
+                     "partial_frames": frames.partial_frames,
++                "effective_scale": frames.world_resolution.map(|r| r.effective_scale),
++                "tv_world_width": frames.world_resolution.map(|r| r.dimensions[0][0]),
++                "tv_world_height": frames.world_resolution.map(|r| r.dimensions[0][1]),
++                "gamepad_world_width": frames.world_resolution.map(|r| r.dimensions[1][0]),
++                "gamepad_world_height": frames.world_resolution.map(|r| r.dimensions[1][1]),
++                "world_surface_bytes": frames.world_resolution.map(|r| r.surface_bytes),
+                 })
+             })
+         });
+@@ -1729,6 +1735,13 @@ impl Game<'_> {
+             status["frames"] = json!(self.cafe_performance.presented);
+             status["cafe_performance"] =
+                 json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
++            status["cafe_graphics"] = json!({
++                "preset": self.settings.horizon.preset.name(),
++                "configured_scale": self.settings.horizon.resolution_scale,
++                "dynamic_resolution": self.settings.horizon.dynamic_resolution,
++                "dynamic_timing_available": false,
++                "target_fps": self.settings.horizon.target_fps,
++            });
+         }
+         status["lod"] = lod;
+         // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index d3bf9c39edb7b7c32cc929f0330c29d6c9f23fd3..aa975fd3ea040c542d9e7c31a2d2d088a342c1a8 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -531,6 +531,7 @@ pub(super) struct BenchmarkFrames {
+     pub(super) terrain_presented: bool,
+     pub(super) omitted_pass_mask: u32,
+     pub(super) partial_frames: u64,
++    pub(super) world_resolution: Option<horizon_client::presentation::WorldResolution>,
+     pub(super) display_sizes: [[u32; 2]; 2],
+     pub(super) latest_start: Option<Instant>,
+ }
+@@ -833,6 +834,9 @@ impl CafeGameSession<'_> {
+         if self.benchmark.is_some() {
+             let state = &mut self.game.cafe_benchmark;
+             state.display_sizes = backend.benchmark_display_sizes();
++            if let Some(resolution) = work.world_resolution {
++                state.world_resolution = Some(resolution);
++            }
+             let paired = work.presented == [true; 2];
+             if paired && phase == performance::Phase::Title {
+                 state.title_presented = true;
+@@ -860,7 +864,7 @@ impl CafeGameSession<'_> {
+         if self
+             .game
+             .cafe_performance
+-            .finish(end, after, self.game.cafe_frame_built, redraw, work)
++            .finish(end, start, after, self.game.cafe_frame_built, redraw, work)
+             && let Some(sample) = &self.game.cafe_performance.latest
+         {
+             log::info!(
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index 3e3b1b5225f93ab9a064e3d51e9b5acbf77c4025..b4957b108c58050658c4de771eba48db7f4a3678 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -1,5 +1,8 @@
++use horizon_client::presentation::WorldResolution;
+ use std::time::{Duration, Instant};
+ 
++const CADENCE_SAMPLES: usize = 256;
++
+ #[derive(Clone, Copy, Default)]
+ pub struct CafeFrameWork {
+     pub presented: [bool; 2],
+@@ -9,6 +12,7 @@ pub struct CafeFrameWork {
+     pub uploaded_bytes: u64,
+     pub terrain_sections: [usize; 2],
+     pub omitted_pass_mask: u32,
++    pub world_resolution: Option<WorldResolution>,
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -51,6 +55,14 @@ struct Window {
+     iterations: u32,
+     frames: u32,
+     outputs: [u32; 2],
++    paired: u32,
++    partial: u32,
++    omitted_pass_mask: u32,
++    terrain_sections: [usize; 2],
++    world_resolution: Option<WorldResolution>,
++    previous_paired: Option<Instant>,
++    cadence_ms: [f32; CADENCE_SAMPLES],
++    cadence_count: usize,
+     cpu: Duration,
+     submission: Duration,
+     gpu_wait: Duration,
+@@ -79,6 +91,14 @@ impl CafePerformance {
+                 iterations: 0,
+                 frames: 0,
+                 outputs: [0; 2],
++                paired: 0,
++                partial: 0,
++                omitted_pass_mask: 0,
++                terrain_sections: [0; 2],
++                world_resolution: None,
++                previous_paired: None,
++                cadence_ms: [0.0; CADENCE_SAMPLES],
++                cadence_count: 0,
+                 cpu: Duration::ZERO,
+                 submission: Duration::ZERO,
+                 gpu_wait: Duration::ZERO,
+@@ -91,6 +111,7 @@ impl CafePerformance {
+     pub(in crate::game) fn finish(
+         &mut self,
+         now: Instant,
++        loop_start: Instant,
+         totals: Totals,
+         built: bool,
+         redraw: Duration,
+@@ -104,7 +125,21 @@ impl CafePerformance {
+         for (count, success) in window.outputs.iter_mut().zip(work.presented) {
+             *count += u32::from(success);
+         }
+-        self.presented += u64::from(work.presented == [true; 2]);
++        if work.presented == [true; 2] {
++            self.presented += 1;
++            window.paired += 1;
++            window.partial += u32::from(work.omitted_pass_mask != 0);
++            window.omitted_pass_mask |= work.omitted_pass_mask;
++            window.terrain_sections = work.terrain_sections;
++            window.world_resolution = work.world_resolution;
++            if let Some(previous) = window.previous_paired.replace(loop_start) {
++                window.cadence_ms[window.cadence_count % CADENCE_SAMPLES] =
++                    loop_start.duration_since(previous).as_secs_f32() * 1000.0;
++                window.cadence_count += 1;
++            }
++        } else {
++            window.previous_paired = None;
++        }
+         window.cpu += redraw.saturating_sub(work.submission);
+         window.submission += work.submission.saturating_sub(work.gpu_wait);
+         window.gpu_wait += work.gpu_wait;
+@@ -114,7 +149,9 @@ impl CafePerformance {
+             return false;
+         }
+ 
+-        let window = self.active.take().unwrap();
++        let mut window = self.active.take().unwrap();
++        let sample_count = window.cadence_count.min(CADENCE_SAMPLES);
++        window.cadence_ms[..sample_count].sort_unstable_by(f32::total_cmp);
+         self.begin(window.phase, now, totals);
+         self.latest = Some(Sample {
+             window,
+@@ -127,7 +164,7 @@ impl CafePerformance {
+ 
+ impl Sample {
+     pub(in crate::game) fn paired_fps(&self) -> f64 {
+-        f64::from(self.window.outputs[0].min(self.window.outputs[1])) / self.seconds()
++        f64::from(self.window.paired) / self.seconds()
+     }
+ 
+     fn seconds(&self) -> f64 {
+@@ -144,6 +181,25 @@ impl Sample {
+         let mean_ms = |value: Duration| {
+             (window.frames != 0).then(|| value.as_secs_f64() * 1000.0 / f64::from(window.frames))
+         };
++        let count = window.cadence_count.min(CADENCE_SAMPLES);
++        let cadence = (count != 0).then(|| {
++            let percentile = |percent: usize| window.cadence_ms[(count * percent).div_ceil(100) - 1];
++            serde_json::json!({
++                "samples": count,
++                "median": percentile(50),
++                "p95": percentile(95),
++                "p99": percentile(99),
++                "max": percentile(100),
++            })
++        });
++        let world_resolution = window.world_resolution.map(|resolution| serde_json::json!({
++            "requested_scale": resolution.requested_scale,
++            "effective_scale": resolution.effective_scale,
++            "tv": resolution.dimensions[0],
++            "gamepad": resolution.dimensions[1],
++            "surface_bytes": resolution.surface_bytes,
++            "dynamic_timing_available": false,
++        }));
+         serde_json::json!({
+             "phase": window.phase.name(),
+             "window_ms": seconds * 1000.0,
+@@ -153,6 +209,13 @@ impl Sample {
+             "game_frames_built_per_second": f64::from(window.frames) / seconds,
+             "tv_submissions_per_second": f64::from(window.outputs[0]) / seconds,
+             "gamepad_submissions_per_second": f64::from(window.outputs[1]) / seconds,
++            "paired_submissions": window.paired,
++            "partial_paired_submissions": window.partial,
++            "complete_paired_submissions": window.paired - window.partial,
++            "paired_host_pacing_ms": cadence,
++            "last_terrain_sections": window.terrain_sections,
++            "omitted_pass_mask": window.omitted_pass_mask,
++            "world_resolution": world_resolution,
+             "combined_gx2_flips_per_second": delta(self.totals.combined_flips, window.base.combined_flips),
+             "integrated_ticks_per_second": delta(self.totals.server_ticks, window.base.server_ticks),
+             "meshed_sections_per_second": self.totals.meshed.saturating_sub(window.base.meshed) as f64 / seconds,
+@@ -164,3 +227,41 @@ impl Sample {
+         })
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cadence_and_completeness_require_paired_submissions() {
++        let start = Instant::now();
++        let totals = Totals::default();
++        let mut performance = CafePerformance::default();
++        performance.begin(Phase::Gameplay, start, totals);
++        for (milliseconds, presented, omitted_pass_mask) in [
++            (0, [true, false], 0),
++            (100, [false, true], 0),
++            (200, [true, true], 1),
++            (300, [true, true], 0),
++            (400, [false, false], 0),
++            (2000, [true, true], 0),
++        ] {
++            let time = start + Duration::from_millis(milliseconds);
++            let work = CafeFrameWork {
++                presented,
++                omitted_pass_mask,
++                ..Default::default()
++            };
++            performance.finish(time, time, totals, true, Duration::ZERO, work);
++        }
++        let sample = performance.latest.as_ref().unwrap();
++        let json = sample.json(start, start + Duration::from_secs(2));
++        assert_eq!(sample.paired_fps(), 1.5);
++        assert_eq!(json["paired_submissions"], 3);
++        assert_eq!(json["partial_paired_submissions"], 1);
++        assert_eq!(json["complete_paired_submissions"], 2);
++        assert_eq!(json["paired_host_pacing_ms"]["samples"], 1);
++        assert_eq!(json["paired_host_pacing_ms"]["p99"].as_f64(), Some(100.0));
++        assert_eq!(json["omitted_pass_mask"], 1);
++    }
++}
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 1f970092c27dc7706a73989712e7271f160616cb..0b47dcff056380e63140b3f24cec3bf3a1e24c9e 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -1259,10 +1259,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+ 
+             let swkbd_occupied = unsafe { horizon_wiiu_swkbd_input_occupied() != 0 };
+             let swkbd_open = unsafe { horizon_swkbd_is_open() != 0 };
+-            let mut native_input_this_frame = self.hosted_benchmark
+-                || self.native_keyboard_active
+-                || swkbd_occupied
+-                || swkbd_open;
++            let keyboard_owns_input = self.native_keyboard_active || swkbd_occupied || swkbd_open;
++            let mut native_input_this_frame = self.hosted_benchmark || keyboard_owns_input;
+             self.native_keyboard_active = swkbd_occupied || swkbd_open;
+             let history_overflowed = !self.button_history.push_poll(
+                 &button_history[..button_history_len],
+@@ -1294,7 +1292,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     );
+                 }
+             }
+-            if native_input_this_frame && !self.native_keyboard_active {
++            if keyboard_owns_input && !self.native_keyboard_active {
+                 if trace_this_iteration {
+                     log::info!(
+                         "Horizon Cafe host loop trace iteration={} phase=keyboard_close.begin",
+@@ -1581,7 +1579,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             {
+                 hosted::mcp::withdraw();
+                 cafe_profile::phase(Phase::Closing);
+-                if !hosted_save_failed || (retry_save && !native_input_this_frame) {
++                if !hosted_save_failed
++                    || (retry_save && !keyboard_owns_input && !self.native_keyboard_active)
++                {
+                     let _save = Span::new(Stage::SavePoll);
+                     let save = if game.hosted_save_pending() {
+                         game.poll_hosted_save()
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 907fa9358342890c243510fe826e5e3e4839748c..e4a43b51f8c8f8573b1f6dd10d2e2daa716cdd9f 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1180,6 +1180,11 @@ impl TerrainProjection {
+ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'static str)> {
+     [
+         (!frame.celestial.is_empty(), 1 << 0, "celestial"),
++        (
++            horizon_client::gfx::sky_open(frame) && (frame.skybox || frame.end_sky),
++            1 << 21,
++            "sky surfaces",
++        ),
+         (frame.stars.is_some(), 1 << 1, "stars"),
+         (frame.clouds.is_some(), 1 << 2, "clouds"),
+         (!frame.weather.is_empty(), 1 << 3, "weather"),
+@@ -1199,6 +1204,7 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+         ),
+         (frame.skin.is_some(), 1 << 16, "skinned entities"),
+         (!frame.hand.is_empty(), 1 << 6, "first-person hand"),
++        (outline::exceeds_budget(frame), 1 << 23, "outline budget"),
+         (
+             !frame.debug_lines.is_empty()
+                 || !frame.debug_lines_on_top.is_empty()
+@@ -1259,11 +1265,13 @@ fn retain_translucent_terrain_omissions(
+ fn log_unsupported_world_pass(name: &str) {
+     let message = match name {
+         "celestial" => "Horizon GX2: skipped unsupported celestial pass\n\0",
++        "sky surfaces" => "Horizon GX2: skipped unsupported sky surfaces\n\0",
+         "stars" => "Horizon GX2: skipped unsupported stars pass\n\0",
+         "clouds" => "Horizon GX2: skipped unsupported clouds pass\n\0",
+         "weather" => "Horizon GX2: skipped unsupported weather pass\n\0",
+         "entities" => "Horizon GX2: skipped unsupported entities pass\n\0",
+         "crumbling budget" => "Horizon GX2: crumbling geometry exceeded its upload budget\n\0",
++        "outline budget" => "Horizon GX2: selection outline exceeded its upload budget\n\0",
+         "block entities" => "Horizon GX2: skipped unsupported block-entities pass\n\0",
+         "first-person hand" => "Horizon GX2: skipped unsupported hand pass\n\0",
+         "debug lines" => "Horizon GX2: skipped unsupported debug-lines pass\n\0",
+@@ -1330,7 +1338,9 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn take_frame_work(&mut self) -> CafeFrameWork {
+-        std::mem::take(&mut self.frame_work)
++        let mut work = std::mem::take(&mut self.frame_work);
++        work.world_resolution = self.world_scale.resolution();
++        work
+     }
+ 
+     fn gx2_flip_count(&self) -> Option<u32> {
+@@ -1835,17 +1845,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.last_frame_partial = false;
+         self.frame_work.terrain_sections = [0; 2];
+         self.frame_work.omitted_pass_mask = 0;
+-        let mut unsupported: Vec<_> = if frame.title {
+-            Vec::new()
+-        } else {
+-            unsupported_world_passes(frame).collect()
+-        };
+-        if !frame.title && self.crumbling.prepare(frame.entities) {
+-            unsupported.push((1 << 22, "crumbling budget"));
+-        }
+-        if !frame.title && !self.translucent_terrain_omitted.is_empty() {
+-            unsupported.push((1 << 20, "translucent terrain"));
+-        }
++        let crumbling_overflow = !frame.title && self.crumbling.prepare(frame.entities);
++        let unsupported = unsupported_world_passes(frame)
++            .chain(crumbling_overflow.then_some((1 << 22, "crumbling budget")))
++            .chain(
++                (!self.translucent_terrain_omitted.is_empty())
++                    .then_some((1 << 20, "translucent terrain")),
++            )
++            .filter(|_| !frame.title);
+         let targets = self.target_viewports();
+         if targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+             return Err("Game frame viewport does not fit TV and DRC".into());
+@@ -2209,20 +2216,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             self.screenshot_result = None;
+             return Err("WHB did not accept both GX2 game frames".into());
+         }
+-        if !unsupported.is_empty() {
+-            for (flag, name) in &unsupported {
+-                self.frame_work.omitted_pass_mask |= *flag;
+-                if self.unsupported_logged & *flag == 0 {
+-                    log_unsupported_world_pass(name);
+-                    self.unsupported_logged |= *flag;
+-                }
++        for (flag, name) in unsupported {
++            self.frame_work.omitted_pass_mask |= flag;
++            if self.unsupported_logged & flag == 0 {
++                log_unsupported_world_pass(name);
++                self.unsupported_logged |= flag;
+             }
++        }
++        self.last_frame_partial = self.frame_work.omitted_pass_mask != 0;
++        if self.last_frame_partial {
+             cafe_profile::count(Counter::Partial, 1);
+-            self.last_frame_partial = true;
+-            Ok(false)
+-        } else {
+-            Ok(true)
+         }
++        Ok(!self.last_frame_partial)
+     }
+ }
+ 
+diff --git a/wiiu/loading_host/outline.rs b/wiiu/loading_host/outline.rs
+index ce57ca34d6df9825bc4e555eec497e8ea42f1582..01375b4098a6c1d82d0070d5adb6b576e5be9fe4 100644
+--- a/wiiu/loading_host/outline.rs
++++ b/wiiu/loading_host/outline.rs
+@@ -22,6 +22,10 @@ unsafe extern "C" {
+     ) -> i32;
+ }
+ 
++pub(crate) fn exceeds_budget(frame: &Frame<'_>) -> bool {
++    frame.outline.len() > geometry::MAX_EDGES
++}
++
+ #[derive(Default)]
+ pub(crate) struct Outline {
+     native: Option<NonNull<c_void>>,

@@ -1,0 +1,715 @@
+diff --git a/crates/horizon-client-render/src/breaking.rs b/crates/horizon-client-render/src/breaking.rs
+index 9e47ae75f582dece4911fb2b24ee81b3ab99bd6f..bae71589177f88c9553adaa4a41455b27d18f0f7 100644
+--- a/crates/horizon-client-render/src/breaking.rs
++++ b/crates/horizon-client-render/src/breaking.rs
+@@ -3,6 +3,9 @@ use crate::{camera::joml, mesher::Vertex, models::catalog::BakedModel};
+ use horizon_assets::model::Direction;
+ use std::f32::consts::{FRAC_PI_2, PI};
+ 
++pub const SOLID_OVERLAY: u32 = 11;
++pub const TRANSLUCENT_OVERLAY: u32 = 12;
++
+ /// Project in model space: the inverse decal pose cancels the block translation/offset.
+ pub fn decal_uv([x, y, z]: [f32; 3], direction: Direction) -> [f32; 2] {
+     let sy = joml::sin(PI);
+@@ -62,7 +65,11 @@ pub fn geometry(
+                 out.push(Vertex {
+                     pos: (origin + glam::Vec3::from(pos)).to_array(),
+                     uv: decal_uv(pos, face.quad.facing),
+-                    layer: if translucent { 12 } else { 11 },
++                    layer: if translucent {
++                        TRANSLUCENT_OVERLAY
++                    } else {
++                        SOLID_OVERLAY
++                    },
+                     color: 0xffff_ffff,
+                     light: stage_light([u0, v0]),
+                     normal: [0; 4],
+@@ -97,7 +104,7 @@ pub fn entity_geometry(vertices: &mut [Vertex], origin: glam::Vec3, stage: Crack
+         }
+         for vertex in quad {
+             vertex.uv = decal_uv((glam::Vec3::from(vertex.pos) - origin).to_array(), facing);
+-            vertex.layer = 11;
++            vertex.layer = SOLID_OVERLAY;
+             vertex.color = 0xffff_ffff;
+             vertex.light = stage_light([u0, v0]);
+             vertex.glint_uv = [w, h];
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index 7646950867712e7e3b634e4c1b114540b912d447..0ad370c4da2d0c8ea778804b35bf9511dd296c70 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -76,6 +76,11 @@ void horizon_hud_texture_destroy(GX2Texture *texture)
+    if (texture->surface.image) GX2RDestroySurfaceEx(&texture->surface, texture_flags);
+ }
+ 
++const void *horizon_gx2_hud_atlas(const HorizonGx2Hud *hud)
++{
++   return hud ? &hud->atlas : NULL;
++}
++
+ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud)
+ {
+    if (!hud) return;
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index 7240194c0e1cbefbf0b466e97aba3a7f5c5ac645..71e27c685958e3222e52cacaf15c9c31570b2f26 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -93,4 +93,6 @@ HorizonHudResult horizon_gx2_hud_draw_to_output(HorizonGx2Hud *hud, const Horizo
+                                                 uint32_t x, uint32_t y,
+                                                 uint32_t width, uint32_t height,
+                                                 uint32_t output);
++/* Borrow the atlas for synchronous GX2 world draws on the render thread. */
++const void *horizon_gx2_hud_atlas(const HorizonGx2Hud *hud);
+ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud);
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 2fc3dc4f173fda517861fc52ad8b59ab37526c6e..2df0da61c146d1d98ca133c84cd99c91758a833e 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -48,8 +48,22 @@ add_custom_command(
+    DEPENDS "${OUTLINE_SHADER}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(CRUMBLING_SHADER "${CMAKE_CURRENT_BINARY_DIR}/crumbling.gsh")
++set(CRUMBLING_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/crumbling_gfd.o")
++add_custom_command(
++   OUTPUT "${CRUMBLING_SHADER}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/crumbling.vert"
++           -ps "${CMAKE_CURRENT_SOURCE_DIR}/crumbling.frag" -o "${CRUMBLING_SHADER}"
++   DEPENDS crumbling.vert crumbling.frag VERBATIM)
++add_custom_command(
++   OUTPUT "${CRUMBLING_GFD_OBJECT}"
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common crumbling.gsh crumbling_gfd.o
++   DEPENDS "${CRUMBLING_SHADER}"
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+-   "${OUTLINE_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   "${OUTLINE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_custom_command(
+    OUTPUT "${PANORAMA_GFD_OBJECT}"
+@@ -76,9 +90,9 @@ add_custom_command(
+ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+-   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c
++   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+-   "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}")
++   "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/crumbling.c b/wiiu/loading_host/crumbling.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c619862431870de6764e8ba5d092728013429d8
+--- /dev/null
++++ b/wiiu/loading_host/crumbling.c
+@@ -0,0 +1,186 @@
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <gx2/draw.h>
++#include <gx2/event.h>
++#include <gx2/registers.h>
++#include <gx2/sampler.h>
++#include <gx2/shaders.h>
++#include <gx2/texture.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_crumbling_gsh_start[];
++
++typedef struct CrumblingVertex {
++   float position[3], uv[2], sprite[4];
++} CrumblingVertex;
++
++_Static_assert(sizeof(CrumblingVertex) == 36, "crumbling vertex ABI changed");
++_Static_assert(offsetof(CrumblingVertex, uv) == 12, "crumbling UV offset changed");
++_Static_assert(offsetof(CrumblingVertex, sprite) == 20, "crumbling sprite offset changed");
++
++enum { CRUMBLING_MAX_VERTICES = 2048 * 6 };
++
++typedef struct HorizonGx2Crumbling {
++   WHBGfxShaderGroup shader;
++   GX2RBuffer vertices[2];
++   uint32_t uploaded[2];
++   GX2Sampler sampler;
++   uint32_t vertex_uniforms[5];
++   uint32_t pixel_uniforms[3];
++   uint32_t atlas_slot;
++} HorizonGx2Crumbling;
++
++static bool uniform_offset(const GX2UniformVar *var, uint32_t *offset)
++{
++   if (!var || var->type != GX2_SHADER_VAR_TYPE_FLOAT4 || var->count != 1 || var->block >= 0)
++      return false;
++   *offset = var->offset;
++   return true;
++}
++
++int horizon_gx2_crumbling_create(HorizonGx2Crumbling **out)
++{
++   if (!out) return -1;
++   *out = NULL;
++   HorizonGx2Crumbling *crumbling = calloc(1, sizeof(*crumbling));
++   if (!crumbling) return -2;
++   WHBGfxShaderGroup *shader = &crumbling->shader;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_crumbling_gsh_start)) {
++      free(crumbling);
++      return -3;
++   }
++   GX2VertexShader *vs = shader->vertexShader;
++   GX2PixelShader *ps = shader->pixelShader;
++   if (!vs || !ps || vs->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       ps->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto fail;
++   const char *vertex_names[] = {"uClipX", "uClipY", "uClipZ", "uClipW", "uAtlasSize"};
++   const char *pixel_names[] = {"uAtlasTexel", "uFogColor", "uFogRanges"};
++   for (unsigned i = 0; i < 5; ++i)
++      if (!uniform_offset(GX2GetVertexUniformVar(vs, vertex_names[i]), &crumbling->vertex_uniforms[i]))
++         goto fail;
++   for (unsigned i = 0; i < 3; ++i)
++      if (!uniform_offset(GX2GetPixelUniformVar(ps, pixel_names[i]), &crumbling->pixel_uniforms[i]))
++         goto fail;
++   const GX2SamplerVar *atlas = NULL;
++   for (unsigned i = 0; ps->samplerVars && i < ps->samplerVarCount; ++i) {
++      const GX2SamplerVar *candidate = &ps->samplerVars[i];
++      if (candidate->type == GX2_SAMPLER_VAR_TYPE_SAMPLER_2D &&
++          candidate->name && !strcmp(candidate->name, "uAtlas")) {
++         atlas = candidate;
++         break;
++      }
++   }
++   if (!atlas) goto fail;
++   crumbling->atlas_slot = atlas->location;
++   if (!WHBGfxInitShaderAttribute(shader, "aPosition", 0, offsetof(CrumblingVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aUv", 0, offsetof(CrumblingVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aSprite", 0, offsetof(CrumblingVertex, sprite), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
++       !WHBGfxInitFetchShader(shader)) goto fail;
++   GX2InitSampler(&crumbling->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++   *out = crumbling;
++   return 0;
++
++fail:
++   WHBGfxFreeShaderGroup(shader);
++   free(crumbling);
++   return -3;
++}
++
++void horizon_gx2_crumbling_destroy(HorizonGx2Crumbling *crumbling)
++{
++   if (!crumbling) return;
++   GX2DrawDone();
++   for (unsigned i = 0; i < 2; ++i) {
++      GX2RBuffer *buffer = &crumbling->vertices[i];
++      if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
++   }
++   WHBGfxFreeShaderGroup(&crumbling->shader);
++   free(crumbling);
++}
++
++int horizon_gx2_crumbling_upload(HorizonGx2Crumbling *crumbling, uint32_t target,
++                                 const CrumblingVertex *first, uint32_t first_count,
++                                 const CrumblingVertex *second, uint32_t second_count)
++{
++   if (!crumbling || target > 1 || (first_count && !first) || (second_count && !second) ||
++       first_count % 6 || second_count % 6 || first_count > CRUMBLING_MAX_VERTICES ||
++       second_count > CRUMBLING_MAX_VERTICES - first_count) return -1;
++   const uint32_t count = first_count + second_count;
++   crumbling->uploaded[target] = 0;
++   if (!count) return 0;
++   GX2RBuffer *buffer = &crumbling->vertices[target];
++   if (count > buffer->elemCount) {
++      uint32_t capacity = buffer->elemCount ? buffer->elemCount : 64;
++      while (capacity < count) capacity *= 2;
++      if (capacity > CRUMBLING_MAX_VERTICES) capacity = CRUMBLING_MAX_VERTICES;
++      GX2RBuffer replacement = {
++         .flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_WRITE |
++                  GX2R_RESOURCE_USAGE_GPU_READ,
++         .elemSize = sizeof(CrumblingVertex), .elemCount = capacity,
++      };
++      if (!GX2RCreateBuffer(&replacement)) return -2;
++      if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
++      *buffer = replacement;
++   }
++   CrumblingVertex *mapped = GX2RLockBufferEx(buffer, 0);
++   if (!mapped) return -2;
++   if (first_count) memcpy(mapped, first, first_count * sizeof(*mapped));
++   if (second_count) memcpy(mapped + first_count, second, second_count * sizeof(*mapped));
++   GX2RUnlockBufferEx(buffer, 0);
++   crumbling->uploaded[target] = count;
++   return 0;
++}
++
++int horizon_gx2_crumbling_draw(HorizonGx2Crumbling *crumbling, uint32_t target,
++                               const uint32_t rect[4], const GX2Texture *atlas,
++                               const float clip_rows[16], const float fog_color[4],
++                               const float fog_ranges[4], uint32_t start, uint32_t count)
++{
++   if (!crumbling || target > 1 || !rect || !rect[2] || !rect[3] || !atlas ||
++       !atlas->surface.image || !atlas->surface.width || !atlas->surface.height ||
++       !clip_rows || !fog_color || !fog_ranges || !count || start % 6 || count % 6 ||
++       start > crumbling->uploaded[target] || count > crumbling->uploaded[target] - start)
++      return -1;
++   const float width = atlas->surface.width, height = atlas->surface.height;
++   const float size[4] = {width, height, 0.0f, 0.0f};
++   const float texel[4] = {1.0f / width, 1.0f / height, 0.0f, 0.0f};
++   WHBGfxShaderGroup *shader = &crumbling->shader;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   for (unsigned row = 0; row < 4; ++row)
++      GX2SetVertexUniformReg(crumbling->vertex_uniforms[row], 4, clip_rows + 4 * row);
++   GX2SetVertexUniformReg(crumbling->vertex_uniforms[4], 4, size);
++   GX2SetPixelUniformReg(crumbling->pixel_uniforms[0], 4, texel);
++   GX2SetPixelUniformReg(crumbling->pixel_uniforms[1], 4, fog_color);
++   GX2SetPixelUniformReg(crumbling->pixel_uniforms[2], 4, fog_ranges);
++   GX2SetPixelTexture(atlas, crumbling->atlas_slot);
++   GX2SetPixelSampler(&crumbling->sampler, crumbling->atlas_slot);
++   GX2RSetAttributeBuffer(&crumbling->vertices[target], 0, sizeof(CrumblingVertex), 0);
++
++   GX2SetDepthOnlyControl(TRUE, FALSE, GX2_COMPARE_FUNC_LEQUAL);
++   /* The stock reversed-depth bias moves toward the camera. GX2 uses forward depth. */
++   GX2SetPolygonOffset(-10.0f, -1.0f, -10.0f, -1.0f, 0.0f);
++   GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, TRUE, FALSE, GX2_POLYGON_MODE_TRIANGLE,
++                        GX2_POLYGON_MODE_TRIANGLE, TRUE, TRUE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0);
++   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_DST_COLOR, GX2_BLEND_MODE_SRC_COLOR,
++                      GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
++   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count, start, 1);
++   return 0;
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/crumbling.frag b/wiiu/loading_host/crumbling.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f9f93746ee16316c2698b163b58a5ce1d562938
+--- /dev/null
++++ b/wiiu/loading_host/crumbling.frag
+@@ -0,0 +1,25 @@
++#version 330
++uniform sampler2D uAtlas;
++uniform vec4 uAtlasTexel;
++uniform vec4 uFogColor;
++uniform vec4 uFogRanges;
++in vec2 vUv;
++in vec4 vSprite;
++in vec2 vFogDistance;
++out vec4 fragColor;
++
++float linearFog(float distance, float start, float end) {
++    if (distance <= start) return 0.0;
++    if (distance >= end) return 1.0;
++    return (distance - start) / (end - start);
++}
++
++void main() {
++    vec2 local = min(floor(fract(vUv) * vSprite.zw), vSprite.zw - vec2(1.0));
++    vec2 uv = (vSprite.xy + local + vec2(0.5)) * uAtlasTexel.xy;
++    vec4 texel = texture(uAtlas, uv);
++    if (texel.a < 0.1) discard;
++    float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
++                    linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
++    fragColor = vec4(mix(texel.rgb, uFogColor.rgb, fog * uFogColor.a), texel.a);
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/crumbling.rs b/wiiu/loading_host/crumbling.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a68fdad74537f050d432fef63d81b9632e0a6b68
+--- /dev/null
++++ b/wiiu/loading_host/crumbling.rs
+@@ -0,0 +1,189 @@
++//! Native draw preparation for Horizon's pre- and post-translucent crack quads.
++
++use crate::TerrainProjection;
++use horizon_client::{
++    breaking::{SOLID_OVERLAY, TRANSLUCENT_OVERLAY},
++    gfx::{fog_uniform, Frame},
++    mesher::Vertex as SharedVertex,
++};
++use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
++use std::{ffi::c_void, ptr::NonNull};
++
++const MAX_QUADS: usize = 2048;
++const CORNERS: [usize; 6] = [0, 1, 2, 0, 2, 3];
++
++#[repr(C)]
++#[derive(Clone, Copy)]
++struct Vertex {
++    position: [f32; 3],
++    uv: [f32; 2],
++    sprite: [f32; 4],
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<Vertex>() == 36);
++    assert!(std::mem::offset_of!(Vertex, uv) == 12);
++    assert!(std::mem::offset_of!(Vertex, sprite) == 20);
++};
++
++impl From<SharedVertex> for Vertex {
++    fn from(vertex: SharedVertex) -> Self {
++        let origin = [vertex.light as u16, (vertex.light >> 16) as u16]
++            .map(|cell| f32::from(cell) / 65535.0);
++        Self {
++            position: vertex.pos,
++            uv: vertex.uv,
++            sprite: [origin[0], origin[1], vertex.glint_uv[0], vertex.glint_uv[1]],
++        }
++    }
++}
++
++unsafe extern "C" {
++    fn horizon_gx2_crumbling_create(out: *mut *mut c_void) -> i32;
++    fn horizon_gx2_crumbling_destroy(crumbling: *mut c_void);
++    fn horizon_gx2_crumbling_upload(
++        crumbling: *mut c_void,
++        target: u32,
++        first: *const Vertex,
++        first_count: u32,
++        second: *const Vertex,
++        second_count: u32,
++    ) -> i32;
++    fn horizon_gx2_crumbling_draw(
++        crumbling: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        atlas: *const c_void,
++        clip_rows: *const f32,
++        fog_color: *const f32,
++        fog_ranges: *const f32,
++        start: u32,
++        count: u32,
++    ) -> i32;
++}
++
++#[derive(Default)]
++pub(crate) struct Crumbling {
++    native: Option<NonNull<c_void>>,
++    opaque: Vec<Vertex>,
++    translucent: Vec<Vertex>,
++}
++
++pub(crate) fn is_crack(layer: u32) -> bool {
++    matches!(layer & 0xffff, SOLID_OVERLAY | TRANSLUCENT_OVERLAY)
++}
++
++impl Crumbling {
++    pub(crate) fn is_empty(&self) -> bool {
++        self.opaque.is_empty() && self.translucent.is_empty()
++    }
++
++    /// Reuse the two scratch batches across frames. Return true on a budget
++    /// overflow so presentation accounting can mark the frame partial.
++    pub(crate) fn prepare(&mut self, entities: &[SharedVertex]) -> bool {
++        self.opaque.clear();
++        self.translucent.clear();
++        let mut quads = 0;
++        for quad in entities.chunks_exact(4) {
++            let output = match quad[0].layer & 0xffff {
++                SOLID_OVERLAY => &mut self.opaque,
++                TRANSLUCENT_OVERLAY => &mut self.translucent,
++                _ => continue,
++            };
++            if quads == MAX_QUADS {
++                return true;
++            }
++            quads += 1;
++            let vertices = [quad[0], quad[1], quad[2], quad[3]].map(Vertex::from);
++            output.extend(CORNERS.map(|corner| vertices[corner]));
++        }
++        false
++    }
++
++    /// Stage both phases in one upload for each output. Called after the
++    /// existing pre-terrain completion wait for this output.
++    pub(crate) fn upload(&mut self, target: u32) -> Result<(), &'static str> {
++        if self.is_empty() {
++            return Ok(());
++        }
++        let native = match self.native {
++            Some(native) => native,
++            None => {
++                let mut resource = std::ptr::null_mut();
++                if unsafe { horizon_gx2_crumbling_create(&mut resource) } != 0 {
++                    return Err("could not create the GX2 crumbling pipeline");
++                }
++                let native = NonNull::new(resource).ok_or("missing GX2 crumbling pipeline")?;
++                self.native = Some(native);
++                native
++            }
++        };
++        // The buffers are bounded by prepare. Neither borrowed slice is
++        // retained beyond this upload.
++        if unsafe {
++            horizon_gx2_crumbling_upload(
++                native.as_ptr(),
++                target,
++                self.opaque.as_ptr(),
++                self.opaque.len() as u32,
++                self.translucent.as_ptr(),
++                self.translucent.len() as u32,
++            )
++        } != 0
++        {
++            return Err("could not stage GX2 crumbling geometry");
++        }
++        Ok(())
++    }
++
++    pub(crate) fn draw(
++        &self,
++        frame: &Frame<'_>,
++        projection: &TerrainProjection,
++        target: u32,
++        rect: [u32; 4],
++        hud: &HorizonPresenter<'_>,
++        translucent: bool,
++    ) -> Result<(), &'static str> {
++        let (start, count) = if translucent {
++            (self.opaque.len(), self.translucent.len())
++        } else {
++            (0, self.opaque.len())
++        };
++        if count == 0 {
++            return Ok(());
++        }
++        let native = self.native.ok_or("GX2 crumbling geometry is not staged")?;
++        let (fog_color, fog_ranges) = fog_uniform(frame);
++        let result = hud.with_native_atlas(|atlas| {
++            // The atlas belongs to the current presenter. Binding copies its
++            // registers into the draw stream and does not hold the pointer.
++            unsafe {
++                horizon_gx2_crumbling_draw(
++                    native.as_ptr(),
++                    target,
++                    rect.as_ptr(),
++                    atlas,
++                    projection.clip.rows.as_ptr().cast(),
++                    fog_color.as_ptr(),
++                    fog_ranges.as_ptr(),
++                    start as u32,
++                    count as u32,
++                )
++            }
++        });
++        if result == 0 {
++            Ok(())
++        } else {
++            Err("GX2 crumbling draw failed")
++        }
++    }
++}
++
++impl Drop for Crumbling {
++    fn drop(&mut self) {
++        if let Some(native) = self.native.take() {
++            unsafe { horizon_gx2_crumbling_destroy(native.as_ptr()) };
++        }
++    }
++}
+diff --git a/wiiu/loading_host/crumbling.vert b/wiiu/loading_host/crumbling.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..9658f64c5f002ad5c3e73c0ed65435a6a1690578
+--- /dev/null
++++ b/wiiu/loading_host/crumbling.vert
+@@ -0,0 +1,22 @@
++#version 330
++layout(location = 0) in vec3 aPosition;
++layout(location = 1) in vec2 aUv;
++layout(location = 2) in vec4 aSprite;
++uniform vec4 uClipX;
++uniform vec4 uClipY;
++uniform vec4 uClipZ;
++uniform vec4 uClipW;
++uniform vec4 uAtlasSize;
++out vec2 vUv;
++out vec4 vSprite;
++out vec2 vFogDistance;
++
++void main() {
++    vec4 pos = vec4(aPosition, 1.0);
++    gl_Position = vec4(dot(uClipX, pos), dot(uClipY, pos),
++                       dot(uClipZ, pos), dot(uClipW, pos));
++    vUv = aUv;
++    vec4 pixels = floor(aSprite * uAtlasSize.xyxy + vec4(0.5));
++    vSprite = vec4(pixels.xy, max(pixels.zw, vec2(1.0)));
++    vFogDistance = vec2(length(aPosition), max(length(aPosition.xz), abs(aPosition.y)));
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index fc26e163ccc6212c0a769fc38191bf05b032a467..00210bf1b1fd31621f37112a35a8f5fbac8b2492 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -7,6 +7,7 @@
+ 
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
++mod crumbling;
+ mod outline;
+ 
+ use horizon_client::chunk::ColumnLayout;
+@@ -566,6 +567,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     panorama: Option<Panorama<'shader>>,
+     terrain: Option<Terrain<'shader>>,
+     outline: outline::Outline,
++    crumbling: crumbling::Crumbling,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+     terrain_generation: Option<u64>,
+     terrain_min_y: Option<i32>,
+@@ -629,6 +631,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             panorama: None,
+             terrain: None,
+             outline: outline::Outline::default(),
++            crumbling: crumbling::Crumbling::default(),
+             terrain_atlas: None,
+             terrain_generation: None,
+             terrain_min_y: None,
+@@ -1181,7 +1184,11 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+         (frame.clouds.is_some(), 1 << 2, "clouds"),
+         (!frame.weather.is_empty(), 1 << 3, "weather"),
+         (
+-            !frame.entities.is_empty() || !frame.glowing.is_empty(),
++            frame
++                .entities
++                .chunks_exact(4)
++                .any(|quad| !crumbling::is_crack(quad[0].layer))
++                || !frame.glowing.is_empty(),
+             1 << 4,
+             "entities",
+         ),
+@@ -1256,6 +1263,7 @@ fn log_unsupported_world_pass(name: &str) {
+         "clouds" => "Horizon GX2: skipped unsupported clouds pass\n\0",
+         "weather" => "Horizon GX2: skipped unsupported weather pass\n\0",
+         "entities" => "Horizon GX2: skipped unsupported entities pass\n\0",
++        "crumbling budget" => "Horizon GX2: crumbling geometry exceeded its upload budget\n\0",
+         "block entities" => "Horizon GX2: skipped unsupported block-entities pass\n\0",
+         "first-person hand" => "Horizon GX2: skipped unsupported hand pass\n\0",
+         "debug lines" => "Horizon GX2: skipped unsupported debug-lines pass\n\0",
+@@ -1793,6 +1801,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.translucent_terrain_omitted.clear();
+         self.terrain = None;
+         self.outline = outline::Outline::default();
++        self.crumbling = crumbling::Crumbling::default();
+         self.hud = None;
+         self.panorama = None;
+         self.panorama_identity = None;
+@@ -1825,6 +1834,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             unsupported_world_passes(frame).collect()
+         };
++        if !frame.title && self.crumbling.prepare(frame.entities) {
++            unsupported.push((1 << 22, "crumbling budget"));
++        }
+         if !frame.title && !self.translucent_terrain_omitted.is_empty() {
+             unsupported.push((1 << 20, "translucent terrain"));
+         }
+@@ -1987,27 +1999,39 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+                 drop(terrain_span);
+ 
+-                // The current terrain pass stops at opaque and cutout surfaces.
+-                // Both outline phases fall here until translucent terrain draws.
+-                if !draw.frame.outline.is_empty() {
++                let overlays = (|| -> Result<(), &'static str> {
++                    if draw.frame.outline.is_empty() && draw.presenter.crumbling.is_empty() {
++                        return Ok(());
++                    }
+                     let fallback;
+-                    let outline_projection = match projection {
++                    let projection = match projection {
+                         Some(projection) => projection,
+                         None => {
+                             fallback = TerrainProjection::new(draw.frame, 0, aspect);
+                             &fallback
+                         }
+                     };
+-                    if let Err(error) = draw.presenter.outline.draw(
+-                        draw.frame,
+-                        outline_projection,
+-                        target,
+-                        world_rect,
+-                        rect[2],
+-                    ) {
+-                        draw.result = Err(error);
+-                        return -1;
+-                    }
++                    let hud = draw
++                        .presenter
++                        .hud
++                        .as_ref()
++                        .ok_or("GX2 HUD atlas is not prepared")?;
++                    draw.presenter.crumbling.upload(target)?;
++                    draw.presenter
++                        .crumbling
++                        .draw(draw.frame, projection, target, world_rect, hud, false)?;
++                    // Both outline positions follow the solid terrain while this
++                    // backend omits the separating translucent terrain pass.
++                    draw.presenter
++                        .outline
++                        .draw(draw.frame, projection, target, world_rect, rect[2])?;
++                    draw.presenter
++                        .crumbling
++                        .draw(draw.frame, projection, target, world_rect, hud, true)
++                })();
++                if let Err(error) = overlays {
++                    draw.result = Err(error);
++                    return -1;
+                 }
+             }
+             if let Some(world_target) = world_target {
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index 100356a2bd489a4005fdd76e0d049afe0ee47840..267e8e242a2de05b21e817f06093a436a97792e1 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -263,6 +263,8 @@ mod cafe {
+         ) -> i32;
+         fn horizon_gx2_hud_destroy(hud: *mut c_void);
+         #[cfg(feature = "horizon-hud")]
++        fn horizon_gx2_hud_atlas(hud: *const c_void) -> *const c_void;
++        #[cfg(feature = "horizon-hud")]
+         fn horizon_gx2_hud_set_glint_texture(
+             hud: *mut c_void,
+             width: u32,
+@@ -304,6 +306,11 @@ mod cafe {
+     }
+ 
+     impl<'shader> Presenter<'shader> {
++        #[cfg(feature = "horizon-hud")]
++        pub(super) fn native_atlas(&self) -> *const c_void {
++            unsafe { horizon_gx2_hud_atlas(self.hud.as_ptr()) }
++        }
++
+         #[cfg(feature = "horizon-hud")]
+         pub(super) unsafe fn set_glint_texture(
+             &mut self,
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index 921c102a59df6eb9710856bc6fae7d7a8edde876..f1fe666ff4b51bc92e66f9bf81d36d070dfee7df 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -185,6 +185,12 @@ pub struct HorizonPresenter<'shader> {
+ 
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ impl<'shader> HorizonPresenter<'shader> {
++    /// Borrow the resident GX2 atlas for a synchronous render-thread draw.
++    /// The texture pointer is owned by this presenter and may not be retained.
++    pub fn with_native_atlas<T>(&self, draw: impl FnOnce(*const std::ffi::c_void) -> T) -> T {
++        draw(self.presenter.native_atlas())
++    }
++
+     /// Upload one image per CIT rule slot for this atlas revision.
+     ///
+     /// # Safety

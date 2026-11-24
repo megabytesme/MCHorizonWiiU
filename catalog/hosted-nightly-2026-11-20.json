@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "90b4766bcf79e8d9f5443d72661c71136f47c751",
+  "output_tree": "e36fdb4c50fad715505a95c58f363775efc8f17d",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -274,12 +274,54 @@
       "sha256": "e0d4164cc7c55010469cd4eb7d5d1e06a3060a8456c3039013fa1352cbfc665e",
       "input_tree": "53aaa6b435053ec7da34a2dce0bfe0e35de48649",
       "output_tree": "90b4766bcf79e8d9f5443d72661c71136f47c751"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0045-gx2-selection-outline.patch",
+      "sha256": "b50a8a556d7d5a8c12d401e126a1b5ad3d7fafd297f34170bd714478e98a3794",
+      "input_tree": "90b4766bcf79e8d9f5443d72661c71136f47c751",
+      "output_tree": "419859a1fcb669d31687d118ea1aad5cb3699581"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0046-gx2-world-resolution.patch",
+      "sha256": "b6446e9eef74f238d890bb327c1325c494f42aa155366c12f567fb63c0453f94",
+      "input_tree": "419859a1fcb669d31687d118ea1aad5cb3699581",
+      "output_tree": "9736f8f171f7840035217469c0e168d4b52ec5a2"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0047-gx2-block-crumbling.patch",
+      "sha256": "18bb6465c9a414780bd7c29abb82190d69ffc9a5a77c9d17fde647aecc93cbfa",
+      "input_tree": "9736f8f171f7840035217469c0e168d4b52ec5a2",
+      "output_tree": "cd042e51890f165d38b80b66f29661e6904b3f9d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0048-host-gx2-game-benchmark.patch",
+      "sha256": "24de2d5e7d8852ba9f1c2ea696a6419348d0d421bd4b3842f6c5a54e5ad30a49",
+      "input_tree": "cd042e51890f165d38b80b66f29661e6904b3f9d",
+      "output_tree": "8f54b20d18835943a0f35e1181ba08b3c56ed09a"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0049-report-cafe-render-work-and-bound-benchmark-saves.patch",
+      "sha256": "f4099fae7457fdd8748ac9debf1723141798047fe91274544120b7195e47299c",
+      "input_tree": "8f54b20d18835943a0f35e1181ba08b3c56ed09a",
+      "output_tree": "efdf4676a99760aa4ba998a182cfbbfe9ad44cd4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0050-gx2-first-person-items.patch",
+      "sha256": "c32277f997e1a1e959e6bc964dad4bd3fb411803e3b9ea8187e7340d56f3a150",
+      "input_tree": "efdf4676a99760aa4ba998a182cfbbfe9ad44cd4",
+      "output_tree": "152fae0158b6734ca546c77a963b4d11d6877723"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0051-gx2-sorted-translucent-terrain.patch",
+      "sha256": "7cc68912a866bd93a1978c6721a69cb61c3d81dc510f0a5d468d8dd64632cd85",
+      "input_tree": "152fae0158b6734ca546c77a963b4d11d6877723",
+      "output_tree": "e36fdb4c50fad715505a95c58f363775efc8f17d"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.22",
-    "patch": "0.5.0-rc.22"
+    "client": "0.8.0-rc.23",
+    "patch": "0.5.0-rc.23"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

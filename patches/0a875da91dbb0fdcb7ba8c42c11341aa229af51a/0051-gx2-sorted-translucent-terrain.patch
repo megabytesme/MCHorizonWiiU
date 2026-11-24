@@ -1,0 +1,1233 @@
+diff --git a/crates/horizon-client-render/src/gfx/translucency.rs b/crates/horizon-client-render/src/gfx/translucency.rs
+index 4c1ad66839147cd3d3f8824c0d5f5e053e38d534..3b365d7258dfe3d0a6177bd7da5400b69d3aa37c 100644
+--- a/crates/horizon-client-render/src/gfx/translucency.rs
++++ b/crates/horizon-client-render/src/gfx/translucency.rs
+@@ -43,6 +43,11 @@ impl SortState {
+         }
+     }
+ 
++    /// A backend that could not publish the reordered indices may retry.
++    pub fn retry_upload(&mut self) {
++        self.last = None;
++    }
++
+     pub fn is_sorted(&self) -> bool {
+         self.last.is_some()
+     }
+diff --git a/crates/horizon-client/src/game/runtime/memory.rs b/crates/horizon-client/src/game/runtime/memory.rs
+index 2ac4efe168ec28812d170f06f986457273327ac8..9557f952ca07ab37e42ce90266ae688608567548 100644
+--- a/crates/horizon-client/src/game/runtime/memory.rs
++++ b/crates/horizon-client/src/game/runtime/memory.rs
+@@ -445,10 +445,11 @@ impl Game<'_> {
+         );
+         if let Some(native) = native {
+             log::info!(
+-                "Horizon terrain mesh memory: sample_ms={sample} pending={} gx2_sections={} gx2_vertex_payload_bytes={} gx2_quads={} gx2_vertices={} gx2_vertex_allocation_bytes={} gx2_shared_index_allocation_bytes={} rust_upload_scratch_bytes={} queued_cpu_bytes={}",
++                "Horizon terrain mesh memory: sample_ms={sample} pending={} gx2_sections={} gx2_vertex_payload_bytes={} gx2_quads={} gx2_vertices={} gx2_vertex_allocation_bytes={} gx2_shared_index_allocation_bytes={} rust_upload_scratch_bytes={} queued_cpu_bytes={} gx2_sorted_index_allocation_bytes={} translucent_center_bytes={}",
+                 self.pending_uploads.len(), native.sections, native.vertex_payload_bytes, native.quads,
+                 native.vertices, native.vertex_allocation_bytes, native.shared_index_allocation_bytes,
+                 native.rust_upload_scratch_bytes, self.streaming.cafe_upload_bytes(),
++                native.sorted_index_allocation_bytes, native.translucent_center_bytes,
+             );
+         }
+     }
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index aa975fd3ea040c542d9e7c31a2d2d088a342c1a8..b28346f6392d64a04a514e44bff881f6c231fc00 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -117,6 +117,8 @@ pub struct CafeTerrainBuffers {
+     pub vertex_payload_bytes: usize,
+     pub vertex_allocation_bytes: usize,
+     pub shared_index_allocation_bytes: usize,
++    pub sorted_index_allocation_bytes: usize,
++    pub translucent_center_bytes: usize,
+     pub rust_upload_scratch_bytes: usize,
+ }
+ 
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 8f7aa69590eb22df411ddaec43d24eb756284e22..59162b97c789ebb472bfb1235e5fafb2c2faf227 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -45,6 +45,13 @@ pub struct TerrainBounds {
+ }
+ 
+ impl TerrainBounds {
++    pub fn union(self, other: Self) -> Self {
++        Self {
++            min: core::array::from_fn(|i| self.min[i].min(other.min[i])),
++            max: core::array::from_fn(|i| self.max[i].max(other.max[i])),
++        }
++    }
++
+     pub fn from_vertices(vertices: &[TerrainVertex]) -> Option<Self> {
+         let first = vertices.first()?.pos;
+         let mut bounds = Self { min: first, max: first };
+@@ -514,6 +521,23 @@ impl TerrainAtlasLayout {
+         &self,
+         source: &[TerrainVertex],
+         output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
++    ) -> Result<(), &'static str> {
++        self.write_material_vertices(source, output, false)
++    }
++
++    pub fn write_translucent_vertices(
++        &self,
++        source: &[TerrainVertex],
++        output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
++    ) -> Result<(), &'static str> {
++        self.write_material_vertices(source, output, true)
++    }
++
++    fn write_material_vertices(
++        &self,
++        source: &[TerrainVertex],
++        output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
++        translucent: bool,
+     ) -> Result<(), &'static str> {
+         if source.len() % 4 != 0 || source.len() != output.len() {
+             return Err("GX2 terrain quad vertex count mismatch");
+@@ -522,12 +546,18 @@ impl TerrainAtlasLayout {
+             let mut vertex = source;
+             self.remap_vertex(&mut vertex)?;
+             let [x, y, z] = vertex.pos;
+-            let [r, g, b, _] = vertex.rgba();
+-            let cutout = if vertex.layer & 0x8000 == 0 { u8::MAX } else { 0 };
++            let [r, g, b, a] = vertex.rgba();
++            let material = if translucent {
++                a
++            } else if vertex.layer & 0x8000 == 0 {
++                u8::MAX
++            } else {
++                0
++            };
+             dest.write(IndexedTerrainVertex {
+                 position: [x, y, z, f32::from(vertex.light)],
+                 uv: vertex.uv(),
+-                color_cutout: [r, g, b, cutout],
++                color_cutout: [r, g, b, material],
+             });
+         }
+         Ok(())
+@@ -617,6 +647,19 @@ mod indexed_vertex_tests {
+         assert_eq!(next, order.len());
+     }
+ 
++    #[test]
++    fn translucent_packing_preserves_tint_alpha_on_both_sprite_flags() {
++        let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
++        let source = [0, 0x8000, 0, 0x8000].map(|layer| {
++            TerrainVertex::new([1.0; 3], [0.5; 2], layer, 0x8020_40ff, 0)
++        });
++        let mut mapped = [MaybeUninit::uninit(); 4];
++        atlas.write_translucent_vertices(&source, &mut mapped).unwrap();
++        for vertex in mapped {
++            assert_eq!(unsafe { vertex.assume_init() }.color_cutout, [0xff, 0x40, 0x20, 0x80]);
++        }
++    }
++
+     #[test]
+     fn linear_atlas_fits_every_layer_without_power_of_two_padding() {
+         let layout = TerrainAtlasLayout::for_layers(64, 1800).unwrap();
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index e883a152a53b7be9e0dd26db1f0d00ad6941c504..8cc427727e3c1f0d698421eb647d941472b1b2ec 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -33,6 +33,7 @@ struct HorizonGx2Terrain {
+    uint32_t section_origin_offset;
+    uint32_t fog_color_offset;
+    uint32_t fog_ranges_offset;
++   uint32_t material_offset;
+    GX2RBuffer quad_indices;
+    uint32_t quad_index_allocation_bytes;
+    int shader_loaded;
+@@ -145,7 +146,8 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+       }
+    if (!uniform_offset(GX2GetVertexUniformVar(vs, "uSectionOrigin"), &t->section_origin_offset) ||
+        !uniform_offset(GX2GetPixelUniformVar(ps, "uFogColor"), &t->fog_color_offset) ||
+-       !uniform_offset(GX2GetPixelUniformVar(ps, "uFogRanges"), &t->fog_ranges_offset)) {
++       !uniform_offset(GX2GetPixelUniformVar(ps, "uFogRanges"), &t->fog_ranges_offset) ||
++       !uniform_offset(GX2GetPixelUniformVar(ps, "uMaterial"), &t->material_offset)) {
+       result = -3; goto fail;
+    }
+    if (!WHBGfxInitShaderAttribute(&t->shader, "aPosition", 0, offsetof(HorizonTerrainVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
+@@ -236,6 +238,9 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+        x > target_width || y > target_height || width > target_width-x || height > target_height-y ||
+        !clip_rows || !section_origin || !fog_color || !fog_ranges) return -1;
+    if (!s->vertex_count) return 0;
++   const bool translucent = GX2RBufferExists(&s->sorted_indices);
++   if (translucent && !s->sorted_indices_ready) return -1;
++   const float material[4] = { translucent ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+    GX2SetShaderMode(t->shader.vertexShader->mode);
+    GX2SetVertexShader(t->shader.vertexShader); GX2SetPixelShader(t->shader.pixelShader);
+    for (uint32_t row = 0; row < 4; ++row)
+@@ -243,6 +248,7 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
+    GX2SetPixelUniformReg(t->fog_color_offset, 4, fog_color);
+    GX2SetPixelUniformReg(t->fog_ranges_offset, 4, fog_ranges);
++   GX2SetPixelUniformReg(t->material_offset, 4, material);
+    GX2SetViewport(x, y, width, height, 0, 1); GX2SetScissor(x, y, width, height);
+    GX2SetFetchShader(&t->shader.fetchShader);
+    GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+@@ -251,15 +257,22 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    horizon_gx2_terrain_bind_lightmap(t, t->lightmap_slot);
+    GX2SetPixelTexture(&t->texture, t->sampler_slot); GX2SetPixelSampler(&t->sampler, t->sampler_slot);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+-   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO,
++   GX2SetBlendControl(GX2_RENDER_TARGET_0,
++                      translucent ? GX2_BLEND_MODE_SRC_ALPHA : GX2_BLEND_MODE_ONE,
++                      translucent ? GX2_BLEND_MODE_INV_SRC_ALPHA : GX2_BLEND_MODE_ZERO,
+                       GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
+-                      GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
++                      translucent ? GX2_BLEND_MODE_INV_SRC_ALPHA : GX2_BLEND_MODE_ZERO,
++                      GX2_BLEND_COMBINE_MODE_ADD);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+-   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, translucent);
+    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
+-   GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, translucent ? 1 : 0, FALSE, TRUE);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
+-   terrain_draw_indexed(&t->quad_indices, s->vertex_count);
++   if (translucent)
++      GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
++                      s->sorted_indices.elemCount, 0, 0, 1);
++   else
++      terrain_draw_indexed(&t->quad_indices, s->vertex_count);
+    return 0;
+ }
+diff --git a/wiiu/gx2_terrain/terrain.frag b/wiiu/gx2_terrain/terrain.frag
+index 56d954e1b0e18e04fbbfe6657fd23f016b6cec05..98016b1dfc488c014383fa8363c5c4f5859daa42 100644
+--- a/wiiu/gx2_terrain/terrain.frag
++++ b/wiiu/gx2_terrain/terrain.frag
+@@ -2,6 +2,7 @@
+ uniform sampler2D uTerrain;
+ uniform vec4 uFogColor;
+ uniform vec4 uFogRanges;
++uniform vec4 uMaterial;
+ in vec3 vColor;
+ in vec2 vUv;
+ in float vCutout;
+@@ -16,8 +17,14 @@ float linearFog(float distance, float start, float end) {
+ 
+ void main() {
+     vec4 texel = texture(uTerrain, vUv);
+-    if (vCutout > 0.5 && texel.a < 0.5) discard;
++    float alpha = texel.a;
++    if (uMaterial.x > 0.5) {
++        alpha *= vCutout;
++        if (alpha < 0.01) discard;
++    } else if (vCutout > 0.5 && alpha < 0.5) {
++        discard;
++    }
+     float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
+                     linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
+-    fragColor = vec4(mix(texel.rgb * vColor, uFogColor.rgb, fog * uFogColor.a), texel.a);
++    fragColor = vec4(mix(texel.rgb * vColor, uFogColor.rgb, fog * uFogColor.a), alpha);
+ }
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 3b9199c7971f6d47a3cefcb2dcb7e5d02c385217..5b659c30d5e3ddae561f9f47b498af01ae09fde5 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -29,6 +29,15 @@ uint32_t horizon_gx2_terrain_index_allocation_bytes(const HorizonGx2Terrain *ter
+ int horizon_gx2_terrain_section_create(HorizonGx2TerrainSection **out,
+                                       uint32_t count, HorizonTerrainFillVertices fill,
+                                       void *context, uint32_t *allocation_bytes);
++/* Translucent sections allocate their own U32 index backing. Its size is
++ * included in the returned allocation bytes and the estimate below. */
++int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
++                                             uint32_t count, HorizonTerrainFillVertices fill,
++                                             void *context, uint32_t *allocation_bytes);
++int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes);
++/* Call only after the preceding consumers have retired. */
++int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
++                                               const uint32_t *indices, uint32_t count);
+ /* Upload before drawing a new frame, after the preceding WHB finish. */
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_t slot);
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index aa95076fe12e65b6cd1e637c49eb3d473d04dd57..0821b47a483fa6ad7c86c214f8770724436e317a 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -5,7 +5,9 @@ enum { TERRAIN_INDEX_QUADS = (UINT16_MAX + 1) / 4 };
+ 
+ struct HorizonGx2TerrainSection {
+    GX2RBuffer buffer;
++   GX2RBuffer sorted_indices;
+    uint32_t vertex_count;
++   bool sorted_indices_ready;
+ };
+ 
+ static void terrain_buffer_release(GX2RBuffer *buffer)
+@@ -14,7 +16,7 @@ static void terrain_buffer_release(GX2RBuffer *buffer)
+    *buffer = (GX2RBuffer){0};
+ }
+ 
+-static int terrain_buffer_create(GX2RBuffer *buffer, GX2RResourceFlags binding,
++static int terrain_buffer_layout(GX2RBuffer *buffer, GX2RResourceFlags binding,
+                                  uint32_t element_size, uint32_t element_count,
+                                  uint32_t *allocation_bytes)
+ {
+@@ -26,11 +28,19 @@ static int terrain_buffer_create(GX2RBuffer *buffer, GX2RResourceFlags binding,
+    *buffer = (GX2RBuffer){ .flags = flags, .elemSize = element_size, .elemCount = element_count };
+    uint32_t bytes = GX2RGetBufferAllocationSize(buffer);
+    if (bytes < payload) return -1;
+-   if (!GX2RCreateBuffer(buffer)) return -2;
+    *allocation_bytes = bytes;
+    return 0;
+ }
+ 
++static int terrain_buffer_create(GX2RBuffer *buffer, GX2RResourceFlags binding,
++                                 uint32_t element_size, uint32_t element_count,
++                                 uint32_t *allocation_bytes)
++{
++   int result = terrain_buffer_layout(buffer, binding, element_size, element_count, allocation_bytes);
++   if (result) return result;
++   return GX2RCreateBuffer(buffer) ? 0 : -2;
++}
++
+ static int terrain_index_buffer_create(GX2RBuffer *buffer, uint32_t *allocation_bytes)
+ {
+    int result = terrain_buffer_create(buffer, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+@@ -91,19 +101,67 @@ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes)
+    if (!bytes || count % 4) return -1;
+    *bytes = 0;
+    if (!count) return 0;
+-   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
+-      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+-   const uint32_t alignment = GX2RGetBufferAlignment(flags);
+-   const uint64_t payload = (uint64_t)sizeof(HorizonTerrainVertex) * count;
+-   if (!alignment || payload > UINT32_MAX - (alignment - 1)) return -1;
+-   GX2RBuffer layout = { .flags = flags, .elemSize = sizeof(HorizonTerrainVertex), .elemCount = count };
+-   *bytes = GX2RGetBufferAllocationSize(&layout);
+-   return *bytes < payload ? -1 : 0;
++   GX2RBuffer layout;
++   return terrain_buffer_layout(&layout, GX2R_RESOURCE_BIND_VERTEX_BUFFER,
++                                sizeof(HorizonTerrainVertex), count, bytes);
++}
++
++int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
++{
++   if (horizon_gx2_terrain_section_estimate(count, bytes) != 0) return -1;
++   if (!count) return 0;
++   if (count / 4 > UINT32_MAX / 6) return -1;
++   uint32_t index_bytes;
++   GX2RBuffer layout;
++   int result = terrain_buffer_layout(&layout, GX2R_RESOURCE_BIND_INDEX_BUFFER,
++                                      sizeof(uint32_t), count / 4 * 6, &index_bytes);
++   if (result || index_bytes > UINT32_MAX - *bytes) return -1;
++   *bytes += index_bytes;
++   return 0;
++}
++
++int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
++                                             uint32_t count, HorizonTerrainFillVertices fill,
++                                             void *context, uint32_t *allocation_bytes)
++{
++   if (!out || !allocation_bytes) return -1;
++   *out = NULL;
++   *allocation_bytes = 0;
++   uint32_t expected;
++   if (!count || horizon_gx2_terrain_section_estimate_sorted(count, &expected) != 0) return -1;
++   HorizonGx2TerrainSection *section = NULL;
++   uint32_t vertex_bytes, index_bytes;
++   int result = horizon_gx2_terrain_section_create(&section, count, fill, context, &vertex_bytes);
++   if (result) return result;
++   result = terrain_buffer_create(&section->sorted_indices, GX2R_RESOURCE_BIND_INDEX_BUFFER,
++                                  sizeof(uint32_t), count / 4 * 6, &index_bytes);
++   if (result || vertex_bytes > expected || index_bytes != expected - vertex_bytes) {
++      horizon_gx2_terrain_section_destroy_after_wait(section);
++      return result ? result : -1;
++   }
++   *out = section;
++   *allocation_bytes = expected;
++   return 0;
++}
++
++int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
++                                               const uint32_t *indices, uint32_t count)
++{
++   if (!section || !indices || !GX2RBufferExists(&section->sorted_indices) ||
++       count != section->sorted_indices.elemCount) return -1;
++   uint32_t *dest = GX2RLockBufferEx(&section->sorted_indices, 0);
++   if (!dest) return -3;
++   /* The shared sorter publishes native big-endian U32 values on Cafe. */
++   memcpy(dest, indices, (size_t)count * sizeof(*indices));
++   GX2RUnlockBufferEx(&section->sorted_indices, 0);
++   section->sorted_indices_ready = true;
++   return 0;
+ }
+ 
+ void horizon_gx2_terrain_section_destroy_after_wait(HorizonGx2TerrainSection *section)
+ {
+    if (!section) return;
++   terrain_buffer_release(&section->sorted_indices);
+    terrain_buffer_release(&section->buffer);
+    free(section);
+ }
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index 6e902ce8310ac402494086130ac4f3e1200def53..63a69897e2ed22f047bbfed95eb0737611589d30 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -4,6 +4,7 @@
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include "../terrain.h"
+ 
+ /* Stub only the SDK operations used by the production buffer code. */
+@@ -22,7 +23,7 @@ enum {
+    GX2_INDEX_TYPE_U16 = 4,
+ };
+ 
+-static bool fail_calloc, fail_create, fail_map, reject_fill;
++static bool fail_calloc, fail_create, fail_map, reject_fill, fail_indices;
+ static unsigned sections, buffers, mapped, waits, fills;
+ static unsigned draw_count;
+ static struct { uint32_t index_count, base_vertex; } draws[3];
+@@ -63,7 +64,7 @@ static uint32_t GX2RGetBufferAllocationSize(GX2RBuffer *buffer)
+ 
+ static bool GX2RCreateBuffer(GX2RBuffer *buffer)
+ {
+-   if (fail_create) return false;
++   if (fail_create || (fail_indices && (buffer->flags & GX2R_RESOURCE_BIND_INDEX_BUFFER))) return false;
+    buffer->buffer = malloc(GX2RGetBufferAllocationSize(buffer));
+    assert(buffer->buffer);
+    ++buffers;
+@@ -196,10 +197,39 @@ static void check_upload_lifetimes(void)
+    assert(!sections && !buffers && waits == 2);
+ }
+ 
++static void check_sorted_section(void)
++{
++   const float x = 3.5f;
++   HorizonGx2TerrainSection *section = NULL;
++   uint32_t bytes, expected;
++   assert(horizon_gx2_terrain_section_estimate_sorted(4, &expected) == 0 && expected == 192);
++
++   const unsigned baseline_waits = waits;
++   fail_indices = true;
++   assert(horizon_gx2_terrain_section_create_sorted(&section, 4, fill, (void *)&x, &bytes) == -2);
++   fail_indices = false;
++   assert(!section && !bytes && !sections && !buffers && waits == baseline_waits);
++
++   assert(horizon_gx2_terrain_section_create_sorted(&section, 4, fill, (void *)&x, &bytes) == 0);
++   assert(bytes == expected && buffers == 2 && !section->sorted_indices_ready);
++   const uint32_t sorted[] = {2, 3, 0, 0, 1, 2};
++   assert(horizon_gx2_terrain_section_update_indices(section, sorted, 5) == -1);
++   fail_map = true;
++   assert(horizon_gx2_terrain_section_update_indices(section, sorted, 6) == -3);
++   fail_map = false;
++   assert(!section->sorted_indices_ready);
++   assert(horizon_gx2_terrain_section_update_indices(section, sorted, 6) == 0);
++   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, sorted, sizeof(sorted)));
++   assert(((HorizonTerrainVertex *)section->buffer.buffer)[0].position[0] == x);
++   horizon_gx2_terrain_section_destroy_after_wait(section);
++   assert(!sections && !buffers && waits == baseline_waits);
++}
++
+ int main(void)
+ {
+    check_index_groups();
+    check_upload_lifetimes();
++   check_sorted_section();
+    puts("Indexed terrain buffer tests passed");
+    return 0;
+ }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 7b3dec6e85bfe4f3d5e52f1f191bf89524bc5c0b..ff6fc19234f5dce9f4f13b0f97b7015bebd15f34 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -220,6 +220,19 @@ extern "C" {
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
++    fn horizon_gx2_terrain_section_create_sorted(
++        out: *mut *mut c_void,
++        count: u32,
++        fill: unsafe extern "C" fn(*mut c_void, *mut MaybeUninit<IndexedTerrainVertex>, u32) -> i32,
++        context: *mut c_void,
++        allocation_bytes: *mut u32,
++    ) -> i32;
++    fn horizon_gx2_terrain_section_estimate_sorted(count: u32, bytes: *mut u32) -> i32;
++    fn horizon_gx2_terrain_section_update_indices(
++        section: *mut c_void,
++        indices: *const u32,
++        count: u32,
++    ) -> i32;
+     fn horizon_gx2_terrain_lightmap(terrain: *mut c_void, rgba: *const u8) -> i32;
+     fn horizon_gx2_terrain_wait_idle();
+     fn horizon_gx2_terrain_section_destroy(section: *mut c_void);
+@@ -472,21 +485,13 @@ struct DeferredTerrain {
+     bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+ }
+ 
+-struct TerrainSection {
+-    bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+-    native: NonNull<c_void>,
+-    vertex_count: u32,
+-    allocation_bytes: u32,
+-}
+-impl Drop for TerrainSection {
+-    fn drop(&mut self) {
+-        unsafe { horizon_gx2_terrain_section_destroy(self.native.as_ptr()) }
+-    }
+-}
++mod terrain_translucency;
++use terrain_translucency::{TerrainSection, TranslucentTerrain};
+ 
+ struct TerrainUpload<'a> {
+     atlas: &'a TerrainAtlasLayout,
+     source: &'a [TerrainVertex],
++    translucent: bool,
+     error: Option<&'static str>,
+ }
+ 
+@@ -509,7 +514,12 @@ unsafe extern "C" fn fill_terrain_vertices(
+     // SAFETY: C allocated and mapped `count` vertices of the matching ABI.
+     // They are uninitialized, exclusively CPU-owned, and not yet GPU-visible.
+     let output = unsafe { std::slice::from_raw_parts_mut(vertices, count) };
+-    match upload.atlas.write_quad_vertices(upload.source, output) {
++    let result = if upload.translucent {
++        upload.atlas.write_translucent_vertices(upload.source, output)
++    } else {
++        upload.atlas.write_quad_vertices(upload.source, output)
++    };
++    match result {
+         Ok(()) => 0,
+         Err(error) => {
+             upload.error = Some(error);
+@@ -590,7 +600,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     next_terrain_retry: Option<Instant>,
+     terrain_allocation_backoff: Option<Instant>,
+     terrain_evictions: u32,
+-    translucent_terrain_omitted: HashSet<SectionKey>,
++    translucent_terrain: TranslucentTerrain,
+     generation: Option<u64>,
+     atlas_revision: Option<u64>,
+     cit_generation: Option<u64>,
+@@ -655,7 +665,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             next_terrain_retry: None,
+             terrain_allocation_backoff: None,
+             terrain_evictions: 0,
+-            translucent_terrain_omitted: HashSet::new(),
++            translucent_terrain: TranslucentTerrain::default(),
+             generation: None,
+             atlas_revision: None,
+             cit_generation: None,
+@@ -1248,25 +1258,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+     .filter_map(|(active, bit, name)| active.then_some((bit, name)))
+ }
+ 
+-fn set_translucent_terrain_omitted(
+-    omitted: &mut HashSet<SectionKey>,
+-    key: SectionKey,
+-    is_omitted: bool,
+-) {
+-    if is_omitted {
+-        omitted.insert(key);
+-    } else {
+-        omitted.remove(&key);
+-    }
+-}
+-
+-fn retain_translucent_terrain_omissions(
+-    omitted: &mut HashSet<SectionKey>,
+-    removed_columns: &HashSet<(i32, i32)>,
+-) {
+-    omitted.retain(|(x, _, z)| !removed_columns.contains(&(*x, *z)));
+-}
+-
+ fn log_unsupported_world_pass(name: &str) {
+     let message = match name {
+         "celestial" => "Horizon GX2: skipped unsupported celestial pass\n\0",
+@@ -1285,9 +1276,6 @@ fn log_unsupported_world_pass(name: &str) {
+         "screen effects" => "Horizon GX2: skipped unsupported screen-effects pass\n\0",
+         "world border" => "Horizon GX2: skipped unsupported world-border pass\n\0",
+         "translucent geometry" => "Horizon GX2: skipped unsupported translucent-geometry pass\n\0",
+-        "translucent terrain" => {
+-            "Horizon GX2: skipped translucent terrain; solid terrain remains visible\n\0"
+-        }
+         "world primitives" => "Horizon GX2: skipped unsupported world-primitives pass\n\0",
+         "shadow pass" => "Horizon GX2: skipped unsupported shadow pass\n\0",
+         "skinned entities" => "Horizon GX2: skipped unsupported skinned-entities pass\n\0",
+@@ -1322,8 +1310,13 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             ..Default::default()
+         };
+         for section in self.sections.values() {
+-            census.vertices += section.vertex_count as usize;
+-            census.vertex_allocation_bytes += section.allocation_bytes as usize;
++            for buffer in section.buffers() {
++                census.vertices += buffer.vertex_count as usize;
++                census.vertex_allocation_bytes += buffer.vertex_bytes as usize;
++                census.sorted_index_allocation_bytes +=
++                    (buffer.gpu_bytes - buffer.vertex_bytes) as usize;
++            }
++            census.translucent_center_bytes += section.center_bytes();
+         }
+         census.quads = census.vertices / 4;
+         census.vertex_payload_bytes = census.vertices * std::mem::size_of::<IndexedTerrainVertex>();
+@@ -1438,7 +1431,6 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
+             self.clear_native_sections();
+-            self.translucent_terrain_omitted.clear();
+         }
+         Ok(())
+     }
+@@ -1461,18 +1453,6 @@ fn cit_factor(factor: Factor) -> u32 {
+ }
+ 
+ impl Gx2LoadingPresenter<'_> {
+-    fn section_info(mesh: &SectionMesh) -> Option<DeferredTerrain> {
+-        let count = u32::try_from(mesh.solid.len()).ok()?;
+-        let mut bytes = 0;
+-        if unsafe { horizon_gx2_terrain_section_estimate(count, &mut bytes) } != 0 {
+-            return None;
+-        }
+-        Some(DeferredTerrain {
+-            bytes: bytes as usize,
+-            bounds: horizon_wiiu_gx2_terrain::TerrainBounds::from_vertices(&mesh.solid),
+-        })
+-    }
+-
+     fn section_rank(
+         &self,
+         key: SectionKey,
+@@ -1494,10 +1474,7 @@ impl Gx2LoadingPresenter<'_> {
+                 self.sections
+                     .iter()
+                     .map(|(&key, section)| {
+-                        (
+-                            self.section_rank(key, section.bounds),
+-                            section.allocation_bytes as usize,
+-                        )
++                        (self.section_rank(key, section.bounds), section.budget_bytes)
+                     })
+                     .collect(),
+             );
+@@ -1514,15 +1491,14 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn retire_section(&mut self, removed: TerrainSection) {
+-        self.terrain_resident_bytes -= removed.allocation_bytes as usize;
+-        self.terrain_retired_bytes += removed.allocation_bytes as usize;
++        self.terrain_resident_bytes -= removed.budget_bytes;
++        self.terrain_retired_bytes += removed.budget_bytes;
+         self.retired_terrain.push(removed);
+     }
+ 
+     fn finish_retired_after_wait(&mut self) {
+         for section in self.retired_terrain.drain(..) {
+-            let section = std::mem::ManuallyDrop::new(section);
+-            unsafe { horizon_gx2_terrain_section_destroy_after_wait(section.native.as_ptr()) };
++            section.destroy_after_wait();
+         }
+         self.terrain_retired_bytes = 0;
+     }
+@@ -1545,6 +1521,7 @@ impl Gx2LoadingPresenter<'_> {
+         self.terrain_ranks = None;
+         self.next_terrain_retry = None;
+         self.terrain_allocation_backoff = None;
++        self.translucent_terrain = TranslucentTerrain::default();
+         self.flush_retired();
+     }
+ 
+@@ -1567,25 +1544,22 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         key: SectionKey,
+         mesh: &SectionMesh,
+     ) -> horizon_client::Result<()> {
+-        if !mesh.solid.len().is_multiple_of(4) {
+-            return Err("Horizon solid section mesh is not quad aligned".into());
++        if ![&mesh.solid, &mesh.translucent]
++            .iter()
++            .all(|vertices| vertices.len().is_multiple_of(4))
++        {
++            return Err("Horizon terrain section mesh is not quad aligned".into());
+         }
+         if self.terrain_min_y.is_none() {
+             return Err("GX2 terrain section layout is not prepared".into());
+         }
+-        let vertex_count =
+-            u32::try_from(mesh.solid.len()).map_err(|_| "GX2 section vertex count overflow")?;
+-        let info = Self::section_info(mesh).ok_or("GX2 section allocation estimate overflow")?;
++        let (info, bounds) =
++            TerrainSection::estimate(mesh).ok_or("GX2 section allocation estimate overflow")?;
+         if info.bytes == 0 {
+             if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+             }
+             self.deferred_terrain.remove(&key);
+-            set_translucent_terrain_omitted(
+-                &mut self.translucent_terrain_omitted,
+-                key,
+-                !mesh.translucent.is_empty(),
+-            );
+             return Ok(());
+         }
+         if self
+@@ -1598,7 +1572,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         let old_bytes = self
+             .sections
+             .get(&key)
+-            .map_or(0, |section| section.allocation_bytes as usize);
++            .map_or(0, |section| section.budget_bytes);
+         let need = (self.terrain_resident_bytes - old_bytes)
+             .saturating_add(info.bytes)
+             .saturating_sub(RESIDENT_VERTEX_BYTES);
+@@ -1625,7 +1599,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                     self.defer_native_section(
+                         key,
+                         DeferredTerrain {
+-                            bytes: old.allocation_bytes as usize,
++                            bytes: old.budget_bytes,
+                             bounds: old.bounds,
+                         },
+                     );
+@@ -1653,60 +1627,32 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .as_ref()
+             .ok_or("GX2 terrain atlas is not prepared")?;
+         let _upload = Span::new(Stage::TerrainUpload);
+-        let mut upload = TerrainUpload {
+-            atlas,
+-            source: &mesh.solid,
+-            error: None,
+-        };
+-        let mut native = std::ptr::null_mut();
+-        let mut allocation_bytes = 0;
+-        // SAFETY: the native function maps a new GX2 buffer and borrows
+-        // `upload` synchronously, releasing the mapping before returning.
+-        let code = unsafe {
+-            horizon_gx2_terrain_section_create(
+-                &mut native,
+-                vertex_count,
+-                fill_terrain_vertices,
+-                std::ptr::from_mut(&mut upload).cast(),
+-                &mut allocation_bytes,
+-            )
++        let section = match TerrainSection::upload(atlas, mesh, info, bounds) {
++            Ok(section) => section,
++            Err(error)
++                if error
++                    .downcast_ref::<horizon_client::presentation::TerrainUploadDeferred>()
++                    .is_some() =>
++            {
++                unsafe {
++                    OSReport(
++                        c"GX2 indexed section allocation failed bytes=%u (uploads backing off)\n"
++                            .as_ptr(),
++                        info.bytes as u32,
++                    )
++                };
++                self.terrain_allocation_backoff = Some(Instant::now() + Duration::from_millis(300));
++                self.defer_native_section(key, info);
++                return Err(error);
++            }
++            Err(error) => return Err(error),
+         };
+-        if let Some(error) = upload.error {
+-            return Err(error.into());
+-        }
+-        if code == -2 {
+-            unsafe {
+-                OSReport(
+-                    c"GX2 indexed section allocation failed bytes=%u (uploads backing off)\n"
+-                        .as_ptr(),
+-                    info.bytes as u32,
+-                )
+-            };
+-            self.terrain_allocation_backoff = Some(Instant::now() + Duration::from_millis(300));
+-            self.defer_native_section(key, info);
+-            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+-        }
+-        if code != 0 {
+-            return Err(format!("GX2 indexed section upload failed ({code})").into());
+-        }
+-        let native = NonNull::new(native).ok_or("GX2 section returned a null resource")?;
++        let budget_bytes = section.budget_bytes;
++        let gpu_bytes = section.gpu_bytes();
+         cafe_profile::count(
+             Counter::UploadBytes,
+-            mesh.solid.len() * std::mem::size_of::<IndexedTerrainVertex>(),
++            (mesh.solid.len() + mesh.translucent.len()) * std::mem::size_of::<IndexedTerrainVertex>(),
+         );
+-        // Publish only after the upload succeeds. The previous section can
+-        // still be drawn if allocation, mapping or conversion fails.
+-        let section = TerrainSection {
+-            native,
+-            vertex_count,
+-            allocation_bytes,
+-            bounds: info.bounds,
+-        };
+-        if allocation_bytes as usize != info.bytes {
+-            return Err(
+-                "GX2 reported a different allocation size from the checked estimate".into(),
+-            );
+-        }
+         if let Some(old) = self.remove_native_section(key) {
+             self.retire_section(old)
+         }
+@@ -1715,18 +1661,13 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             self.terrain_ranks
+                 .as_mut()
+                 .unwrap()
+-                .insert(rank, allocation_bytes as usize);
++                .insert(rank, budget_bytes);
+         }
+-        self.terrain_resident_bytes += allocation_bytes as usize;
++        self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
+         self.frame_work.uploaded_sections += 1;
+-        self.frame_work.uploaded_bytes += u64::from(allocation_bytes);
++        self.frame_work.uploaded_bytes += gpu_bytes as u64;
+         self.deferred_terrain.remove(&key);
+-        set_translucent_terrain_omitted(
+-            &mut self.translucent_terrain_omitted,
+-            key,
+-            !mesh.translucent.is_empty(),
+-        );
+         Ok(())
+     }
+ 
+@@ -1754,7 +1695,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             let old = self
+                 .sections
+                 .get(&key)
+-                .map_or(0, |section| section.allocation_bytes as usize);
++                .map_or(0, |section| section.budget_bytes);
+             let need = info.bytes.saturating_sub(free + old);
+             let rank = self.section_rank(key, info.bounds);
+             let enough = need == 0
+@@ -1781,7 +1722,6 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+     fn clear_sections(&mut self, layout: ColumnLayout) {
+         self.terrain_min_y = Some(layout.min_y());
+         self.clear_native_sections();
+-        self.translucent_terrain_omitted.clear();
+     }
+ 
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
+@@ -1802,7 +1742,6 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         if self.terrain_retired_bytes >= RETIRE_BATCH_BYTES {
+             self.flush_retired()
+         }
+-        retain_translucent_terrain_omissions(&mut self.translucent_terrain_omitted, &removed);
+     }
+ }
+ 
+@@ -1819,7 +1758,6 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     fn release_surface(&mut self) {
+         self.world_scale.release();
+         self.clear_native_sections();
+-        self.translucent_terrain_omitted.clear();
+         self.terrain = None;
+         self.outline = outline::Outline::default();
+         self.crumbling = crumbling::Crumbling::default();
+@@ -1858,10 +1796,6 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let unsupported = unsupported_world_passes(frame)
+             .chain(hand_partial.then_some((1 << 6, "first-person materials")))
+             .chain(crumbling_overflow.then_some((1 << 22, "crumbling budget")))
+-            .chain(
+-                (!self.translucent_terrain_omitted.is_empty())
+-                    .then_some((1 << 20, "translucent terrain")),
+-            )
+             .filter(|_| !frame.title);
+         let targets = self.target_viewports();
+         if targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+@@ -1972,7 +1906,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 }
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
++                let mut sections_tested = 0usize;
+                 for (&key, section) in &draw.presenter.sections {
++                    let Some(section) = section.solid.as_ref() else {
++                        continue;
++                    };
++                    sections_tested += 1;
+                     let Some(projection) = projection else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+@@ -2029,26 +1968,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .saturating_add(section.vertex_count / 4 * 6);
+                     }
+                 }
+-                cafe_profile::count(
+-                    [Counter::TvSectionsTested, Counter::DrcSectionsTested][index],
+-                    draw.presenter.sections.len(),
+-                );
+-                cafe_profile::count(
+-                    [Counter::TvSectionsDrawn, Counter::DrcSectionsDrawn][index],
+-                    sections_drawn,
+-                );
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+-                draw.presenter.frame_work.terrain_sections[index] = sections_drawn;
+                 drop(terrain_span);
+ 
+                 let overlays = (|| -> Result<(), &'static str> {
+-                    if draw.frame.outline.is_empty()
+-                        && draw.presenter.crumbling.is_empty()
+-                        && draw.presenter.hand.is_empty()
+-                    {
+-                        return Ok(());
+-                    }
+                     let fallback;
+                     let projection = match projection {
+                         Some(projection) => projection,
+@@ -2066,11 +1990,27 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.presenter
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, false)?;
+-                    // Both outline positions follow the solid terrain while this
+-                    // backend omits the separating translucent terrain pass.
+-                    draw.presenter
+-                        .outline
+-                        .draw(draw.frame, projection, target, world_rect, rect[2])?;
++                    if !draw.frame.outline_after_terrain {
++                        draw.presenter
++                            .outline
++                            .draw(draw.frame, projection, target, world_rect, rect[2])?;
++                    }
++                    let [tested, drawn] = draw.presenter.translucent_terrain.draw(
++                        &mut draw.presenter.sections,
++                        terrain,
++                        projection,
++                        [world_width, world_height],
++                        world_rect,
++                        &fog_color,
++                        &fog_ranges,
++                    )?;
++                    sections_tested += tested;
++                    sections_drawn += drawn;
++                    if draw.frame.outline_after_terrain {
++                        draw.presenter
++                            .outline
++                            .draw(draw.frame, projection, target, world_rect, rect[2])?;
++                    }
+                     draw.presenter
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, true)?;
+@@ -2082,6 +2022,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.result = Err(error);
+                     return -1;
+                 }
++                cafe_profile::count(
++                    [Counter::TvSectionsTested, Counter::DrcSectionsTested][index],
++                    sections_tested,
++                );
++                cafe_profile::count(
++                    [Counter::TvSectionsDrawn, Counter::DrcSectionsDrawn][index],
++                    sections_drawn,
++                );
++                draw.presenter.frame_work.terrain_sections[index] = sections_drawn;
+             }
+             if let Some(world_target) = world_target {
+                 world_target.composite();
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0ce00c8249e0a3c6ea9fc750bd03c8bac9fb6cb
+--- /dev/null
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -0,0 +1,302 @@
++use super::*;
++use horizon_client::gfx::translucency::{SortState, Sorter, quad_center};
++use horizon_wiiu_gx2_terrain::TerrainBounds;
++
++pub(super) struct TerrainBuffer {
++    pub(super) native: NonNull<c_void>,
++    pub(super) vertex_count: u32,
++    pub(super) vertex_bytes: u32,
++    pub(super) gpu_bytes: u32,
++    pub(super) bounds: Option<TerrainBounds>,
++}
++
++impl TerrainBuffer {
++    fn estimate(count: u32, translucent: bool) -> Option<u32> {
++        let mut bytes = 0;
++        let result = unsafe {
++            if translucent {
++                horizon_gx2_terrain_section_estimate_sorted(count, &mut bytes)
++            } else {
++                horizon_gx2_terrain_section_estimate(count, &mut bytes)
++            }
++        };
++        (result == 0).then_some(bytes)
++    }
++
++    fn upload(
++        atlas: &TerrainAtlasLayout,
++        source: &[TerrainVertex],
++        translucent: bool,
++        bounds: Option<TerrainBounds>,
++    ) -> horizon_client::Result<Option<Self>> {
++        if source.is_empty() {
++            return Ok(None);
++        }
++        let vertex_count = u32::try_from(source.len())?;
++        let vertex_bytes =
++            Self::estimate(vertex_count, false).ok_or("GX2 vertex allocation estimate overflow")?;
++        let mut upload = TerrainUpload {
++            atlas,
++            source,
++            translucent,
++            error: None,
++        };
++        let mut native = std::ptr::null_mut();
++        let mut gpu_bytes = 0;
++        let create = if translucent {
++            horizon_gx2_terrain_section_create_sorted
++        } else {
++            horizon_gx2_terrain_section_create
++        };
++        // C borrows the upload during the synchronous callback and unmaps it
++        // before returning. This resource is not yet in the retirement queue.
++        let code = unsafe {
++            create(
++                &mut native,
++                vertex_count,
++                fill_terrain_vertices,
++                std::ptr::from_mut(&mut upload).cast(),
++                &mut gpu_bytes,
++            )
++        };
++        if let Some(error) = upload.error {
++            return Err(error.into());
++        }
++        if code == -2 {
++            return Err(horizon_client::presentation::TerrainUploadDeferred.into());
++        }
++        if code != 0 {
++            return Err(format!("GX2 indexed section upload failed ({code})").into());
++        }
++        Ok(Some(Self {
++            native: NonNull::new(native).ok_or("GX2 section returned a null resource")?,
++            vertex_count,
++            vertex_bytes,
++            gpu_bytes,
++            bounds,
++        }))
++    }
++
++    fn destroy_after_wait(self) {
++        let section = std::mem::ManuallyDrop::new(self);
++        unsafe { horizon_gx2_terrain_section_destroy_after_wait(section.native.as_ptr()) }
++    }
++}
++
++impl Drop for TerrainBuffer {
++    fn drop(&mut self) {
++        unsafe { horizon_gx2_terrain_section_destroy(self.native.as_ptr()) }
++    }
++}
++
++struct SortedSection {
++    buffer: TerrainBuffer,
++    sort: SortState,
++}
++
++pub(super) struct TerrainSection {
++    pub(super) solid: Option<TerrainBuffer>,
++    translucent: Option<SortedSection>,
++    pub(super) bounds: Option<TerrainBounds>,
++    pub(super) budget_bytes: usize,
++}
++
++impl TerrainSection {
++    pub(super) fn estimate(
++        mesh: &SectionMesh,
++    ) -> Option<(DeferredTerrain, [Option<TerrainBounds>; 2])> {
++        let solid_count = u32::try_from(mesh.solid.len()).ok()?;
++        let translucent_count = u32::try_from(mesh.translucent.len()).ok()?;
++        let solid_bytes = TerrainBuffer::estimate(solid_count, false)? as usize;
++        let sorted_bytes = TerrainBuffer::estimate(translucent_count, true)? as usize;
++        let center_bytes =
++            (translucent_count as usize / 4).checked_mul(std::mem::size_of::<[f32; 3]>())?;
++        let bytes = solid_bytes
++            .checked_add(sorted_bytes)?
++            .checked_add(center_bytes)?;
++        let solid_bounds = TerrainBounds::from_vertices(&mesh.solid);
++        let translucent_bounds = TerrainBounds::from_vertices(&mesh.translucent);
++        let bounds = match (solid_count != 0, translucent_count != 0) {
++            (true, true) => solid_bounds
++                .zip(translucent_bounds)
++                .map(|(a, b)| a.union(b)),
++            (true, false) => solid_bounds,
++            (false, true) => translucent_bounds,
++            (false, false) => None,
++        };
++        Some((
++            DeferredTerrain { bytes, bounds },
++            [solid_bounds, translucent_bounds],
++        ))
++    }
++
++    pub(super) fn upload(
++        atlas: &TerrainAtlasLayout,
++        mesh: &SectionMesh,
++        info: DeferredTerrain,
++        [solid_bounds, translucent_bounds]: [Option<TerrainBounds>; 2],
++    ) -> horizon_client::Result<Self> {
++        let solid = TerrainBuffer::upload(atlas, &mesh.solid, false, solid_bounds)?;
++        let translucent =
++            match TerrainBuffer::upload(atlas, &mesh.translucent, true, translucent_bounds) {
++                Ok(buffer) => buffer.map(|buffer| {
++                    let centers = mesh
++                        .translucent
++                        .chunks_exact(4)
++                        .map(|quad| quad_center(quad[0].pos, quad[2].pos))
++                        .collect();
++                    SortedSection {
++                        buffer,
++                        sort: SortState::new(centers),
++                    }
++                }),
++                Err(error) => {
++                    // The opaque side of this pair has never been submitted.
++                    if let Some(solid) = solid {
++                        solid.destroy_after_wait();
++                    }
++                    return Err(error);
++                }
++            };
++        let section = Self {
++            solid,
++            translucent,
++            bounds: info.bounds,
++            budget_bytes: info.bytes,
++        };
++        if section.gpu_bytes() + section.center_bytes() != info.bytes {
++            section.destroy_after_wait();
++            return Err(
++                "GX2 reported a different allocation size from the checked estimate".into(),
++            );
++        }
++        Ok(section)
++    }
++
++    pub(super) fn gpu_bytes(&self) -> usize {
++        self.buffers().map(|buffer| buffer.gpu_bytes as usize).sum()
++    }
++
++    pub(super) fn center_bytes(&self) -> usize {
++        self.translucent.as_ref().map_or(0, |section| {
++            section.buffer.vertex_count as usize / 4 * std::mem::size_of::<[f32; 3]>()
++        })
++    }
++
++    pub(super) fn buffers(&self) -> impl Iterator<Item = &TerrainBuffer> {
++        self.solid
++            .iter()
++            .chain(self.translucent.iter().map(|section| &section.buffer))
++    }
++
++    pub(super) fn destroy_after_wait(self) {
++        if let Some(buffer) = self.solid {
++            buffer.destroy_after_wait();
++        }
++        if let Some(section) = self.translucent {
++            section.buffer.destroy_after_wait();
++        }
++    }
++}
++
++/// Both outputs share terrain and sorted indices. A display culls against its
++/// own frustum, but the upstream quad sort depends only on the common camera.
++#[derive(Default)]
++pub(super) struct TranslucentTerrain {
++    visible: Vec<(f64, SectionKey)>,
++    sorter: Sorter,
++}
++
++impl TranslucentTerrain {
++    pub(super) fn draw(
++        &mut self,
++        sections: &mut HashMap<SectionKey, TerrainSection>,
++        terrain: NonNull<c_void>,
++        projection: &TerrainProjection,
++        size: [u32; 2],
++        rect: [u32; 4],
++        fog_color: &[f32; 4],
++        fog_ranges: &[f32; 4],
++    ) -> Result<[usize; 2], &'static str> {
++        self.visible.clear();
++        let mut additional_tested = 0;
++        let mut additional_drawn = 0;
++        self.visible
++            .extend(sections.iter().filter_map(|(&key, entry)| {
++                let section = entry.translucent.as_ref()?;
++                additional_tested += usize::from(entry.solid.is_none());
++                let origin = projection.section_origin(key);
++                let clip = projection.clip_rows(origin);
++                if section
++                    .buffer
++                    .bounds
++                    .is_some_and(|bound| !clip.may_intersect(bound))
++                {
++                    return None;
++                }
++                additional_drawn += usize::from(entry.solid.as_ref().is_none_or(|solid| {
++                    solid.bounds.is_some_and(|bound| !clip.may_intersect(bound))
++                }));
++                let distance = origin.into_iter().map(|v| (v + 8.0).powi(2)).sum::<f64>();
++                Some((distance, key))
++            }));
++        self.visible
++            .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
++
++        let mut indices_drawn = 0usize;
++        for &(_, key) in &self.visible {
++            let section = sections
++                .get_mut(&key)
++                .unwrap()
++                .translucent
++                .as_mut()
++                .unwrap();
++            let world_origin = [key.0 * 16, projection.min_y + key.1 * 16, key.2 * 16];
++            if let Some(indices) =
++                section
++                    .sort
++                    .update(projection.camera, world_origin, &mut self.sorter)
++            {
++                // The existing terrain wait retired earlier consumers. The
++                // other display uses the same order and does not remap it.
++                let status = unsafe {
++                    horizon_gx2_terrain_section_update_indices(
++                        section.buffer.native.as_ptr(),
++                        indices.as_ptr(),
++                        indices.len() as u32,
++                    )
++                };
++                if status != 0 {
++                    section.sort.retry_upload();
++                    return Err("GX2 translucent terrain index upload failed");
++                }
++            }
++            let origin = projection.section_origin(key);
++            let rows = projection.clip_rows(origin);
++            let [x, y, z] = origin.map(|v| v as f32);
++            if unsafe {
++                horizon_gx2_terrain_draw(
++                    terrain.as_ptr(),
++                    section.buffer.native.as_ptr(),
++                    size[0],
++                    size[1],
++                    rect[0],
++                    rect[1],
++                    rect[2],
++                    rect[3],
++                    rows.rows.as_ptr().cast(),
++                    [x, y, z, 0.0].as_ptr(),
++                    fog_color.as_ptr(),
++                    fog_ranges.as_ptr(),
++                )
++            } != 0
++            {
++                return Err("GX2 translucent terrain draw failed");
++            }
++            indices_drawn += section.buffer.vertex_count as usize / 4 * 6;
++        }
++        cafe_profile::count(Counter::Indices, indices_drawn);
++        cafe_profile::count(Counter::SectionDraws, self.visible.len());
++        Ok([additional_tested, additional_drawn])
++    }
++}

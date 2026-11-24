@@ -43,6 +43,8 @@ def prepare(args):
     portable, app = paths(args.lab)
     instance = "default" if args.default_instance else "Lab"
     game = app if args.default_instance else app / "instances/Lab"
+    if args.keep_fixture_distances and (not args.game or not (args.game / "options.txt").is_file()):
+        raise ValueError("preserving fixture distances requires --game with options.txt")
     args.lab.mkdir(parents=True)
     game.mkdir(parents=True)
     (app / "launcher").mkdir()
@@ -74,10 +76,11 @@ def prepare(args):
         for name in ("options.txt", "horizon-controller.txt", "horizon-graphics.txt"):
             if (args.game / name).is_file():
                 shutil.copyfile(args.game / name, game / name)
-        opts = game / "options.txt"
-        lines = opts.read_text(encoding="utf-8").splitlines() if opts.exists() else []
-        lines = [line for line in lines if not line.startswith(("renderDistance:", "simulationDistance:"))]
-        opts.write_text("\n".join(lines + ["renderDistance:12", "simulationDistance:12", ""]), encoding="utf-8")
+        if not args.keep_fixture_distances:
+            opts = game / "options.txt"
+            lines = opts.read_text(encoding="utf-8").splitlines() if opts.exists() else []
+            lines = [line for line in lines if not line.startswith(("renderDistance:", "simulationDistance:"))]
+            opts.write_text("\n".join(lines + ["renderDistance:12", "simulationDistance:12", ""]), encoding="utf-8")
         inputs.extend(sorted(game.glob("*.txt")))
     if args.scratch_world:
         if not (args.scratch_world / "level.dat").is_file():
@@ -285,6 +288,8 @@ def main():
     for name in ("cemu", "rpx", "template", "game", "scratch-world"):
         setup.add_argument(f"--{name}", type=Path, required=name in ("cemu", "rpx", "template"))
     setup.add_argument("--capture", action="store_true")
+    setup.add_argument("--keep-fixture-distances", action="store_true",
+                       help="copy the supplied options without overriding render and simulation distances")
     setup.add_argument("--default-instance", action="store_true")
     launch = subs.add_parser("start")
     launch.add_argument("--cpu-mode", choices=CPU_MODES, default="interpreter")
