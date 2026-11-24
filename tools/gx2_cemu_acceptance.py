@@ -127,7 +127,7 @@ def configure_fixture_controls(root):
     mappings = root_element.find("controller/mappings")
     if mappings is None or root_element.findtext("controller/api") != "Keyboard":
         raise ValueError("the fixture must have a keyboard-backed GamePad")
-    remap = {"1": 90, "9": 80, "17": 87}  # Z is A, P is Plus and W is left stick up.
+    remap = {"2": 88, "9": 80, "17": 87}  # X is B, P is Plus and W is left stick up.
     keys = {str(key) for key in remap.values()}
     for entry in list(mappings):
         if entry.findtext("mapping") in remap or entry.findtext("button") in keys:
@@ -168,6 +168,8 @@ def exercise(args):
         lab.record("night-ready", cpu_mode=mode)
         if mode != args.cpu_mode:
             raise ValueError(f"requested CPU mode {args.cpu_mode}, observed {mode}")
+        # The interpreter can take several seconds to consume a VPAD sample.
+        game_hold = 6 if mode == "interpreter" else 0.5
         lab.show("night")
         lab.select_world()
         for index in range(1, args.sessions + 1):
@@ -192,24 +194,24 @@ def exercise(args):
                 lab.show("stationary-gameplay")
 
             if index == 1:
-                lab.send("key", key=87, hold=2)
+                lab.send("key", key=87, hold=max(2, game_hold))
                 time.sleep(4)
             lab.phase = f"session-{index}-audio"
             try:
                 lab.wait(r"Horizon AX first nonzero PCM delivered", 5, start)
             except TimeoutError:
-                lab.send("key", key=90, hold=0.75)
+                lab.send("key", key=88, hold=game_hold)
                 try:
                     lab.wait(r"Horizon AX first nonzero PCM delivered", args.audio_timeout, start)
                 except TimeoutError:
                     lab.record("ax-pcm-missing")
                 time.sleep(8)
             lab.phase = f"session-{index}-save"
-            lab.send("key", key=80, hold=0.5)
+            lab.send("key", key=80, hold=game_hold)
             lab.show(f"session-{index}-pause")
             save = lab.mark()
             deadline = time.monotonic() + args.save_timeout
-            lab.send("tap", x=args.save_at[0], y=args.save_at[1])
+            lab.send("tap", x=args.save_at[0], y=args.save_at[1], hold=game_hold)
             for marker in (r"hosted save barrier completed", r"hosted game and loading workers released",
                            r"frame.home.play"):
                 lab.wait(marker, deadline - time.monotonic(), save)
