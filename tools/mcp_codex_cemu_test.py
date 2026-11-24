@@ -150,6 +150,7 @@ def wait_for_cafe_performance(invoke):
             assert outputs["effective_scale"] in range(50, 101)
             assert isinstance(outputs["dynamic_timing_available"], bool)
             assert all(len(outputs[name]) == 2 and min(outputs[name]) > 0 for name in ("tv", "gamepad"))
+            assert isinstance(game["cafe_graphics"]["dynamic_resolution"], bool)
             print("Authenticated game_state returned Cafe cadence and both world resolutions.", flush=True)
             return game
         time.sleep(2)
@@ -236,6 +237,11 @@ def play_and_save(invoke, window, client_name, index, evidence):
 
     if os.environ.get("MCHORIZON_CEMU_REQUIRE_CAFE_PERFORMANCE") == "1":
         game = wait_for_cafe_performance(invoke)
+        if evidence:
+            profile = {name: game[name] for name in ("cafe_performance", "cafe_graphics")}
+            with (evidence / f"session-{index}-cafe-performance.json").open("x", encoding="utf-8") as output:
+                json.dump(profile, output, indent=2)
+                output.write("\n")
 
     quit_reply = invoke("game_quit")
     # Launcher read tools remain callable while the original game saves.
