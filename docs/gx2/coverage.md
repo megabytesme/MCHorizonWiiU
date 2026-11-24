@@ -68,6 +68,33 @@ cap. The sampled loop cadence slowed near cap while the MCP frame counter
 stayed unchanged. CPU/GPU cost attribution needs the native profile stages.
 See [RC 20 physical validation](../nightly-2026-11-20.md#rc-20-physical-save-audio-and-streaming).
 
+## Stock pass implementation plan
+
+The RC 20 assembled tree `d9d505bb527671985fd946841ac3cc63234d5ddb`
+is the reference for this plan. The active presenter projects and culls the
+shared indexed solid/cutout geometry independently for TV and GamePad.
+It also draws the stock lightmap, fog, title panorama and native HUD.
+The terrain atlas samples a single level. Its mapped upload and retained
+section bounds already have separate host fixtures.
+
+| Order | Pass and current source boundary | Independent acceptance scene |
+|---:|---|---|
+| 1 | Block selection uses the shared `Frame.outline`. Add a native line or thin-quad pass with stock depth testing and separately bound state. | Aim at a full block, a fence and a partially hidden block. Compare outline location, occlusion and widths at the two display aspects. |
+| 2 | Crumbling produces the stock pre- and post-translucent slices. Use their original geometry and stage textures, with explicit overlay depth and blend state. | Capture several break stages on a solid face and then on glass, including overlap with the selection outline. |
+| 3 | The first-person hand and held items already reach `Frame.hand`. Use their camera and animation data with a separate projection and depth clear. Keep inventory items on the existing HUD path. | Test empty hands, swing, offhand, shield, bow and map against the same camera pose and verify that terrain does not occlude the hand. |
+| 4 | `SectionMesh.translucent` retains fluid and glass geometry on the CPU. Implement a budgeted upload and sort by view, with depth test and blend separate from solid writes. Solid-classified material continues through the solid path. | Use multiple glass layers, submerged and waterline views, and adjacent lava. Compare depth and ordering during rotation and verify retirement under the existing byte cap. |
+| 5 | Native terrain currently takes the first atlas image for each sprite. Reuse the shared animation state for bounded subimage writes. Add repeat and mip-level selection with per-tile borders before enabling filtered sampling. | Compare water and lava phases, a repeated quad and distant fences across tile edges. Profile upload bytes and test the same mip policy on both outputs. |
+| 6 | Shared world geometry exposes opaque and blended entities, dropped items, block entities and particle data. The Cafe HUD already supports item icons. | Use a moving mob, a dropped stack and a chest, followed by overlapping opaque, translucent and additive particle effects. Compare depth and ordering separately. |
+| 7 | The clear/fog background and title panorama exist. The game still needs world sky, celestial bodies, clouds, lightning and precipitation passes. | Compare daylight, sunset, night, sky blocked, rain and underwater transitions. Measure view-dependent cost against the clear-weather baseline. |
+
+Start each pass with a host fixture for its input conversion, state ordering
+and bounds. Then use an isolated GX2 draw/readback fixture with explicit
+expected pixels on both outputs. The existing lightmap and buffer fixtures
+show the pattern. Add a matching shared-frame gameplay scene before marking a
+pass complete. Keep the 128 MiB resident vertex cap and 24 MiB completed-mesh
+cap in those tests. Compare partial-frame reports alongside screenshots and
+HZP timing because a successful submission can omit world passes.
+
 
 ## How a frame reaches GX2
 

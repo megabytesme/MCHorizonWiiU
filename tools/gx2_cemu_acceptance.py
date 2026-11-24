@@ -127,9 +127,10 @@ def configure_fixture_controls(root):
     mappings = root_element.find("controller/mappings")
     if mappings is None or root_element.findtext("controller/api") != "Keyboard":
         raise ValueError("the fixture must have a keyboard-backed GamePad")
-    remap = {"9": 80, "17": 87}  # P is Plus and W is left stick up.
+    remap = {"1": 90, "9": 80, "17": 87}  # Z is A, P is Plus and W is left stick up.
+    keys = {str(key) for key in remap.values()}
     for entry in list(mappings):
-        if entry.findtext("mapping") in remap or entry.findtext("button") in {"80", "87"}:
+        if entry.findtext("mapping") in remap or entry.findtext("button") in keys:
             mappings.remove(entry)
     for button, virtual_key in remap.items():
         entry = ET.SubElement(mappings, "entry")
@@ -144,6 +145,8 @@ def exercise(args):
     if not all(math.isfinite(value) and value > 0 for value in
                (args.startup_timeout, args.save_timeout, args.audio_timeout)):
         raise ValueError("phase timeouts must be positive and finite")
+    if not 0 <= args.gameplay_dwell <= 300:
+        raise ValueError("gameplay dwell must be between zero and 300 seconds")
     root = args.lab.resolve()
     portable, app = gx2_cemu.paths(root)
     world = app / "saves" / args.world
@@ -154,8 +157,10 @@ def exercise(args):
     with (root / "acceptance-inputs.json").open("x", encoding="utf-8") as receipt:
         json.dump({"controller_sha256": gx2_cemu.sha256(portable / "controllerProfiles/controller0.xml"),
                    "fixture_level_sha256": gx2_cemu.sha256(world / "level.dat"),
-                   "sessions": args.sessions, "save_at": args.save_at}, receipt, indent=2)
+                   "sessions": args.sessions, "save_at": args.save_at,
+                   "gameplay_dwell": args.gameplay_dwell}, receipt, indent=2)
     lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id))
+    audio_failures = []
     try:
         lab.wait(r"frame.home.play", 60)
         trace = lab.log.read_text(encoding="utf-8", errors="replace")
@@ -174,24 +179,45 @@ def exercise(args):
                             args.startup_timeout, start)
             lab.record("gameplay-ready", elapsed_ms=int(game[1]))
             lab.wait(r"Horizon prepared I/O: stage=block_models_sprites", 5, start)
-            lab.wait(r"Horizon AX first nonzero PCM delivered", args.audio_timeout, start)
-            lab.record("ax-pcm-delivered")
             lab.show(f"session-{index}-gameplay")
+            if index == 1 and args.gameplay_dwell:
+                lab.phase = "stationary-gameplay"
+                lab.record("dwell-start", duration_seconds=args.gameplay_dwell)
+                try:
+                    lab.process.wait(args.gameplay_dwell)
+                except subprocess.TimeoutExpired:
+                    pass
+                else:
+                    raise RuntimeError("Cemu exited during the stationary scene")
+                lab.show("stationary-gameplay")
 
-            lab.phase = f"session-{index}-save"
             if index == 1:
                 lab.send("key", key=87, hold=2)
                 time.sleep(4)
+            lab.phase = f"session-{index}-audio"
+            try:
+                lab.wait(r"Horizon AX first nonzero PCM delivered", 5, start)
+            except TimeoutError:
+                lab.send("key", key=90, hold=0.75)
+                try:
+                    lab.wait(r"Horizon AX first nonzero PCM delivered", args.audio_timeout, start)
+                except TimeoutError:
+                    lab.record("ax-pcm-missing")
+                time.sleep(8)
+            lab.phase = f"session-{index}-save"
             lab.send("key", key=80, hold=0.5)
             lab.show(f"session-{index}-pause")
             save = lab.mark()
+            deadline = time.monotonic() + args.save_timeout
             lab.send("tap", x=args.save_at[0], y=args.save_at[1])
-            lab.wait(r"hosted save barrier completed", args.save_timeout, save)
-            lab.wait(r"hosted game and loading workers released", args.save_timeout, save)
-            lab.wait(r"frame.home.play", args.save_timeout, save)
+            for marker in (r"hosted save barrier completed", r"hosted game and loading workers released",
+                           r"frame.home.play"):
+                lab.wait(marker, deadline - time.monotonic(), save)
             lab.wait(r"Cafe sound decoders joined: 2", 5, save)
-            ax = lab.wait(r"AX session closed callback=1 nonzero=1 queue_write=(\d+) queue_read=(\d+)",
+            ax = lab.wait(r"AX session closed callback=(\d+) nonzero=(\d+) queue_write=(\d+) queue_read=(\d+)",
                           5, save)
+            if ax[1] != "1" or ax[2] != "1" or int(ax[4]) <= 0:
+                audio_failures.append(index)
             memory = lab.wait(r"hosted.after_game_drop rust_live=(\d+).*rust_peak=(\d+)",
                               5, save)
             bulk = lab.wait(r"hosted.after_game_drop bulk_free=(\d+).*bulk_largest=(\d+)",
@@ -205,7 +231,8 @@ def exercise(args):
                 raise ValueError("the bulk heap did not recover its baseline free space")
             lab.record("save-completed", rust_live=int(memory[1]), rust_peak=int(memory[2]),
                        bulk_free=int(bulk[1]), bulk_largest=int(bulk[2]),
-                       ax_queue_write=int(ax[1]), ax_queue_read=int(ax[2]),
+                       ax_callback=ax[1] == "1", ax_nonzero=ax[2] == "1",
+                       ax_queue_write=int(ax[3]), ax_queue_read=int(ax[4]),
                        saved_position=list(persisted))
             before = persisted
             lab.show(f"session-{index}-night")
@@ -214,7 +241,10 @@ def exercise(args):
         lab.send("tap", x=150, y=400)
         lab.wait(r"coreinit.exit\(0\)", 25, closing)
         lab.record("local-rounds-completed", sessions=args.sessions,
-                   mcp="requires a pre-authorized fixture", death="separate scenario")
+                   audio_failures=audio_failures, mcp="requires a pre-authorized fixture",
+                   death="separate scenario")
+        if audio_failures:
+            raise RuntimeError(f"AX PCM did not pass in sessions {audio_failures}")
     except Exception as error:
         lab.record("failure", detail=str(error))
         if lab.process.poll() is None:
@@ -239,6 +269,8 @@ def main():
     parser.add_argument("--startup-timeout", type=float, default=1500)
     parser.add_argument("--save-timeout", type=float, default=240)
     parser.add_argument("--audio-timeout", type=float, default=180)
+    parser.add_argument("--gameplay-dwell", type=float, default=0,
+                        help="seconds to keep the first gameplay view stationary")
     try:
         exercise(parser.parse_args())
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:

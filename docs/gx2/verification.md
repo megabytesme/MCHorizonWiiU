@@ -1,5 +1,32 @@
 # Hosted GX2 verification
 
+The [stock pass plan](coverage.md#stock-pass-implementation-plan) uses the
+assembled RC 20 presenter as its source reference. The earlier lightmap,
+buffer and screenshot fixtures below remain useful for independent pass
+checks. Use the [live Cafe measurements](benchmarks.md#live-cafe-measurements)
+alongside HZP for RC 21 runtime evidence.
+
+For a disposable Windows Cemu run, use the exact built RPX and start from a
+prepared resource archive bound to the default-instance path. Select a saved
+fixture already owned by the offline Player profile. Configure only a copy of
+the Cemu template.
+
+```powershell
+python -B tools/gx2_cemu.py $lab prepare --default-instance --capture `
+  --cemu $cemu --rpx $rpx --template $portableTemplate `
+  --game $preparedGame --scratch-world $disposableWorld
+python -B tools/gx2_cemu_acceptance.py $lab --cpu-mode interpreter --sessions 3 `
+  --save-at $saveButtonX $saveButtonY
+```
+
+Use the center of the fixture's verified GamePad Save & Quit button. The
+runner records the actual CPU mode and saves timestamped results and both
+screen captures in the lab. It expects the fixture to remain stationary after
+the first movement test. Use the existing authenticated MCP client to verify
+the exact live player state on reopening when a fixture grant is available.
+The [recompiler diagnosis](../../wiiu/cemu/RECOMPILER.md) records which
+mode and emulator patches have independent evidence.
+
 ## Baseline identity and emulator separation
 
 The uninstrumented hosted baseline was port commit

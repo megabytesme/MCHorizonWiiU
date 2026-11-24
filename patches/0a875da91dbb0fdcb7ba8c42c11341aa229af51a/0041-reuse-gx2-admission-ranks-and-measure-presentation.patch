@@ -1,0 +1,818 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index a3f8208508c6ae989e632be7a8fbdc345bb6b790..bab24aaddf66e972a0595943b561d975f86bcfbb 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -983,6 +983,10 @@ struct Game<'a> {
+     #[cfg(target_os = "cafe")]
+     cafe_viewport: [u32; 2],
+     #[cfg(target_os = "cafe")]
++    cafe_performance: cafe::CafePerformance,
++    #[cfg(target_os = "cafe")]
++    cafe_frame_built: bool,
++    #[cfg(target_os = "cafe")]
+     cafe_terrain_clear_pending: bool,
+     #[cfg(target_os = "cafe")]
+     cafe_terrain_remove_pending: Vec<(i32, i32)>,
+@@ -7891,10 +7895,17 @@ impl Game<'_> {
+         Ok(rendered)
+     }
+     #[cfg(target_os = "cafe")]
+-    fn render_and_flip_cafe(&mut self, elapsed: Duration, backend: &mut dyn CafeGameBackend) -> Result<bool> {
++    fn render_and_flip_cafe(
++        &mut self,
++        elapsed: Duration,
++        backend: &mut dyn CafeGameBackend,
++    ) -> Result<bool> {
++        let mut built = false;
+         let rendered = self.render_to(Some(backend.viewport_size()), |_, frame| {
++            built = true;
+             horizon_client::spans::time("renderer", || backend.present_frame(frame))
+         })?;
++        self.cafe_frame_built = built;
+         self.frame_drawn = rendered;
+         self.finish_render_frame(elapsed);
+         if rendered {
+@@ -10552,6 +10563,10 @@ impl<'a> Game<'a> {
+             #[cfg(target_os = "cafe")]
+             cafe_viewport,
+             #[cfg(target_os = "cafe")]
++            cafe_performance: Default::default(),
++            #[cfg(target_os = "cafe")]
++            cafe_frame_built: false,
++            #[cfg(target_os = "cafe")]
+             cafe_terrain_clear_pending: true,
+             #[cfg(target_os = "cafe")]
+             cafe_terrain_remove_pending: Vec::new(),
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 9a167743d44799207a0858c14a7c721f71a61912..db4ae1b43543bed856dc621e6d248293b15a0404 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1696,6 +1696,14 @@ impl Game<'_> {
+                 .eye_position()
+                 .map(|e| self.shown_name_tags(glam::DVec3::from_array(e))),
+         });
++        #[cfg(target_os = "cafe")]
++        {
++            let sample = self.cafe_performance.latest.as_ref();
++            status["fps"] = json!(sample.map(|sample| sample.paired_fps()));
++            status["frames"] = json!(self.cafe_performance.presented);
++            status["cafe_performance"] =
++                json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
++        }
+         status["lod"] = lod;
+         // Parallel Tick: the setting, whether the next tick shares its work, and Auto's state.
+         let (setting, on, auto) = horizon_client::parallel::status();
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index 3f984f163e3950b1321e91b8b8f8e09dfe6041a6..b68f32a9d89056583646bb64ccd1dc73a5000faf 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -86,6 +86,8 @@ struct Flags {
+     /// while it is not.
+     published: AtomicU16,
+     smoothed_tick_ms: AtomicU32,
++    #[cfg(target_os = "cafe")]
++    completed_ticks: AtomicU32,
+     /// `options.renderDistance` and `options.simulationDistance`, which the
+     /// server follows while it runs (IntegratedServer.tickServer).
+     render_distance: AtomicI32,
+@@ -844,6 +846,8 @@ impl Game<'_> {
+                         let cpu = horizon_client::spans::thread_cpu();
+                         let started = Instant::now();
+                         self.tick_server_measured(false)?;
++                        #[cfg(target_os = "cafe")]
++                        flags.completed_ticks.fetch_add(1, Ordering::Relaxed);
+                         // MinecraftServer.tickServer's tick times, for /tick query.
+                         self.clock.record(started.elapsed());
+                         // Parallel Tick's Auto decides here, between ticks, how the next one runs.
+@@ -1913,3 +1917,12 @@ pub(super) mod tests {
+         assert_eq!(server.stop().unwrap_err().to_string(), "disk write failed");
+     }
+ }
++
++#[cfg(target_os = "cafe")]
++impl Game<'_> {
++    pub(super) fn cafe_integrated_ticks(&self) -> Option<u32> {
++        self.integrated
++            .as_ref()
++            .map(|server| server.flags.completed_ticks.load(Ordering::Relaxed))
++    }
++}
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 42369b8eb002384a93f162c8e0fd8d2465e18ad7..9a9c5d8252064196f1f77ed16e4b71355895ccba 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -64,6 +64,11 @@ pub struct CafeScreenshot {
+     pub rgba: Vec<u8>,
+ }
+ 
++#[path = "cafe_performance.rs"]
++mod performance;
++pub use performance::CafeFrameWork;
++pub(super) use performance::CafePerformance;
++
+ /// Native presentation and terrain upload boundary for original Game frames.
+ /// `prepare_game_artwork` runs before Horizon builds the frame; it borrows the
+ /// resource data only for this call, so implementations must copy any native
+@@ -78,6 +83,14 @@ pub trait CafeGameBackend:
+         None
+     }
+ 
++    fn take_frame_work(&mut self) -> CafeFrameWork {
++        CafeFrameWork::default()
++    }
++
++    fn gx2_flip_count(&self) -> Option<u32> {
++        None
++    }
++
+     fn request_screenshot(&mut self, _output: CafeScreenshotOutput) {}
+ 
+     fn take_screenshot(&mut self) -> Option<std::result::Result<CafeScreenshot, String>> {
+@@ -623,6 +636,23 @@ impl CafeGameSession<'_> {
+         event_loop: &dyn horizon_client_platform::EventLoopCtl,
+         backend: &mut dyn CafeGameBackend,
+     ) -> Result<bool> {
++        let start = Instant::now();
++        let totals = |game: &Game<'_>, backend: &dyn CafeGameBackend| performance::Totals {
++            meshed: game.streaming.meshed_total,
++            server_ticks: game.cafe_integrated_ticks(),
++            combined_flips: backend.gx2_flip_count(),
++        };
++        let phase = if !self.world_loading_complete() {
++            performance::Phase::Loading
++        } else if self.game.title.is_some() {
++            performance::Phase::Title
++        } else if self.game.screen == Screen::Playing {
++            performance::Phase::Gameplay
++        } else {
++            performance::Phase::Menu
++        };
++        let before = totals(&self.game, backend);
++        self.game.cafe_performance.begin(phase, start, before);
+         if let Some(result) = self.game.cafe_screenshot_result.as_ref() {
+             match result.try_recv() {
+                 Ok(value) => {
+@@ -692,11 +722,28 @@ impl CafeGameSession<'_> {
+             backend.request_screenshot(output);
+         }
+         self.game.frame_drawn = false;
++        self.game.cafe_frame_built = false;
++        let redraw = Instant::now();
+         self.game.handle_window_event_with_cafe(
+             &Loop(event_loop),
+             WindowEvent::RedrawRequested,
+             Some(backend),
+         );
++        let redraw = redraw.elapsed();
++        let work = backend.take_frame_work();
++        let end = Instant::now();
++        let after = totals(&self.game, backend);
++        if self
++            .game
++            .cafe_performance
++            .finish(end, after, self.game.cafe_frame_built, redraw, work)
++            && let Some(sample) = &self.game.cafe_performance.latest
++        {
++            log::info!(
++                "Horizon Cafe performance: {}",
++                sample.json(self.game.started, end)
++            );
++        }
+         let frame_drawn = self.game.frame_drawn;
+         #[cfg(target_os = "cafe")]
+         self.sample_terrain_memory(
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef144432dbce1571a8d43f8e4e245c47603a3c6a
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -0,0 +1,164 @@
++use std::time::{Duration, Instant};
++
++#[derive(Clone, Copy, Default)]
++pub struct CafeFrameWork {
++    pub presented: [bool; 2],
++    pub submission: Duration,
++    pub gpu_wait: Duration,
++    pub uploaded_sections: u64,
++    pub uploaded_bytes: u64,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(in crate::game) enum Phase {
++    Loading,
++    Title,
++    Gameplay,
++    Menu,
++}
++
++impl Phase {
++    fn name(self) -> &'static str {
++        match self {
++            Self::Loading => "loading",
++            Self::Title => "title",
++            Self::Gameplay => "gameplay",
++            Self::Menu => "menu",
++        }
++    }
++}
++
++#[derive(Clone, Copy, Default)]
++pub(in crate::game) struct Totals {
++    pub(in crate::game) meshed: u64,
++    pub(in crate::game) server_ticks: Option<u32>,
++    pub(in crate::game) combined_flips: Option<u32>,
++}
++
++#[derive(Default)]
++pub(in crate::game) struct CafePerformance {
++    active: Option<Window>,
++    pub(in crate::game) latest: Option<Sample>,
++    pub(in crate::game) presented: u64,
++}
++
++struct Window {
++    phase: Phase,
++    start: Instant,
++    base: Totals,
++    iterations: u32,
++    frames: u32,
++    outputs: [u32; 2],
++    cpu: Duration,
++    submission: Duration,
++    gpu_wait: Duration,
++    uploaded_sections: u64,
++    uploaded_bytes: u64,
++}
++
++pub(in crate::game) struct Sample {
++    window: Window,
++    end: Instant,
++    totals: Totals,
++}
++
++impl CafePerformance {
++    pub(in crate::game) fn begin(&mut self, phase: Phase, now: Instant, totals: Totals) {
++        if self
++            .active
++            .as_ref()
++            .is_none_or(|window| window.phase != phase)
++        {
++            self.latest = None;
++            self.active = Some(Window {
++                phase,
++                start: now,
++                base: totals,
++                iterations: 0,
++                frames: 0,
++                outputs: [0; 2],
++                cpu: Duration::ZERO,
++                submission: Duration::ZERO,
++                gpu_wait: Duration::ZERO,
++                uploaded_sections: 0,
++                uploaded_bytes: 0,
++            });
++        }
++    }
++
++    pub(in crate::game) fn finish(
++        &mut self,
++        now: Instant,
++        totals: Totals,
++        built: bool,
++        redraw: Duration,
++        work: CafeFrameWork,
++    ) -> bool {
++        let Some(window) = self.active.as_mut() else {
++            return false;
++        };
++        window.iterations += 1;
++        window.frames += u32::from(built);
++        for (count, success) in window.outputs.iter_mut().zip(work.presented) {
++            *count += u32::from(success);
++        }
++        self.presented += u64::from(work.presented == [true; 2]);
++        window.cpu += redraw.saturating_sub(work.submission);
++        window.submission += work.submission.saturating_sub(work.gpu_wait);
++        window.gpu_wait += work.gpu_wait;
++        window.uploaded_sections += work.uploaded_sections;
++        window.uploaded_bytes += work.uploaded_bytes;
++        if now.duration_since(window.start) < Duration::from_secs(2) {
++            return false;
++        }
++
++        let window = self.active.take().unwrap();
++        self.begin(window.phase, now, totals);
++        self.latest = Some(Sample {
++            window,
++            end: now,
++            totals,
++        });
++        true
++    }
++}
++
++impl Sample {
++    pub(in crate::game) fn paired_fps(&self) -> f64 {
++        f64::from(self.window.outputs[0].min(self.window.outputs[1])) / self.seconds()
++    }
++
++    fn seconds(&self) -> f64 {
++        self.end.duration_since(self.window.start).as_secs_f64()
++    }
++
++    pub(in crate::game) fn json(&self, session_start: Instant, now: Instant) -> serde_json::Value {
++        let window = &self.window;
++        let seconds = self.seconds();
++        let delta = |end: Option<u32>, start: Option<u32>| {
++            end.zip(start)
++                .map(|(end, start)| f64::from(end.wrapping_sub(start)) / seconds)
++        };
++        let mean_ms = |value: Duration| {
++            (window.frames != 0).then(|| value.as_secs_f64() * 1000.0 / f64::from(window.frames))
++        };
++        serde_json::json!({
++            "phase": window.phase.name(),
++            "window_ms": seconds * 1000.0,
++            "sample_at_session_ms": self.end.saturating_duration_since(session_start).as_secs_f64() * 1000.0,
++            "sample_age_ms": now.saturating_duration_since(self.end).as_secs_f64() * 1000.0,
++            "host_iterations_per_second": f64::from(window.iterations) / seconds,
++            "game_frames_built_per_second": f64::from(window.frames) / seconds,
++            "tv_submissions_per_second": f64::from(window.outputs[0]) / seconds,
++            "gamepad_submissions_per_second": f64::from(window.outputs[1]) / seconds,
++            "combined_gx2_flips_per_second": delta(self.totals.combined_flips, window.base.combined_flips),
++            "integrated_ticks_per_second": delta(self.totals.server_ticks, window.base.server_ticks),
++            "meshed_sections_per_second": self.totals.meshed.saturating_sub(window.base.meshed) as f64 / seconds,
++            "uploaded_sections_per_second": window.uploaded_sections as f64 / seconds,
++            "uploaded_vertex_bytes_per_second": window.uploaded_bytes as f64 / seconds,
++            "redraw_outside_submission_ms_per_game_frame": mean_ms(window.cpu),
++            "submission_outside_measured_waits_ms_per_game_frame": mean_ms(window.submission),
++            "measured_gx2_wait_ms_per_game_frame": mean_ms(window.gpu_wait),
++        })
++    }
++}
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 86cfa32098bf014c038fd256357a4f845827e275..8f7aa69590eb22df411ddaec43d24eb756284e22 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -63,7 +63,7 @@ impl TerrainBounds {
+ 
+ /// Four affine clip-space rows uploaded to the GX2 vertex shader. The xyz
+ /// terms multiply section-local positions; w is the camera-relative origin.
+-#[derive(Clone, Copy, Debug, Default)]
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
+ pub struct TerrainClipRows {
+     pub rows: [[f32; 4]; 4],
+ }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 34a4d506be0f83738248a4f57277900354b3e488..2877e08b9a98f99312a4886354f32df3671b9970 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -15,8 +15,8 @@ use horizon_client::mesher::{SectionMesh, TerrainVertex};
+ use horizon_client::sprites::SpriteAnimation;
+ use horizon_client::{
+     game::{
+-        CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter, CafeScreenshot,
+-        CafeScreenshotOutput, CafeTerrainBuffers,
++        CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter,
++        CafeScreenshot, CafeScreenshotOutput, CafeTerrainBuffers,
+     },
+     gfx::{Frame, panorama},
+     presentation::{HudBackend, PresentationBackend, TerrainBackend},
+@@ -158,6 +158,9 @@ const _: () = {
+ 
+ extern "C" {
+     fn OSReport(format: *const std::ffi::c_char, ...);
++    fn horizon_loading_host_last_outputs() -> u32;
++    fn horizon_loading_host_last_wait_ns() -> u64;
++    fn horizon_loading_host_flip_count() -> u32;
+     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
+     fn horizon_loading_host_read_rgba(target: u32, out: *mut u8, length: usize) -> i32;
+     fn horizon_loading_host_hud_gfd(length: *mut usize) -> *const u8;
+@@ -567,6 +570,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     deferred_terrain: HashMap<SectionKey, DeferredTerrain>,
+     terrain_camera: SectionKey,
+     terrain_views: [Option<TerrainProjection>; 2],
++    frame_work: CafeFrameWork,
++    terrain_ranks: Option<std::collections::BTreeMap<terrain_residency::Priority, usize>>,
+     next_terrain_retry: Option<Instant>,
+     terrain_allocation_backoff: Option<Instant>,
+     terrain_evictions: u32,
+@@ -625,6 +630,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             deferred_terrain: HashMap::new(),
+             terrain_camera: (0, 0, 0),
+             terrain_views: [None, None],
++            frame_work: CafeFrameWork::default(),
++            terrain_ranks: None,
+             next_terrain_retry: None,
+             terrain_allocation_backoff: None,
+             terrain_evictions: 0,
+@@ -1114,6 +1121,7 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+     }
+ }
+ 
++#[derive(PartialEq)]
+ struct TerrainProjection {
+     camera: [f64; 3],
+     min_y: i32,
+@@ -1299,6 +1307,14 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         self.screenshot_result.take()
+     }
+ 
++    fn take_frame_work(&mut self) -> CafeFrameWork {
++        std::mem::take(&mut self.frame_work)
++    }
++
++    fn gx2_flip_count(&self) -> Option<u32> {
++        Some(unsafe { horizon_loading_host_flip_count() })
++    }
++
+     fn last_game_frame_was_partial(&self) -> bool {
+         self.last_frame_partial
+     }
+@@ -1433,6 +1449,31 @@ impl Gx2LoadingPresenter<'_> {
+         terrain_residency::priority(key, self.terrain_camera, visible)
+     }
+ 
++    fn ensure_terrain_ranks(&mut self) {
++        if self.terrain_ranks.is_none() {
++            self.terrain_ranks = Some(
++                self.sections
++                    .iter()
++                    .map(|(&key, section)| {
++                        (
++                            self.section_rank(key, section.bounds),
++                            section.allocation_bytes as usize,
++                        )
++                    })
++                    .collect(),
++            );
++        }
++    }
++
++    fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
++        let section = self.sections.remove(&key)?;
++        if self.terrain_ranks.is_some() {
++            let rank = self.section_rank(key, section.bounds);
++            self.terrain_ranks.as_mut().unwrap().remove(&rank);
++        }
++        Some(section)
++    }
++
+     fn retire_section(&mut self, removed: TerrainSection) {
+         self.terrain_resident_bytes -= removed.allocation_bytes as usize;
+         self.terrain_retired_bytes += removed.allocation_bytes as usize;
+@@ -1462,6 +1503,7 @@ impl Gx2LoadingPresenter<'_> {
+         self.terrain_resident_bytes = 0;
+         self.deferred_terrain.clear();
+         self.terrain_views = [None, None];
++        self.terrain_ranks = None;
+         self.next_terrain_retry = None;
+         self.terrain_allocation_backoff = None;
+         self.flush_retired();
+@@ -1496,7 +1538,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             u32::try_from(mesh.solid.len()).map_err(|_| "GX2 section vertex count overflow")?;
+         let info = Self::section_info(mesh).ok_or("GX2 section allocation estimate overflow")?;
+         if info.bytes == 0 {
+-            if let Some(old) = self.sections.remove(&key) {
++            if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+             }
+             self.deferred_terrain.remove(&key);
+@@ -1526,25 +1568,21 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         if need != 0 {
+             let rank = self.section_rank(key, info.bounds);
+-            let mut candidates: Vec<_> = self
+-                .sections
++            self.ensure_terrain_ranks();
++            let candidates = self
++                .terrain_ranks
++                .as_ref()
++                .unwrap()
+                 .iter()
+-                .filter(|(k, _)| **k != key)
+-                .map(|(&key, section)| {
+-                    (
+-                        self.section_rank(key, section.bounds),
+-                        section.allocation_bytes as usize,
+-                    )
+-                })
+-                .filter(|(current, _)| *current > rank)
+-                .collect();
+-            candidates.sort_unstable_by_key(|(current, _)| std::cmp::Reverse(*current));
++                .rev()
++                .filter(|(current, _)| current.2 != key)
++                .map(|(&current, &bytes)| (current, bytes));
+             let Some(victims) = terrain_residency::victims(rank, need, candidates) else {
+                 self.defer_native_section(key, info);
+                 return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+             };
+             for key in victims {
+-                if let Some(old) = self.sections.remove(&key) {
++                if let Some(old) = self.remove_native_section(key) {
+                     self.defer_native_section(
+                         key,
+                         DeferredTerrain {
+@@ -1630,10 +1668,20 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                 "GX2 reported a different allocation size from the checked estimate".into(),
+             );
+         }
+-        self.terrain_resident_bytes += allocation_bytes as usize;
+-        if let Some(old) = self.sections.insert(key, section) {
++        if let Some(old) = self.remove_native_section(key) {
+             self.retire_section(old)
+         }
++        if self.terrain_ranks.is_some() {
++            let rank = self.section_rank(key, section.bounds);
++            self.terrain_ranks
++                .as_mut()
++                .unwrap()
++                .insert(rank, allocation_bytes as usize);
++        }
++        self.terrain_resident_bytes += allocation_bytes as usize;
++        self.sections.insert(key, section);
++        self.frame_work.uploaded_sections += 1;
++        self.frame_work.uploaded_bytes += u64::from(allocation_bytes);
+         self.deferred_terrain.remove(&key);
+         set_translucent_terrain_omitted(
+             &mut self.translucent_terrain_omitted,
+@@ -1644,7 +1692,10 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn prepare_section_uploads(&mut self, camera: SectionKey, retry: &mut dyn FnMut(SectionKey)) {
+-        self.terrain_camera = camera;
++        if self.terrain_camera != camera {
++            self.terrain_camera = camera;
++            self.terrain_ranks = None;
++        }
+         if self.deferred_terrain.is_empty() {
+             return;
+         }
+@@ -1658,22 +1709,29 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.next_terrain_retry = Some(now + Duration::from_millis(300));
+         let free = RESIDENT_VERTEX_BYTES.saturating_sub(self.terrain_resident_bytes);
+-        let worst = self
+-            .sections
+-            .iter()
+-            .map(|(&key, section)| self.section_rank(key, section.bounds))
+-            .max();
+-        let mut ready: Vec<_> = self
+-            .deferred_terrain
+-            .iter()
+-            .filter_map(|(&key, info)| {
+-                let rank = self.section_rank(key, info.bounds);
+-                (info.bytes <= free || worst.is_some_and(|worst| rank < worst))
+-                    .then_some((rank, info.bytes))
+-            })
+-            .collect();
+-        ready.sort_unstable();
+-        for ((_, _, key), bytes) in ready.into_iter().take(8) {
++        self.ensure_terrain_ranks();
++        let ranks = self.terrain_ranks.as_ref().unwrap();
++        let ready = self.deferred_terrain.iter().filter_map(|(&key, info)| {
++            let old = self
++                .sections
++                .get(&key)
++                .map_or(0, |section| section.allocation_bytes as usize);
++            let need = info.bytes.saturating_sub(free + old);
++            let rank = self.section_rank(key, info.bounds);
++            let enough = need == 0
++                || ranks
++                    .iter()
++                    .rev()
++                    .take_while(|(resident, _)| **resident > rank)
++                    .filter(|(resident, _)| resident.2 != key)
++                    .scan(0usize, |total, (_, bytes)| {
++                        *total += bytes;
++                        Some(*total)
++                    })
++                    .any(|total| total >= need);
++            enough.then_some((rank, info.bytes))
++        });
++        for ((_, _, key), bytes) in terrain_residency::best_retries(ready) {
+             if unsafe { horizon_wiiu_memory_can_upload_terrain(bytes as u32) } != 0 {
+                 self.deferred_terrain.remove(&key);
+                 retry(key);
+@@ -1696,7 +1754,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .filter(|(x, _, z)| removed.contains(&(*x, *z)))
+             .collect();
+         for key in expired {
+-            if let Some(old) = self.sections.remove(&key) {
++            if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+             }
+         }
+@@ -1797,7 +1855,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+                 // Wait once before drawing all retained section buffers;
+                 // projection uniforms change per draw, geometry buffers do not.
+-                let wait_start = GX2_PROFILE_ENABLED.then(Instant::now);
++                let wait_start = Instant::now();
+                 {
+                     let _wait = Span::new(Stage::TerrainWait);
+                     unsafe { horizon_gx2_terrain_wait_idle() };
+@@ -1805,17 +1863,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.presenter.finish_retired_after_wait()
+                     }
+                 }
+-                if let Some(start) = wait_start {
+-                    draw.profile.terrain_wait_ns = draw
+-                        .profile
+-                        .terrain_wait_ns
+-                        .saturating_add(elapsed_ns(start));
+-                }
++                draw.profile.terrain_wait_ns = draw
++                    .profile
++                    .terrain_wait_ns
++                    .saturating_add(elapsed_ns(wait_start));
+                 let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                 let projection = draw
+                     .terrain_min_y
+                     .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
+-                draw.presenter.terrain_views[index] = projection;
++                if draw.presenter.terrain_views[index] != projection {
++                    draw.presenter.terrain_views[index] = projection;
++                    draw.presenter.terrain_ranks = None;
++                }
+                 let projection = draw.presenter.terrain_views[index].as_ref();
+                 let (fog_color, fog_ranges) = horizon_client::gfx::fog_uniform(draw.frame);
+                 if let Some(start) = projection_start {
+@@ -2012,7 +2071,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
+         };
+-        let present_start = GX2_PROFILE_ENABLED.then(Instant::now);
++        let present_start = Instant::now();
+         let host = unsafe {
+             horizon_loading_host_present_with_clear(
+                 draw_target,
+@@ -2023,8 +2082,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let profile = draw.profile;
+         let draw_result = draw.result;
+         drop(draw);
+-        if let Some(start) = present_start {
+-            self.profile.add_present(profile, elapsed_ns(start));
++        let elapsed = present_start.elapsed();
++        let outputs = unsafe { horizon_loading_host_last_outputs() };
++        self.frame_work.presented = [outputs & 1 != 0, outputs & 2 != 0];
++        self.frame_work.submission = elapsed;
++        self.frame_work.gpu_wait = Duration::from_nanos(
++            profile
++                .terrain_wait_ns
++                .saturating_add(unsafe { horizon_loading_host_last_wait_ns() }),
++        );
++        if GX2_PROFILE_ENABLED {
++            self.profile
++                .add_present(profile, elapsed.as_nanos().min(u64::MAX as u128) as u64);
+             self.profile.report_if_due();
+         }
+         if let Err(error) = draw_result {
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 64bb56839471ae0faf30aa885391ab7e2e9dd8b8..c530e97d807ece6f516c5f4b1109dcb81c4bc9d3 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -4,6 +4,7 @@
+ 
+ #include <whb/gfx.h>
+ #include <gx2/event.h>
++#include <coreinit/time.h>
+ #include <gx2/surface.h>
+ #include <gx2r/surface.h>
+ #include <string.h>
+@@ -113,6 +114,26 @@ cleanup:
+ 
+ // Only the rendering thread calls these functions.
+ static uint32_t completed_presents;
++static uint32_t last_outputs;
++static uint64_t last_wait_ns;
++
++uint32_t horizon_loading_host_last_outputs(void)
++{
++   return last_outputs;
++}
++
++uint64_t horizon_loading_host_last_wait_ns(void)
++{
++   return last_wait_ns;
++}
++
++uint32_t horizon_loading_host_flip_count(void)
++{
++   uint32_t queued, completed;
++   OSTime flip, vsync;
++   GX2GetSwapStatus(&queued, &completed, &flip, &vsync);
++   return completed;
++}
+ uint32_t horizon_loading_host_completed_presents(void)
+ {
+    return completed_presents;
+@@ -127,12 +148,16 @@ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context)
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4])
+ {
++   last_outputs = 0;
++   last_wait_ns = 0;
+    if (!draw || !rgba) return -1;
+    uint32_t dimensions[4];
+    if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
+    int result = 0;
+    uint64_t stamp = horizon_gx2_profile_stamp();
++   const OSTime wait_start = OSGetTime();
+    WHBGfxBeginRender();
++   const OSTime flip_wait = OSGetTime() - wait_start;
+    horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
+ 
+    stamp = horizon_gx2_profile_stamp();
+@@ -141,6 +166,7 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+        horizon_swkbd_draw(0) != 0) result = -2;
++   else last_outputs |= 1u;
+    WHBGfxFinishRenderTV();
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
+ 
+@@ -150,12 +176,15 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+        horizon_swkbd_draw(1) != 0) result = -3;
++   else last_outputs |= 2u;
+    WHBGfxFinishRenderDRC();
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
++   const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
++   last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    if (result == 0) {
+       ++completed_presents;
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 96629d0ca20ba5608a60b8d9c7152b4cf5f689f2..b48ac0788a468a05f4231d30ac79a6589dbf62b8 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -9,6 +9,9 @@ typedef int (*HorizonLoadingDrawTarget)(void *context, uint32_t target,
+  * target is active, and finish both. This is synchronous on the GX2 thread. */
+ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context);
+ uint32_t horizon_loading_host_completed_presents(void);
++uint32_t horizon_loading_host_last_outputs(void);
++uint64_t horizon_loading_host_last_wait_ns(void);
++uint32_t horizon_loading_host_flip_count(void);
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4]);
+ 
+diff --git a/wiiu/loading_host/terrain_residency.rs b/wiiu/loading_host/terrain_residency.rs
+index d4f923f98fdd5da68fc506318fcfa00dd5a345e8..691de3050137b8f2c92b7eda8a0e8d4911496b5e 100644
+--- a/wiiu/loading_host/terrain_residency.rs
++++ b/wiiu/loading_host/terrain_residency.rs
+@@ -1,4 +1,6 @@
+ //! Admission policy for the shared TV and GamePad indexed geometry.
++use std::collections::BinaryHeap;
++
+ pub(super) const RESIDENT_VERTEX_BYTES: usize = 128 * 1024 * 1024;
+ pub(super) const RETIRE_BATCH_BYTES: usize = 2 * 1024 * 1024;
+ pub(super) type Key = (i32, i32, i32);
+@@ -38,10 +40,41 @@ pub(super) fn victims(
+     None
+ }
+ 
++/// Bound both the retry batch and the memory needed to choose it.
++pub(super) fn best_retries(
++    candidates: impl IntoIterator<Item = (Priority, usize)>,
++) -> Vec<(Priority, usize)> {
++    const RETRIES: usize = 8;
++    let mut best = BinaryHeap::with_capacity(RETRIES);
++    for candidate in candidates {
++        if best.len() < RETRIES {
++            best.push(candidate);
++        } else if let Some(mut worst) = best.peek_mut() {
++            if candidate < *worst {
++                *worst = candidate;
++            }
++        }
++    }
++    best.into_sorted_vec()
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn retry_batch_keeps_the_best_eight_in_priority_order() {
++        let camera = (0, 0, 0);
++        let candidates = (0..20)
++            .rev()
++            .map(|i| (priority((i, 0, 0), camera, i % 2 == 0), 256));
++        let selected: Vec<_> = best_retries(candidates)
++            .into_iter()
++            .map(|(rank, _)| rank.2.0)
++            .collect();
++        assert_eq!(selected, [0, 2, 4, 6, 8, 10, 12, 14]);
++    }
++
+     #[test]
+     fn visible_near_updates_evict_invisible_or_far_residents() {
+         let camera = (4, 8, 3);

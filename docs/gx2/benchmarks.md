@@ -147,3 +147,27 @@ Allocate the receive buffer outside measured frames. Forward only from an
 explicitly authorized control session and process the bytes off the render
 thread. The capture records timings and volume counters rather than player
 data or authentication material.
+
+## Live Cafe measurements
+
+The RC 21 game-status response includes `cafe_performance` after a completed
+two-second window. The session-relative end timestamp, window length and
+sample age accompany each response. Loading, title, gameplay and menus use
+separate windows. A phase transition clears the previous sample until the new
+window completes. The same samples appear in the native log.
+
+| Field | Measurement |
+|---|---|
+| Host iterations | Calls completed by the hosted original Game frame loop, including calls without a presentation. The pre-handoff loader remains in the HZP loading phase. |
+| Game frames built | Calls that reached the presentation backend with the shared Game frame. |
+| TV and GamePad submissions | Successful native target draw and software-keyboard submissions during a completed WHB frame. Accepted partial frames count toward submission rate. |
+| Combined GX2 flips | Change in the driver's completed scan-buffer flip counter. GX2 exposes the combined counter, so physical delivery to each display needs HDMI and GamePad observation. |
+| Integrated ticks | Completed unpaused server ticks on the integrated thread. Multiplayer clients have no local sample. |
+| Meshing and uploads | Delta of client meshed sections and successful GX2 section publications and backing bytes. Empty sections and deferred uploads are excluded from the upload counters. |
+| Redraw and submission | Wall time spent in redraw outside the native presentation call, and time inside it outside the measured waits. |
+| GX2 wait | Time around WHB begin and finish and explicit terrain draw-completion waits. It includes synchronization and small WHB wrapper costs. |
+
+Use distance 12, the same saved position and heading, and the same CPU mode
+and Cemu binary for rate comparisons. Record the mode and package hash
+alongside each window. Preserve the HZP data for flip and terrain wait
+breakdowns and run a separate physical verification for Wii U timing.

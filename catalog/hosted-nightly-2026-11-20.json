@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "d9d505bb527671985fd946841ac3cc63234d5ddb",
+  "output_tree": "128e4ccd37c0d2dd36ca5d71c7a55cc4146bf699",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -238,12 +238,30 @@
       "sha256": "43097758707710baf550c242450685f4d8240ab6abaffd05fac9a43d62f2e07c",
       "input_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699",
       "output_tree": "d9d505bb527671985fd946841ac3cc63234d5ddb"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0039-verify-cafe-sprite-cache-and-read-ahead.patch",
+      "sha256": "e5154b563f6c60d29ecf55706299d7ee49f1c5f042b80bc5f1eab1467c627497",
+      "input_tree": "d9d505bb527671985fd946841ac3cc63234d5ddb",
+      "output_tree": "b511241579d3d3f9f0dbfedaff2c4933988c3429"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0040-use-cafe-gui-size-for-respawn.patch",
+      "sha256": "0c2c7cad67a541fd6ae8fbb642bc6c6f08201e0405ef807641a0da7542c54bf1",
+      "input_tree": "b511241579d3d3f9f0dbfedaff2c4933988c3429",
+      "output_tree": "234d0e0c1f1c154717acc23ffe41f517413d11f7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0041-reuse-gx2-admission-ranks-and-measure-presentation.patch",
+      "sha256": "70a7e4401d09b9c663f548800d85f175a51989feee601681888cfff8c7815cad",
+      "input_tree": "234d0e0c1f1c154717acc23ffe41f517413d11f7",
+      "output_tree": "128e4ccd37c0d2dd36ca5d71c7a55cc4146bf699"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.20",
-    "patch": "0.5.0-rc.20"
+    "client": "0.8.0-rc.21",
+    "patch": "0.5.0-rc.21"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

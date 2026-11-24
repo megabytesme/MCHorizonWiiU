@@ -1,0 +1,597 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index d6ff345063c87dacd2ce44c5bc992ebdba3a75b2..c2e4958c2aad7f46c6e53524c26fc3bff25cdecb 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -667,6 +667,107 @@ impl ResourceSource {
+         }
+         Some(hash.finish())
+     }
++    /// Match the winning texture sources used by the Cafe sprite decoder.
++    /// Prepared directories serve the archive, while loose packs are mutable
++    /// and must be read even where the filesystem supplies no change stamp.
++    #[cfg(any(target_os = "cafe", test))]
++    pub fn cafe_texture_fingerprint(&self) -> Option<u64> {
++        use horizon_core::prepared_files;
++        if let Storage::Directory(root) = self.0.as_ref()
++            && let Some(prepared) = prepared_files::open(root)
++        {
++            return prepared.texture_fingerprint().ok();
++        }
++
++        let mut archives = HashMap::new();
++        let mut hash = DefaultHasher::new();
++        hash.write(b"Horizon Cafe texture sources v1");
++        for name in self.list_under("assets", &["textures"]) {
++            if name.ends_with(".png") || name.ends_with(".png.mcmeta") {
++                name.hash(&mut hash);
++                self.cafe_texture_file(&name, &mut archives, &mut hash)?;
++            }
++        }
++        Some(hash.finish())
++    }
++
++    #[cfg(any(target_os = "cafe", test))]
++    fn cafe_texture_file(
++        &self,
++        name: &str,
++        archives: &mut HashMap<usize, Option<u64>>,
++        hash: &mut DefaultHasher,
++    ) -> Option<()> {
++        use std::collections::hash_map::Entry;
++        use std::io::Read;
++
++        if !stays_inside(name) {
++            return None;
++        }
++        let key = Arc::as_ptr(&self.0) as usize;
++        match self.0.as_ref() {
++            Storage::Directory(root) => {
++                let prepared = match archives.entry(key) {
++                    Entry::Occupied(entry) => *entry.get(),
++                    Entry::Vacant(entry) => {
++                        *entry.insert(match horizon_core::prepared_files::open(root) {
++                            Some(files) => Some(files.texture_fingerprint().ok()?),
++                            None => None,
++                        })
++                    }
++                };
++                if let Some(prepared) = prepared {
++                    // An index can alias a path outside the texture set.
++                    // That payload is absent from the prepared digest.
++                    if !horizon_core::prepared_files::is_texture_payload(name) {
++                        return None;
++                    }
++                    0u8.hash(hash);
++                    prepared.hash(hash);
++                    name.hash(hash);
++                } else {
++                    1u8.hash(hash);
++                    let mut file = fs::File::open(root.join(name)).ok()?;
++                    let mut file_hash = DefaultHasher::new();
++                    let mut bytes = [0; 8192];
++                    loop {
++                        let read = file.read(&mut bytes).ok()?;
++                        if read == 0 {
++                            break;
++                        }
++                        file_hash.write(&bytes[..read]);
++                    }
++                    file_hash.finish().hash(hash);
++                }
++            }
++            #[cfg(not(target_arch = "wasm32"))]
++            Storage::Archive(archive) => {
++                let fingerprint = match archives.entry(key) {
++                    Entry::Occupied(entry) => *entry.get(),
++                    Entry::Vacant(entry) => {
++                        *entry.insert(Some(archive.content_fingerprint().ok()?))
++                    }
++                }?;
++                2u8.hash(hash);
++                fingerprint.hash(hash);
++                name.hash(hash);
++            }
++            Storage::Prefix { source, prefix } => {
++                source.cafe_texture_file(&format!("{prefix}{name}"), archives, hash)?;
++            }
++            Storage::Index(files, _) => match &files.get(name)?.0 {
++                ResourceStorage::File { source, name } => {
++                    source.cafe_texture_file(name, archives, hash)?;
++                }
++                ResourceStorage::Bytes(bytes) => {
++                    3u8.hash(hash);
++                    bytes.hash(hash);
++                }
++            },
++        }
++        Some(())
++    }
++
+     fn file_fingerprint(&self, name: &str, archives: &mut HashMap<usize, u64>) -> Option<u64> {
+         match self.0.as_ref() {
+             Storage::Directory(root) => {
+@@ -806,6 +907,45 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn cafe_texture_identity_uses_loose_content_and_winning_source() {
++        let fixture = Fixture::new();
++        let name = "assets/demo/textures/block/fixture.png";
++        let path = fixture.0.join(name);
++        fs::create_dir_all(path.parent().unwrap()).unwrap();
++        fs::write(&path, b"one").unwrap();
++        let loose = ResourceSource::directory(fixture.0.clone());
++        let stamp = fs::metadata(&path).unwrap().modified().unwrap();
++        let first = loose.cafe_texture_fingerprint().unwrap();
++        fs::write(&path, b"two").unwrap();
++        fs::File::open(&path).unwrap().set_modified(stamp).unwrap();
++        let second = loose.cafe_texture_fingerprint().unwrap();
++        assert_ne!(first, second);
++
++        let animation = path.with_extension("png.mcmeta");
++        fs::write(&animation, b"{}").unwrap();
++        assert_ne!(loose.cafe_texture_fingerprint(), Some(second));
++        fs::remove_file(animation).unwrap();
++        assert_eq!(loose.cafe_texture_fingerprint(), Some(second));
++
++        let first_layer = Resource::file(loose.clone(), name.into());
++        let second_layer = Resource::bytes(b"red".to_vec());
++        let stack = |layers: [Resource; 2]| {
++            let files = layers
++                .into_iter()
++                .map(|layer| (name.to_owned(), layer))
++                .collect();
++            ResourceSource::layered(files, loose.clone())
++                .cafe_texture_fingerprint()
++                .unwrap()
++        };
++        let f = stack([first_layer.clone(), second_layer.clone()]);
++        assert_ne!(f, stack([second_layer.clone(), first_layer.clone()]));
++        fs::remove_file(path).unwrap();
++        assert_ne!(loose.cafe_texture_fingerprint(), Some(second));
++        assert_eq!(f, stack([first_layer, second_layer]));
++    }
++
+     #[test]
+     fn folder_and_archive_have_identical_lookup_and_listing() {
+         let fixture = Fixture::new();
+diff --git a/crates/horizon-assets/src/zip.rs b/crates/horizon-assets/src/zip.rs
+index df0febdc79a8f807d34512de4ff3d52e7a7aa15d..07faf27abe08890a122906ddb9da6b4ce7bd6fee 100644
+--- a/crates/horizon-assets/src/zip.rs
++++ b/crates/horizon-assets/src/zip.rs
+@@ -113,9 +113,18 @@ impl Zip {
+     /// reload may already have replaced it). Match the pack-cache policy for
+     /// large jars: central directory and file stamps above 250 MiB.
+     pub(crate) fn fingerprint(&self) -> io::Result<u64> {
++        self.fingerprint_with_limit(250 << 20)
++    }
++
++    #[cfg(any(target_os = "cafe", test))]
++    pub(crate) fn content_fingerprint(&self) -> io::Result<u64> {
++        self.fingerprint_with_limit(usize::MAX)
++    }
++
++    fn fingerprint_with_limit(&self, byte_limit: usize) -> io::Result<u64> {
+         let mut hash = DefaultHasher::new();
+         let mut reader = self.archive.clone().into_inner();
+-        if self.len > 250 << 20 {
++        if self.len > byte_limit {
+             reader.tail.hash(&mut hash);
+             if let Some(file) = &reader.file {
+                 metadata_fingerprint(&file.metadata()?)?.hash(&mut hash);
+diff --git a/crates/horizon-client-render/src/sprite_cache.rs b/crates/horizon-client-render/src/sprite_cache.rs
+index 0f0682edd7f695598448e18d1178306858a8546b..cb2aacafb028b662f651d7dd11193816c0f88695 100644
+--- a/crates/horizon-client-render/src/sprite_cache.rs
++++ b/crates/horizon-client-render/src/sprite_cache.rs
+@@ -8,7 +8,10 @@ use std::{collections::HashMap, fs, path::PathBuf};
+ 
+ const MAGIC: &[u8; 4] = b"HSPR";
+ /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
++#[cfg(not(target_os = "cafe"))]
+ const VERSION: u32 = 3;
++#[cfg(target_os = "cafe")]
++const VERSION: u32 = 4;
+ const FILE: &str = "horizon-sprites.cache";
+ /// The most pixel bytes one entry's frames may hold: a full atlas, the most one decoded image
+ /// may be (`hud::read_png`).
+@@ -49,13 +52,19 @@ impl SpriteCache {
+     pub fn open(root: &ResourceRoot) -> Option<Self> {
+         use crate::spans::startup;
+         let fingerprint = startup::time("core.sprite_cache_fingerprint", || {
+-            root.source().fingerprint_under("assets", &["textures"])
++            #[cfg(not(target_os = "cafe"))]
++            let value = root.source().fingerprint_under("assets", &["textures"]);
++            #[cfg(target_os = "cafe")]
++            let value = root.source().cafe_texture_fingerprint();
++            value
+         })?;
+         fs::create_dir_all(root.cache()).ok()?;
+         let path = root.cache().join(FILE);
+         let entries = startup::time("core.sprite_cache_read", || fs::read(&path))
+             .ok()
+-            .and_then(|bytes| startup::time("core.sprite_cache_parse", || parse(&bytes, fingerprint)))
++            .and_then(|bytes| {
++                startup::time("core.sprite_cache_parse", || parse(&bytes, fingerprint))
++            })
+             .unwrap_or_default();
+         Some(Self {
+             path,
+@@ -133,8 +142,25 @@ fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
+             u8::from(d.has_transparent) | u8::from(d.opaque) << 1 | u8::from(d.translucent) << 2,
+         );
+     }
++    #[cfg(target_os = "cafe")]
++    out.extend_from_slice(&payload_checksum(&out).to_le_bytes());
+     out
+ }
++
++#[cfg(any(target_os = "cafe", test))]
++fn payload_checksum(bytes: &[u8]) -> u64 {
++    use std::hash::{DefaultHasher, Hasher};
++    let mut hash = DefaultHasher::new();
++    hash.write(bytes);
++    hash.finish()
++}
++
++#[cfg(any(target_os = "cafe", test))]
++fn verified_payload(bytes: &[u8]) -> Option<&[u8]> {
++    let (data, tail) = bytes.split_at_checked(bytes.len().checked_sub(8)?)?;
++    (payload_checksum(data) == u64::from_le_bytes(tail.try_into().ok()?)).then_some(data)
++}
++
+ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+     out.extend_from_slice(bytes);
+@@ -164,6 +190,8 @@ fn frames_fit(frame_len: u128, count: u32, remaining: usize) -> bool {
+         && count * (frame_len + table_entry) <= u128::from(MAX_ENTRY_BYTES)
+ }
+ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
++    #[cfg(target_os = "cafe")]
++    let bytes = verified_payload(bytes)?;
+     let mut r = Reader(bytes);
+     if r.take(4)? != MAGIC || r.u32()? != VERSION {
+         return None;
+@@ -271,6 +299,17 @@ mod tests {
+             );
+         }
+     }
++    #[test]
++    fn cafe_cache_detects_payload_corruption_even_when_the_format_is_valid() {
++        let entries = HashMap::from([("a:b".to_owned(), sample(1, None))]);
++        let mut bytes = serialize(7, &entries);
++        #[cfg(not(target_os = "cafe"))]
++        bytes.extend_from_slice(&payload_checksum(&bytes).to_le_bytes());
++        assert!(verified_payload(&bytes).is_some());
++        bytes[40] ^= 1;
++        assert!(verified_payload(&bytes).is_none());
++    }
++
+     #[test]
+     fn wrong_fingerprint_truncation_and_garbage_are_misses() {
+         let mut entries = HashMap::new();
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index da39b19390cb714ad83d66299096f17cd45a30f9..3f538149df72969d47d07fddfb8f5702692ef4bc 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -23,6 +23,7 @@
+ //! - the files' bytes.
+ use std::{
+     fs::{self, File},
++    hash::{DefaultHasher, Hasher},
+     io::{self, BufWriter, Read, Write},
+     path::{Path, PathBuf},
+     sync::{
+@@ -53,6 +54,10 @@ mod cafe_io {
+     pub(super) static READS: AtomicU64 = AtomicU64::new(0);
+     pub(super) static SMALL_READS: AtomicU64 = AtomicU64::new(0);
+     pub(super) static READ_BYTES: AtomicU64 = AtomicU64::new(0);
++    pub(super) static READ_REQUESTS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static REQUEST_BYTES: AtomicU64 = AtomicU64::new(0);
++    pub(super) static READ_AHEAD_HITS: AtomicU64 = AtomicU64::new(0);
++    pub(super) static SEEKS: AtomicU64 = AtomicU64::new(0);
+ 
+     pub(super) fn count(counter: &AtomicU64) {
+         counter.fetch_add(1, Relaxed);
+@@ -68,7 +73,7 @@ mod cafe_io {
+ 
+     pub(super) fn log_totals(stage: &str) {
+         log::info!(
+-            "Horizon prepared I/O: stage={stage} archive_opens={} disk_fallbacks={} entry_hits={} entry_misses={} reads={} small_reads={} read_bytes={}",
++            "Horizon prepared I/O: stage={stage} archive_opens={} disk_fallbacks={} entry_hits={} entry_misses={} reads={} small_reads={} read_bytes={} read_requests={} request_bytes={} read_ahead_hits={} seeks={}",
+             ARCHIVE_OPENS.load(Relaxed),
+             DISK_FALLBACKS.load(Relaxed),
+             ENTRY_HITS.load(Relaxed),
+@@ -76,6 +81,10 @@ mod cafe_io {
+             READS.load(Relaxed),
+             SMALL_READS.load(Relaxed),
+             READ_BYTES.load(Relaxed),
++            READ_REQUESTS.load(Relaxed),
++            REQUEST_BYTES.load(Relaxed),
++            READ_AHEAD_HITS.load(Relaxed),
++            SEEKS.load(Relaxed),
+         );
+     }
+ }
+@@ -185,11 +194,87 @@ struct Entry {
+     data: (u64, u64),
+ }
+ 
++/// A single bounded window. Keep it across small reads and bypass it for
++/// bulk reads, which already amortize the Cafe seek cost.
++const READ_AHEAD_BYTES: usize = 32 * 1024;
++const SMALL_ENTRY_BYTES: usize = 4 * 1024;
++const READ_AHEAD_GAP: u64 = 1024;
++
++#[derive(Default)]
++struct ReadAhead {
++    previous_small: Option<(u64, u64)>,
++    start: u64,
++    bytes: Vec<u8>,
++}
++
++impl ReadAhead {
++    fn read(&mut self, file: &File, size: u64, out: &mut [u8], offset: u64) -> io::Result<()> {
++        if out.is_empty() {
++            return Ok(());
++        }
++        #[cfg(target_os = "cafe")]
++        {
++            use std::sync::atomic::Ordering::Relaxed;
++            cafe_io::count(&cafe_io::READ_REQUESTS);
++            cafe_io::REQUEST_BYTES.fetch_add(out.len() as u64, Relaxed);
++        }
++        if out.len() > SMALL_ENTRY_BYTES {
++            return read_at(file, out, offset);
++        }
++        let end = offset + out.len() as u64;
++        let previous = self.previous_small.replace((offset, end));
++        let hit = offset
++            .checked_sub(self.start)
++            .and_then(|gap| usize::try_from(gap).ok())
++            .and_then(|gap| self.bytes.get(gap..)?.get(..out.len()));
++        if let Some(bytes) = hit {
++            #[cfg(target_os = "cafe")]
++            cafe_io::count(&cafe_io::READ_AHEAD_HITS);
++            out.copy_from_slice(bytes);
++            return Ok(());
++        }
++
++        // Pay for an exact read until the request order shows locality.
++        let Some((previous, _)) = previous.filter(|&(start, last_end)| {
++            offset.saturating_sub(last_end).max(start.saturating_sub(end)) <= READ_AHEAD_GAP
++        }) else {
++            return read_at(file, out, offset);
++        };
++        // A recent backwards step can still belong to the same batch.
++        let start = offset.min(previous);
++        self.start = start;
++        self.bytes
++            .resize((size - start).min(READ_AHEAD_BYTES as u64) as usize, 0);
++        if read_at(file, &mut self.bytes, start).is_err() {
++            // A failed speculative read may extend past the requested bytes.
++            self.bytes.clear();
++            return read_at(file, out, offset);
++        }
++        let at = (offset - start) as usize;
++        out.copy_from_slice(&self.bytes[at..at + out.len()]);
++        Ok(())
++    }
++}
++
++/// Resource paths covered by the prepared archive's sprite-cache identity.
++pub fn is_texture_payload(name: &str) -> bool {
++    name.strip_prefix("assets/")
++        .and_then(|name| name.split_once('/'))
++        .is_some_and(|(_, name)| {
++            name.starts_with("textures/")
++                && (name.ends_with(".png") || name.ends_with(".png.mcmeta"))
++        })
++}
++
+ /// An open `horizon-data.bin`.
+ pub struct PreparedFiles {
+     file: File,
+     names: Box<str>,
+     entries: Box<[Entry]>,
++    size: u64,
++    texture_identity: Mutex<Option<u64>>,
++    #[cfg(target_os = "cafe")]
++    read_ahead: Mutex<ReadAhead>,
+ }
+ 
+ impl PreparedFiles {
+@@ -209,8 +294,60 @@ impl PreparedFiles {
+             .ok()?;
+         let (offset, len) = self.entries[i].data;
+         let mut bytes = vec![0; len.min(max) as usize];
+-        Some(read_at(&self.file, &mut bytes, offset).map(|()| bytes))
++        #[cfg(target_os = "cafe")]
++        let result = self.read_ahead(&mut bytes, offset);
++        #[cfg(not(target_os = "cafe"))]
++        let result = read_at(&self.file, &mut bytes, offset);
++        Some(result.map(|()| bytes))
++    }
++
++    #[cfg(target_os = "cafe")]
++    fn read_ahead(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
++        self.read_ahead
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner)
++            .read(&self.file, self.size, bytes, offset)
+     }
++
++    /// Identity of the texture paths and bytes of this validated open archive.
++    /// Prepared roots are immutable for the reader's lifetime. A new process
++    /// validates and fingerprints the archive it actually opens.
++    pub fn texture_fingerprint(&self) -> io::Result<u64> {
++        let mut cached = self
++            .texture_identity
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner);
++        if let Some(value) = *cached {
++            return Ok(value);
++        }
++
++        let mut identity = DefaultHasher::new();
++        identity.write(b"Horizon prepared textures v1");
++        let mut window = ReadAhead::default();
++        let mut buffer = vec![0; SMALL_ENTRY_BYTES];
++        for entry in &self.entries {
++            let name = self.name(entry);
++            if !is_texture_payload(name) {
++                continue;
++            }
++            let (mut offset, mut remaining) = entry.data;
++            identity.write(&(name.len() as u64).to_le_bytes());
++            identity.write(name.as_bytes());
++            identity.write(&remaining.to_le_bytes());
++            while remaining != 0 {
++                let count = remaining.min(buffer.len() as u64) as usize;
++                let bytes = &mut buffer[..count];
++                window.read(&self.file, self.size, bytes, offset)?;
++                identity.write(bytes);
++                offset += count as u64;
++                remaining -= count as u64;
++            }
++        }
++        let value = identity.finish();
++        *cached = Some(value);
++        Ok(value)
++    }
++
+     /// The files under `dir` (`/`-separated, from the root) and its
+     /// subfolders, in name order, by their names from the root; `None` when
+     /// this doesn't hold that folder or has no file in it (list the folder).
+@@ -258,8 +395,17 @@ impl PreparedFiles {
+         let (count, root_len, source_len, pool_len) =
+             (u32_at(12) as u64, u64_at(16), u64_at(24), u64_at(32));
+         let index_len = count * ENTRY as u64;
+-        let index_end = HEADER as u64 + pad(root_len) + pad(source_len) + index_len + pad(pool_len);
+-        if index_end > size {
++        let mut index_end = HEADER as u64;
++        for len in [root_len, source_len, index_len, pool_len] {
++            let Some(end) = len
++                .checked_next_multiple_of(8)
++                .and_then(|len| index_end.checked_add(len))
++            else {
++                return Ok(None);
++            };
++            index_end = end;
++        }
++        if index_end > size || usize::try_from(index_end).is_err() {
+             prepared_trace!(
+                 "Horizon prepared files: index bounds rejected end={index_end} size={size}"
+             );
+@@ -315,6 +461,10 @@ impl PreparedFiles {
+             file,
+             names: names.into(),
+             entries,
++            size,
++            texture_identity: Mutex::new(None),
++            #[cfg(target_os = "cafe")]
++            read_ahead: Mutex::default(),
+         };
+         // Every name in the pool, in strict order; every file's bytes inside the file.
+         prepared_trace!(
+@@ -324,12 +474,12 @@ impl PreparedFiles {
+         let mut last: Option<&str> = None;
+         for e in files.entries.iter() {
+             let (at, len) = (e.name.0 as usize, e.name.1 as usize);
+-            let name = files.names.get(at..at + len);
++            let name = at.checked_add(len).and_then(|end| files.names.get(at..end));
+             let in_file = e
+                 .data
+                 .0
+                 .checked_add(e.data.1)
+-                .is_some_and(|end| end <= size);
++                .is_some_and(|end| e.data.0 >= index_end && end <= size);
+             if name.is_none_or(|n| last.is_some_and(|l| l >= n)) || !in_file {
+                 return Ok(None);
+             }
+@@ -789,6 +939,8 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+     let _held = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+     let mut file = file;
+     file.seek(io::SeekFrom::Start(offset))?;
++    #[cfg(target_os = "cafe")]
++    cafe_io::count(&cafe_io::SEEKS);
+     file.read_exact(buf)?;
+     #[cfg(target_os = "cafe")]
+     cafe_io::read(buf.len());
+@@ -861,6 +1013,76 @@ mod tests {
+         root
+     }
+ 
++    #[test]
++    fn texture_identity_tracks_payloads_in_a_new_archive() {
++        let root = root("texture-identity");
++        let texture = root.join("assets/minecraft/textures/block/stone.png");
++        write(&root).unwrap();
++        let old = PreparedFiles::open(&root).unwrap().unwrap();
++        let identity = old.texture_fingerprint().unwrap();
++        fs::write(&texture, b"changed").unwrap();
++        assert_eq!(old.texture_fingerprint().unwrap(), identity);
++        drop(old);
++        write(&root).unwrap();
++
++        let new = PreparedFiles::open(&root).unwrap().unwrap();
++        assert_ne!(new.texture_fingerprint().unwrap(), identity);
++        assert_eq!(
++            new.read("assets/minecraft/textures/block/stone.png")
++                .unwrap()
++                .unwrap(),
++            b"changed"
++        );
++        drop(new);
++        fs::remove_dir_all(&root).unwrap();
++    }
++
++    #[test]
++    fn read_ahead_handles_hits_large_bypasses_and_end_of_file() {
++        let root = root("readahead");
++        let path = root.join("fixture.bin");
++        let bytes: Vec<u8> = (0..READ_AHEAD_BYTES + 31)
++            .map(|i| (i % 251) as u8)
++            .collect();
++        fs::write(&path, &bytes).unwrap();
++        let file = File::open(path).unwrap();
++        let mut window = ReadAhead::default();
++        for (offset, length) in [
++            (0, 103),
++            (13, 19),
++            (3, 5000),
++            (31, 64),
++            (READ_AHEAD_BYTES, 31),
++            (1, 12),
++        ] {
++            let mut actual = vec![0; length];
++            window
++                .read(&file, bytes.len() as u64, &mut actual, offset as u64)
++                .unwrap();
++            assert_eq!(actual, bytes[offset..offset + length]);
++            assert!(window.bytes.len() <= READ_AHEAD_BYTES);
++        }
++        drop(file);
++        fs::remove_dir_all(&root).unwrap();
++    }
++
++    #[test]
++    fn failed_speculation_preserves_an_in_bounds_short_read() {
++        let root = root("readahead-truncated");
++        let path = root.join("fixture.bin");
++        fs::write(&path, b"complete entry").unwrap();
++        let file = File::open(path).unwrap();
++        let mut window = ReadAhead::default();
++        let mut actual = [0; 8];
++        window.read(&file, 4096, &mut actual, 0).unwrap();
++        assert!(window.bytes.is_empty());
++        window.read(&file, 4096, &mut actual, 1).unwrap();
++        assert_eq!(&actual, b"omplete ");
++        assert!(window.bytes.is_empty());
++        drop(file);
++        fs::remove_dir_all(&root).unwrap();
++    }
++
+     /// A writer that stopped midway leaves its temporary file: the next write
+     /// removes it, and nothing else.
+     #[test]

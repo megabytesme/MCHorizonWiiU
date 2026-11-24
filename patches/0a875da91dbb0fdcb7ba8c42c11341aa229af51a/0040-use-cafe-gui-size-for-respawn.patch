@@ -1,0 +1,19 @@
+diff --git a/crates/horizon-client/src/game/interface/screens.rs b/crates/horizon-client/src/game/interface/screens.rs
+index 1d2a0c3c5bcc775936f87e99c6849c2ef7bfcd24..c8583aeba2ac168c14ad603be56778ac92cb9983 100644
+--- a/crates/horizon-client/src/game/interface/screens.rs
++++ b/crates/horizon-client/src/game/interface/screens.rs
+@@ -946,12 +946,8 @@ impl Game<'_> {
+                 return Ok(());
+             }
+         }
+-        let size = self
+-            .renderer
+-            .as_ref()
+-            .map_or([1, 1], |r| [r.config.width, r.config.height]);
+-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+-        let hit = death_buttons(b.width, b.height, self.level.hardcore)
++        let (width, height) = self.gui_size();
++        let hit = death_buttons(width, height, self.level.hardcore)
+             .into_iter()
+             .find(|d| ui::hovered(self.cursor, d.0, d.1, 200.0, 20.0))
+             .map(|d| d.3);
