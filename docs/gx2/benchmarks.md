@@ -94,6 +94,15 @@ same-binary comparison, set the marker's first byte to ASCII `1` to
 restore the previous 16 ms Poll sleep. Use the empty marker for normal WHB
 pacing. Both leave the established save and WaitUntil delays in place.
 
+For the RC 29 stock Cafe benchmark, `Cafe benchmark readiness` logs the
+blocking condition on entry, at bounded ten-second intervals, and when
+ready. It includes the resident and required column counts, generated and
+pending chunks, and submitted terrain counts on both outputs. Flight
+coverage records adjacent eligible intervals, their total duration and the
+longest consecutive run of ineligible attempts, independent of retained
+frame times. Stock readiness thresholds and the original route remain in
+effect. The coverage line also appears when a route has no valid intervals.
+
 The RC 28 source also writes `gx2-profile-session.hzp` after a hosted
 session with presented gameplay returns to Night. The snapshot is taken
 after teardown and before Night can overwrite that gameplay in the ring.

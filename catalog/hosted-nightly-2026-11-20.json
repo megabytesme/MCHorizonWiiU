@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "eb2dcb07a9f02f0d2eb9f9495561ecb68db5d902",
+  "output_tree": "3c01be75d4ed4427989060ea8fb8fc72620a78cc",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -466,6 +466,12 @@
       "sha256": "72a0d48eabb95fbd80fea685fe22c97f988135abf03ab0a93b1a18437397e9c7",
       "input_tree": "8a3b3904eb9c0feadea682a84145a36697b6813e",
       "output_tree": "eb2dcb07a9f02f0d2eb9f9495561ecb68db5d902"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0077-trace-stock-cafe-benchmark-readiness-and-coverage.patch",
+      "sha256": "fae6bcb29fe820950fcdede7de5d250ea80cecb9a7e659ee099d0e34c841935b",
+      "input_tree": "eb2dcb07a9f02f0d2eb9f9495561ecb68db5d902",
+      "output_tree": "3c01be75d4ed4427989060ea8fb8fc72620a78cc"
     }
   ],
   "candidate": {
