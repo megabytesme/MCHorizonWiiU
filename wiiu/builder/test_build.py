@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import core
 import native
@@ -45,6 +46,35 @@ class CatalogTests(unittest.TestCase):
         broken["series"][1]["input_tree"] = "f" * 40
         with self.assertRaisesRegex(ValueError, "noncontiguous"):
             nightly.validate(broken)
+
+    def test_nightly_toolchain_pin_is_independent_of_legacy_native_inputs(self):
+        spec, _, _ = nightly.read_recipe(self.fingerprint)
+        legacy = {key: value for key, value in spec.items() if key != "toolchain"}
+        legacy["schema"] = 1
+        nightly.validate(legacy)
+        old_version, old_hash, old_lock = nightly.toolchain_inputs(self.recipe, legacy)
+        self.assertEqual((old_version, old_hash), (self.recipe["toolchain"], self.recipe["inputs_sha256"]))
+        self.assertEqual(old_lock["version"], old_version)
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            locks = fixture / "catalog"
+            locks.mkdir()
+            lock = locks / "toolchain-cafe-v1.2.3.json"
+            lock.write_bytes(b'{"schema":1,"version":"1.2.3","toolchain":{"files":{}}}')
+            pin = {"version": "1.2.3", "sha256": core.file_digest(lock)}
+            current = dict(legacy, schema=2, toolchain=pin)
+            nightly.validate(current)
+            with patch.object(native, "ROOT", fixture):
+                version, fingerprint, selected = nightly.toolchain_inputs(self.recipe, current)
+                self.assertEqual((version, fingerprint), (pin["version"], pin["sha256"]))
+                self.assertEqual(selected, json.loads(lock.read_bytes()))
+                lock.write_bytes(b'{"schema":1,"version":"1.0.0"}')
+                with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                    nightly.toolchain_inputs(self.recipe, current)
+                pin["sha256"] = core.file_digest(lock)
+                with self.assertRaisesRegex(ValueError, "incompatible native input specification"):
+                    nightly.toolchain_inputs(self.recipe, current)
 
     def test_reject_duplicate_fields_broken_chain_and_wrong_versions(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):

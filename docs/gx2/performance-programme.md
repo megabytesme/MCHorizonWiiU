@@ -296,11 +296,10 @@ uses the patched native code with depth and the HUD enabled. RPX
 `2f4201a8…` passed all ten checks, including the 50% bilinear boundary.
 Physical inspection of both displays and the system Menu handoff is pending.
 
-The assembled RC 29 source passed a Cafe cross-check with the available
-development compiler. Hosted packaging is blocked at the toolchain check
-because the available Rust compiler and sysroot differ from the release pin.
-The standalone GX2 Scale Check was built with the pinned native C and shader
-toolchain.
+The [Cafe Toolchain 1.1.0 record](cafe-toolchain-1.1.0.md) documents
+the separately pinned replacement, ABI results and verified private
+restore. The standalone GX2 Scale Check was built with the existing
+pinned native C and shader tools.
 
 The [independent offscreen reference](../../wiiu/diagnostics/gx2-offscreen-reference/README.md)
 sampled the WHB GamePad target and drew into a manually allocated color-only

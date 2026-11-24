@@ -72,9 +72,9 @@ Cafe Winit comes from the Nightly patch series.
 
 Use the same arguments with `build-hosted-nightly` to package the hosted
 candidate. Enable the documented Cafe toolchain environment first. The builder
-verifies the compiler and SDK inputs against Toolchain 1.0.0 and uses the
-locked, offline dependency graph. Use a fresh output directory for each
-independent build.
+checks the lock selected by the source recipe and uses the locked, offline
+dependency graph. The RC 29 recipe uses [Toolchain 1.1.0](gx2/cafe-toolchain-1.1.0.md).
+Use a fresh output directory for each independent build.
 
 ```sh
 python3 wiiu/builder/build.py build-hosted-nightly \

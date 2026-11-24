@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "wiiu-hosted-nightly-source",
   "target": "powerpc-nintendo-cafe",
   "upstream": {
@@ -8,6 +8,10 @@
     "inventory_sha256": "a959d259ed1d49f69e53a9fa3355c19fa3bbf4be9ce7235fc44dbbb41016f8d8"
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
+  "toolchain": {
+    "version": "1.1.0",
+    "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
+  },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
   "output_tree": "53dae28084460c2448e22714f6962d8bfb1fa3d8",
   "series": [
@@ -493,7 +497,7 @@
     }
   ],
   "candidate": {
-    "builder": "0.7.0-rc.4",
+    "builder": "0.7.0-rc.5",
     "client": "0.8.0-rc.29",
     "patch": "0.5.0-rc.29"
   },

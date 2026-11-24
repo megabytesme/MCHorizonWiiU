@@ -23,4 +23,7 @@ python3 -B wiiu/builder/workflow.py --allow-unsigned inventory-toolchain
 
 Add `--package-cache PATH` to check the devkitPro package archive SHA-256 values. This is an inventory command. Install or repair the official packages and custom compiler in your chosen environment before building. Toolchain drift requires a new reviewed recipe, build and evidence.
 
+The hosted Nightly recipe selects its compiler lock independently of the
+historical release. See the [1.1.0 recovery and restoration record](gx2/cafe-toolchain-1.1.0.md).
+
 Minecraft assets, decompiled source, Nintendo proprietary SDK components and user data must stay private. The project distributes public source and deltas. Tools and installed libraries remain separate from builder and client bundles until their individual licenses, corresponding-source obligations and redistribution provenance have been reviewed. Cemu test patches are source-only. See [third-party notices](../THIRD_PARTY_NOTICES.md).

@@ -5,7 +5,7 @@ import tomllib
 import native
 import rpx
 import source
-from core import (ROOT, TARGET, artifacts, client_input, discard_unverified_outputs,
+from core import (ROOT, TARGET, VERSION_PATTERN, artifacts, client_input, discard_unverified_outputs,
                   digest, fields, file_digest, isolated, parse_json, pattern, verify_source,
                   write_record)
 
@@ -14,11 +14,17 @@ OVERLAYS = ("ring", "png", "ureq")
 
 
 def validate(spec):
-    fields(spec, "schema", "kind", "target", "upstream", "base_recipe_sha256",
-           "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin")
-    if (type(spec["schema"]) is not int or spec["schema"] != 1
-            or spec["kind"] != "wiiu-hosted-nightly-source" or spec["target"] != TARGET):
+    if not isinstance(spec, dict) or type(spec.get("schema")) is not int or spec["schema"] not in (1, 2):
         raise ValueError("unsupported hosted Nightly source recipe")
+    toolchain_field = ("toolchain",) if spec["schema"] == 2 else ()
+    fields(spec, "schema", "kind", "target", "upstream", "base_recipe_sha256",
+           "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin", *toolchain_field)
+    if spec["kind"] != "wiiu-hosted-nightly-source" or spec["target"] != TARGET:
+        raise ValueError("unsupported hosted Nightly source recipe")
+    if spec["schema"] == 2:
+        fields(spec["toolchain"], "version", "sha256")
+        pattern(spec["toolchain"]["version"], VERSION_PATTERN, "Nightly toolchain version")
+        pattern(spec["toolchain"]["sha256"], source.SHA256, "Nightly toolchain SHA-256")
     fields(spec["candidate"], "builder", "client", "patch")
     for version in spec["candidate"].values():
         pattern(version, r"\d+\.\d+\.\d+-rc\.\d+", "Nightly candidate version")
@@ -69,6 +75,16 @@ def read_recipe(base_fingerprint):
     return spec, digest(payload), patches
 
 
+def toolchain_inputs(base, spec):
+    if spec["schema"] == 1:
+        return base["toolchain"], base["inputs_sha256"], native.toolchain_spec(base)
+    pin = spec["toolchain"]
+    version, sha256 = pin["version"], pin["sha256"]
+    lock = native.toolchain_spec({"toolchain": version, "inputs_sha256": sha256},
+                                 f"catalog/toolchain-cafe-v{version}.json")
+    return version, sha256, lock
+
+
 def stage(directory, upstream, inputs, toolchain, recipe):
     spec, recipe_sha256, patches = recipe
     verify_source(upstream, "HEAD", spec["upstream"])
@@ -107,14 +123,14 @@ def stage(directory, upstream, inputs, toolchain, recipe):
 def assemble(upstream, inputs, output, base, base_fingerprint, build=False, resources_hash=None):
     recipe = read_recipe(base_fingerprint)
     spec, recipe_sha256, _ = recipe
-    toolchain = native.toolchain_spec(base)
+    version, toolchain_sha256, toolchain = toolchain_inputs(base, spec)
     directory = isolated(output)
     directory.mkdir(parents=True, exist_ok=True)
     with native.build_lock(directory):
         staged, manifest, receipt = stage(directory, upstream, inputs, toolchain, recipe)
         if not build:
             return directory / "nightly-source-record.json"
-        tools, sysroot, observed = native.native_toolchain()
+        tools, sysroot, observed = native.native_toolchain(include_host=spec["schema"] == 2)
         if observed != toolchain["toolchain"]:
             changed = sorted(key for key, value in observed.items()
                              if value != toolchain["toolchain"].get(key))
@@ -145,13 +161,17 @@ def assemble(upstream, inputs, output, base, base_fingerprint, build=False, reso
         code_heap = rpx.read_code_heap(directory / packages[0])
         write_record(directory / "code-heap.json", code_heap)
         rpx.require_aroma_fit(code_heap)
-        _, _, confirmed = stage(directory, upstream, inputs, toolchain, read_recipe(base_fingerprint))
-        if confirmed != receipt or client_input(base) != launcher:
+        confirmed_recipe = read_recipe(base_fingerprint)
+        _, _, confirmed = stage(directory, upstream, inputs, toolchain, confirmed_recipe)
+        if (confirmed != receipt or client_input(base) != launcher
+                or toolchain_inputs(base, confirmed_recipe[0]) != (version, toolchain_sha256, toolchain)):
             raise ValueError("hosted Nightly inputs changed during compilation")
+        if spec["schema"] == 2 and native.native_toolchain(include_host=True)[2] != observed:
+            raise ValueError("hosted Nightly toolchain changed during compilation")
         write_record(record, {
             "schema": 1, "kind": "wiiu-hosted-game-build",
             "recipe_sha256": recipe_sha256, "source": receipt, "versions": versions,
-            "toolchain_version": base["toolchain"], "toolchain_spec_sha256": base["inputs_sha256"],
+            "toolchain_version": version, "toolchain_spec_sha256": toolchain_sha256,
             "toolchain": tools, "launcher": launcher, "embedded_build": embedded,
             "environment": native.BUILD_SETTINGS, "commands": commands,
             "cargo_release_profile": tomllib.loads(manifest.read_text())["profile"]["release"],

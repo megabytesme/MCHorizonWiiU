@@ -25,8 +25,8 @@ HOSTED_LOCK = "wiiu/game-bridge/offline/unified.Cargo.lock"
 
 
 
-def toolchain_spec(recipe):
-    data = checked_bytes(ROOT, INPUTS_FILE, recipe["inputs_sha256"])
+def toolchain_spec(recipe, path=INPUTS_FILE):
+    data = checked_bytes(ROOT, path, recipe["inputs_sha256"])
     lock = parse_json(data)
     if lock.get("schema") != 1 or lock.get("version") != recipe["toolchain"]:
         raise ValueError("incompatible native input specification")
@@ -92,7 +92,7 @@ def inventory_digest(directory):
     return digest(json.dumps(directory_inventory(directory), sort_keys=True).encode())
 
 
-def native_toolchain():
+def native_toolchain(*, include_host=False):
     tools = inspect_toolchain()
     rustc = tools["files"]["rustc"]["path"]
     cargo = tools["files"]["cargo"]["path"]
@@ -113,6 +113,10 @@ def native_toolchain():
         "nightly_cargo_sha256": file_digest(nightly),
         "nightly_cargo_version": subprocess.check_output([cargo, "+nightly", "-vV"], text=True).strip(),
     }
+    if include_host:
+        host_lib = Path(subprocess.check_output(
+            [rustc, "--print", "target-libdir"], text=True).strip())
+        result["host_library_inventory_sha256"] = inventory_digest(host_lib)
     return tools, sysroot, result
 
 
