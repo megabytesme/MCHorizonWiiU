@@ -22,7 +22,7 @@
     }
   ],
   "expires": "2027-05-20T00:00:00Z",
-  "published": "2026-11-20T00:00:00Z",
+  "published": "2026-11-24T00:00:00Z",
   "releases": {
     "builder": {
       "0.5.0": {
@@ -205,10 +205,33 @@
         "description": "Linux x86-64 Cafe toolchain and verified Cargo overlays.",
         "notes": "docs/releases/toolchain-v1.0.0.md",
         "status": "active"
+      },
+      "1.1.0": {
+        "artifacts": {
+          "dependencies": {
+            "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
+            "path": "catalog/dependencies-cafe-v1.json",
+            "sha256": "2d4ac3439281909b71b6bd11e1a984e57fe2dfb6123b3fdba72a4d5c25bcef02"
+          },
+          "rust-delta": {
+            "commit": "941a368ad08a7780923c9583569f31f3e04446e3",
+            "path": "patches/toolchain/cafe-rust-62606b70/source.json",
+            "sha256": "97a05cbe3ee49092516a29801a9f752461c54b80cc0fbecadd537b693265825a"
+          },
+          "toolchain-lock": {
+            "commit": "6c996ff6edcebdd58618ff0c23a3da69879fee1f",
+            "path": "catalog/toolchain-cafe-v1.1.0.json",
+            "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
+          }
+        },
+        "channel": "development",
+        "description": "Reconstructed hosted Nightly Cafe Rust compiler with pinned host and Cafe target libraries.",
+        "notes": "docs/gx2/cafe-toolchain-1.1.0.md",
+        "status": "active"
       }
     }
   },
   "schema": 2,
-  "sequence": 2,
+  "sequence": 3,
   "signing": "unsigned-development"
 }
