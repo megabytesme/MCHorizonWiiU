@@ -1,0 +1,163 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index de4a71b59751ed7a95df2448fa9eb71815dd008e..ff15f139a73a660781baf8b2a1216020ff88c50b 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -33,6 +33,7 @@ struct HorizonGx2Terrain {
+    uint32_t lightmap_slot;
+    uint32_t clip_offsets[4];
+    uint32_t section_origin_offset;
++   uint32_t section_uniform_words;
+    uint32_t atlas_grid_offset;
+    float atlas_grid[4];
+    uint32_t fog_color_offset;
+@@ -42,6 +43,7 @@ struct HorizonGx2Terrain {
+    uint32_t quad_index_allocation_bytes;
+    int shader_loaded;
+    bool legacy_attributes;
++   bool legacy_uniforms;
+ };
+ static const GX2RResourceFlags texture_flags = GX2R_RESOURCE_BIND_TEXTURE |
+    GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+@@ -156,6 +158,13 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+        !uniform_offset(GX2GetPixelUniformVar(ps, "uMaterial"), &t->material_offset)) {
+       result = -3; goto fail;
+    }
++   // Reflection offsets count 32-bit words. Keep the separate writes if
++   // another shader layout moves a row, and merge just the rows if the
++   // origin has its own range.
++   const uint32_t clip = t->clip_offsets[0];
++   if (clip <= UINT32_MAX - 16 && t->clip_offsets[1] == clip + 4 &&
++       t->clip_offsets[2] == clip + 8 && t->clip_offsets[3] == clip + 12)
++      t->section_uniform_words = t->section_origin_offset == clip + 16 ? 20 : 16;
+    if (!WHBGfxInitShaderAttribute(&t->shader, "aPosition", 0, offsetof(HorizonTerrainVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aColor", 0, offsetof(HorizonTerrainVertex, color_cutout), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
+        !WHBGfxInitShaderAttribute(&t->shader, "aUv", 0, offsetof(HorizonTerrainVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+@@ -332,6 +341,29 @@ void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool
+    terrain->legacy_attributes = enabled;
+ }
+ 
++void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool enabled)
++{
++   terrain->legacy_uniforms = enabled;
++}
++
++static void bind_section_uniforms(const HorizonGx2Terrain *t, const float clip_rows[16],
++                                  const float section_origin[4])
++{
++   if (!t->legacy_uniforms && t->section_uniform_words == 20) {
++      _Alignas(16) float words[20];
++      memcpy(words, clip_rows, 16 * sizeof(float));
++      memcpy(words + 16, section_origin, 4 * sizeof(float));
++      GX2SetVertexUniformReg(t->clip_offsets[0], 20, words);
++      return;
++   }
++   if (!t->legacy_uniforms && t->section_uniform_words == 16)
++      GX2SetVertexUniformReg(t->clip_offsets[0], 16, clip_rows);
++   else
++      for (uint32_t row = 0; row < 4; ++row)
++         GX2SetVertexUniformReg(t->clip_offsets[row], 4, &clip_rows[row * 4]);
++   GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
++}
++
+ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                                   const float clip_rows[16], const float section_origin[4])
+ {
+@@ -339,9 +371,7 @@ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSectio
+    if (!s->vertex_count) return 0;
+    const bool translucent = GX2RBufferExists(&s->sorted_indices);
+    if (translucent && !s->sorted_indices_ready) return -1;
+-   for (uint32_t row = 0; row < 4; ++row)
+-      GX2SetVertexUniformReg(t->clip_offsets[row], 4, &clip_rows[row * 4]);
+-   GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
++   bind_section_uniforms(t, clip_rows, section_origin);
+    GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+    if (t->legacy_attributes) {
+       GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index e7bd76ee25f7e7bde3881bfa77cbf63ba481f197..171f820ccc82fa5c05327f4894a93eb9dd4b1014 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -56,6 +56,8 @@ void horizon_gx2_terrain_draw_quads(HorizonGx2Terrain *terrain, uint32_t vertex_
+ void horizon_gx2_terrain_wait_idle(void);
+ /* Restore redundant stream writes for matched measurements on the render thread. */
+ void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool enabled);
++/* Keep separate section uniform writes for matched measurements. */
++void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool enabled);
+ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ /* Caller has completed every submitted use of this section. */
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 0ea5795d767411db9f248c258eeb925475f7c384..290359d3c1ea4c32b139daf881255eb3e11d0ddc 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -67,6 +67,7 @@ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
++static bool legacy_terrain_uniforms;
+ static struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+@@ -91,12 +92,14 @@ void horizon_gx2_profile_init(void)
+    legacy_terrain_bindings = mode == '2';
+    legacy_terrain_attributes = mode == '3';
+    gpu_cycle_probe = mode == '4';
++   legacy_terrain_uniforms = mode == '5';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+    if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
+    if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
++   if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -114,6 +117,11 @@ bool horizon_gx2_profile_legacy_terrain_attributes(void)
+    return legacy_terrain_attributes;
+ }
+ 
++bool horizon_gx2_profile_legacy_terrain_uniforms(void)
++{
++   return legacy_terrain_uniforms;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    if (!gpu_cycle_probe || !recording || current.phase != PLAYING_PHASE) return false;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 1577d2d1abbe0bd5fec0eee60e4f8384158bd187..362b751e4d80d7e08691f726a46d5a083aab852e 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -21,6 +21,7 @@ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
++bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 869e082fcf8e2b3b95058b62673c1904d22ff480..6492492ea6fc9bff04cc0ca3c49382f5c07342cf 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -219,6 +219,8 @@ extern "C" {
+     fn horizon_gx2_terrain_set_sprite_grid(terrain: *mut c_void, columns: u32, cell_size: u32) -> i32;
+     fn horizon_gx2_terrain_set_legacy_attributes(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_attributes() -> bool;
++    fn horizon_gx2_terrain_set_legacy_uniforms(terrain: *mut c_void, enabled: bool);
++    fn horizon_gx2_profile_legacy_terrain_uniforms() -> bool;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+     fn horizon_gx2_terrain_section_create(
+@@ -1452,6 +1454,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     native.as_ptr(),
+                     horizon_gx2_profile_legacy_terrain_attributes(),
+                 );
++                horizon_gx2_terrain_set_legacy_uniforms(
++                    native.as_ptr(),
++                    horizon_gx2_profile_legacy_terrain_uniforms(),
++                );
+             }
+             self.terrain = Some(terrain);
+             self.terrain_atlas = Some(layout);

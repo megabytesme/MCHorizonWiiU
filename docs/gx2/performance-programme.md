@@ -247,6 +247,14 @@ draw. Across both outputs, 128 draws took 117–169 µs of submission time
 with the redundant binds and 88–109 µs with a single bind per draw.
 The isolated result leaves the physical timing impact open.
 
+RC 29 also batches the reflected terrain clip rows and origin into one
+20-word GX2 register write per draw. Alternate shader layouts keep separate
+writes where needed. Marker `5` in `gx2-profile.enable` restores the five
+writes in the same executable. The paired native fixture checked all 20
+words, draw and index counts, solid and translucent output, and eight
+matched TV and GamePad images. Its Cemu wall-time ranges overlapped.
+Physical submission cost remains to measure.
+
 ## Temporary direct rendering on Wii U
 
 RC 29 keeps the saved resolution and the other preset values. An ordinary
