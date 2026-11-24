@@ -52,6 +52,41 @@ Run `prepare --keep-fixture-distances` with separately prepared fixture files
 to retain the 6/5 reference settings. Use the same options-file hashes, seed,
 camera and resources in each matched run.
 
+## RC 23 saved-world acceptance
+
+Client `0.8.0-rc.23` at port commit
+`aa6e9ecddd47cf4173707e1de4b07915fd945038` passed one stock Full
+Performance session in forced-interpreter Cemu. The RPX SHA-256 is
+`c1acd1f090c9873578bbbc5a479206a96b095ada8c0a7edca57bc8fa62e8af7a`.
+The WUHB SHA-256 is
+`8002f1811d2b82860c296a86a3bd7331e39ffaedf2d6b4675e30e50d850d69c6`.
+The WUHB contains the exact standalone RPX and the package passed the
+Aroma code-heap check with 13,025,344 bytes of estimated headroom.
+
+The runs used the same prepared inputs, initial save, controller mappings,
+graphics options and 130-second stationary window. RC 23 rendered its
+world at 1440×809 on TV and 641×360 on GamePad using 11,378,688 bytes of
+additional GX2 world surfaces. The HUD drew at output resolution. Movement,
+AX PCM, the durable save and return to Night passed. The post-session GX2
+bulk heap recovered to 234,880,920 free bytes. The process allocator peaked
+at 335,620,266 requested bytes and settled to 44,509,148 after teardown.
+
+| Forced-interpreter capture | RC 21 | RC 23 |
+| --- | ---: | ---: |
+| Partial gameplay submissions | 54 | 51 |
+| Pacing samples | 53 | 49 |
+| Median host pacing | 2,943.249 ms | 3,076.834 ms |
+| p95 host pacing | 3,197.168 ms | 3,814.640 ms |
+| p99 and maximum host pacing | 3,402.762 ms | 4,897.866 ms |
+| Median section draws across both outputs | 8 | 4 |
+
+Both captures were still streaming. Rendering stages and effective world
+resolution differ, so the timings describe the two candidate workloads.
+On RC 21, the median of 51 logged gameplay windows was 2,867.9 ms per
+built frame outside native submission, 25.9 ms in submission outside the
+measured waits and 10.2 ms inside those waits. This points to CPU-side
+redraw work in the interpreter. Hardware timing remains open.
+
 ## Milestones
 
 | Work | Current status |
