@@ -44,7 +44,7 @@ static void reset_slot(CycleSlot *slot)
 static uint64_t read_slot(CycleSlot *slot)
 {
    DCInvalidateRange(slot, sizeof(*slot));
-   return slot->value;
+   return *(volatile uint64_t *)&slot->value;
 }
 
 static bool valid(uint64_t cycle)
@@ -153,14 +153,15 @@ static bool workload(GX2ColorBuffer *color, unsigned count, bool full, unsigned 
 
    reset_slot(&top);
    reset_slot(&bottom);
+   const uint64_t reset_top = read_slot(&top), reset_bottom = read_slot(&bottom);
    const OSTime submitted_before = GX2GetLastSubmittedTimeStamp();
    const OSTime started = OSGetSystemTime();
    GX2SampleTopGPUCycle(&top.value);
    draw(count);
    GX2SampleBottomGPUCycle(&bottom.value);
    const OSTime built = OSGetSystemTime();
-   // An immediate write before GX2Flush identifies an emulator stub when the
-   // queued batch did not submit implicitly during command construction.
+   // Distinguish a destination that the API initializes from a valid sample
+   // that appeared before the explicit flush. Observe both raw values.
    const bool auto_submitted = GX2GetLastSubmittedTimeStamp() != submitted_before;
    const uint64_t early_top = read_slot(&top);
    const uint64_t early_bottom = read_slot(&bottom);
@@ -190,6 +191,9 @@ static bool workload(GX2ColorBuffer *color, unsigned count, bool full, unsigned 
    OSReport("GX2 span %u ticks=%016llx early=%u,%u auto=%u\n", trial,
             (unsigned long long)(written ? b - a : 0), (unsigned)(early_top != poison),
             (unsigned)(early_bottom != poison), (unsigned)auto_submitted);
+   OSReport("GX2 timing preflush %u reset=%016llx,%016llx value=%016llx,%016llx\n", trial,
+            (unsigned long long)reset_top, (unsigned long long)reset_bottom,
+            (unsigned long long)early_top, (unsigned long long)early_bottom);
    return true;
 }
 

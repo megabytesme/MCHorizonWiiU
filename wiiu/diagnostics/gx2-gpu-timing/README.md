@@ -71,6 +71,7 @@ cost. The normal game does not need these probe-only drains.
 | `GX2 timing <trial>` | CPU wall microseconds to build the commands, flush the batch, and poll and wait for retirement. `pending=1` means the target was still in flight immediately before the wait. |
 | `GX2 cycles` | Raw 64-bit hexadecimal top and bottom values read after retirement and CPU cache invalidation. Zero, all-ones, unchanged poison, and reversed pairs are rejected. |
 | `GX2 span` | The 64-bit hexadecimal difference between valid top and bottom values. `early` shows whether either destination changed before the deliberate flush. `auto=1` means command construction had already advanced the submission watermark. |
+| `GX2 timing preflush` | Both raw destinations immediately after poisoning and just before `GX2Flush`. An API can initialize the destination before submission, so use the raw values to distinguish initialization from a valid early sample. |
 | `GX2 timing calibration` | Host elapsed microseconds and the GPU counter increase between drained bottom samples. The increase is hexadecimal. Use the two intervals to estimate and cross-check the clock rate. |
 | `GX2 timing present` | CPU wall time in WHB begin, clear/copy and finish, plus combined swap and flip counts. |
 
