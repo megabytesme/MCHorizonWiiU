@@ -114,6 +114,25 @@ Both WUHBs contain the exact standalone RPX. The Aroma code-heap check
 reports 12,986,560 bytes of estimated headroom. Native packages and
 detailed receipts are stored privately. Hardware acceptance is pending.
 
+## RC 25 packages and loading cancellation
+
+Client `0.8.0-rc.25` and patch `0.5.0-rc.25` were built at port commit
+`6e8ea5bc31e2c92889608960ad863d96d24d5398` and assembled tree
+`45e78150bc53cfc1295250f091c67b721d49892d`. Two separate build directories
+produced identical packages. One reused compiled dependencies from the RC 24
+build. The RPX SHA-256 is
+`ba1ac64c187291ca0285097cf3b4c0f83fe0880cb0f92f3d6f687e324ce5360c`.
+The WUHB SHA-256 is
+`f201c722a7fc160328951306b82f30122ff86f065d07c3b72b454ad0079a314a`.
+Both WUHBs embed the exact standalone RPX. The Aroma check reports
+12,973,504 bytes of estimated headroom.
+
+The exact RPX returned to Night in 5.235 seconds when Minus was pressed
+during early resource loading. A second forced-interpreter run pressed Minus
+during PNG decoding and returned in 10.210 seconds. Both runs released the
+loading resources, recovered 234,880,920 free GX2 bulk-heap bytes and left
+the report list empty. Cancellation during timed gameplay remains pending.
+
 Keep stock Full Performance, experimental Wii U tuning and distance-12
 regression as different configurations. Record which options affect GX2.
 Avoid using interpreter cadence to select a physical resolution floor or
