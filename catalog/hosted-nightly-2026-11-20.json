@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "a31f007df55777cba7e07cd6581742978c04e4a1",
+  "output_tree": "53dae28084460c2448e22714f6962d8bfb1fa3d8",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -484,6 +484,12 @@
       "sha256": "e75dbce7369fb21523a415839ed3dd850a24a9883ad289b914068d07719793a8",
       "input_tree": "3340b7e5e4e8848f78a1abe9df971e6bfa263ebd",
       "output_tree": "a31f007df55777cba7e07cd6581742978c04e4a1"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0080-restore-gx2-draw-state-after-offscreen-clear.patch",
+      "sha256": "dc326460bc767ee085371b827043e7f360372347ab153476491b40062dcb5247",
+      "input_tree": "a31f007df55777cba7e07cd6581742978c04e4a1",
+      "output_tree": "53dae28084460c2448e22714f6962d8bfb1fa3d8"
     }
   ],
   "candidate": {

@@ -273,18 +273,32 @@ select 50%, 75% or 100% with the other scene settings held fixed. Remove the
 marker before starting ordinary gameplay. Authenticated `cafe_graphics`
 reports the scaling mode and whether automatic resolution is active.
 
-The prepared `storage-v5` probe remains the first physical diagnostic. Its
-eight arms compare direct and scaled controls, depth-off, no color clear,
-context retention, a GPU-only copy, and state reset after clearing. The
-exact RPX `1599550c…` matched all 16 Cemu stills. Only a hardware run can
-determine whether any of these changes recovers the scaled pattern.
+The `storage-v5` hardware run recovered the scaled pattern when it restored
+the WHB context after clearing the offscreen targets. The original control
+stayed green in the same run. The RC 29 renderer includes this state
+restore. The [physical record](physical-rc26.md#physical-post-clear-state-test)
+covers the eight arms and the independent reference. The default fallback
+remains active while the patched hosted depth and HUD paths await hardware
+qualification.
+
+The readback-free [GX2 Scale Check](../../wiiu/diagnostics/world_scale/README.md)
+uses the patched native code with depth and the HUD enabled. RPX
+`c8ad5161…` passed 40 RGB checks across TV and GamePad stills at 100%,
+75%, 50%, 95%, and 75% again in Cemu. The separate emulator readback RPX
+`2f4201a8…` passed all ten checks, including the 50% bilinear boundary.
+Physical inspection of both displays and the system Menu handoff is pending.
+
+The assembled RC 29 source passed a Cafe cross-check with the available
+development compiler. Hosted packaging is blocked at the toolchain check
+because the available Rust compiler and sysroot differ from the release pin.
+The standalone GX2 Scale Check was built with the pinned native C and shader
+toolchain.
 
 The [independent offscreen reference](../../wiiu/diagnostics/gx2-offscreen-reference/README.md)
-is ready for the same hardware session if `storage-v5` still shows green.
-It samples a known WHB GamePad target into the TV and exercises a manually
-allocated color-only target with a dedicated context. RPX `38514e9c…`
-passed 40 RGB comparisons across 10 Cemu stills. It performs no CPU
-framebuffer readback.
+sampled the WHB GamePad target and drew into a manually allocated color-only
+target on physical hardware. Its five TV arms matched the expected pattern
+and clear on HDMI. RPX `38514e9c…` also passed 40 RGB comparisons across
+10 Cemu stills. The probe uses scan-out stills and serial markers.
 
 ## Gameplay wall time and GPU timing
 

@@ -42,3 +42,22 @@ offscreen output pairs. The printed dimensions use a deliberately inset test
 viewport. Use a hosted gameplay test to check the live graphics menu, screenshot
 readback, touch mapping and game session transitions. The diagnostic timings
 cannot establish console performance.
+
+For physical testing, configure a separate build with
+`-DHORIZON_SCALE_VISUAL=ON`. It uses the same depth-tested world draw and
+native HUD geometry and presents each scale for seven seconds. This mode
+compiles out CPU framebuffer readback and requests the system Menu through
+ProcUI. Package only this mode for the console.
+
+```sh
+wuhbtool "$diagnostic_build/gx2_world_scale_diagnostic.rpx" \
+  "$diagnostic_build/HorizonGX2ScaleCheck.wuhb" \
+  --name='Horizon GX2 Scale Check' --short-name='GX2 Scale Check' --author=MCHorizonWiiU
+```
+
+Take an HDMI still and note the GamePad pattern after each
+`GX2 scale visual still` serial marker. Expect a red upper half, blue
+lower half, black inset margins and a small green HUD bar at the left
+edge on both displays. Verify both visits to 75% and the native-size
+HUD bar. `SUBMITTED` confirms that all five arms ran. The images establish
+visibility. Use a hosted gameplay run separately for input and stability.

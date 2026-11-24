@@ -136,6 +136,39 @@ depth writes and tests, switching the depth comparison to `ALWAYS`, and
 binding attachments before clearing did not recover the pattern. All
 fourteen TV and GamePad pixel checks passed in Cemu for this same probe.
 
+### Physical post-clear state test
+
+The `storage-v5` probe (WUHB `2b3517d3…`, RPX `1599550c…`) completed all
+eight arms at TV 1440×809 and GamePad 641×360 and returned to the Menu.
+The HDMI projector and owner stills agreed on the visible sequence.
+The same RPX matched all 16 TV and GamePad stills from its Cemu sweep.
+
+| Arm | TV result |
+| --- | --- |
+| Direct | Red above blue |
+| RC 26 | Green offscreen clear |
+| Depth off | Green offscreen clear |
+| Draw without the color clear | Blue above red |
+| Keep the drawing context for the composite | Gray display clear |
+| Sample a separate GPU-only copy | Green offscreen clear |
+| Restore the WHB context after clearing, rebind and draw | Red above blue |
+| RC 26 repeat | Green offscreen clear |
+
+Both recovery arms used depth-off pattern draws. The standalone evidence
+isolates the failure to draw state after the combined offscreen clear.
+Restoring the context at that point recovers draws into the existing
+surface. RC 29 applies that restore before rebinding the scaled color and
+depth attachments. Hosted gameplay with depth, the native HUD, and
+repeated 50%, 75% and 100% transitions still need hardware acceptance.
+
+The independent reference (WUHB `753b5f5b…`, RPX `38514e9c…`) also completed
+and returned through ProcUI. HDMI showed the same color pattern for the
+direct draw, sampling the WHB GamePad buffer, the manual draw without a
+clear and the manual draw after a separate clear. Its clear-only arm stayed
+green at all four sample points. The manual source used RGBA8, tile mode 4,
+320×192 resolution and a dedicated context. GamePad pixel results were
+not independently recorded in this round.
+
 ## Physical GPU timing probe
 
 The visual timing WUHB (`dbf6ed9b…`, RPX `72a58a12…`) produced both

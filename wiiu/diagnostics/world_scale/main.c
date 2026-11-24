@@ -7,6 +7,10 @@
 #include <gx2/event.h>
 #include <stdio.h>
 #include <whb/proc.h>
+#ifdef HORIZON_SCALE_VISUAL
+#include <proc_ui/procui.h>
+#include <sysapp/launch.h>
+#endif
 
 static int texture(GX2Texture *texture)
 {
@@ -16,7 +20,10 @@ static int texture(GX2Texture *texture)
    texture->surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
    if (!GX2RCreateSurface(&texture->surface, flags)) return 0;
    uint8_t *pixels = GX2RLockSurfaceEx(&texture->surface, 0, flags);
-   if (!pixels) return 0;
+   if (!pixels) {
+      GX2RDestroySurfaceEx(&texture->surface, 0);
+      return 0;
+   }
    memcpy(pixels, (uint8_t[]){255, 0, 0, 255}, 4);
    memcpy(pixels + texture->surface.pitch * 4, (uint8_t[]){0, 0, 255, 255}, 4);
    GX2RUnlockSurfaceEx(&texture->surface, 0, flags);
@@ -74,6 +81,7 @@ static bool draw_hud(HorizonGx2Hud *hud, uint32_t target, uint32_t w, uint32_t h
    return horizon_gx2_hud_draw_to_output(hud, &frame, 0, 0, w, h, target) == HORIZON_HUD_OK;
 }
 
+#ifndef HORIZON_SCALE_VISUAL
 static bool readback(uint32_t w, uint32_t h, uint32_t target, uint32_t percent)
 {
    size_t bytes = (size_t)w * h * 4;
@@ -102,11 +110,55 @@ static bool readback(uint32_t w, uint32_t h, uint32_t target, uint32_t percent)
    free(pixels);
    return success;
 }
+#else
+static bool proc_running = true;
 
-int main(void)
+static bool displays_ready(void)
 {
-   WHBProcInit();
-   if (!WHBGfxInit()) return 1;
+   proc_running = WHBProcIsRunning();
+   // WHB can release the framebuffer images before ProcUI leaves foreground.
+   return proc_running && ProcUIInForeground() &&
+      WHBGfxGetTVColourBuffer()->surface.image && WHBGfxGetTVDepthBuffer()->surface.image &&
+      WHBGfxGetDRCColourBuffer()->surface.image && WHBGfxGetDRCDepthBuffer()->surface.image;
+}
+#endif
+
+static bool present_scale_frame(HorizonGx2WorldScale *state, HorizonGx2Hud *hud,
+                                const GX2Texture *pattern, GX2Surface *const outputs[2],
+                                uint32_t percent, const uint32_t scaled[4],
+                                uint32_t viewports[2][4])
+{
+   bool passed = true;
+   WHBGfxBeginRender();
+   for (unsigned target = 0; target < 2; ++target) {
+      if (target == 0) WHBGfxBeginRenderTV();
+      else WHBGfxBeginRenderDRC();
+      WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      if (percent < 100) {
+         horizon_gx2_world_scale_begin(state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
+         draw_pattern(state, pattern, 0, 0, scaled[target * 2], scaled[target * 2 + 1]);
+         horizon_gx2_world_scale_end(state, target, viewports[target], true);
+      } else {
+         draw_pattern(state, pattern, viewports[target][0], viewports[target][1],
+                      viewports[target][2], viewports[target][3]);
+      }
+      const uint32_t output_w = outputs[target]->width, output_h = outputs[target]->height;
+      passed &= draw_hud(hud, target, output_w, output_h);
+#ifndef HORIZON_SCALE_VISUAL
+      passed &= readback(output_w, output_h, target, percent);
+#endif
+      if (target == 0) WHBGfxFinishRenderTV();
+      else WHBGfxFinishRenderDRC();
+   }
+   WHBGfxFinishRender();
+   return passed;
+}
+
+static int run_scale_diagnostic(void)
+{
+#ifdef HORIZON_SCALE_VISUAL
+   if (!displays_ready()) return 1;
+#endif
    GX2Texture pattern = {0};
    if (!texture(&pattern)) return 2;
    HorizonGx2Hud *hud;
@@ -114,7 +166,10 @@ int main(void)
    size_t gfd_length;
    const uint8_t *gfd = horizon_loading_host_hud_gfd(&gfd_length);
    if (!gfd || !gfd_length || horizon_gx2_hud_create(&hud, gfd, 1, 1, white, sizeof(white), 6) !=
-       HORIZON_HUD_OK) return 3;
+       HORIZON_HUD_OK) {
+      GX2RDestroySurfaceEx(&pattern.surface, 0);
+      return 3;
+   }
 
    uint32_t over_budget_bytes = 0;
    const uint32_t oversized[] = {1920, 1080, 1920, 1080};
@@ -127,6 +182,12 @@ int main(void)
    const uint32_t scales[] = {100, 75, 50, 95, 75};
    bool passed = budget_respected;
    for (unsigned i = 0; i < sizeof(scales) / sizeof(scales[0]); ++i) {
+#ifdef HORIZON_SCALE_VISUAL
+      if (!displays_ready()) {
+         passed = false;
+         break;
+      }
+#endif
       const uint32_t percent = scales[i];
       uint32_t scaled[4];
       uint32_t viewports[2][4];
@@ -152,34 +213,51 @@ int main(void)
       }
       OSReport("GX2 scale diagnostic: dimensions scale=%u TV=%ux%u DRC=%ux%u bytes=%u\n",
                percent, scaled[0], scaled[1], scaled[2], scaled[3], percent == 100 ? 0 : bytes);
-      WHBGfxBeginRender();
-      for (unsigned target = 0; target < 2; ++target) {
-         if (target == 0) WHBGfxBeginRenderTV();
-         else WHBGfxBeginRenderDRC();
-         WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-         if (percent < 100) {
-            horizon_gx2_world_scale_begin(state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
-            draw_pattern(state, &pattern, 0, 0, scaled[target * 2], scaled[target * 2 + 1]);
-            horizon_gx2_world_scale_end(state, target, viewports[target], true);
-         } else {
-            draw_pattern(state, &pattern, 9, 11, viewports[target][2], viewports[target][3]);
+      passed &= present_scale_frame(state, hud, &pattern, outputs, percent, scaled, viewports);
+#ifdef HORIZON_SCALE_VISUAL
+      if (passed) {
+         OSReport("GX2 scale visual still trial=%u scale=%u\n", i, percent);
+         const OSTime deadline = OSGetSystemTime() + OSSecondsToTicks(7);
+         while (passed && OSGetSystemTime() < deadline) {
+            OSSleepTicks(OSMillisecondsToTicks(16));
+            passed = displays_ready() &&
+               present_scale_frame(state, hud, &pattern, outputs, percent, scaled, viewports);
          }
-         const uint32_t output_w = outputs[target]->width, output_h = outputs[target]->height;
-         passed &= draw_hud(hud, target, output_w, output_h);
-         passed &= readback(output_w, output_h, target, percent);
-         if (target == 0) WHBGfxFinishRenderTV();
-         else WHBGfxFinishRenderDRC();
       }
-      WHBGfxFinishRender();
+#endif
       horizon_gx2_world_scale_destroy(state);
+#ifdef HORIZON_SCALE_VISUAL
+      if (!passed) break;
+#endif
    }
    horizon_gx2_hud_destroy(hud);
    GX2RDestroySurfaceEx(&pattern.surface, 0);
+#ifdef HORIZON_SCALE_VISUAL
+   OSReport("GX2 scale visual diagnostic done result=%s\n", passed ? "SUBMITTED" : "INTERRUPTED");
+#else
    OSReport("GX2 scale diagnostic done result=%s\n", passed ? "PASS" : "FAIL");
+#endif
+   return passed ? 0 : 3;
+}
+
+int main(void)
+{
+   WHBProcInit();
+   const bool graphics = WHBGfxInit();
+   const int result = graphics ? run_scale_diagnostic() : 1;
+#ifdef HORIZON_SCALE_VISUAL
+   if (proc_running && WHBProcIsRunning()) {
+      SYSLaunchMenu();
+      while (WHBProcIsRunning()) OSSleepTicks(OSMillisecondsToTicks(20));
+   }
+#else
    const OSTime deadline = OSGetTime() + OSSecondsToTicks(3);
    while (OSGetTime() < deadline && WHBProcIsRunning())
       OSSleepTicks(OSMillisecondsToTicks(20));
-   WHBGfxShutdown();
+#endif
+   if (graphics) WHBGfxShutdown();
+#ifndef HORIZON_SCALE_VISUAL
    WHBProcShutdown();
-   return passed ? 0 : 3;
+#endif
+   return result;
 }

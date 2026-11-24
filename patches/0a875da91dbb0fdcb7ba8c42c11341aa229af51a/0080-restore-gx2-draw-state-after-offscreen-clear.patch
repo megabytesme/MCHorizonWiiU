@@ -1,0 +1,13 @@
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+index a7f1bd40d08a0807940269f625f5eee74c49425c..17699c51829c7158a79b1700dcccd3d82997e670 100644
+--- a/wiiu/loading_host/world_scale.c
++++ b/wiiu/loading_host/world_scale.c
+@@ -194,6 +194,8 @@ void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
+    WorldTarget *output = &scale->outputs[target];
+    GX2ClearBuffersEx(&output->color, &output->depth, clear[0], clear[1], clear[2],
+                      clear[3], 1.0f, 0, GX2_CLEAR_FLAGS_DEPTH);
++   // Recover draw state changed by the clear before rebinding offscreen attachments.
++   GX2SetContextState(target == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
+    GX2SetColorBuffer(&output->color, GX2_RENDER_TARGET_0);
+    GX2SetDepthBuffer(&output->depth);
+    const uint32_t width = output->color.surface.width, height = output->color.surface.height;
