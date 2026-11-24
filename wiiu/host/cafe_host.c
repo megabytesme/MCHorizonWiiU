@@ -170,7 +170,13 @@ bool shell_create_view(const uint8_t *atlas, uint32_t width, uint32_t height, ui
                                 atlas, (size_t)width * height * 4, capacity) == HORIZON_HUD_OK;
 }
 
-static bool draw(const HorizonHudVertex *vertices, uint32_t count, uint32_t color,
+static void clear_night(uint32_t color)
+{
+   WHBGfxClearColor((color & 255) / 255.0f, ((color >> 8) & 255) / 255.0f,
+                    ((color >> 16) & 255) / 255.0f, 1.0f);
+}
+
+static bool draw(const HorizonHudVertex *vertices, uint32_t count,
                  const GX2ColorBuffer *target, uint32_t output)
 {
    const uint32_t w = target->surface.width;
@@ -179,8 +185,6 @@ static bool draw(const HorizonHudVertex *vertices, uint32_t count, uint32_t colo
    const uint32_t scale = (w / 16 < h / 9) ? w / 16 : h / 9;
    const uint32_t width = 16 * scale;
    const uint32_t height = 9 * scale;
-   WHBGfxClearColor((color & 255) / 255.0f, ((color >> 8) & 255) / 255.0f,
-                    ((color >> 16) & 255) / 255.0f, 1.0f);
    if (!count) return true;
    const HorizonHudRun run = {.end = count, .blend = HORIZON_HUD_ALPHA};
    const HorizonHudFrame frame = {
@@ -201,35 +205,53 @@ bool shell_present(const HorizonHudVertex *tv_vertices, uint32_t tv_count, uint3
 
 #ifdef HORIZON_WIIU_HOSTED
    uint64_t stamp = horizon_gx2_profile_stamp();
+   uint64_t stage_stamp;
 #endif
    WHBGfxBeginRender();
 #ifdef HORIZON_WIIU_HOSTED
    horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
    stamp = horizon_gx2_profile_stamp();
+   stage_stamp = stamp;
 #endif
    WHBGfxBeginRenderTV();
-   const bool tv_ok = draw(tv_vertices, tv_count, tv_color, tv, 0);
+   clear_night(tv_color);
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_CLEAR_TV, stage_stamp);
+#endif
+   const bool tv_ok = draw(tv_vertices, tv_count, tv, 0);
 #ifdef HORIZON_WIIU_HOSTED
    horizon_swkbd_draw(0);
+   stage_stamp = horizon_gx2_profile_stamp();
 #endif
    WHBGfxFinishRenderTV();
 #ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stage_stamp);
    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
    stamp = horizon_gx2_profile_stamp();
+   stage_stamp = stamp;
 #endif
    WHBGfxBeginRenderDRC();
-   const bool drc_ok = draw(drc_vertices, drc_count, drc_color, drc, 1);
+   clear_night(drc_color);
+#ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_CLEAR_DRC, stage_stamp);
+#endif
+   const bool drc_ok = draw(drc_vertices, drc_count, drc, 1);
 #ifdef HORIZON_WIIU_HOSTED
    horizon_swkbd_draw(1);
+   stage_stamp = horizon_gx2_profile_stamp();
 #endif
    WHBGfxFinishRenderDRC();
 #ifdef HORIZON_WIIU_HOSTED
+   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stage_stamp);
    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
    stamp = horizon_gx2_profile_stamp();
 #endif
    WHBGfxFinishRender();
 #ifdef HORIZON_WIIU_HOSTED
    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+   const uint32_t dimensions[] = {tv->surface.width, tv->surface.height,
+                                   drc->surface.width, drc->surface.height};
+   horizon_gx2_profile_outputs((tv_ok ? 1u : 0u) | (drc_ok ? 2u : 0u), dimensions);
    if (tv_ok && drc_ok) horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
    horizon_gx2_profile_count(GX2_PROFILE_HUD_VERTICES, tv_count + drc_count);
    horizon_gx2_profile_finish();

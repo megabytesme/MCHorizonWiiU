@@ -1,0 +1,323 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index 5c810e5..f53eec5 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -24,6 +24,14 @@ pub enum Stage {
+     Screenshot,
+     SavePoll,
+     Sleep,
++    ClearTv,
++    ClearDrc,
++    ScanCopyTv,
++    ScanCopyDrc,
++    SolidTerrainTv,
++    SolidTerrainDrc,
++    HudSubmitTv,
++    HudSubmitDrc,
+ }
+ 
+ #[repr(u32)]
+@@ -46,6 +54,7 @@ pub enum Phase {
+ }
+ 
+ #[repr(u32)]
++#[derive(Clone, Copy)]
+ pub enum Counter {
+     Presented,
+     Partial,
+@@ -56,6 +65,16 @@ pub enum Counter {
+     RustLive,
+     RustPeak,
+     RustBlocks,
++    GameFramesBuilt,
++    TvSubmissions,
++    DrcSubmissions,
++    SwapDelta,
++    FlipDelta,
++    FlipInterval,
++    TvSectionsTested,
++    DrcSectionsTested,
++    TvSectionsDrawn,
++    DrcSectionsDrawn,
+ }
+ 
+ unsafe extern "C" {
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 9a9c5d8..ea5248c 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -729,6 +729,11 @@ impl CafeGameSession<'_> {
+             WindowEvent::RedrawRequested,
+             Some(backend),
+         );
++        #[cfg(target_os = "cafe")]
++        if self.game.cafe_frame_built {
++            use horizon_client_platform::cafe_profile::{Counter, count};
++            count(Counter::GameFramesBuilt, 1);
++        }
+         let redraw = redraw.elapsed();
+         let work = backend.take_frame_work();
+         let end = Instant::now();
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 71e6061..3adfc91 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,6 +1,7 @@
+ #include "gx2_profile.h"
+ #include <coreinit/debug.h>
+ #include <coreinit/time.h>
++#include <gx2/event.h>
+ #include <stdatomic.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -11,6 +12,19 @@
+ #define STAGES 19
+ #define COUNTERS 9
+ #define WORKERS 4
++#define EXTRA_STAGES 8
++#define EXTRA_COUNTERS 14
++#define SCREENSHOT_STAGE 16
++#define PLAYING_PHASE 5
++
++enum {
++   TV_SUBMISSIONS = 1,
++   DRC_SUBMISSIONS,
++   SWAP_DELTA,
++   FLIP_DELTA,
++   FLIP_INTERVAL_TICKS,
++   TV_WIDTH = 10,
++};
+ #define ROOT "/vol/external01/wiiu/apps/HorizonWiiU/"
+ #define CAPTURE ROOT "gx2-profile.hzp"
+ 
+@@ -18,8 +32,11 @@ typedef struct {
+    uint32_t sequence, phase, start_hi, start_lo, loop_ticks, pacing_ticks;
+    uint32_t stages[STAGES], counters[COUNTERS];
+    uint32_t workers[WORKERS][2];
++   uint32_t extra_stages[EXTRA_STAGES], extra_counters[EXTRA_COUNTERS];
+ } ProfileFrame;
+ 
++_Static_assert(sizeof(ProfileFrame) == 256, "HZP2 record size");
++
+ typedef struct {
+    uint32_t magic, version, ticks_per_second, frame_size, capacity, count, total;
+ } ProfileHeader;
+@@ -31,6 +48,11 @@ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing;
++static struct {
++   OSTime flip_time;
++   uint32_t swaps, flips, phase, sequence, mask;
++   bool known;
++} previous_output;
+ static uint32_t phase_frames[8];
+ static void flush_to(const char *path, const char *temporary);
+ 
+@@ -80,10 +102,11 @@ uint64_t horizon_gx2_profile_stamp(void)
+ /* A render span is host-thread-only. Worker spans use the separate atomics. */
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin)
+ {
+-   if (!begin || !recording || stage >= STAGES) return;
++   if (!begin || !recording || stage >= STAGES + EXTRA_STAGES) return;
++   uint32_t *value = stage < STAGES ? &current.stages[stage] : &current.extra_stages[stage - STAGES];
+    uint32_t cost = ticks(begin, (uint64_t)OSGetSystemTime());
+-   uint32_t sum = current.stages[stage] + cost;
+-   current.stages[stage] = sum < cost ? UINT32_MAX : sum;
++   uint32_t sum = *value + cost;
++   *value = sum < cost ? UINT32_MAX : sum;
+ }
+ 
+ void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin)
+@@ -96,9 +119,41 @@ void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin)
+ 
+ void horizon_gx2_profile_count(uint32_t counter, uint32_t value)
+ {
+-   if (!recording || counter >= COUNTERS) return;
+-   uint32_t sum = current.counters[counter] + value;
+-   current.counters[counter] = sum < value ? UINT32_MAX : sum;
++   if (!recording || counter >= COUNTERS + EXTRA_COUNTERS) return;
++   uint32_t *record = counter < COUNTERS ? &current.counters[counter] :
++      &current.extra_counters[counter - COUNTERS];
++   uint32_t sum = *record + value;
++   *record = sum < value ? UINT32_MAX : sum;
++}
++
++void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4])
++{
++   if (!recording) return;
++   uint32_t *extra = current.extra_counters;
++   extra[TV_SUBMISSIONS] = (mask & 1) != 0;
++   extra[DRC_SUBMISSIONS] = (mask & 2) != 0;
++   memcpy(extra + TV_WIDTH, dimensions, sizeof(uint32_t) * 4);
++
++   uint32_t swaps = 0, flips = 0;
++   OSTime flip_time = 0, vsync = 0;
++   GX2GetSwapStatus(&swaps, &flips, &flip_time, &vsync);
++   if (previous_output.known) {
++      extra[SWAP_DELTA] = swaps - previous_output.swaps;
++      extra[FLIP_DELTA] = flips - previous_output.flips;
++      if (extra[FLIP_DELTA] == 1 && mask == 3 && previous_output.mask == 3 &&
++          previous_output.phase == current.phase && previous_output.sequence + 1 == total &&
++          !current.stages[SCREENSHOT_STAGE] && previous_output.flip_time > 0 &&
++          flip_time > previous_output.flip_time) {
++         extra[FLIP_INTERVAL_TICKS] = ticks(previous_output.flip_time, flip_time);
++      }
++   }
++   previous_output.flip_time = flip_time;
++   previous_output.swaps = swaps;
++   previous_output.flips = flips;
++   previous_output.phase = current.phase;
++   previous_output.sequence = total;
++   previous_output.mask = current.stages[SCREENSHOT_STAGE] ? 0 : mask;
++   previous_output.known = true;
+ }
+ 
+ void horizon_gx2_profile_finish(void)
+@@ -122,18 +177,19 @@ void horizon_gx2_profile_finish(void)
+    // One bounded checkpoint per phase survives a forced emulator stop.
+    // Skip the next start-to-start interval so the export I/O is excluded.
+    if (current.phase < 8 && current.counters[GX2_PROFILE_PRESENTED] &&
+-       ++phase_frames[current.phase] == 300) {
++       ++phase_frames[current.phase] == (current.phase == PLAYING_PHASE ? 30u : 300u)) {
+       char path[sizeof(ROOT) + 36], temporary[sizeof(path)];
+       snprintf(path, sizeof(path), ROOT "gx2-profile-phase-%u.hzp", current.phase);
+       snprintf(temporary, sizeof(temporary), ROOT "gx2-profile-phase-%u.tmp", current.phase);
+       flush_to(path, temporary);
+       previous_phase = 0;
++      previous_output.phase = 0;
+    }
+ }
+ 
+ static ProfileHeader header(void)
+ {
+-   return (ProfileHeader){0x485A5031, 1, OSTimerClockSpeed, sizeof(ProfileFrame),
++   return (ProfileHeader){0x485A5032, 2, OSTimerClockSpeed, sizeof(ProfileFrame),
+                           CAPACITY, total < CAPACITY ? total : CAPACITY, total};
+ }
+ 
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 72b7d22..0ffcbb3 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -9,6 +9,10 @@ enum {
+    GX2_PROFILE_SUBMIT_DRC = 12,
+    GX2_PROFILE_WAIT_FLIP = 13,
+    GX2_PROFILE_FINISH = 14,
++   GX2_PROFILE_CLEAR_TV = 19,
++   GX2_PROFILE_CLEAR_DRC,
++   GX2_PROFILE_SCAN_COPY_TV,
++   GX2_PROFILE_SCAN_COPY_DRC,
+    GX2_PROFILE_PRESENTED = 0,
+    GX2_PROFILE_HUD_VERTICES = 5
+ };
+@@ -21,6 +25,7 @@ uint64_t horizon_gx2_profile_stamp(void);
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);
+ void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin);
+ void horizon_gx2_profile_count(uint32_t counter, uint32_t value);
++void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4]);
+ void horizon_gx2_profile_finish(void);
+ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
+ void horizon_gx2_profile_flush(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 2877e08..0d5f1c3 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1867,6 +1867,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     .profile
+                     .terrain_wait_ns
+                     .saturating_add(elapsed_ns(wait_start));
++                let _terrain_span =
++                    Span::new([Stage::SolidTerrainTv, Stage::SolidTerrainDrc][index]);
+                 let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                 let projection = draw
+                     .terrain_min_y
+@@ -1940,6 +1942,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .saturating_add(section.vertex_count / 4 * 6);
+                     }
+                 }
++                cafe_profile::count(
++                    [Counter::TvSectionsTested, Counter::DrcSectionsTested][index],
++                    draw.presenter.sections.len(),
++                );
++                cafe_profile::count(
++                    [Counter::TvSectionsDrawn, Counter::DrcSectionsDrawn][index],
++                    sections_drawn,
++                );
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+             }
+@@ -1949,16 +1959,20 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             };
+             cafe_profile::count(Counter::HudVertices, draw.frame.hud.vertices.len());
+             let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-            if let Err(error) = unsafe {
+-                hud.draw_batch_to(
+-                    draw.frame.hud,
+-                    draw.presenter.layout,
+-                    rect,
+-                    target,
+-                    draw.frame.ticks,
+-                    true,
+-                )
+-            } {
++            let hud_result = {
++                let _hud_span = Span::new([Stage::HudSubmitTv, Stage::HudSubmitDrc][index]);
++                unsafe {
++                    hud.draw_batch_to(
++                        draw.frame.hud,
++                        draw.presenter.layout,
++                        rect,
++                        target,
++                        draw.frame.ticks,
++                        true,
++                    )
++                }
++            };
++            if let Err(error) = hud_result {
+                 let code = match error {
+                     horizon_wiiu_platform::hud::Error::Invalid => -1,
+                     horizon_wiiu_platform::hud::Error::Unsupported => -2,
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index c530e97..528652f 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -162,22 +162,30 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
++   uint64_t stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderTV();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   horizon_gx2_profile_end(GX2_PROFILE_CLEAR_TV, stage_stamp);
+    if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+        horizon_swkbd_draw(0) != 0) result = -2;
+    else last_outputs |= 1u;
++   stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
++   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stage_stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
++   stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderDRC();
+    WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   horizon_gx2_profile_end(GX2_PROFILE_CLEAR_DRC, stage_stamp);
+    if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+        horizon_swkbd_draw(1) != 0) result = -3;
+    else last_outputs |= 2u;
++   stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderDRC();
++   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stage_stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
+    stamp = horizon_gx2_profile_stamp();
+@@ -186,6 +194,7 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    WHBGfxFinishRender();
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (result == 0) {
+       ++completed_presents;
+       horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);

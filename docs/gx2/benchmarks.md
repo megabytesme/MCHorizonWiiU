@@ -85,9 +85,11 @@ Night to publish `gx2-profile.hzp` next to the marker. The writer uses a
 temporary file and renames it after the write completes. Use a fresh output
 directory to avoid comparing data from two runs.
 
-The pacing candidate also writes one `gx2-profile-phase-N.hzp` checkpoint
-at each phase's 300th accepted submission. The first interval following a
-checkpoint is excluded from pacing because it includes SD I/O. For a
+The recorder also writes one `gx2-profile-phase-N.hzp` checkpoint per
+phase at its 300th accepted submission. HZP2 checkpoints active gameplay
+at its 30th accepted submission so slow interpreter runs can recover it
+while the game is open. The first interval following a checkpoint is
+excluded from pacing because it includes SD I/O. For a
 same-binary comparison, set the marker's first byte to ASCII `1` to
 restore the previous 16 ms Poll sleep. Use the empty marker for normal WHB
 pacing. Both leave the established save and WaitUntil delays in place.
@@ -99,10 +101,30 @@ python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summar
 - The `HZP1` header is seven big-endian u32 values. It contains magic,
   version 1, clock rate, row size, capacity, retained count and total frame
   count. Complete rows follow in oldest-to-newest sequence order.
+- `HZP2` keeps that header layout with new magic and version 2. Its
+  256-byte rows retain the entire HZP1 prefix and append per-display
+  clear, scan-copy, solid terrain and HUD CPU spans, game frames built,
+  individual output results, combined swap and flip deltas, observed
+  flip interval and section and surface counters. The decoder reads both
+  formats. Surface sizes refer to WHB output surfaces.
+- One combined flip interval is available when successive same-phase
+  submissions advance one flip and the driver returns progressing flip
+  timestamps. Zero, missing or multi-flip intervals are omitted from the
+  percentile calculation. The swap and flip totals still show progress
+  when timestamp samples are unavailable. The counters describe the
+  combined scan-buffer path. They cannot independently time photon output
+  on the TV or GamePad.
+- WUT exposes submitted and retired command timestamps, swap/flip
+  timestamps, event callbacks, semaphores and blocking completion. The
+  installed public API has no qualified per-pass execution timing source.
+  HZP clear, scan-copy, terrain, HUD and WHB spans measure CPU wall time
+  spent making those calls. Explicit waits remain separately visible.
+  Capture and submission add no per-pass GPU drain.
 - A row contains sequence, phase, start offset high and low words, loop
   duration and start-to-start duration, then stage, workload and cumulative
   worker arrays in the order enumerated in `tools/gx2_profile.py`.
-  Each row is 168 bytes. The static ring reserves 672 KiB. Disabled
+  Each HZP1 row is 168 bytes. The static ring reserves 672 KiB in HZP1
+  and 1 MiB in HZP2. Disabled
   profiling skips clock reads, capture writes and per-frame allocation.
   Spans use `OSGetSystemTime` with the installed WUT timebase frequency
   `OSGetSystemInfo()->busClockSpeed / 4` in the file header. Nominal tick

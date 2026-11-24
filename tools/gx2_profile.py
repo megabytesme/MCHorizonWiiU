@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize a hosted Cafe HZP1 capture or export its samples as CSV."""
+"""Summarize a hosted Cafe HZP capture or export its samples as CSV."""
 
 import argparse
 import csv
@@ -21,15 +21,27 @@ COUNTERS = (
     "rust_live_bytes", "rust_peak_bytes", "rust_live_blocks",
 )
 WORKERS = ("streaming_worker", "mesh_worker", "integrated_tick", "save_work")
+V2_STAGES = (
+    "clear_tv", "clear_drc", "scan_copy_tv", "scan_copy_drc", "solid_terrain_tv",
+    "solid_terrain_drc", "hud_submit_tv", "hud_submit_drc",
+)
+V2_COUNTERS = (
+    "game_frames_built", "tv_submissions", "gamepad_submissions", "gx2_swap_delta",
+    "gx2_flip_delta", "gx2_flip_interval_ticks", "tv_sections_tested", "drc_sections_tested",
+    "tv_sections_drawn", "drc_sections_drawn", "tv_width", "tv_height", "drc_width", "drc_height",
+)
 HEADER = struct.Struct(">7I")
 ROW = struct.Struct(f">{6 + len(STAGES) + len(COUNTERS) + 2 * len(WORKERS)}I")
+V2_ROW = struct.Struct(f">{ROW.size // 4 + len(V2_STAGES) + len(V2_COUNTERS)}I")
+FORMATS = {(0x485A5031, 1): ROW, (0x485A5032, 2): V2_ROW}
 
 
 def read(data):
     if len(data) < HEADER.size:
         raise ValueError("truncated capture header")
     magic, version, hz, size, capacity, count, total = HEADER.unpack_from(data)
-    if (magic, version, size) != (0x485A5031, 1, ROW.size) or not hz:
+    layout = FORMATS.get((magic, version))
+    if layout is None or size != layout.size or not hz:
         raise ValueError("unsupported HZP capture")
     if count > min(capacity, total) or len(data) != HEADER.size + count * size:
         raise ValueError("capture length or frame count is invalid")
@@ -37,7 +49,7 @@ def read(data):
     scale = 1000 / hz
     frames = []
     previous = None
-    for expected, row in enumerate(ROW.iter_unpack(data[HEADER.size:]), total - count):
+    for expected, row in enumerate(layout.iter_unpack(data[HEADER.size:]), total - count):
         seq, phase, hi, lo, loop, pacing = row[:6]
         start = (hi << 32) | lo
         if seq != expected or not 0 < phase < len(PHASES):
@@ -52,16 +64,25 @@ def read(data):
         end_counters = end_stages + len(COUNTERS)
         frame.update((f"{key}_ms", cost * scale) for key, cost in zip(STAGES, row[6:end_stages]))
         frame.update(zip(COUNTERS, row[end_stages:end_counters]))
-        workers = row[end_counters:]
+        workers = row[end_counters:ROW.size // 4]
         for index, name in enumerate(WORKERS):
             i = 2 * index
             frame[f"{name}_count"] = None if previous is None else (workers[i] - previous[i]) % 2**32
             frame[f"{name}_ms"] = None if previous is None else (
                 (workers[i + 1] - previous[i + 1]) % 2**32
             ) * scale
+        if version == 2:
+            end_extra_stages = ROW.size // 4 + len(V2_STAGES)
+            frame.update((f"{key}_ms", cost * scale) for key, cost in zip(
+                V2_STAGES, row[ROW.size // 4:end_extra_stages],
+            ))
+            frame.update(zip(V2_COUNTERS, row[end_extra_stages:]))
+            interval = frame.pop("gx2_flip_interval_ticks")
+            frame["gx2_flip_interval_ms"] = interval * scale if interval else None
         frames.append(frame)
         previous = workers
-    return {"clock_hz": hz, "ring_capacity": capacity, "total": total, "retained": count}, frames
+    return {"version": version, "clock_hz": hz, "ring_capacity": capacity,
+            "total": total, "retained": count}, frames
 
 
 def stats(values):
@@ -89,10 +110,12 @@ def summarize(frames, start, end, stall_ms=50):
             row["pacing_ms"] for previous, row in zip(presented, presented[1:])
             if previous["sequence"] + 1 == row["sequence"] and row["pacing_ms"] is not None
         ]
-        summaries[phase] = {
+        partial = sum(row["partial"] for row in presented)
+        summary = summaries[phase] = {
             "host_loops": len(selected),
             "presented_loops": len(presented),
-            "partial_presentations": sum(row["partial"] for row in presented),
+            "partial_presentations": partial,
+            "complete_presentations": len(presented) - partial,
             "host_loop_ms": stats(row["loop_ms"] for row in selected),
             "frame_pacing_ms": stats(pacing),
             "pacing_stalls": sum(value >= stall_ms for value in pacing),
@@ -110,6 +133,18 @@ def summarize(frames, start, end, stall_ms=50):
                 } for key in WORKERS
             },
         }
+        if "gx2_flip_interval_ms" in selected[0]:
+            summary["submission_totals"] = {
+                key: sum(row[key] for row in selected) for key in V2_COUNTERS[:5]
+            }
+            summary["submission_totals"]["paired_submissions"] = sum(row["presented"] for row in selected)
+            summary["paired_flip_interval_ms"] = stats(
+                row["gx2_flip_interval_ms"] for row in selected if row["gx2_flip_interval_ms"] is not None
+            )
+            summary["stages_ms_on_presented_loops"].update({
+                name: stats(row[f"{name}_ms"] for row in presented) for name in V2_STAGES
+            })
+            summary["workload"].update({key: stats(row[key] for row in presented) for key in V2_COUNTERS[6:]})
     return summaries
 
 

@@ -19,6 +19,34 @@ def capture(*rows, total=None):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_hzp2_counts_builds_and_display_results_independently(self):
+        def v2(sequence, *, paired, partial, gamepad, flips, interval):
+            legacy = list(profile.ROW.unpack(row(sequence, 5, sequence * 16, presented=paired)))
+            legacy[6 + len(profile.STAGES) + 1] = partial
+            timings = [1, 2, 3, 4, 5, 6, 7, 8]
+            counters = [1, 1, gamepad, 1, flips, interval, 10, 9, 4, 3, 1280, 720, 854, 480]
+            return profile.V2_ROW.pack(*legacy, *timings, *counters)
+
+        header = profile.HEADER.pack(0x485A5032, 2, 1000, 256, 4096, 3, 3)
+        metadata, frames = profile.read(header + b"".join((
+            v2(0, paired=1, partial=1, gamepad=1, flips=1, interval=0),
+            v2(1, paired=0, partial=0, gamepad=0, flips=2, interval=0),
+            v2(2, paired=1, partial=0, gamepad=1, flips=1, interval=17),
+        )))
+        self.assertEqual(metadata["version"], 2)
+        self.assertEqual(frames[0]["solid_terrain_drc_ms"], 6)
+        self.assertEqual(frames[0]["tv_sections_tested"], 10)
+        self.assertEqual(frames[0]["drc_width"], 854)
+        playing = profile.summarize(frames, 0, 1)["playing"]
+        self.assertEqual(playing["complete_presentations"], 1)
+        self.assertEqual(playing["partial_presentations"], 1)
+        self.assertEqual(playing["submission_totals"], {
+            "game_frames_built": 3, "tv_submissions": 3, "gamepad_submissions": 2,
+            "gx2_swap_delta": 3, "gx2_flip_delta": 4, "paired_submissions": 2,
+        })
+        self.assertEqual(playing["paired_flip_interval_ms"]["median"], 17)
+        self.assertEqual(playing["paired_flip_interval_ms"]["samples"], 1)
+
     def test_pacing_skips_screen_changes_and_unpresented_or_readback_iterations(self):
         _, frames = profile.read(capture(
             row(0, 3, 0), row(1, 5, 17), row(2, 5, 34, pacing=17),
@@ -48,6 +76,8 @@ class ProfileTests(unittest.TestCase):
             profile.read(capture(row(0, 1, 0))[:-1])
         with self.assertRaisesRegex(ValueError, "indices"):
             profile.read(capture(row(1, 1, 0)))
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            profile.read(profile.HEADER.pack(0x485A5031, 2, 1000, 256, 4096, 0, 0))
 
 
 if __name__ == "__main__":
