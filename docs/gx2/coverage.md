@@ -77,6 +77,11 @@ It also draws the stock lightmap, fog, title panorama and native HUD.
 The terrain atlas samples a single level. Its mapped upload and retained
 section bounds already have separate host fixtures.
 
+The [Phase 1 parity matrix](../../wiiu/RENDERER_PARITY.md) is a pinned
+source input from an earlier checkpoint. Its lightmap, vertex expansion,
+and visibility rows describe that checkpoint. Use the hosted rows above
+for stock lighting, indexed geometry, and per-output culling evidence.
+
 | Order | Pass and current source boundary | Independent acceptance scene |
 |---:|---|---|
 | 1 | Block selection uses the shared `Frame.outline`. Add a native line or thin-quad pass with stock depth testing and separately bound state. | Aim at a full block, a fence and a partially hidden block. Compare outline location, occlusion and widths at the two display aspects. |
@@ -131,7 +136,11 @@ CafeGLSL builds `hud.vert/.frag`, `panorama.vert/.frag` and
 `terrain.vert/.frag` to GFD files. CMake embeds or generates linkable GFD
 objects, and the WUT loader reflects their register and attribute bindings.
 
-## Evidence and classifications
+## Historical baseline matrix
+
+The following rows describe the first hosted tree identified at the top of
+this page. The RC 17 through RC 20 sections and the stock pass plan track
+newer implementations and remaining work.
 
 - **Native implementation, partially verified** means a draw exists and has
   some observed evidence. The table identifies the observed scope.

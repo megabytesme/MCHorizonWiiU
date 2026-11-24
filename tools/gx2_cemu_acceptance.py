@@ -21,6 +21,11 @@ import gx2_cemu
 BAD_MARKERS = ("Crashlog for Cemu", "panicked at", "frame.startup_error",
                "rust allocation failed", "alloc_failed", "upload failed",
                "AX shutdown skipped", "save compression failed")
+POSITION_TAG = b"\x09\x00\x03Pos\x06\x00\x00\x00\x03"
+GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
+DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
+HEALTH_TAG = b"\x05\x00\x06Health"
+GROUND_TAG = b"\x01\x00\x08OnGround"
 
 
 def timestamp():
@@ -105,19 +110,52 @@ class Lab:
             self.process.wait(10)
 
 
-def position(world):
+def player_record(world):
     player_files = list((world / "players/data").glob("*.dat"))
     if len(player_files) != 1:
         raise ValueError("the offline fixture must contain exactly one player record")
-    tag = b"\x09\x00\x03Pos\x06\x00\x00\x00\x03"
-    with gzip.open(player_files[0], "rb") as stream:
-        data = stream.read(1024 * 1024)
+    record = player_files[0]
+    limit = 1024 * 1024
+    with gzip.open(record, "rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("the offline fixture player record exceeds 1 MiB")
+    return record, data
+
+
+def tag_offset(data, tag):
     if data.count(tag) != 1:
-        raise ValueError("fixture player record has no unique position tag")
-    return struct.unpack_from(">ddd", data, data.index(tag) + len(tag))
+        raise ValueError(f"fixture player record has no unique {tag!r} tag")
+    return data.index(tag) + len(tag)
 
 
-def configure_fixture_controls(root):
+def position(world):
+    _, data = player_record(world)
+    return struct.unpack_from(">ddd", data, tag_offset(data, POSITION_TAG))
+
+
+def prepare_fall(world):
+    record, original = player_record(world)
+    if DEATH_TAG in original or struct.unpack_from(">i", original, tag_offset(original, GAME_MODE_TAG))[0] != 0:
+        raise ValueError("the fall fixture must be an unused offline Survival player")
+    if struct.unpack_from(">f", original, tag_offset(original, HEALTH_TAG))[0] <= 0:
+        raise ValueError("the fall fixture must start alive")
+    data = bytearray(original)
+    y_offset = tag_offset(data, POSITION_TAG) + 8
+    elevated_y = struct.unpack_from(">d", data, y_offset)[0] + 96
+    if not -64 < elevated_y < 319:
+        raise ValueError("the elevated fall fixture is outside the build height")
+    struct.pack_into(">d", data, y_offset, elevated_y)
+    if GROUND_TAG in data:
+        data[tag_offset(data, GROUND_TAG)] = 0
+    updated = record.with_suffix(".acceptance-new")
+    with updated.open("xb") as out:
+        out.write(gzip.compress(data, mtime=0))
+    updated.replace(record)
+    return elevated_y
+
+
+def configure_fixture_controls(root, respawn=False):
     """Map keys to the virtual GamePad only in the disposable controller profile."""
     path = root / "portable/controllerProfiles/controller0.xml"
     tree = ET.parse(path)
@@ -127,7 +165,9 @@ def configure_fixture_controls(root):
     mappings = root_element.find("controller/mappings")
     if mappings is None or root_element.findtext("controller/api") != "Keyboard":
         raise ValueError("the fixture must have a keyboard-backed GamePad")
-    remap = {"2": 88, "9": 80, "17": 87}  # X is B, P is Plus and W is left stick up.
+    remap = {"1": 90, "9": 80, "17": 87}  # Z is A, P is Plus and W is left stick up.
+    if respawn:
+        remap.update({"11": 81, "4": 73})  # Q is D-pad Up and I is Y.
     keys = {str(key) for key in remap.values()}
     for entry in list(mappings):
         if entry.findtext("mapping") in remap or entry.findtext("button") in keys:
@@ -139,6 +179,40 @@ def configure_fixture_controls(root):
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
+def respawn_fixture(lab, start, hold):
+    lab.phase = "wait-for-death"
+    lab.wait(r'"phase":"menu"', 240, start)
+    lab.show("after-fall")
+    time.sleep(2)  # The death screen intentionally ignores immediate input.
+    lab.phase = "respawn"
+    offset = lab.mark()
+    lab.send("key", key=81, hold=hold)
+    lab.show("death-focused")
+    lab.send("key", key=90, hold=hold)
+    try:
+        lab.wait(r'"phase":"gameplay"', 85, offset)
+    except TimeoutError:
+        lab.show("confirm-retry-state")
+        lab.send("key", key=90, hold=hold)
+        lab.wait(r'"phase":"gameplay"', 85, offset)
+    lab.show("respawned")
+
+    lab.phase = "inventory"
+    offset = lab.mark()
+    lab.send("key", key=73, hold=hold)
+    try:
+        lab.wait(r'"phase":"menu"', 45, offset)
+    except TimeoutError:
+        lab.record("inventory-missing")
+        return False
+    lab.show("inventory")
+    offset = lab.mark()
+    lab.send("key", key=80, hold=hold)
+    lab.wait(r'"phase":"gameplay"', 45, offset)
+    lab.record("inventory-closed")
+    return True
+
+
 def exercise(args):
     if not 1 <= args.sessions <= 5:
         raise ValueError("choose one to five same-process sessions")
@@ -147,20 +221,32 @@ def exercise(args):
         raise ValueError("phase timeouts must be positive and finite")
     if not 0 <= args.gameplay_dwell <= 300:
         raise ValueError("gameplay dwell must be between zero and 300 seconds")
+    if args.spawn_xz is not None and (not args.respawn_fixture
+                                     or not all(map(math.isfinite, args.spawn_xz))):
+        raise ValueError("set a finite expected respawn location only for the fall fixture")
     root = args.lab.resolve()
     portable, app = gx2_cemu.paths(root)
+    if not (root / "input-hashes.json").is_file() or (root / "process.txt").exists():
+        raise ValueError("prepare a fresh lab before changing the disposable fixture")
     world = app / "saves" / args.world
-    if world.parent != app / "saves" or not (world / "level.dat").is_file():
+    if (world.parent != app / "saves" or world.resolve() != world
+            or not (world / "level.dat").is_file()):
         raise ValueError("prepare a default-instance lab with the disposable world first")
     before = position(world)
-    configure_fixture_controls(root)
+    elevated_y = prepare_fall(world) if args.respawn_fixture else None
+    configure_fixture_controls(root, args.respawn_fixture)
+    player_path, _ = player_record(world)
     with (root / "acceptance-inputs.json").open("x", encoding="utf-8") as receipt:
         json.dump({"controller_sha256": gx2_cemu.sha256(portable / "controllerProfiles/controller0.xml"),
                    "fixture_level_sha256": gx2_cemu.sha256(world / "level.dat"),
+                   "fixture_player_sha256": gx2_cemu.sha256(player_path), "fall_y": elevated_y,
+                   "spawn_xz": args.spawn_xz,
                    "sessions": args.sessions, "save_at": args.save_at,
                    "gameplay_dwell": args.gameplay_dwell}, receipt, indent=2)
     lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id))
     audio_failures = []
+    inventory_ok = None
+    movement_ok = None
     try:
         lab.wait(r"frame.home.play", 60)
         trace = lab.log.read_text(encoding="utf-8", errors="replace")
@@ -182,6 +268,8 @@ def exercise(args):
             lab.record("gameplay-ready", elapsed_ms=int(game[1]))
             lab.wait(r"Horizon prepared I/O: stage=block_models_sprites", 5, start)
             lab.show(f"session-{index}-gameplay")
+            if index == 1 and elevated_y is not None:
+                inventory_ok = respawn_fixture(lab, start, game_hold)
             if index == 1 and args.gameplay_dwell:
                 lab.phase = "stationary-gameplay"
                 lab.record("dwell-start", duration_seconds=args.gameplay_dwell)
@@ -195,19 +283,22 @@ def exercise(args):
 
             if index == 1:
                 lab.send("key", key=87, hold=max(2, game_hold))
-                time.sleep(4)
+                time.sleep(16 if elevated_y is not None else 4)
             lab.phase = f"session-{index}-audio"
             try:
                 lab.wait(r"Horizon AX first nonzero PCM delivered", 5, start)
             except TimeoutError:
-                lab.send("key", key=88, hold=game_hold)
+                # The disposable Night profile uses the default Nintendo face buttons.
+                lab.send("key", key=90, hold=game_hold)
                 try:
                     lab.wait(r"Horizon AX first nonzero PCM delivered", args.audio_timeout, start)
                 except TimeoutError:
                     lab.record("ax-pcm-missing")
                 time.sleep(8)
             lab.phase = f"session-{index}-save"
+            pause = lab.mark()
             lab.send("key", key=80, hold=game_hold)
+            lab.wait(r'"phase":"menu"', 25, pause)
             lab.show(f"session-{index}-pause")
             save = lab.mark()
             deadline = time.monotonic() + args.save_timeout
@@ -225,8 +316,18 @@ def exercise(args):
             bulk = lab.wait(r"hosted.after_game_drop bulk_free=(\d+).*bulk_largest=(\d+)",
                             5, save)
             persisted = position(world)
-            if index == 1 and persisted[::2] == before[::2]:
-                raise ValueError("movement left no horizontal change in the durable player record")
+            if index == 1:
+                if elevated_y is None:
+                    movement_ok = persisted[::2] != before[::2]
+                if elevated_y is not None:
+                    _, data = player_record(world)
+                    health = struct.unpack_from(">f", data, tag_offset(data, HEALTH_TAG))[0]
+                    if DEATH_TAG not in data or health <= 0 or persisted[1] >= elevated_y:
+                        raise ValueError("durable player data did not confirm death and respawn")
+                    lab.record("respawn-confirmed", activation="emulated GamePad D-pad and A",
+                               health=health, position=persisted)
+                    if args.spawn_xz is not None:
+                        movement_ok = persisted[::2] != tuple(args.spawn_xz)
             if index > 1 and persisted != before:
                 raise ValueError("the untouched reopened session rewrote the durable position")
             if int(bulk[1]) != 234880920 or int(bulk[2]) != 234880896:
@@ -244,9 +345,14 @@ def exercise(args):
         lab.wait(r"coreinit.exit\(0\)", 25, closing)
         lab.record("local-rounds-completed", sessions=args.sessions,
                    audio_failures=audio_failures, mcp="requires a pre-authorized fixture",
-                   death="separate scenario")
+                   death="verified" if elevated_y is not None else "separate scenario",
+                   inventory=inventory_ok, movement_verified=movement_ok)
         if audio_failures:
             raise RuntimeError(f"AX PCM did not pass in sessions {audio_failures}")
+        if inventory_ok is False:
+            raise RuntimeError("the virtual GamePad did not open the inventory")
+        if movement_ok is False:
+            raise RuntimeError("movement left no horizontal change in the durable player record")
     except Exception as error:
         lab.record("failure", detail=str(error))
         if lab.process.poll() is None:
@@ -273,9 +379,13 @@ def main():
     parser.add_argument("--audio-timeout", type=float, default=180)
     parser.add_argument("--gameplay-dwell", type=float, default=0,
                         help="seconds to keep the first gameplay view stationary")
+    parser.add_argument("--respawn-fixture", action="store_true",
+                        help="raise the disposable Survival player for a controller-only fall and Respawn")
+    parser.add_argument("--spawn-xz", type=float, nargs=2,
+                        help="known fall fixture respawn X and Z used to verify subsequent movement")
     try:
         exercise(parser.parse_args())
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError, ValueError, struct.error, subprocess.SubprocessError) as error:
         print(f"Cemu acceptance stopped: {error}", file=sys.stderr)
         return 1
     return 0
