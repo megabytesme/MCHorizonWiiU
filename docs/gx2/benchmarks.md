@@ -113,6 +113,14 @@ close. Collect the session checkpoint before subsequent test sessions.
 python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summary
 ```
 
+For a GPU timing run, add `--gpu-serial $serialLog` with the serial log
+from the same HZP3 capture. The decoder matches the retained frame
+sequence, checks the duration against each pair of raw endpoints, and
+reports the order, overlap or gap with the sampled resolution and terrain
+workload. Keep captures from consecutive game sessions separate when the
+sequence resets. A correlation labels the measured pipeline span as
+unqualified for automatic resolution.
+
 - The `HZP1` header is seven big-endian u32 values. It contains magic,
   version 1, clock rate, row size, capacity, retained count and total frame
   count. Complete rows follow in oldest-to-newest sequence order.

@@ -19,6 +19,37 @@ def capture(*rows, total=None):
     ) + b"".join(rows)
 
 
+def gpu_serial(sequence, endpoints, *, reported_tv=None, endpoints_only=False):
+    tv_top, tv_bottom, pad_top, pad_bottom = endpoints
+    span = (
+        f"Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq={sequence}"
+        f" tv_ticks={tv_bottom - tv_top if reported_tv is None else reported_tv}"
+        f" drc_ticks={pad_bottom - pad_top} valid=3 unpaired=0\n"
+    )
+    line = (
+        f"Horizon GX2 GPU endpoints seq={sequence} tv={tv_top:016x}/{tv_bottom:016x}"
+        f" drc={pad_top:016x}/{pad_bottom:016x}\n"
+    )
+    return line if endpoints_only else span + line
+
+
+def gpu_capture():
+    rows = []
+    for sequence, scale in enumerate([100, 50, 50, 50, 50, 50]):
+        legacy = profile.ROW.unpack(row(sequence, 5, sequence * 16, capture=int(sequence == 2)))
+        extra = [0] * len(profile.V2_STAGES) + [
+            1, 1, 1, 1, 1, 0, 10, 9, 4, 3, 1920, 1080, 854, 480,
+        ]
+        worlds = [0] * len(profile.V3_STAGES) + [
+            scale, scale, 1920 * scale // 100, 1080 * scale // 100,
+            854 * scale // 100, 480 * scale // 100, 0, 0,
+        ]
+        rows.append(profile.V3_ROW.pack(*legacy, *extra, *worlds))
+    count = len(rows)
+    header = profile.HEADER.pack(0x485A5033, 3, 1000, profile.V3_ROW.size, 4096, count, count)
+    return profile.read(header + b"".join(rows))[1]
+
+
 class ProfileTests(unittest.TestCase):
     def test_hzp2_counts_builds_and_display_results_independently(self):
         def v2(sequence, *, paired, partial, gamepad, flips, interval):
@@ -85,6 +116,42 @@ class ProfileTests(unittest.TestCase):
         self.assertIsNone(frames[0]["streaming_worker_ms"])
         self.assertEqual(frames[1]["streaming_worker_count"], 5)
         self.assertEqual(frames[1]["streaming_worker_ms"], 5)
+
+    def test_gpu_serial_join_preserves_overlap_and_scale_without_summing_spans(self):
+        frames = gpu_capture()
+        serial = "".join([
+            gpu_serial(0, [27, 108_027, 81_027, 162_027]),
+            gpu_serial(1, [600_000, 627_000, 654_000, 681_000]),
+            gpu_serial(2, [800_000, 827_000, 854_000, 881_000]),
+            gpu_serial(3, [900_000, 927_000, 954_000, 981_000], endpoints_only=True),
+            gpu_serial(4, [1_000_000, 1_027_000, 1_054_000, 1_081_000], reported_tv=1),
+            gpu_serial(5, [1_100_000, 1_127_000, 1_154_000, 1_181_000]),
+            gpu_serial(100, [1_200_000, 1_227_000, 1_254_000, 1_281_000]),
+        ])
+        result = profile.correlate_gpu_spans(frames, serial.splitlines(), 0, 0.075)
+        self.assertFalse(result["qualified_for_drs"])
+        self.assertEqual(result["matched_samples"], 2)
+        self.assertEqual(result["excluded_samples"], dict(
+            missing_serial_line=1, not_retained=1, outside_interval=1,
+            ineligible_frame=1, invalid_endpoints=1,
+        ))
+        tv_and_pad, sequential = result["samples"]
+        self.assertEqual(tv_and_pad["world_dimensions_tv_gamepad"], [[1920, 1080], [854, 480]])
+        self.assertEqual(tv_and_pad["endpoint_order"], "overlap")
+        self.assertAlmostEqual(tv_and_pad["endpoint_overlap_ms"], 1.0)
+        self.assertAlmostEqual(tv_and_pad["tv_span_ms"], 4.0)
+        self.assertAlmostEqual(tv_and_pad["gamepad_span_ms"], 3.0)
+        self.assertEqual(sequential["endpoint_order"], "tv_then_gamepad")
+        self.assertAlmostEqual(sequential["endpoint_gap_ms"], 1.0)
+        self.assertEqual(result["by_effective_scale"]["50"]["tv_span_ms"]["median"], 1.0)
+
+    def test_gpu_serial_join_refuses_conflicting_sequences_and_deduplicates_copies(self):
+        frames = gpu_capture()
+        first = gpu_serial(0, [27, 108_027, 81_027, 162_027])
+        self.assertEqual(profile.correlate_gpu_spans(frames, [first, first], 0, 1)["matched_samples"], 1)
+        different = gpu_serial(0, [100, 120, 130, 150])
+        with self.assertRaisesRegex(ValueError, "conflicting GPU serial records"):
+            profile.correlate_gpu_spans(frames, [first, different], 0, 1)
 
     def test_rejects_a_truncated_capture_or_inconsistent_sequence(self):
         with self.assertRaisesRegex(ValueError, "length"):
