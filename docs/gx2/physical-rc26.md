@@ -113,9 +113,43 @@ The separately installed world-scale transition probe reached the expected
 75% target dimensions. Its first direct TV control then failed in
 `horizon_loading_host_read_rgba` while destroying the readback surface.
 The console reported a fatal error before any transition trial. That result
-qualifies neither the render-target synchronization variants nor the native
-screenshot path. The companion timing probe shared the readback approach,
-so it was left unrun. Subsequent physical probes should compare projector
-stills on TV, GamePad observation and serial counters without CPU surface
-readback. No controlled physical resolution sweep, GPU timing, functional
-DRS or valid standard benchmark report was established in this session.
+leaves native screenshot readback unqualified. The readback-free replacements
+both completed and returned to the Wii U Menu through ProcUI.
+
+## Physical scale transition probe
+
+The visual scale WUHB (`09a8478c…`, RPX `87d11a43…`) ran all six arms on
+the physical console. HDMI showed the expected red and blue on the direct
+control. Every 75% arm showed the green offscreen clear across the tested
+area. This persisted with both pattern orders, synchronization before
+restoring the scan target, split color and texture synchronization, and an
+added `GX2DrawDone`. The same patterns pass in Cemu. The observed green
+confirms the composite can display the source clear. The tests leave open
+whether the pattern draws fail at the offscreen target or the sampler sees
+the clear before those draws become visible.
+
+## Physical GPU timing probe
+
+The visual timing WUHB (`dbf6ed9b…`, RPX `72a58a12…`) produced both
+expected HDMI stills. The owner also saw the dark-green final clear. Serial
+confirmed all nine timing trials, one combined swap and flip in the separate
+presentation check, and ProcUI exit followed by the Wii U Menu.
+
+| TV work per trial | Trials | Median counter span | Median CPU fence wait |
+| --- | ---: | ---: | ---: |
+| Empty control | 1 | 12 ticks | 1 µs |
+| 32 draws, 480×270 viewport | 4 | 4,056 ticks | 158 µs |
+| 32 draws, 1920×1080 viewport | 4 | 60,411 ticks | 2,245.5 µs |
+
+The two calibration pairs measured 26.985 and 26.997 ticks/µs. At that
+rate the workload spans are about 0.150 ms and 2.237 ms, a 14.89× change
+for 16× the viewport area. CPU build and flush times stayed at 2 and 3 µs.
+All eight nonempty trials were still pending at the start of the fence wait.
+The counter tracks this isolated raster workload and its spans are close to
+the separate fence measurements. In every trial both sample locations had
+changed before the deliberate flush while the submission watermark was
+unchanged. That observation leaves write ordering and safe asynchronous
+sampling unresolved. The probe does not establish game-frame GPU cost.
+
+The controlled gameplay scale sweep, functional DRS and a valid standard
+benchmark report remain open.
