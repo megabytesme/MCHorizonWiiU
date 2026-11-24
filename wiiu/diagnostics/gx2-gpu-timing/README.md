@@ -33,41 +33,49 @@ spent polling the watermark and waiting on the selected submission.
 
 ## Run and interpret
 
-In forced-interpreter Cemu, launch the RPX in a disposable portable directory
-and retain the guest log. Expect both raster readbacks to pass and cycle
-samples to report `unavailable`. This verifies the workload, data plumbing
-and rejection of the emulator's sentinel.
-
-The initial pinned Cafe build reproduced byte-for-byte in two build
-directories. In forced-interpreter Cemu, the 480×270 raster check read red
-203 and 0 at the corner and center. At 1920×1080, both reads were 203. All
-nine bottom samples were all-ones and had already changed before an explicit
-flush, with no automatic submission. The timing source was reported as
-unavailable and the fixture exited successfully.
-
 For a console run, use a separate application directory such as
 `sd:/wiiu/apps/HorizonGX2Timing/` with `HorizonGX2Timing.wuhb`. Start serial
-capture before launching it. It runs automatically, briefly presents a teal
-frame and returns to Aroma. No Horizon settings or worlds are accessed.
-Keep the full raw log from `GX2 timing raster` through `GX2 TIMING FIXTURE`.
+capture before launching it. The fixture presents two visual checks on TV
+and GamePad and holds each for eight seconds. When `GX2 timing visual small`
+appears, take a still of the HDMI projector. The orange rectangle should
+occupy the top left quarter of the width and height against black. When
+`GX2 timing visual full` appears, take a second still showing orange across
+the full output. Observe the GamePad directly where practical. Keep the
+stills and serial log together. Leave video recording disabled.
+
+The fixture then runs automatically and requests the system menu through
+ProcUI. No Horizon settings or worlds are accessed. Keep the raw log from
+`GX2 timing visual` through `GX2 timing ProcUI exit complete` and note
+whether the menu returned. The fixture uses the normal WHB scan copy for
+display and performs no CPU framebuffer readback.
+
+In forced-interpreter Cemu, launch the RPX in a disposable portable directory
+and retain the guest log. Expect both visual-stage markers, nine timing
+trials and cycle samples reported as `unavailable`. This exercises the
+presentation and timing paths and the rejection of the emulator's sentinel.
+After the menu request, the fixture pumps ProcUI until the system acknowledges
+exit. If Cemu leaves the request pending, stop only that disposable Cemu
+instance after a bounded host wait. The probe keeps waiting for ProcUI on Aroma.
 
 The same pipeline draws 32 blended triangles at full and one-quarter
 viewport width and height, in ABBA order twice. This changes fragment
 coverage sixteenfold while keeping draw and vertex counts fixed. The
-zero-draw batch estimates marker overhead. The probe reads colors outside
-the measured batches, runs two drained clock-calibration pairs over 10 and
-40 ms CPU sleeps, and samples one independent WHB frame for presentation
+zero-draw batch estimates marker overhead. The visual checks run before the
+TV-only trials. The probe runs two drained clock-calibration pairs over 10
+and 40 ms CPU sleeps and samples one independent WHB frame for presentation
 cost. The normal game does not need these probe-only drains.
 
 | Log record | Meaning |
 | --- | --- |
+| `GX2 timing visual` | The viewport dimensions sent to both displays before the still-capture hold. Check the visible coverage on the outputs. |
 | `GX2 timing <trial>` | CPU wall microseconds to build the commands, flush the batch, and poll and wait for retirement. `pending=1` means the target was still in flight immediately before the wait. |
 | `GX2 cycles` | Raw 64-bit hexadecimal top and bottom values read after retirement and CPU cache invalidation. Zero, all-ones, unchanged poison, and reversed pairs are rejected. |
 | `GX2 span` | The 64-bit hexadecimal difference between valid top and bottom values. `early` shows whether either destination changed before the deliberate flush. `auto=1` means command construction had already advanced the submission watermark. |
 | `GX2 timing calibration` | Host elapsed microseconds and the GPU counter increase between drained bottom samples. The increase is hexadecimal. Use the two intervals to estimate and cross-check the clock rate. |
 | `GX2 timing present` | CPU wall time in WHB begin, clear/copy and finish, plus combined swap and flip counts. |
 
-`GX2 TIMING FIXTURE PASSED` means the workload and retirement path worked.
+`GX2 TIMING FIXTURE PASSED` means the presentation calls, workload and
+retirement path completed. The projector stills establish pixel visibility.
 Qualify the cycle source only if the console repeatedly shows writes after
 submission, ordered non-sentinel values, consistent calibration, and an
 increase for the high-coverage trials without a similar change in CPU build

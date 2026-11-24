@@ -8,9 +8,10 @@
 #include <gx2/shaders.h>
 #include <gx2/state.h>
 #include <gx2/surface.h>
-#include <gx2r/surface.h>
+#include <proc_ui/procui.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sysapp/launch.h>
 #include <whb/gfx.h>
 #include <whb/proc.h>
 
@@ -22,7 +23,7 @@ extern const uint8_t _binary_timing_gsh_start[];
 extern void GX2SampleTopGPUCycle(uint64_t *destination);
 extern void GX2SampleBottomGPUCycle(uint64_t *destination);
 
-enum { DRAWS = 32, TRIALS = 8, CACHE_BYTES = 64 };
+enum { DRAWS = 32, TRIALS = 8, CACHE_BYTES = 64, VISUAL_HOLD_MS = 8000 };
 static const uint64_t poison = UINT64_C(0xa55a2c076ac15a5a);
 typedef struct {
    _Alignas(CACHE_BYTES) uint64_t value;
@@ -68,6 +69,7 @@ static void viewport(const GX2ColorBuffer *color, bool full)
 {
    const uint32_t width = full ? color->surface.width : color->surface.width / 4;
    const uint32_t height = full ? color->surface.height : color->surface.height / 4;
+   GX2SetScissor(0, 0, color->surface.width, color->surface.height);
    WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
    GX2SetViewport(0.0f, 0.0f, width, height, 0.0f, 1.0f);
    GX2SetScissor(0, 0, width, height);
@@ -76,6 +78,66 @@ static void viewport(const GX2ColorBuffer *color, bool full)
 static void draw(unsigned count)
 {
    for (unsigned i = 0; i < count; ++i) GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
+}
+
+static bool targets_ready(void)
+{
+   // ProcUIInForeground may still be true during release. WHB drains and
+   // clears these foreground allocations before returning from its callback.
+   return ProcUIInForeground() && WHBGfxGetTVColourBuffer()->surface.image &&
+      WHBGfxGetDRCColourBuffer()->surface.image;
+}
+
+static bool foreground(void)
+{
+   return WHBProcIsRunning() && targets_ready();
+}
+
+static void bind_pipeline(const WHBGfxShaderGroup *shader)
+{
+   GX2SetDepthOnlyControl(false, false, GX2_COMPARE_FUNC_ALWAYS);
+   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, false, false);
+   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, false, true);
+   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
+   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA,
+                      GX2_BLEND_MODE_INV_SRC_ALPHA, GX2_BLEND_COMBINE_MODE_ADD, false,
+                      GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
+   GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
+   GX2SetFetchShader(&shader->fetchShader);
+   GX2SetVertexShader(shader->vertexShader);
+   GX2SetPixelShader(shader->pixelShader);
+   GX2SetAttribBuffer(0, sizeof(triangle), sizeof(triangle[0]), triangle);
+}
+
+static bool show_raster(const WHBGfxShaderGroup *shader, bool full)
+{
+   if (!foreground()) return false;
+   WHBGfxBeginRender();
+   WHBGfxBeginRenderTV();
+   const GX2ColorBuffer *tv = WHBGfxGetTVColourBuffer();
+   bind_pipeline(shader);
+   viewport(tv, full);
+   draw(DRAWS);
+   WHBGfxFinishRenderTV();
+
+   WHBGfxBeginRenderDRC();
+   const GX2ColorBuffer *drc = WHBGfxGetDRCColourBuffer();
+   bind_pipeline(shader);
+   viewport(drc, full);
+   draw(DRAWS);
+   WHBGfxFinishRenderDRC();
+   WHBGfxFinishRender();
+
+   const unsigned divide = full ? 1 : 4;
+   OSReport("GX2 timing visual %s tv=%ux%u drc=%ux%u hold_ms=%u\n", full ? "full" : "small",
+            tv->surface.width / divide, tv->surface.height / divide,
+            drc->surface.width / divide, drc->surface.height / divide, VISUAL_HOLD_MS);
+   const OSTime deadline = OSGetSystemTime() + OSMillisecondsToTicks(VISUAL_HOLD_MS);
+   do {
+      if (!foreground()) return false;
+      OSSleepTicks(OSMillisecondsToTicks(16));
+   } while (OSGetSystemTime() < deadline);
+   return true;
 }
 
 static bool workload(GX2ColorBuffer *color, unsigned count, bool full, unsigned trial,
@@ -131,50 +193,23 @@ static bool workload(GX2ColorBuffer *color, unsigned count, bool full, unsigned 
    return true;
 }
 
-static bool check_raster(GX2ColorBuffer *color, bool full)
-{
-   const GX2Surface *source = &color->surface;
-   GX2Surface copy = {
-      .dim = GX2_SURFACE_DIM_TEXTURE_2D, .width = source->width, .height = source->height,
-      .depth = 1, .mipLevels = 1, .format = source->format,
-      .aa = GX2_AA_MODE1X, .tileMode = GX2_TILE_MODE_LINEAR_SPECIAL,
-   };
-   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_TEXTURE |
-      GX2R_RESOURCE_USAGE_CPU_READ | GX2R_RESOURCE_USAGE_GPU_WRITE;
-   if (!GX2RCreateSurface(&copy, flags)) return false;
-   GX2CopySurface(source, 0, 0, &copy, 0, 0);
-   bool ok = false;
-   if (drain()) {
-      const uint8_t *pixels = GX2RLockSurfaceEx(&copy, 0, flags);
-      if (pixels) {
-         const size_t corner = ((size_t)(copy.height / 8) * copy.pitch + copy.width / 8) * 4;
-         const size_t center = ((size_t)(copy.height / 2) * copy.pitch + copy.width / 2) * 4;
-         ok = pixels[corner] > 140 && (full ? pixels[center] > 140 : pixels[center] == 0);
-         OSReport("GX2 timing raster full=%u corner_r=%u center_r=%u pass=%u\n",
-                  (unsigned)full, pixels[corner], pixels[center], (unsigned)ok);
-         GX2RUnlockSurfaceEx(&copy, 0, flags);
-      }
-   }
-   GX2RDestroySurfaceEx(&copy, 0);
-   return ok;
-}
-
 // Compare separately drained samples across a CPU sleep. The reported relation
 // calibrates the counter's units without assuming the GPU shader clock.
-static void calibrate(unsigned milliseconds)
+static bool calibrate(unsigned milliseconds)
 {
    reset_slot(&top);
    reset_slot(&bottom);
    const OSTime first = OSGetSystemTime();
    GX2SampleBottomGPUCycle(&top.value);
-   if (!drain()) return;
+   if (!drain()) return false;
    OSSleepTicks(OSMillisecondsToTicks(milliseconds));
    GX2SampleBottomGPUCycle(&bottom.value);
-   if (!drain()) return;
+   if (!drain()) return false;
    const OSTime second = OSGetSystemTime();
    const uint64_t a = read_slot(&top), b = read_slot(&bottom);
    OSReport("GX2 timing calibration sleep_ms=%u cpu_us=%u gpu_ticks=%016llx\n", milliseconds,
             usec(second - first), (unsigned long long)(valid(a) && valid(b) && b > a ? b - a : 0));
+   return true;
 }
 
 static void measure_presentation(void)
@@ -200,10 +235,56 @@ static void measure_presentation(void)
             swaps - swaps_before, flips - flips_before);
 }
 
+static bool measure_raster(const WHBGfxShaderGroup *shader)
+{
+   if (!foreground()) return false;
+   WHBGfxBeginRender();
+   WHBGfxBeginRenderTV();
+   bind_pipeline(shader);
+   GX2ColorBuffer *color = WHBGfxGetTVColourBuffer();
+   bool valid_counter = false, invalid_counter = false;
+   if (!workload(color, 0, true, 0, &valid_counter, &invalid_counter)) return false;
+   for (unsigned i = 0; i < TRIALS; ++i) {
+      const bool full = (i % 4 == 1) || (i % 4 == 2); // ABBA, repeated once
+      if (!foreground() || !workload(color, DRAWS, full, i + 1,
+                                      &valid_counter, &invalid_counter)) return false;
+   }
+   if (!calibrate(10) || !calibrate(40) || !foreground()) return false;
+   WHBGfxFinishRenderTV();
+   WHBGfxBeginRenderDRC();
+   WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   WHBGfxFinishRenderDRC();
+   WHBGfxFinishRender();
+   measure_presentation();
+   OSReport("GX2 timing cycle samples state=%s\n", valid_counter ?
+            (invalid_counter ? "mixed" : "available") : "unavailable");
+   return true;
+}
+
+static void return_to_menu(void)
+{
+   if (WHBProcIsRunning()) {
+      OSReport("GX2 timing requesting system menu\n");
+      SYSLaunchMenu();
+      const OSTime warning = OSGetSystemTime() + OSMillisecondsToTicks(5000);
+      bool warned = false;
+      while (WHBProcIsRunning()) {
+         if (!warned && OSGetSystemTime() >= warning) {
+            OSReport("GX2 timing waiting for ProcUI to acknowledge the menu request\n");
+            warned = true;
+         }
+         OSSleepTicks(OSMillisecondsToTicks(16));
+      }
+   }
+   OSReport("GX2 timing ProcUI exit complete\n");
+}
+
 int main(void)
 {
    WHBProcInit();
    if (!WHBGfxInit()) {
+      OSReport("GX2 TIMING FIXTURE FAILED graphics initialization\n");
+      return_to_menu();
       WHBProcShutdown();
       return 1;
    }
@@ -213,48 +294,13 @@ int main(void)
                         GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) && WHBGfxInitFetchShader(&shader);
    if (!ok) OSReport("GX2 timing shader setup failed load=%u\n", (unsigned)loaded);
    if (ok) {
-      GX2ColorBuffer *color = WHBGfxGetTVColourBuffer();
-      WHBGfxBeginRenderTV();
-      GX2SetDepthOnlyControl(false, false, GX2_COMPARE_FUNC_ALWAYS);
-      GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, false, false);
-      GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, false, true);
-      GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA,
-                         GX2_BLEND_MODE_INV_SRC_ALPHA, GX2_BLEND_COMBINE_MODE_ADD, false,
-                         GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
-      GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
-      GX2SetFetchShader(&shader.fetchShader);
-      GX2SetVertexShader(shader.vertexShader);
-      GX2SetPixelShader(shader.pixelShader);
       DCFlushRange(triangle, sizeof(triangle));
-      GX2SetAttribBuffer(0, sizeof(triangle), sizeof(triangle[0]), triangle);
-
-      viewport(color, false);
-      draw(DRAWS);
-      ok = drain() && check_raster(color, false);
-      if (ok) {
-         viewport(color, true);
-         draw(DRAWS);
-         ok = drain() && check_raster(color, true);
-      }
-
-      bool valid_counter = false, invalid_counter = false;
-      ok = ok && workload(color, 0, true, 0, &valid_counter, &invalid_counter);
-      for (unsigned i = 0; i < TRIALS && ok; ++i) {
-         const bool full = (i % 4 == 1) || (i % 4 == 2); // ABBA, repeated once
-         ok = WHBProcIsRunning() && workload(color, DRAWS, full, i + 1,
-                                            &valid_counter, &invalid_counter);
-      }
-      if (ok) {
-         calibrate(10);
-         calibrate(40);
-         measure_presentation();
-         OSReport("GX2 timing cycle samples state=%s\n", valid_counter ?
-                  (invalid_counter ? "mixed" : "available") : "unavailable");
-      }
-      GX2DrawDone();
+      ok = show_raster(&shader, false) && show_raster(&shader, true) && measure_raster(&shader);
    }
+   if (targets_ready()) GX2DrawDone();
    if (loaded) WHBGfxFreeShaderGroup(&shader);
    OSReport("GX2 TIMING FIXTURE %s\n", ok ? "PASSED" : "FAILED");
+   return_to_menu();
    WHBGfxShutdown();
    WHBProcShutdown();
    return ok ? 0 : 1;
