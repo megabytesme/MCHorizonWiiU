@@ -1,0 +1,450 @@
+diff --git a/crates/horizon-client-render/src/gfx/lightning.rs b/crates/horizon-client-render/src/gfx/lightning.rs
+index 86191bbe203114f4488b800dfc305bd1be52df3f..366223d1eed19aba4b148dd46ffda9034869f39d 100644
+--- a/crates/horizon-client-render/src/gfx/lightning.rs
++++ b/crates/horizon-client-render/src/gfx/lightning.rs
+@@ -32,7 +32,7 @@ pub fn white_uv(white: &crate::hud::Rect) -> [f32; 2] {
+ pub(super) const QUADS: u32 = 4 * 14 * 4;
+ 
+ /// `LightningBoltRenderer.submit`: keep random draws, layers and quad order unchanged.
+-fn geometry(seed: i64, uv: [f32; 2]) -> Vec<Vertex> {
++pub fn geometry(seed: i64, uv: [f32; 2]) -> Vec<Vertex> {
+     let mut out = Vec::with_capacity(QUADS as usize * 4);
+     // ARGB 0.45, 0.45, 0.5 at 0.3 alpha, packed RGBA.
+     let color = (76u32 << 24) | (127 << 16) | (114 << 8) | 114;
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 1e433f6bdf39a28d07fee71009c5c6dd53e0781b..2669fb97d47823e519cf3fc1faed2e51f1659469 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -152,17 +152,28 @@ add_custom_command(
+    DEPENDS end_sky.vert end_sky.frag
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(LIGHTNING_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/lightning_gfd.o")
++add_custom_command(
++   OUTPUT "${LIGHTNING_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/lightning.vert"
++      -ps "${CMAKE_CURRENT_SOURCE_DIR}/lightning.frag" -o lightning.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common lightning.gsh lightning_gfd.o
++   DEPENDS lightning.vert lightning.frag
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" "${STOCK_SKY_GFD_OBJECT}"
+    "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}" "${END_SKY_GFD_OBJECT}"
++   "${LIGHTNING_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+-   stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c
++   stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+-   "${END_SKY_GFD_OBJECT}")
++   "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 6492492ea6fc9bff04cc0ca3c49382f5c07342cf..747dca0159636e7b0108223e353b5dedbea6a26e 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -10,6 +10,7 @@
+ mod crumbling;
+ mod end_sky;
+ mod hand;
++mod lightning;
+ mod outline;
+ mod precipitation;
+ mod sky_bodies;
+@@ -598,6 +599,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     outline: outline::Outline,
+     crumbling: crumbling::Crumbling,
+     models: hand::Models,
++    lightning: lightning::Lightning,
+     stock_sky: stock_sky::Sky,
+     precipitation: precipitation::Precipitation,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+@@ -668,6 +670,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             outline: outline::Outline::default(),
+             crumbling: crumbling::Crumbling::default(),
+             models: hand::Models::default(),
++            lightning: lightning::Lightning::default(),
+             stock_sky: stock_sky::Sky::default(),
+             precipitation: precipitation::Precipitation::default(),
+             terrain_atlas: None,
+@@ -1247,7 +1250,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+             "world primitives",
+         ),
+         (!frame.shadow_only.is_empty(), 1 << 13, "shadow pass"),
+-        (!frame.lightning.bolts.is_empty(), 1 << 17, "lightning"),
+         (
+             !frame.dynamic_lights.is_empty()
+                 || !frame.colored_lights.is_empty()
+@@ -1286,7 +1288,7 @@ fn log_unsupported_world_pass(name: &str) {
+         "world primitives" => "Horizon GX2: skipped unsupported world-primitives pass\n\0",
+         "shadow pass" => "Horizon GX2: skipped unsupported shadow pass\n\0",
+         "skinned entities" => "Horizon GX2: skipped unsupported skinned-entities pass\n\0",
+-        "lightning" => "Horizon GX2: skipped unsupported lightning pass\n\0",
++        "lightning" => "Horizon GX2: lightning exceeded its upload budget or lacked a terrain index buffer\n\0",
+         "dynamic and emissive lighting" => {
+             "Horizon GX2: skipped unsupported dynamic/emissive lighting\n\0"
+         }
+@@ -1806,6 +1808,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.outline = outline::Outline::default();
+         self.crumbling = crumbling::Crumbling::default();
+         self.models = hand::Models::default();
++        self.lightning = lightning::Lightning::default();
+         self.stock_sky = stock_sky::Sky::default();
+         self.precipitation = precipitation::Precipitation::default();
+         self.hud = None;
+@@ -1846,6 +1849,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             self.models.prepare_world(frame)
+         };
+         let world_partial = models.world_partial || !frame.glowing.is_empty();
++        let lightning_partial = !frame.title
++            && if self.terrain.is_some() {
++                self.lightning.prepare(frame.lightning.bolts, frame.camera.to_array())
++            } else {
++                !frame.lightning.bolts.is_empty()
++            };
+         let weather_partial = !frame.title
+             && if self.terrain.is_some() {
+                 self.precipitation.prepare(frame.weather, frame.weather_time)?
+@@ -1856,6 +1865,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             .chain(sky_bodies::unsupported(frame, self.hud.is_some()).then_some((1 << 0, "celestial")))
+             .chain(end_sky::unsupported(frame, self.hud.is_some()).then_some((1 << 21, "sky surfaces")))
+             .chain(world_partial.then_some((1 << 4, "entity materials")))
++            .chain(lightning_partial.then_some((1 << 17, "lightning")))
+             .chain(models.particles_partial.then_some((1 << 26, "particles budget")))
+             .chain(weather_partial.then_some((1 << 3, "weather")))
+             .chain(self.block_entity_models_partial.then_some((1 << 5, "block entities")))
+@@ -2107,6 +2117,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.presenter
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, false)?;
++                    {
++                        let _span = Span::new([Stage::WorldEntitiesTv, Stage::WorldEntitiesDrc][index]);
++                        draw.presenter.lightning.draw(terrain, world_rect, &projection.clip)?;
++                    }
+                     if !draw.frame.outline_after_terrain {
+                         draw.presenter
+                             .outline
+diff --git a/wiiu/loading_host/lightning.c b/wiiu/loading_host/lightning.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..504046ae6460d824c3db4e3bd973092326293f9f
+--- /dev/null
++++ b/wiiu/loading_host/lightning.c
+@@ -0,0 +1,128 @@
++#include "lightning.h"
++
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <gx2/event.h>
++#include <gx2/registers.h>
++#include <gx2/shaders.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_lightning_gsh_start[];
++
++enum { MAX_VERTICES = 8 * 224 * 4 };
++_Static_assert(sizeof(HorizonGx2LightningVertex) == 16, "lightning vertex ABI changed");
++_Static_assert(offsetof(HorizonGx2LightningVertex, color) == 12, "lightning color offset changed");
++
++struct HorizonGx2Lightning {
++   WHBGfxShaderGroup shader;
++   GX2RBuffer vertices;
++   uint32_t clip_offsets[4];
++   uint32_t count;
++};
++
++int horizon_gx2_lightning_create(HorizonGx2Lightning **out)
++{
++   if (!out) return -1;
++   *out = NULL;
++   HorizonGx2Lightning *lightning = calloc(1, sizeof(*lightning));
++   if (!lightning) return -2;
++   WHBGfxShaderGroup *shader = &lightning->shader;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_lightning_gsh_start)) {
++      free(lightning);
++      return -3;
++   }
++
++   const GX2VertexShader *vs = shader->vertexShader;
++   const GX2PixelShader *ps = shader->pixelShader;
++   if (!vs || !ps || vs->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       ps->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto invalid_shader;
++
++   const char *clip_names[] = {"uClipX", "uClipY", "uClipZ", "uClipW"};
++   for (unsigned row = 0; row < 4; ++row) {
++      const GX2UniformVar *var = GX2GetVertexUniformVar(vs, clip_names[row]);
++      if (!var || var->type != GX2_SHADER_VAR_TYPE_FLOAT4 || var->count != 1 ||
++          var->block >= 0) goto invalid_shader;
++      lightning->clip_offsets[row] = var->offset;
++   }
++   if (!WHBGfxInitShaderAttribute(shader, "aPosition", 0,
++         offsetof(HorizonGx2LightningVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aColor", 0,
++         offsetof(HorizonGx2LightningVertex, color), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
++       !WHBGfxInitFetchShader(shader)) goto invalid_shader;
++
++   *out = lightning;
++   return 0;
++
++invalid_shader:
++   WHBGfxFreeShaderGroup(shader);
++   free(lightning);
++   return -3;
++}
++
++void horizon_gx2_lightning_destroy(HorizonGx2Lightning *lightning)
++{
++   if (!lightning) return;
++   GX2DrawDone();
++   if (GX2RBufferExists(&lightning->vertices))
++      GX2RDestroyBufferEx(&lightning->vertices, 0);
++   WHBGfxFreeShaderGroup(&lightning->shader);
++   free(lightning);
++}
++
++int horizon_gx2_lightning_upload(HorizonGx2Lightning *lightning,
++                                 const HorizonGx2LightningVertex *vertices, uint32_t count)
++{
++   if (!lightning || !vertices || !count || count % 4 || count > MAX_VERTICES) return -1;
++   lightning->count = 0;
++   GX2RBuffer *buffer = &lightning->vertices;
++   /* The preceding WHB frame retired before the render thread writes again. */
++   if (count > buffer->elemCount) {
++      const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++         GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++      GX2RBuffer replacement = {
++         .flags = flags, .elemSize = sizeof(HorizonGx2LightningVertex), .elemCount = count,
++      };
++      if (!GX2RCreateBuffer(&replacement)) return -2;
++      if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
++      *buffer = replacement;
++   }
++   void *mapped = GX2RLockBufferEx(buffer, 0);
++   if (!mapped) return -2;
++   memcpy(mapped, vertices, count * sizeof(*vertices));
++   GX2RUnlockBufferEx(buffer, 0);
++   lightning->count = count;
++   return 0;
++}
++
++int horizon_gx2_lightning_draw(HorizonGx2Lightning *lightning, HorizonGx2Terrain *terrain,
++                               const uint32_t rect[4], const float clip_rows[4][4])
++{
++   if (!lightning || !lightning->count || !terrain || !rect || !rect[2] || !rect[3] ||
++       !clip_rows) return -1;
++   const WHBGfxShaderGroup *shader = &lightning->shader;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   for (unsigned row = 0; row < 4; ++row)
++      GX2SetVertexUniformReg(lightning->clip_offsets[row], 4, clip_rows[row]);
++   GX2RSetAttributeBuffer(&lightning->vertices, 0, sizeof(HorizonGx2LightningVertex), 0);
++
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetDepthOnlyControl(TRUE, FALSE, GX2_COMPARE_FUNC_LEQUAL);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
++   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_SRC_ALPHA,
++                      GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_ADD);
++   horizon_gx2_terrain_draw_quads(terrain, lightning->count);
++   return 0;
++}
+diff --git a/wiiu/loading_host/lightning.frag b/wiiu/loading_host/lightning.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..8a62e1dbc68c790fab13857ec5463d3c4a8383d8
+--- /dev/null
++++ b/wiiu/loading_host/lightning.frag
+@@ -0,0 +1,8 @@
++#version 330
++in vec4 vColor;
++out vec4 fragColor;
++
++void main() {
++    // The shared bolt uses an unlit white atlas texel and ignores distance fog.
++    fragColor = vColor;
++}
+diff --git a/wiiu/loading_host/lightning.h b/wiiu/loading_host/lightning.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fd1a220a93e20195d94efd5aa7ac819f91104fb
+--- /dev/null
++++ b/wiiu/loading_host/lightning.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++#include "terrain.h"
++#include <stdint.h>
++
++typedef struct HorizonGx2Lightning HorizonGx2Lightning;
++
++typedef struct HorizonGx2LightningVertex {
++   float position[3];
++   uint8_t color[4];
++} HorizonGx2LightningVertex;
++
++int horizon_gx2_lightning_create(HorizonGx2Lightning **out);
++void horizon_gx2_lightning_destroy(HorizonGx2Lightning *lightning);
++int horizon_gx2_lightning_upload(HorizonGx2Lightning *lightning,
++                                 const HorizonGx2LightningVertex *vertices, uint32_t count);
++int horizon_gx2_lightning_draw(HorizonGx2Lightning *lightning, HorizonGx2Terrain *terrain,
++                               const uint32_t rect[4], const float clip_rows[4][4]);
+diff --git a/wiiu/loading_host/lightning.rs b/wiiu/loading_host/lightning.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab5b9feabe7509954638014cbed70da9d9d9bc69
+--- /dev/null
++++ b/wiiu/loading_host/lightning.rs
+@@ -0,0 +1,118 @@
++//! Seeded bolt geometry shared with the desktop renderer.
++
++use horizon_client::gfx::lightning::{geometry, Bolt};
++use horizon_wiiu_gx2_terrain::TerrainClipRows;
++use std::{ffi::c_void, ptr::NonNull};
++
++const MAX_BOLTS: usize = 8;
++
++#[repr(C)]
++struct Vertex {
++    position: [f32; 3],
++    color: [u8; 4],
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<Vertex>() == 16);
++    assert!(std::mem::offset_of!(Vertex, color) == 12);
++};
++
++unsafe extern "C" {
++    fn horizon_gx2_lightning_create(out: *mut *mut c_void) -> i32;
++    fn horizon_gx2_lightning_destroy(lightning: *mut c_void);
++    fn horizon_gx2_lightning_upload(
++        lightning: *mut c_void,
++        vertices: *const Vertex,
++        count: u32,
++    ) -> i32;
++    fn horizon_gx2_lightning_draw(
++        lightning: *mut c_void,
++        terrain: *mut c_void,
++        rect: *const u32,
++        clip_rows: *const f32,
++    ) -> i32;
++}
++
++#[derive(Default)]
++pub(crate) struct Lightning {
++    native: Option<NonNull<c_void>>,
++    vertices: Vec<Vertex>,
++    ready: bool,
++}
++
++impl Lightning {
++    /// Prepare one camera-relative buffer for both outputs, preserving simulation order.
++    /// Returns true if an active bolt was omitted.
++    pub(crate) fn prepare(&mut self, bolts: &[Bolt], camera: [f64; 3]) -> bool {
++        self.ready = false;
++        self.vertices.clear();
++        if bolts.is_empty() {
++            return false;
++        }
++        for bolt in bolts.iter().take(MAX_BOLTS) {
++            // Match the shared desktop bolt's f64 camera subtraction before
++            // adding the small, bolt-local mesh in f32.
++            let [x, y, z] = std::array::from_fn(|i| (bolt.at[i] - camera[i]) as f32);
++            self.vertices.extend(
++                geometry(bolt.seed, [0.0; 2])
++                    .into_iter()
++                    .map(|vertex| Vertex {
++                        position: [vertex.pos[0] + x, vertex.pos[1] + y, vertex.pos[2] + z],
++                        color: vertex.color.to_le_bytes(),
++                    }),
++            );
++        }
++        let native = match self.native {
++            Some(native) => native,
++            None => {
++                let mut ptr = std::ptr::null_mut();
++                if unsafe { horizon_gx2_lightning_create(&mut ptr) } != 0 {
++                    return true;
++                }
++                let Some(native) = NonNull::new(ptr) else {
++                    return true;
++                };
++                self.native = Some(native);
++                native
++            }
++        };
++        self.ready = unsafe {
++            horizon_gx2_lightning_upload(
++                native.as_ptr(),
++                self.vertices.as_ptr(),
++                self.vertices.len() as u32,
++            )
++        } == 0;
++        !self.ready || bolts.len() > MAX_BOLTS
++    }
++
++    pub(crate) fn draw(
++        &self,
++        terrain: NonNull<c_void>,
++        rect: [u32; 4],
++        projection: &TerrainClipRows,
++    ) -> Result<(), &'static str> {
++        if let Some(native) = self.native.filter(|_| self.ready) {
++            if unsafe {
++                horizon_gx2_lightning_draw(
++                    native.as_ptr(),
++                    terrain.as_ptr(),
++                    rect.as_ptr(),
++                    projection.rows.as_ptr().cast(),
++                )
++            } != 0
++            {
++                return Err("GX2 lightning draw failed");
++            }
++        }
++        Ok(())
++    }
++}
++
++impl Drop for Lightning {
++    fn drop(&mut self) {
++        if let Some(native) = self.native.take() {
++            unsafe { horizon_gx2_lightning_destroy(native.as_ptr()) };
++        }
++    }
++}
+diff --git a/wiiu/loading_host/lightning.vert b/wiiu/loading_host/lightning.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7dacaded676dd10afacf8df884e4f7982870da9
+--- /dev/null
++++ b/wiiu/loading_host/lightning.vert
+@@ -0,0 +1,15 @@
++#version 330
++layout(location = 0) in vec3 aPosition;
++layout(location = 1) in vec4 aColor;
++uniform vec4 uClipX;
++uniform vec4 uClipY;
++uniform vec4 uClipZ;
++uniform vec4 uClipW;
++out vec4 vColor;
++
++void main() {
++    vec4 pos = vec4(aPosition, 1.0);
++    gl_Position = vec4(dot(uClipX, pos), dot(uClipY, pos),
++                       dot(uClipZ, pos), dot(uClipW, pos));
++    vColor = aColor;
++}
