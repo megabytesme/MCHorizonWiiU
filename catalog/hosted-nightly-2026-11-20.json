@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "72e190467ce50467cdb6bf87052cc7261b49dfc8",
+  "output_tree": "c4a11dd3605e7c32686bad2c9d912caec1caaf93",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -406,6 +406,12 @@
       "sha256": "cda290a85ab1a1269c5a3e76751d4cc7c296f695fe2722fc9865483020b3b193",
       "input_tree": "1f405190dbff9428f2585cee478efc0d9fb0307c",
       "output_tree": "72e190467ce50467cdb6bf87052cc7261b49dfc8"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0067-draw-gx2-overworld-stars.patch",
+      "sha256": "02433f2e01bd66c04810b2af2f0e9300cae0bea8dec86e802b6f3389da399751",
+      "input_tree": "72e190467ce50467cdb6bf87052cc7261b49dfc8",
+      "output_tree": "c4a11dd3605e7c32686bad2c9d912caec1caaf93"
     }
   ],
   "candidate": {
