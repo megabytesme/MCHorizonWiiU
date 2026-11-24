@@ -156,8 +156,15 @@ All eight nonempty trials were still pending at the start of the fence wait.
 The counter tracks this isolated raster workload and its spans are close to
 the separate fence measurements. In every trial both sample locations had
 changed before the deliberate flush while the submission watermark was
-unchanged. That observation leaves write ordering and safe asynchronous
-sampling unresolved. The probe does not establish game-frame GPU cost.
+unchanged. The follow-up timing WUHB (`f5ed174e…`, RPX `5bab5956…`)
+resolved this observation. Both destinations changed from the host's
+poison to all-ones before submission in all nine trials and held ordered,
+workload-sensitive values after retirement. The median spans repeated at
+4,026 and 60,394.5 ticks with the same 27 ticks/µs calibration. The Cemu
+control returned an early top value and retained the invalid bottom
+sentinel after retirement. The physical counter is suitable for measuring
+this isolated batch of commands. Frame-level timing and safe use across
+foreground changes still need qualification.
 
 The controlled gameplay scale sweep, functional DRS and a valid standard
 benchmark report remain open.
