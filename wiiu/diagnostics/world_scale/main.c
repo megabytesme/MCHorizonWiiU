@@ -27,8 +27,9 @@ static int texture(GX2Texture *texture)
    return 1;
 }
 
-static void draw_pattern(HorizonGx2WorldScale *scale, const GX2Texture *texture,
-                         uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+static void draw_pattern_with_depth(HorizonGx2WorldScale *scale, const GX2Texture *texture,
+                                    uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                    bool test_depth, GX2CompareFunction depth_compare)
 {
    GX2Sampler point;
    GX2InitSampler(&point, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
@@ -41,13 +42,19 @@ static void draw_pattern(HorizonGx2WorldScale *scale, const GX2Texture *texture,
    GX2RSetAttributeBuffer(&scale->geometry, 0, sizeof(CompositeVertex), 0);
    GX2SetPixelTexture(texture, scale->texture_slot);
    GX2SetPixelSampler(&point, scale->texture_slot);
-   GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+   GX2SetDepthOnlyControl(test_depth, test_depth, depth_compare);
    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
    GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE);
    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
+}
+
+static void draw_pattern(HorizonGx2WorldScale *scale, const GX2Texture *texture,
+                         uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+   draw_pattern_with_depth(scale, texture, x, y, w, h, true, GX2_COMPARE_FUNC_LEQUAL);
 }
 
 static bool draw_hud(HorizonGx2Hud *hud, uint32_t target, uint32_t w, uint32_t h)

@@ -20,23 +20,31 @@ static bool check_transitions(GX2Surface *outputs[2], const GX2Texture *pattern)
       return false;
    }
    OSReport("GX2 transitions TV=%ux%u DRC=%ux%u bytes=%u\n", sizes[0], sizes[1], sizes[2], sizes[3], bytes);
+   for (unsigned target = 0; target < 2; ++target) {
+      const GX2Surface *color = &state->outputs[target].color.surface;
+      const GX2Surface *depth = &state->outputs[target].depth.surface;
+      OSReport("GX2 scale layout target=%u color=%u/%u/%u depth=%u/%u/%u\n", target,
+               color->pitch, color->tileMode, color->use, depth->pitch, depth->tileMode, depth->use);
+   }
    const struct {
       const char *name;
-      enum TransitionMode mode;
       bool scaled;
       bool reverse;
+      bool bind_before_clear;
+      bool test_depth;
+      GX2CompareFunction compare;
    } trials[] = {
-      {"direct", RC26_ORDER, false, false},
-      {"rc26", RC26_ORDER, true, true},
-      {"before-restore", BEFORE_RESTORE, true, false},
-      {"split-sync", SPLIT_SYNC, true, true},
-      {"drained", DRAINED_SYNC, true, true},
-      {"rc26-repeat", RC26_ORDER, true, false},
+      {"direct", false, false, false, true, GX2_COMPARE_FUNC_LEQUAL},
+      {"rc26", true, true, false, true, GX2_COMPARE_FUNC_LEQUAL},
+      {"depth-off", true, false, false, false, GX2_COMPARE_FUNC_ALWAYS},
+      {"depth-always", true, true, false, true, GX2_COMPARE_FUNC_ALWAYS},
+      {"bind-first", true, false, true, true, GX2_COMPARE_FUNC_LEQUAL},
+      {"bind-first-depth-off", true, true, true, false, GX2_COMPARE_FUNC_ALWAYS},
+      {"rc26-repeat", true, false, false, true, GX2_COMPARE_FUNC_LEQUAL},
    };
    bool completed = true;
    for (unsigned trial = 0; trial < sizeof(trials) / sizeof(trials[0]); ++trial) {
       const bool reverse = trials[trial].reverse;
-      transition_mode = trials[trial].mode;
       const OSTime hold_until = OSGetSystemTime() + OSMillisecondsToTicks(7000);
       bool announced = false;
       do {
@@ -55,16 +63,15 @@ static bool check_transitions(GX2Surface *outputs[2], const GX2Texture *pattern)
             else WHBGfxBeginRenderDRC();
             WHBGfxClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             if (trials[trial].scaled) {
-               horizon_gx2_world_scale_begin(state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
-               draw_pattern(state, reverse ? &reversed : pattern, 0, 0,
-                            sizes[target * 2], sizes[target * 2 + 1]);
-               GX2Surface *surface = &state->outputs[target].color.surface;
-               if (transition_mode != RC26_ORDER) {
-                  const GX2InvalidateMode modes = transition_mode == SPLIT_SYNC ?
-                     GX2_INVALIDATE_MODE_COLOR_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE;
-                  GX2Invalidate(modes, surface->image, surface->imageSize);
-                  if (transition_mode == DRAINED_SYNC) GX2DrawDone();
+               WorldTarget *output = &state->outputs[target];
+               if (trials[trial].bind_before_clear) {
+                  GX2SetColorBuffer(&output->color, GX2_RENDER_TARGET_0);
+                  GX2SetDepthBuffer(&output->depth);
                }
+               horizon_gx2_world_scale_begin(state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
+               draw_pattern_with_depth(state, reverse ? &reversed : pattern, 0, 0,
+                                       sizes[target * 2], sizes[target * 2 + 1],
+                                       trials[trial].test_depth, trials[trial].compare);
                horizon_gx2_world_scale_end(state, target, rect, true);
             } else {
                draw_pattern(state, pattern, rect[0], rect[1], rect[2], rect[3]);

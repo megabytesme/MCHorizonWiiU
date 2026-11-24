@@ -20,24 +20,28 @@ sha256sum "$build/gx2_world_scale_transition.rpx" "$build/HorizonGX2Scale.wuhb"
 
 Run the RPX in forced-interpreter Cemu or put the WUHB in its own application
 directory, `sd:/wiiu/apps/HorizonGX2Scale/`. The physical build presents
-six seven-second still windows and requests the Wii U Menu through ProcUI
+seven seven-second still windows and requests the Wii U Menu through ProcUI
 when finished. It performs no surface copy or CPU readback.
 
 A 1080p TV and a standard GamePad yield 1440×809 and 641×360 world
 surfaces. Capture one output still per `GX2 scale still` serial record.
 `reverse=0` expects red above blue and `reverse=1` expects blue above red.
 The `SUBMITTED` line confirms all arms ran. Check the stills for pixels.
-All twelve PNG stills matched the expected colors in forced-interpreter
-Cemu. A failed direct control invalidates the physical comparison.
+The first visual probe found that synchronizing before restoring WHB,
+splitting synchronization, and waiting for retirement all preserved green
+on physical HDMI. This follow-up holds synchronization constant and varies
+the draw's depth state and the attachment order. A failed direct control
+invalidates the physical comparison.
 
 | Trial | Transition | What a pass indicates when the RC 26 arm fails |
 | --- | --- | --- |
 | 0 | Direct WHB draw of the CPU-filled pattern. | The control validates the shader, pattern and output. |
 | 1 | RC 26. Restore WHB, then invalidate source color and texture. | A failure isolates the difference to the scaled path in this fixture. |
-| 2 | Invalidate source color and texture while it is bound, then restore WHB. | Moving the same operation before rebinding is sufficient for this workload. |
-| 3 | Invalidate color before restoring WHB and texture after restoration. | Separating the producer and consumer cache operations is sufficient for this workload. |
-| 4 | Invalidate color and texture before restoring WHB, then wait for retirement. | The extra retirement wait changes the observed result and adds synchronization cost. |
-| 5 | RC 26 repeated with the opposite source pattern. | Compare the two RC 26 arms for stale output and reuse effects. |
+| 2 | Disable depth testing and depth writes for the pattern. | The offscreen draw passes with depth disabled. |
+| 3 | Enable depth testing and writes with `ALWAYS` comparison. | Changing the depth comparison is sufficient. |
+| 4 | Bind the color and depth attachments before the RC 26 clear. | Binding both attachments before clearing is sufficient. |
+| 5 | Bind before clear and disable depth for the pattern. | The combination is sufficient. |
+| 6 | RC 26 repeated with the opposite source pattern. | Compare the two RC 26 arms for stale output and reuse effects. |
 
 If every row passes on hardware, repeat with stock terrain and the original
 frame's target-state changes. For emulator-only source and destination
