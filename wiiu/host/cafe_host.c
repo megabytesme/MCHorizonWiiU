@@ -5,8 +5,10 @@
 #include <coreinit/foreground.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <coreinit/title.h>
 #include <gx2/surface.h>
 #include <proc_ui/procui.h>
+#include <sysapp/launch.h>
 #include <vpad/input.h>
 #include <whb/gfx.h>
 #ifdef HORIZON_WIIU_HOSTED
@@ -17,10 +19,10 @@
 enum { VIEW_WIDTH = 1280, VIEW_HEIGHT = 720, VPAD_CAPACITY = 16 };
 typedef struct LauncherSample { uint32_t buttons, touch, x, y; } LauncherSample;
 static HorizonGx2Hud *view;
+static bool app_exiting;
 #ifdef HORIZON_WIIU_HOSTED
 static bool game_focused;
 static bool game_release_pending;
-static bool app_exiting;
 extern void horizon_wiiu_app_entropy_first(void);
 extern void horizon_wiiu_memory_init(void);
 extern void horizon_wiiu_memory_report_display_surfaces(void);
@@ -49,16 +51,12 @@ static void saves_ready(void)
 
 int32_t shell_process(void)
 {
-#ifdef HORIZON_WIIU_HOSTED
    if (app_exiting)
       return 2;
-#endif
    switch (ProcUIProcessMessages(TRUE)) {
       case PROCUI_STATUS_IN_FOREGROUND: return 1;
       case PROCUI_STATUS_EXITING:
-#ifdef HORIZON_WIIU_HOSTED
          app_exiting = true;
-#endif
          return 2;
       case PROCUI_STATUS_RELEASE_FOREGROUND: return 3;
       default:
@@ -70,6 +68,47 @@ int32_t shell_process(void)
 void shell_release(void)
 {
    ProcUIDrawDoneRelease();
+}
+
+static void finish_system_close(void)
+{
+   // Let an existing foreground transition finish before requesting a new
+   // title. An OS-triggered exit already has a successor.
+   int32_t status = shell_process();
+   while (status != 1 && status != 2) {
+      if (status == 3) {
+         shell_trace("menu.release");
+         shell_release();
+      }
+      status = shell_process();
+   }
+   if (status == 2) {
+      shell_trace("menu.os_exit");
+      return;
+   }
+
+   // Cemu's raw RPX launcher assigns a placeholder title with an all-ones
+   // upper word. It has no installed title lifecycle to return to.
+   if ((OSGetTitleID() >> 32) == UINT32_MAX) {
+      shell_trace("menu.placeholder_title");
+      return;
+   }
+   shell_trace("menu.requested");
+   SYSLaunchMenu();
+
+   // WHB's registered callbacks release its display surfaces when ProcUI
+   // advances past RELEASE_FOREGROUND. Continue the system message pump
+   // until it permits this application to finish.
+   while (status != 2) {
+      if (status == 3) {
+         shell_trace("menu.release");
+         shell_release();
+      } else if (status == 1) {
+         OSSleepTicks(OSMillisecondsToTicks(16));
+      }
+      status = shell_process();
+   }
+   shell_trace("menu.os_exit");
 }
 
 #ifdef HORIZON_WIIU_HOSTED
@@ -281,7 +320,9 @@ int main(void)
    horizon_gx2_profile_flush();
 #endif
    horizon_gx2_hud_destroy(view);
+   view = NULL;
    shell_trace("view.released");
+   finish_system_close();
    WHBGfxShutdown();
    shell_trace("gx2.closed");
    ProcUIShutdown();
