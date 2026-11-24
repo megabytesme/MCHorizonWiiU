@@ -60,7 +60,7 @@ camera and resources in each matched run.
 | Renderer parity | The [coverage inventory](coverage.md) tracks stock passes. Isolated interpreter diagnostics cover selection, crumbling, basic first-person geometry, sorted translucent terrain, stock sky discs, ordinary entities, precipitation, animated atlas cells and repeated terrain UVs on both outputs. Hosted gameplay and unsupported passes remain separately tracked. |
 | Fixed scaling and DRS | Fixed world scaling uses a bounded pair of native color/depth surfaces per display and composites before native-size HUD. Host tests drive the original controller through 75–100% on synthetic GPU samples. Without qualified GPU timing on Cafe, automatic mode holds the configured floor. |
 | Benchmark | Night calls the original runner for Standard, Village, Forest, Ocean, Mountain and Travel. The benchmark uses stock Full Performance with an owned disposable world and requires terrain on both outputs. Reports identify omitted passes and distinguish configured and effective dimensions. Host queue tests and the Cafe Rust check passed for the benchmark source. |
-| World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. The current source batches invariant state once per pass and preserves a same-binary per-section reference. The fixture qualifies this change; measured world impact and synchronized buffer reuse remain open. |
+| World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. The current source batches invariant state once per pass and preserves a same-binary per-section reference. Both binding modes passed the fixture. Measured world impact and synchronized buffer reuse remain open. |
 
 The RC 24 hosted recipe pins client `0.8.0-rc.24`, patch `0.5.0-rc.24`,
 builder `0.7.0-rc.4` and assembled source tree
@@ -82,22 +82,33 @@ comparison and retain matching output captures outside the timed window.
 
 ## Physical testing queue
 
-1. With the console owner present, use a disposable installation and verify
-   the candidate RPX and WUHB hashes. Follow the [capture setup](benchmarks.md)
-   and record TV mode, GamePad output, resource cache state and the active
-   graphics configuration. Retain the owner-approved RC 21 package for A/B.
+1. With the console owner present, prepare a dedicated test SD with the
+   existing compatible resources and a disposable copy of the saved-world
+   fixture. Keep the normal SD separate. Verify the candidate RPX and WUHB
+   against its receipt, place the WUHB at
+   `sd:/wiiu/apps/HorizonWiiU/HorizonWiiU.wuhb`, and confirm the version in
+   **Night → Versions → About this build** before opening a world. Record
+   the TV mode, GamePad output, resource cache state and active graphics
+   configuration. Keep the owner-approved RC 21 package available for A/B.
 2. Play a warm stock Full Performance scene and the same fixed camera,
    rotation and streaming route on both packages. Capture per-display
    outcomes, complete and partial submissions, GX2 flip deltas, frame-time
    tails, server ticks and memory. Repeat capture-on/off under identical
    conditions using `cafe_performance` for the independent A/B readings.
+   Use an empty `gx2-profile.enable` marker for the candidate's normal
+   binding and a marker containing `2` for the matched per-section reference.
+   Keep the world and resolution identical for the two binding arms. Follow
+   the [capture setup](benchmarks.md) for collection and decoding.
 3. Exercise the existing RC 21 distance-12 regression setup. Verify terrain
    convergence, GamePad touch and controls, audible AX playback, foreground
    return, durable Save & Quit, Night restoration and a position-preserving
    reopen. Exercise authenticated diagnostics only after local consent.
-4. As passes land, compare matched TV and GamePad reference views. Check
+4. Compare matched TV and GamePad reference views. Check
    the outline against full blocks, fences and occluded edges. Verify world
    scale transitions at 100%, 75% and 50%, full-size HUD and correct touch.
+   Run **Night → Settings → Benchmark → Village** to completion, then
+   repeat with Minus during loading and the timed route. Verify the report
+   and resource teardown before the next launch.
 
 Keep emulator and hardware evidence separate. Private receipts, captures,
 logs, resources, fixtures and packages stay outside Git.
