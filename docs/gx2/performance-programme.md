@@ -268,3 +268,14 @@ for paired terrain at the current camera before timing and keeps the stock
 seed, camera path and 12-second flight. Its report scenario is
 `cafe-diagnostic-village`, with a `Diagnostic` label and an explicit relaxed
 streaming-gate metric. Use standard Village for full-view comparisons.
+
+The packaged RC 26 diagnostic entered Village and started the 12-second
+route in forced-interpreter Cemu. After the timing marker, one paired
+submission logged terrain on both outputs. The following submissions lost
+visible terrain as the camera advanced through the streaming area. No
+qualifying frame interval was recorded, so the runner rejected the flight
+and wrote no benchmark report. The save barrier completed, the workers
+released, and Night returned to its reports screen with 234,880,920 free
+GX2 bulk-heap bytes. The result verifies entry, timing and failure teardown.
+Standard Village report generation and cancellation during a timed route
+remain open on the candidate.
