@@ -1,0 +1,439 @@
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index f65bd893be120abe50ac4eaea889bb73aac3e76d..ff9f9ec505ed4f99ac2bbbed4c6ed22a537659dc 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1550,9 +1550,11 @@ impl Game<'_> {
+ 
+     #[cfg(target_os = "cafe")]
+     pub(super) fn add_cafe_state(&self, state: &mut Value) {
++        let now = std::time::Instant::now();
+         let sample = self.cafe_performance.latest.as_ref();
+         state["cafe_performance"] =
+-            json!(sample.map(|sample| sample.json(self.started, std::time::Instant::now())));
++            json!(sample.map(|sample| sample.json(self.started, now)));
++        state["cafe_gpu_timing"] = json!(self.cafe_performance.gpu_timing_json(now));
+         let graphics = &self.settings.horizon;
+         let experimental_scaling = horizon_client::graphics::cafe_experimental_world_scaling();
+         state["cafe_graphics"] = json!({
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index eb066a684571ae3818eb76e1d4e59653a1d6b19a..29aec9eae878682a9d18a4d65a58ac0f1bdf8546 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -72,7 +72,7 @@ pub struct CafeScreenshot {
+ 
+ #[path = "cafe_performance.rs"]
+ mod performance;
+-pub use performance::CafeFrameWork;
++pub use performance::{CafeFrameWork, CafeGpuSample};
+ pub(super) use performance::CafePerformance;
+ 
+ /// Native presentation and terrain upload boundary for original Game frames.
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index a404d181ecd7c7ae353d617256a3e6a26837f31b..8d4d3b96706c1e6c37f81b27c011e2619550cd44 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -2,12 +2,83 @@ use horizon_client::presentation::WorldResolution;
+ use std::time::{Duration, Instant};
+ 
+ const CADENCE_SAMPLES: usize = 256;
++const GX2_GPU_HZ: u32 = 27_000_000;
++
++/// One attempt from the GX2 host's render thread. Keep the layout in sync
++/// with HorizonGx2GpuSample in wiiu/loading_host/gx2_profile.h.
++#[repr(C, align(8))]
++#[derive(Clone, Copy, Default)]
++pub struct CafeGpuSample {
++    endpoints: [[u64; 2]; 2],
++    submitted: u64,
++    retired: u64,
++    sequence: u32,
++    status: u32,
++    valid: u32,
++    unpaired: u32,
++    rejected: u32,
++    reserved: u32,
++}
++
++const _: () = assert!(std::mem::size_of::<CafeGpuSample>() == 72);
++
++struct GpuTimingObservation {
++    sample: CafeGpuSample,
++    at: Instant,
++    terrain_sections: [usize; 2],
++    resolution: Option<WorldResolution>,
++}
++
++impl GpuTimingObservation {
++    fn json(&self, now: Instant) -> serde_json::Value {
++        let sample = self.sample;
++        let status = match sample.status {
++            1 => "valid_endpoints",
++            2 => "unpaired",
++            3 => "not_retired",
++            4 => "invalid_endpoints",
++            5 => "screenshot",
++            _ => "unknown",
++        };
++        // Hex strings preserve the exact 64-bit values in JSON clients.
++        let endpoints = matches!(sample.status, 1 | 4).then(|| {
++            sample
++                .endpoints
++                .map(|pair| pair.map(|tick| format!("{tick:016x}")))
++        });
++        let span_ticks =
++            (sample.status == 1).then(|| sample.endpoints.map(|[top, bottom]| bottom - top));
++        serde_json::json!({
++            "source": "gx2-top-bottom",
++            "scope": "per_output_draw_callback",
++            "qualified_for_drs": false,
++            "frequency_hz": GX2_GPU_HZ,
++            "status": status,
++            "hzp_sequence": sample.sequence,
++            "age_ms": now.saturating_duration_since(self.at).as_secs_f64() * 1000.0,
++            "submitted": format!("{:016x}", sample.submitted),
++            "retired": format!("{:016x}", sample.retired),
++            "endpoints_tv_gamepad": endpoints,
++            "span_ticks_tv_gamepad": span_ticks,
++            "span_ms_tv_gamepad": span_ticks.map(|pair|
++                pair.map(|ticks| ticks as f64 * 1000.0 / f64::from(GX2_GPU_HZ))
++            ),
++            "valid_attempts": sample.valid,
++            "unpaired_attempts": sample.unpaired,
++            "rejected_attempts": sample.rejected,
++            "terrain_sections_tv_gamepad": self.terrain_sections,
++            "effective_scale": self.resolution.map(|value| value.effective_scale),
++            "world_dimensions_tv_gamepad": self.resolution.map(|value| value.dimensions),
++        })
++    }
++}
+ 
+ #[derive(Clone, Copy, Default)]
+ pub struct CafeFrameWork {
+     pub presented: [bool; 2],
+     pub submission: Duration,
+     pub gpu_wait: Duration,
++    pub gpu_sample: Option<CafeGpuSample>,
+     pub uploaded_sections: u64,
+     pub uploaded_bytes: u64,
+     pub terrain_sections: [usize; 2],
+@@ -103,6 +174,7 @@ pub(in crate::game) struct CafePerformance {
+     active: Option<Window>,
+     pub(in crate::game) latest: Option<Sample>,
+     pub(in crate::game) presented: u64,
++    gpu_timing: Option<GpuTimingObservation>,
+ }
+ 
+ struct Window {
+@@ -136,6 +208,9 @@ pub(in crate::game) struct Sample {
+ 
+ impl CafePerformance {
+     pub(in crate::game) fn begin(&mut self, phase: Phase, now: Instant, totals: Totals) {
++        if phase != Phase::Gameplay {
++            self.gpu_timing = None;
++        }
+         if self
+             .active
+             .as_ref()
+@@ -179,6 +254,16 @@ impl CafePerformance {
+         let Some(window) = self.active.as_mut() else {
+             return false;
+         };
++        if window.phase == Phase::Gameplay
++            && let Some(sample) = work.gpu_sample
++        {
++            self.gpu_timing = Some(GpuTimingObservation {
++                sample,
++                at: now,
++                terrain_sections: work.terrain_sections,
++                resolution: work.world_resolution,
++            });
++        }
+         window.iterations += 1;
+         window.frames += u32::from(built);
+         for (count, success) in window.outputs.iter_mut().zip(work.presented) {
+@@ -222,6 +307,10 @@ impl CafePerformance {
+         });
+         true
+     }
++
++    pub(in crate::game) fn gpu_timing_json(&self, now: Instant) -> Option<serde_json::Value> {
++        self.gpu_timing.as_ref().map(|value| value.json(now))
++    }
+ }
+ 
+ impl Sample {
+@@ -386,6 +475,91 @@ impl Sample {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn gx2_timing_keeps_exact_endpoints_and_the_sampled_frame_geometry() {
++        let start = Instant::now();
++        let ms = Duration::from_millis;
++        let totals = Totals::default();
++        let mut performance = CafePerformance::default();
++        performance.begin(Phase::Gameplay, start, totals);
++        let sample = CafeGpuSample {
++            endpoints: [
++                [0x8000000000000001, 0x8000000000000001 + 27000],
++                [0x8000000000008001, 0x8000000000008001 + 54000],
++            ],
++            submitted: 1100,
++            retired: 1101,
++            sequence: 70,
++            status: 1,
++            valid: 25,
++            ..Default::default()
++        };
++        performance.finish(
++            start + ms(100),
++            start,
++            totals,
++            true,
++            StepSpans::default(),
++            CafeFrameWork {
++                presented: [true, true],
++                gpu_sample: Some(sample),
++                terrain_sections: [20, 22],
++                world_resolution: Some(WorldResolution {
++                    requested_scale: 75,
++                    effective_scale: 75,
++                    dimensions: [[1440, 810], [640, 360]],
++                    surface_bytes: 0,
++                }),
++                ..Default::default()
++            },
++        );
++        let json = performance.gpu_timing_json(start + ms(250)).unwrap();
++        assert_eq!(json["status"], "valid_endpoints");
++        assert_eq!(json["age_ms"], 150.0);
++        assert_eq!(json["hzp_sequence"], 70);
++        assert_eq!(json["endpoints_tv_gamepad"][0][0], "8000000000000001");
++        assert_eq!(
++            json["span_ticks_tv_gamepad"],
++            serde_json::json!([27000, 54000])
++        );
++        assert_eq!(json["span_ms_tv_gamepad"], serde_json::json!([1.0, 2.0]));
++        assert_eq!(
++            json["terrain_sections_tv_gamepad"],
++            serde_json::json!([20, 22])
++        );
++        assert_eq!(
++            json["world_dimensions_tv_gamepad"][1],
++            serde_json::json!([640, 360])
++        );
++        assert_eq!(json["effective_scale"], 75);
++        assert_eq!(json["qualified_for_drs"], false);
++
++        performance.begin(Phase::Menu, start + ms(300), totals);
++        assert!(performance.gpu_timing_json(start + ms(300)).is_none());
++    }
++
++    #[test]
++    fn a_retired_invalid_pair_exposes_the_raw_sentinel_without_a_duration() {
++        let now = Instant::now();
++        let json = GpuTimingObservation {
++            sample: CafeGpuSample {
++                endpoints: [[100, u64::MAX], [150, 200]],
++                status: 4,
++                rejected: 1,
++                ..Default::default()
++            },
++            at: now,
++            terrain_sections: [0, 0],
++            resolution: None,
++        }
++        .json(now);
++        assert_eq!(json["status"], "invalid_endpoints");
++        assert_eq!(json["rejected_attempts"], 1);
++        assert_eq!(json["endpoints_tv_gamepad"][0][1], "ffffffffffffffff");
++        assert!(json["span_ticks_tv_gamepad"].is_null());
++        assert!(json["span_ms_tv_gamepad"].is_null());
++    }
++
+     #[test]
+     fn wall_buckets_cover_the_window_even_when_a_game_frame_is_not_built() {
+         let start = Instant::now();
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index ccb47f7a5817647810ebf537077d994a61d88061..4b49d0e9df44765a705a43bc324e34cb91874694 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -45,7 +45,9 @@ _Static_assert(sizeof(GpuCycleSlot) == 64, "isolate GPU sample cache lines");
+ static GpuCycleSlot gpu_slots[2][2];
+ static bool gpu_cycle_probe;
+ static OSTime gpu_before, gpu_report_at;
+-static uint32_t gpu_samples_valid, gpu_samples_unpaired;
++static HorizonGx2GpuSample gpu_sample;
++
++_Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+ typedef struct {
+    uint32_t sequence, phase, start_hi, start_lo, loop_ticks, pacing_ticks;
+@@ -125,6 +127,7 @@ bool horizon_gx2_profile_legacy_terrain_uniforms(void)
+ 
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
++   gpu_sample.status = GX2_GPU_NO_SAMPLE;
+    if (!gpu_cycle_probe || !recording || current.phase != PLAYING_PHASE) return false;
+    gpu_before = GX2GetLastSubmittedTimeStamp();
+    return true;
+@@ -145,46 +148,77 @@ static uint64_t gpu_slot_read(GpuCycleSlot *slot)
+    return *(volatile uint64_t *)&slot->value;
+ }
+ 
++static void gpu_reject(uint32_t status)
++{
++   gpu_sample.status = status;
++   ++gpu_sample.rejected;
++}
++
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+ {
+    // WHB has already flushed and called GX2DrawDone for the presented frame.
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+-   if (submitted <= gpu_before || GX2GetRetiredTimeStamp() < submitted) {
++   const OSTime retired = GX2GetRetiredTimeStamp();
++   gpu_sample.sequence = total;
++   gpu_sample.submitted = submitted;
++   gpu_sample.retired = retired;
++   memset(gpu_sample.endpoints, 0, sizeof(gpu_sample.endpoints));
++   if (submitted <= gpu_before || retired < submitted) {
+       // Leave the static slots alone for the rest of this process.
+       gpu_cycle_probe = false;
++      gpu_reject(GX2_GPU_NOT_RETIRED);
+       OSReport("Horizon GX2 GPU samples unavailable: submission not verified retired\n");
+       return;
+    }
+    if (outputs != 3) {
+-      ++gpu_samples_unpaired;
++      ++gpu_sample.unpaired;
++      gpu_reject(GX2_GPU_UNPAIRED);
+       return;
+    }
+ 
+-   uint64_t endpoints[2][2];
++   // Readback uses its own drain and copy between these markers.
++   if (current.stages[SCREENSHOT_STAGE]) {
++      gpu_reject(GX2_GPU_SCREENSHOT);
++      return;
++   }
++
++   bool valid = true;
+    for (unsigned target = 0; target < 2; ++target) {
+       const uint64_t top = gpu_slot_read(&gpu_slots[target][0]);
+       const uint64_t bottom = gpu_slot_read(&gpu_slots[target][1]);
+-      if (!top || bottom == UINT64_MAX || bottom <= top) {
+-         gpu_cycle_probe = false;
+-         OSReport("Horizon GX2 GPU samples unavailable: invalid GPU cycle pair\n");
+-         return;
+-      }
+-      endpoints[target][0] = top;
+-      endpoints[target][1] = bottom;
++      valid &= top != 0 && bottom != UINT64_MAX && bottom > top;
++      gpu_sample.endpoints[target][0] = top;
++      gpu_sample.endpoints[target][1] = bottom;
+    }
+-   ++gpu_samples_valid;
++   if (!valid) {
++      gpu_cycle_probe = false;
++      gpu_reject(GX2_GPU_INVALID_ENDPOINTS);
++      OSReport("Horizon GX2 GPU samples unavailable: invalid GPU cycle pair\n");
++      return;
++   }
++   gpu_sample.status = GX2_GPU_VALID;
++   ++gpu_sample.valid;
+ 
+    const OSTime now = OSGetSystemTime();
+    if (now < gpu_report_at) return;
+    gpu_report_at = now + OSMillisecondsToTicks(2000);
++   const uint64_t (*endpoints)[2] = gpu_sample.endpoints;
+    OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu valid=%u unpaired=%u\n",
+             total, (unsigned long long)(endpoints[0][1] - endpoints[0][0]),
+-            (unsigned long long)(endpoints[1][1] - endpoints[1][0]), gpu_samples_valid, gpu_samples_unpaired);
++            (unsigned long long)(endpoints[1][1] - endpoints[1][0]), gpu_sample.valid, gpu_sample.unpaired);
+    OSReport("Horizon GX2 GPU endpoints seq=%u tv=%016llx/%016llx drc=%016llx/%016llx\n",
+             total, (unsigned long long)endpoints[0][0], (unsigned long long)endpoints[0][1],
+             (unsigned long long)endpoints[1][0], (unsigned long long)endpoints[1][1]);
+ }
+ 
++bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample)
++{
++   if (gpu_sample.status == GX2_GPU_NO_SAMPLE) return false;
++   *sample = gpu_sample;
++   gpu_sample.status = GX2_GPU_NO_SAMPLE;
++   return true;
++}
++
+ bool horizon_gx2_profile_begin(uint32_t phase)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 362b751e4d80d7e08691f726a46d5a083aab852e..8e1b0cbe8503db0bf31eb3372a93a073956df7e7 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -17,6 +17,23 @@ enum {
+    GX2_PROFILE_HUD_VERTICES = 5
+ };
+ 
++enum {
++   GX2_GPU_NO_SAMPLE,
++   GX2_GPU_VALID,
++   GX2_GPU_UNPAIRED,
++   GX2_GPU_NOT_RETIRED,
++   GX2_GPU_INVALID_ENDPOINTS,
++   GX2_GPU_SCREENSHOT,
++};
++
++typedef struct {
++   uint64_t endpoints[2][2]; // TV and DRC, top and bottom.
++   uint64_t submitted, retired;
++   uint32_t sequence, status;
++   uint32_t valid, unpaired, rejected;
++   uint32_t reserved;
++} HorizonGx2GpuSample;
++
+ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+@@ -25,6 +42,7 @@ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
++bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 747dca0159636e7b0108223e353b5dedbea6a26e..4589bdaa04c8bbdf6db39bec5a30dabe8d6ab41f 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -24,8 +24,9 @@ use horizon_client::mesher::{SectionMesh, TerrainVertex};
+ use horizon_client::sprites::SpriteAnimation;
+ use horizon_client::{
+     game::{
+-        CafeBlockEntitySections, CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork,
+-        CafeLoadingPresenter, CafeScreenshot, CafeScreenshotOutput, CafeTerrainBuffers,
++        CafeBlockEntitySections, CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeGpuSample,
++        CafeLoadingArtwork, CafeLoadingPresenter, CafeScreenshot, CafeScreenshotOutput,
++        CafeTerrainBuffers,
+     },
+     gfx::{Frame, panorama},
+     presentation::{HudBackend, PresentationBackend, TerrainBackend, WorldResolution},
+@@ -175,6 +176,7 @@ const _: () = {
+ extern "C" {
+     fn OSReport(format: *const std::ffi::c_char, ...);
+     fn horizon_loading_host_last_outputs() -> u32;
++    fn horizon_gx2_profile_take_gpu_sample(sample: *mut CafeGpuSample) -> bool;
+     fn horizon_loading_host_last_wait_ns() -> u64;
+     fn horizon_loading_host_flip_count() -> u32;
+     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
+@@ -2331,6 +2333,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
+         self.frame_work.presented = [outputs & 1 != 0, outputs & 2 != 0];
++        let mut gpu_sample = CafeGpuSample::default();
++        self.frame_work.gpu_sample =
++            unsafe { horizon_gx2_profile_take_gpu_sample(&mut gpu_sample) }.then_some(gpu_sample);
+         self.frame_work.submission = elapsed;
+         self.frame_work.gpu_wait = Duration::from_nanos(
+             profile

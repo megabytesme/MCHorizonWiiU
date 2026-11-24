@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "463aca61771a9f503e2523ec29d0fded187fde96",
+  "output_tree": "30c69a9f4e2c3930ede4af3f306be66003c66abf",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -500,6 +500,12 @@
       "sha256": "be328b706943eab4894087354a57dfd49758d932786edfec169366741e0aac15",
       "input_tree": "53dae28084460c2448e22714f6962d8bfb1fa3d8",
       "output_tree": "463aca61771a9f503e2523ec29d0fded187fde96"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0082-export-cafe-gpu-timing.patch",
+      "sha256": "00a66474626ac7c3886f1b4642be087a501ce0ce69965474fe4173feebf58522",
+      "input_tree": "463aca61771a9f503e2523ec29d0fded187fde96",
+      "output_tree": "30c69a9f4e2c3930ede4af3f306be66003c66abf"
     }
   ],
   "candidate": {

@@ -360,6 +360,15 @@ the wall and HZP3 records. Physical gameplay, foreground transitions,
 scale sensitivity and tighter marker placement still need qualification
 before this signal can drive DRS.
 
+RC 30 exposes the latest completed timing observation through authenticated
+Cafe performance and status. It includes raw hexadecimal endpoints, the
+submission and retirement watermarks, the HZP3 sequence, the frame's actual
+resolution, and attempt counts for each validity outcome. The sample age is
+the time since the game observed that result. Marker modes `4` and `45`
+and HZP3 remain compatible. A native fixture exercised cache handling,
+retirement checks and invalid pairs. The timings remain unqualified and
+the observations do not activate automatic scaling.
+
 ## Hosted benchmark
 
 Open **Settings → Benchmark** in Night, choose a scenario, then use
