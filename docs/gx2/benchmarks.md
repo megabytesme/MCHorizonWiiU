@@ -181,7 +181,16 @@ The RC 21 game-status response includes `cafe_performance` after a completed
 two-second window. The session-relative end timestamp, window length and
 sample age accompany each response. Loading, title, gameplay and menus use
 separate windows. A phase transition clears the previous sample until the new
-window completes. The same samples appear in the native log.
+window completes.
+
+The RC 25 source emits short `Horizon Cafe` console records for cadence,
+pacing, streaming, CPU time and world resolution. Join them by `t_ms` within
+one hosted session. `span_ms` is the elapsed window, `paired_hz` is the paired
+submission rate, and output, worker and flip counters count events within
+that window. `partial` is the count of paired submissions with omitted work.
+CPU time is averaged per built frame. Pacing and world records appear when
+their samples are available. Authenticated `cafe_performance` still returns
+the complete JSON window.
 
 | Field | Measurement |
 |---|---|

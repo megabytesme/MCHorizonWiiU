@@ -1,0 +1,126 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 07f12648e7d0b903ae9cfc5d32b2e68c2a803c25..6e5f6af34bb1d0e6ec3d96f0ec81932b86c22d81 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -884,10 +884,7 @@ impl CafeGameSession<'_> {
+             .finish(end, start, after, self.game.cafe_frame_built, redraw, work)
+             && let Some(sample) = &self.game.cafe_performance.latest
+         {
+-            log::info!(
+-                "Horizon Cafe performance: {}",
+-                sample.json(self.game.started, end)
+-            );
++            sample.log_serial(self.game.started);
+         }
+         let frame_drawn = self.game.frame_drawn;
+         #[cfg(target_os = "cafe")]
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index b4957b108c58050658c4de771eba48db7f4a3678..e3290b6b359b3c57cf9ed522de590575a8a236ae 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -171,6 +171,76 @@ impl Sample {
+         self.end.duration_since(self.window.start).as_secs_f64()
+     }
+ 
++    fn cadence_percentiles(&self) -> Option<(usize, [f32; 4])> {
++        let window = &self.window;
++        let count = window.cadence_count.min(CADENCE_SAMPLES);
++        (count != 0).then(|| {
++            let percentiles = [50, 95, 99, 100]
++                .map(|percent| window.cadence_ms[(count * percent).div_ceil(100) - 1]);
++            (count, percentiles)
++        })
++    }
++
++    pub(in crate::game) fn log_serial(&self, session_start: Instant) {
++        let window = &self.window;
++        let at = self
++            .end
++            .saturating_duration_since(session_start)
++            .as_millis();
++        // The Cafe console backend can split long writes. Emit complete,
++        // independently useful lines with a common window timestamp.
++        log::info!(
++            "Horizon Cafe cadence: t_ms={at} phase={} span_ms={:.1} paired_hz={:.3} loops={} built={} tv={} gamepad={} paired={} partial={}",
++            window.phase.name(),
++            self.seconds() * 1000.0,
++            self.paired_fps(),
++            window.iterations,
++            window.frames,
++            window.outputs[0],
++            window.outputs[1],
++            window.paired,
++            window.partial,
++        );
++        if let Some((count, [median, p95, p99, max])) = self.cadence_percentiles() {
++            log::info!(
++                "Horizon Cafe pacing: t_ms={at} samples={count} median_ms={median:.2} p95_ms={p95:.2} p99_ms={p99:.2} max_ms={max:.2}"
++            );
++        }
++        let delta = |end: Option<u32>, start: Option<u32>| {
++            end.zip(start).map(|(end, start)| end.wrapping_sub(start))
++        };
++        log::info!(
++            "Horizon Cafe streaming: t_ms={at} ticks={:?} flips={:?} meshed={} uploaded={} upload_bytes={} tv_sections={} gamepad_sections={}",
++            delta(self.totals.server_ticks, window.base.server_ticks),
++            delta(self.totals.combined_flips, window.base.combined_flips),
++            self.totals.meshed.saturating_sub(window.base.meshed),
++            window.uploaded_sections,
++            window.uploaded_bytes,
++            window.terrain_sections[0],
++            window.terrain_sections[1],
++        );
++        if window.frames != 0 {
++            let mean =
++                |duration: Duration| duration.as_secs_f64() * 1000.0 / f64::from(window.frames);
++            log::info!(
++                "Horizon Cafe CPU per frame: t_ms={at} redraw_ms={:.2} submit_ms={:.2} gx2_wait_ms={:.2}",
++                mean(window.cpu),
++                mean(window.submission),
++                mean(window.gpu_wait),
++            );
++        }
++        if let Some(resolution) = window.world_resolution {
++            let [[tv_w, tv_h], [pad_w, pad_h]] = resolution.dimensions;
++            log::info!(
++                "Horizon Cafe world: t_ms={at} requested={} effective={} tv={tv_w}x{tv_h} gamepad={pad_w}x{pad_h} surface_bytes={} omitted_passes={:#x}",
++                resolution.requested_scale,
++                resolution.effective_scale,
++                resolution.surface_bytes,
++                window.omitted_pass_mask,
++            );
++        }
++    }
++
+     pub(in crate::game) fn json(&self, session_start: Instant, now: Instant) -> serde_json::Value {
+         let window = &self.window;
+         let seconds = self.seconds();
+@@ -181,17 +251,17 @@ impl Sample {
+         let mean_ms = |value: Duration| {
+             (window.frames != 0).then(|| value.as_secs_f64() * 1000.0 / f64::from(window.frames))
+         };
+-        let count = window.cadence_count.min(CADENCE_SAMPLES);
+-        let cadence = (count != 0).then(|| {
+-            let percentile = |percent: usize| window.cadence_ms[(count * percent).div_ceil(100) - 1];
+-            serde_json::json!({
+-                "samples": count,
+-                "median": percentile(50),
+-                "p95": percentile(95),
+-                "p99": percentile(99),
+-                "max": percentile(100),
+-            })
+-        });
++        let cadence = self
++            .cadence_percentiles()
++            .map(|(count, [median, p95, p99, max])| {
++                serde_json::json!({
++                    "samples": count,
++                    "median": median,
++                    "p95": p95,
++                    "p99": p99,
++                    "max": max,
++                })
++            });
+         let world_resolution = window.world_resolution.map(|resolution| serde_json::json!({
+             "requested_scale": resolution.requested_scale,
+             "effective_scale": resolution.effective_scale,

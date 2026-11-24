@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "966bb274f40ad7092e5a8e1c819b0c00e7f5ac79",
+  "output_tree": "95eee671ce5f045b1a3db212ad3849f4639d5874",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -364,12 +364,18 @@
       "sha256": "3751239642fcab7516437476df4353a77eef32be2d8ee38a483e8b0909623aa7",
       "input_tree": "5a1240e54f179895249b41705e2ec46b78678509",
       "output_tree": "966bb274f40ad7092e5a8e1c819b0c00e7f5ac79"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0060-make-cafe-serial-windows-readable.patch",
+      "sha256": "7c657687fced241ebf3561d307ee92239fe04d3cf52daf74a0f62343c9777ade",
+      "input_tree": "966bb274f40ad7092e5a8e1c819b0c00e7f5ac79",
+      "output_tree": "95eee671ce5f045b1a3db212ad3849f4639d5874"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.24",
-    "patch": "0.5.0-rc.24"
+    "client": "0.8.0-rc.25",
+    "patch": "0.5.0-rc.25"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
