@@ -288,6 +288,25 @@ framebuffer readback.
 
 ## Gameplay GPU timing probe
 
+The RC 29 `cafe_performance.wall_ms_per_recorded_iteration` and serial wall
+records use one denominator for game idle, artwork, redraw, native submission,
+explicit waits and other time inside the timed game step. They also report
+the window time outside those steps and flag inconsistent nested spans. The
+outside-step bucket includes host work, the game tail and unrecorded
+iterations. All buckets measure elapsed wall time. Existing HZP3 and
+per-built-frame fields remain compatible.
+
+For the stationary RC 26 sample, weighting the rounded means by the number
+of completed pairs yields 25.42 ms of redraw outside submission, 60.20 ms of
+submission outside waits and 3.35 ms of measured waits per loop. About
+73.60 ms per loop lies outside those recorded categories. This is an
+aggregate residual. Earlier scaled entry captures recorded a 77.86 ms
+median artwork span on 64 paired gameplay rows, with a 77.80 ms median
+nested texture-upload span. That earlier sample motivates measuring terrain
+animation preparation separately in the next stationary run.
+
+### Counter sampling
+
 The physical [RC 26 timing trials](physical-rc26.md#physical-gpu-timing-probe)
 qualified the top and bottom cycle counter on isolated raster loads. RC 28
 adds opt-in sampling for the hosted gameplay path with `4` in

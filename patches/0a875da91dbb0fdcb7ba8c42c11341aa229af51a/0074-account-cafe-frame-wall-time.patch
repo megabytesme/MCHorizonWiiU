@@ -1,0 +1,290 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index b3e8c7cf611c8e5abab54236e6bd38cbd5cb69be..eb066a684571ae3818eb76e1d4e59653a1d6b19a 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -805,10 +805,12 @@ impl CafeGameSession<'_> {
+                 Phase::Menu
+             });
+         }
++        let idle_started = Instant::now();
+         {
+             horizon_client_platform::cafe_span!(Idle);
+             self.game.idle(&Loop(event_loop));
+         }
++        let idle = idle_started.elapsed();
+         if let Some(error) = &self.game.error {
+             return Err(error.to_string().into());
+         }
+@@ -816,6 +818,7 @@ impl CafeGameSession<'_> {
+             return Ok(false);
+         }
+ 
++        let artwork_started = Instant::now();
+         horizon_client_platform::cafe_span!(artwork, StageArtwork);
+         self.game.gui.atlas.pack_pixels();
+         backend.prepare_game_artwork(CafeGameArtwork {
+@@ -840,6 +843,7 @@ impl CafeGameSession<'_> {
+         })?;
+         #[cfg(target_os = "cafe")]
+         drop(artwork);
++        let artwork = artwork_started.elapsed();
+         let capture = std::mem::take(&mut self.game.cafe_screenshot_requested);
+         if let Some(output) = capture {
+             backend.request_screenshot(output);
+@@ -898,7 +902,14 @@ impl CafeGameSession<'_> {
+         if self
+             .game
+             .cafe_performance
+-            .finish(end, start, after, self.game.cafe_frame_built, redraw, work)
++            .finish(
++                end,
++                start,
++                after,
++                self.game.cafe_frame_built,
++                performance::StepSpans { idle, artwork, redraw },
++                work,
++            )
+             && let Some(sample) = &self.game.cafe_performance.latest
+         {
+             sample.log_serial(self.game.started);
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index d6e8fdda3984503511f64078bf0c5a7d59cb630f..a404d181ecd7c7ae353d617256a3e6a26837f31b 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -42,6 +42,62 @@ pub(in crate::game) struct Totals {
+     pub(in crate::game) combined_flips: Option<u32>,
+ }
+ 
++#[derive(Clone, Copy, Default)]
++pub(in crate::game) struct StepSpans {
++    pub(super) idle: Duration,
++    pub(super) artwork: Duration,
++    pub(super) redraw: Duration,
++}
++
++#[derive(Default)]
++struct WallTimes {
++    game_steps: Duration,
++    idle: Duration,
++    artwork: Duration,
++    redraw_outside_submission: Duration,
++    submission_outside_waits: Duration,
++    waits: Duration,
++    other_game_step: Duration,
++    invalid_steps: u32,
++}
++
++impl WallTimes {
++    fn observe(&mut self, elapsed: Duration, spans: StepSpans, work: CafeFrameWork) {
++        self.game_steps += elapsed;
++        // These are nested wall spans on the render thread. A broken nesting
++        // boundary must not be hidden by independently saturating each bucket.
++        let covered = spans.idle + spans.artwork + spans.redraw;
++        if covered > elapsed || work.submission > spans.redraw || work.gpu_wait > work.submission {
++            self.invalid_steps += 1;
++            self.other_game_step += elapsed;
++            return;
++        }
++        self.idle += spans.idle;
++        self.artwork += spans.artwork;
++        self.redraw_outside_submission += spans.redraw - work.submission;
++        self.submission_outside_waits += work.submission - work.gpu_wait;
++        self.waits += work.gpu_wait;
++        self.other_game_step += elapsed - covered;
++    }
++
++    // Recorded iterations are game steps reaching finish, including ones without a built frame.
++    fn per_iteration(&self, window: Duration, iterations: u32) -> serde_json::Value {
++        let mean = |duration: Duration| duration.as_secs_f64() * 1000.0 / f64::from(iterations);
++        serde_json::json!({
++            "game_steps": mean(self.game_steps),
++            "game_idle": mean(self.idle),
++            "artwork_preparation": mean(self.artwork),
++            "redraw_outside_submission": mean(self.redraw_outside_submission),
++            "submission_outside_measured_waits": mean(self.submission_outside_waits),
++            "measured_gx2_waits": mean(self.waits),
++            "other_inside_game_step": mean(self.other_game_step),
++            "outside_timed_game_steps": window.checked_sub(self.game_steps).map(mean),
++            "invalid_game_steps": self.invalid_steps,
++            "recorded_iterations": iterations,
++        })
++    }
++}
++
+ #[derive(Default)]
+ pub(in crate::game) struct CafePerformance {
+     active: Option<Window>,
+@@ -67,6 +123,7 @@ struct Window {
+     cpu: Duration,
+     submission: Duration,
+     gpu_wait: Duration,
++    wall: WallTimes,
+     uploaded_sections: u64,
+     uploaded_bytes: u64,
+ }
+@@ -103,6 +160,7 @@ impl CafePerformance {
+                 cpu: Duration::ZERO,
+                 submission: Duration::ZERO,
+                 gpu_wait: Duration::ZERO,
++                wall: WallTimes::default(),
+                 uploaded_sections: 0,
+                 uploaded_bytes: 0,
+             });
+@@ -115,7 +173,7 @@ impl CafePerformance {
+         loop_start: Instant,
+         totals: Totals,
+         built: bool,
+-        redraw: Duration,
++        spans: StepSpans,
+         work: CafeFrameWork,
+     ) -> bool {
+         let Some(window) = self.active.as_mut() else {
+@@ -141,7 +199,10 @@ impl CafePerformance {
+         } else {
+             window.previous_paired = None;
+         }
+-        window.cpu += redraw.saturating_sub(work.submission);
++        window
++            .wall
++            .observe(now.duration_since(loop_start), spans, work);
++        window.cpu += spans.redraw.saturating_sub(work.submission);
+         window.submission += work.submission.saturating_sub(work.gpu_wait);
+         window.gpu_wait += work.gpu_wait;
+         window.uploaded_sections += work.uploaded_sections;
+@@ -230,6 +291,24 @@ impl Sample {
+                 mean(window.gpu_wait),
+             );
+         }
++        let wall = &window.wall;
++        let duration = self.end.duration_since(window.start);
++        let mean = |span: Duration| span.as_secs_f64() * 1000.0 / f64::from(window.iterations);
++        log::info!(
++            "Horizon Cafe wall game: t_ms={at} game_ms={:.2} idle_ms={:.2} artwork_ms={:.2} other_ms={:.2} invalid_steps={}",
++            mean(wall.game_steps),
++            mean(wall.idle),
++            mean(wall.artwork),
++            mean(wall.other_game_step),
++            wall.invalid_steps,
++        );
++        log::info!(
++            "Horizon Cafe wall render: t_ms={at} redraw_ms={:.2} submit_ms={:.2} gx2_wait_ms={:.2} outside_game_ms={:?}",
++            mean(wall.redraw_outside_submission),
++            mean(wall.submission_outside_waits),
++            mean(wall.waits),
++            duration.checked_sub(wall.game_steps).map(mean),
++        );
+         if let Some(resolution) = window.world_resolution {
+             let [[tv_w, tv_h], [pad_w, pad_h]] = resolution.dimensions;
+             log::info!(
+@@ -295,6 +374,10 @@ impl Sample {
+             "redraw_outside_submission_ms_per_game_frame": mean_ms(window.cpu),
+             "submission_outside_measured_waits_ms_per_game_frame": mean_ms(window.submission),
+             "measured_gx2_wait_ms_per_game_frame": mean_ms(window.gpu_wait),
++            "wall_ms_per_recorded_iteration": window.wall.per_iteration(
++                self.end.duration_since(window.start),
++                window.iterations,
++            ),
+         })
+     }
+ }
+@@ -303,6 +386,91 @@ impl Sample {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn wall_buckets_cover_the_window_even_when_a_game_frame_is_not_built() {
++        let start = Instant::now();
++        let ms = Duration::from_millis;
++        let totals = Totals::default();
++        let mut performance = CafePerformance::default();
++        performance.begin(Phase::Gameplay, start, totals);
++        performance.finish(
++            start + ms(120),
++            start + ms(20),
++            totals,
++            true,
++            StepSpans {
++                idle: ms(10),
++                artwork: ms(20),
++                redraw: ms(55),
++            },
++            CafeFrameWork {
++                submission: ms(30),
++                gpu_wait: ms(5),
++                ..Default::default()
++            },
++        );
++        performance.finish(
++            start + ms(2000),
++            start + ms(1900),
++            totals,
++            false,
++            StepSpans {
++                idle: ms(20),
++                artwork: ms(15),
++                redraw: ms(40),
++            },
++            CafeFrameWork::default(),
++        );
++        let sample = performance.latest.as_ref().unwrap();
++        let json = sample.json(start, start + ms(2000));
++        let wall = &json["wall_ms_per_recorded_iteration"];
++        assert_eq!(
++            wall,
++            &serde_json::json!({
++                "game_steps": 100.0,
++                "game_idle": 15.0,
++                "artwork_preparation": 17.5,
++                "redraw_outside_submission": 32.5,
++                "submission_outside_measured_waits": 12.5,
++                "measured_gx2_waits": 2.5,
++                "other_inside_game_step": 20.0,
++                "outside_timed_game_steps": 900.0,
++                "invalid_game_steps": 0,
++                "recorded_iterations": 2,
++            })
++        );
++        // Preserve the earlier per-built-frame denominator on existing fields.
++        assert_eq!(
++            json["submission_outside_measured_waits_ms_per_game_frame"],
++            25.0
++        );
++    }
++
++    #[test]
++    fn inconsistent_nested_spans_count_as_unattributed_game_time() {
++        let mut wall = WallTimes::default();
++        let ms = Duration::from_millis;
++        wall.observe(
++            ms(100),
++            StepSpans {
++                idle: ms(10),
++                artwork: ms(20),
++                redraw: ms(10),
++            },
++            CafeFrameWork {
++                submission: ms(11),
++                ..Default::default()
++            },
++        );
++        let json = wall.per_iteration(ms(120), 1);
++        assert_eq!(json["invalid_game_steps"], 1);
++        assert_eq!(json["game_steps"], 100.0);
++        assert_eq!(json["other_inside_game_step"], 100.0);
++        assert_eq!(json["submission_outside_measured_waits"], 0.0);
++        assert_eq!(json["outside_timed_game_steps"], 20.0);
++        assert!(wall.per_iteration(ms(90), 1)["outside_timed_game_steps"].is_null());
++    }
++
+     #[test]
+     fn cadence_and_completeness_require_paired_submissions() {
+         let start = Instant::now();
+@@ -323,7 +491,7 @@ mod tests {
+                 omitted_pass_mask,
+                 ..Default::default()
+             };
+-            performance.finish(time, time, totals, true, Duration::ZERO, work);
++            performance.finish(time, time, totals, true, StepSpans::default(), work);
+         }
+         let sample = performance.latest.as_ref().unwrap();
+         let json = sample.json(start, start + Duration::from_secs(2));
