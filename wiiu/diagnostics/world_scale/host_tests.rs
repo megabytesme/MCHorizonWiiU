@@ -130,9 +130,15 @@ fn native_scale_preserves_native_hud_extent_and_retires_surfaces() {
 
 #[test]
 fn synthetic_gpu_samples_drive_native_target_requests() {
+    let _serial = SERIAL.lock().unwrap();
+    for target_fps in [30, 60] {
+        check_target_fps(target_fps);
+    }
+}
+
+fn check_target_fps(target_fps: u32) {
     use dynamic_resolution::{DynamicResolution, Pace};
 
-    let _serial = SERIAL.lock().unwrap();
     let mut controller = DynamicResolution::new();
     let mut targets = world_scale::WorldScale::default();
     let viewports = [[0, 0, 1280, 720], [0, 0, 854, 480]];
@@ -141,7 +147,7 @@ fn synthetic_gpu_samples_drive_native_target_requests() {
 
     for _ in 0..100 {
         assert_eq!(
-            controller.observe(None, 100.0, floor, 60, Pace::Quick),
+            controller.observe(None, 100.0, floor, target_fps, Pace::Quick),
             None
         );
     }
@@ -153,7 +159,7 @@ fn synthetic_gpu_samples_drive_native_target_requests() {
 
     let mut changes = Vec::new();
     for _ in 0..1000 {
-        if let Some(scale) = controller.observe(Some(8.0), 16.0, floor, 60, Pace::Quick) {
+        if let Some(scale) = controller.observe(Some(8.0), 16.0, floor, target_fps, Pace::Quick) {
             targets.prepare(scale, viewports);
             changes.push(targets.resolution().unwrap().effective_scale);
         }
@@ -161,9 +167,24 @@ fn synthetic_gpu_samples_drive_native_target_requests() {
     assert_eq!(changes, [80, 85, 90, 95, 100]);
     assert_eq!(targets.resolution().unwrap().surface_bytes, 0);
 
+    for _ in 0..240 {
+        assert_eq!(
+            controller.observe(Some(8.0), 100.0, floor, target_fps, Pace::Quick),
+            None,
+        );
+    }
+    assert_eq!(controller.scale(floor), 100);
+
     changes.clear();
+    let (gpu_ms, frame_ms) = if target_fps == 30 {
+        (50.0, 60.0)
+    } else {
+        (25.0, 33.0)
+    };
     for _ in 0..500 {
-        if let Some(scale) = controller.observe(Some(25.0), 33.0, floor, 60, Pace::Quick) {
+        if let Some(scale) =
+            controller.observe(Some(gpu_ms), frame_ms, floor, target_fps, Pace::Quick)
+        {
             targets.prepare(scale, viewports);
             changes.push(targets.resolution().unwrap().effective_scale);
         }
