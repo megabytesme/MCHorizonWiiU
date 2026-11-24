@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699",
+  "output_tree": "d9d505bb527671985fd946841ac3cc63234d5ddb",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -232,6 +232,12 @@
       "sha256": "b47368bffa2b383b71a9da58fea5d48471358d74214197284b27a6353a549f44",
       "input_tree": "9c2c314ff9773278f480c3b78f3e52878ec5a0fe",
       "output_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0038-keep-cafe-ax-across-game-sessions.patch",
+      "sha256": "43097758707710baf550c242450685f4d8240ab6abaffd05fac9a43d62f2e07c",
+      "input_tree": "2be1bcc1f185f1a52ab8823540abd853a0e3b699",
+      "output_tree": "d9d505bb527671985fd946841ac3cc63234d5ddb"
     }
   ],
   "candidate": {

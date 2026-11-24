@@ -1,0 +1,228 @@
+diff --git a/wiiu/audio/audio.c b/wiiu/audio/audio.c
+index 2c67bfc..713511b 100644
+--- a/wiiu/audio/audio.c
++++ b/wiiu/audio/audio.c
+@@ -24,6 +24,10 @@ void horizon_wiiu_audio_close(void *handle)
+    (void)handle;
+ }
+ 
++void horizon_wiiu_audio_shutdown(void)
++{
++}
++
+ #else
+ 
+ #include <coreinit/cache.h>
+@@ -62,10 +66,12 @@ typedef struct HorizonWiiUAudio {
+    uint32_t ring_cursor;
+    volatile uint32_t queue_write;
+    volatile uint32_t queue_read;
+-   BOOL owns_ax;
+    BOOL callback_registered;
+ } HorizonWiiUAudio;
+ 
++/* AX belongs to the application. Each world still owns its callback, voices
++ * and PCM. Keep the system service running across the return to Night. */
++static BOOL sOwnsAx;
+ static HorizonWiiUAudio *sAudio;
+ static volatile uint32_t sCallbacksActive;
+ 
+@@ -120,15 +126,15 @@ static AXResult configure_voice(AXVoice *voice, int16_t *samples, uint32_t count
+ 
+ static void audio_frame_callback(void)
+ {
+-   __atomic_add_fetch(&sCallbacksActive, 1u, __ATOMIC_ACQUIRE);
+-   HorizonWiiUAudio *audio = __atomic_load_n(&sAudio, __ATOMIC_ACQUIRE);
++   __atomic_add_fetch(&sCallbacksActive, 1u, __ATOMIC_SEQ_CST);
++   HorizonWiiUAudio *audio = __atomic_load_n(&sAudio, __ATOMIC_SEQ_CST);
+    if (audio == NULL) {
+-      __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_RELEASE);
++      __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_SEQ_CST);
+       return;
+    }
+    if (audio->samples_per_frame > HORIZON_AUDIO_MAX_FRAME_SAMPLES ||
+        audio->left_voice == NULL || audio->right_voice == NULL) {
+-      __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_RELEASE);
++      __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_SEQ_CST);
+       return;
+    }
+ 
+@@ -158,7 +164,7 @@ static void audio_frame_callback(void)
+       __atomic_store_n(&audio->callback_milestones, next, __ATOMIC_RELEASE);
+    audio->ring_cursor = (audio->ring_cursor + audio->samples_per_frame) % audio->ring_samples;
+ 
+-   __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_RELEASE);
++   __atomic_sub_fetch(&sCallbacksActive, 1u, __ATOMIC_SEQ_CST);
+ }
+ 
+ static void close_partial(HorizonWiiUAudio *audio)
+@@ -181,10 +187,6 @@ static void close_partial(HorizonWiiUAudio *audio)
+       MEMFreeToDefaultHeap(audio->left_ring);
+       audio->left_ring = NULL;
+    }
+-   if (audio->owns_ax) {
+-      AXQuit();
+-      audio->owns_ax = FALSE;
+-   }
+ }
+ 
+ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+@@ -199,7 +201,7 @@ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+    }
+    if (!AXIsInit()) {
+       AXInit();
+-      audio->owns_ax = TRUE;
++      sOwnsAx = AXIsInit();
+    }
+    audio->samples_per_frame = AXGetInputSamplesPerFrame();
+    audio->samples_per_second = AXGetInputSamplesPerSec();
+@@ -244,12 +246,12 @@ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate)
+    AXResult drc_right = configure_voice(audio->right_voice, audio->right_ring,
+                                          audio->ring_samples, AX_DEVICE_TYPE_DRC, 1);
+ 
+-   __atomic_store_n(&sAudio, audio, __ATOMIC_RELEASE);
++   __atomic_store_n(&sAudio, audio, __ATOMIC_SEQ_CST);
+    AXResult callback = AXRegisterAppFrameCallback(audio_frame_callback);
+    if (callback != AX_RESULT_SUCCESS) {
+       OSReport("Horizon AX callback registration failed: result=%d\n", (int)callback);
+-      __atomic_store_n(&sAudio, NULL, __ATOMIC_RELEASE);
+-      while (__atomic_load_n(&sCallbacksActive, __ATOMIC_ACQUIRE) != 0) {
++      __atomic_store_n(&sAudio, NULL, __ATOMIC_SEQ_CST);
++      while (__atomic_load_n(&sCallbacksActive, __ATOMIC_SEQ_CST) != 0) {
+          OSSleepTicks(1);
+       }
+       close_partial(audio);
+@@ -295,19 +297,36 @@ void horizon_wiiu_audio_submit(void *handle, const float *stereo, uint32_t frame
+ void horizon_wiiu_audio_close(void *handle)
+ {
+    HorizonWiiUAudio *audio = (HorizonWiiUAudio *)handle;
+-   if (audio == NULL || audio != __atomic_load_n(&sAudio, __ATOMIC_ACQUIRE)) {
++   if (audio == NULL || audio != __atomic_load_n(&sAudio, __ATOMIC_SEQ_CST)) {
+       return;
+    }
+    if (audio->callback_registered) {
+       AXDeregisterAppFrameCallback(audio_frame_callback);
+       audio->callback_registered = FALSE;
+    }
+-   __atomic_store_n(&sAudio, NULL, __ATOMIC_RELEASE);
+-   while (__atomic_load_n(&sCallbacksActive, __ATOMIC_ACQUIRE) != 0) {
++   __atomic_store_n(&sAudio, NULL, __ATOMIC_SEQ_CST);
++   while (__atomic_load_n(&sCallbacksActive, __ATOMIC_SEQ_CST) != 0) {
+       OSSleepTicks(1);
+    }
++   const uint32_t milestones = __atomic_load_n(&audio->callback_milestones, __ATOMIC_RELAXED);
++   OSReport("Horizon AX session closed callback=%u nonzero=%u queue_write=%u queue_read=%u\n",
++            (milestones & AUDIO_CALLBACK_SEEN) != 0, (milestones & AUDIO_PCM_DELIVERED) != 0,
++            __atomic_load_n(&audio->queue_write, __ATOMIC_RELAXED),
++            __atomic_load_n(&audio->queue_read, __ATOMIC_RELAXED));
+    close_partial(audio);
+    free(audio);
+ }
+ 
++void horizon_wiiu_audio_shutdown(void)
++{
++   if (__atomic_load_n(&sAudio, __ATOMIC_SEQ_CST) != NULL) {
++      OSReport("Horizon AX shutdown skipped while a game stream still owns the mixer\n");
++      return;
++   }
++   if (sOwnsAx) {
++      if (AXIsInit()) AXQuit();
++      sOwnsAx = FALSE;
++   }
++}
++
+ #endif
+diff --git a/wiiu/audio/audio.h b/wiiu/audio/audio.h
+index 3074ef3..9f94f8f 100644
+--- a/wiiu/audio/audio.h
++++ b/wiiu/audio/audio.h
+@@ -5,3 +5,6 @@
+ void *horizon_wiiu_audio_open(uint32_t *frames, uint32_t *rate);
+ void horizon_wiiu_audio_submit(void *handle, const float *stereo, uint32_t frames);
+ void horizon_wiiu_audio_close(void *handle);
++
++/* Release an application-owned AX service after all session streams close. */
++void horizon_wiiu_audio_shutdown(void);
+diff --git a/wiiu/audio/tests/reopen/CMakeLists.txt b/wiiu/audio/tests/reopen/CMakeLists.txt
+new file mode 100644
+index 0000000..307be8e
+--- /dev/null
++++ b/wiiu/audio/tests/reopen/CMakeLists.txt
+@@ -0,0 +1,7 @@
++# Configure with powerpc-eabi-cmake and build with the pinned Cafe toolchain.
++cmake_minimum_required(VERSION 3.13)
++project(horizon_cafe_ax_reopen C)
++
++add_executable(horizon_cafe_ax_reopen main.c)
++target_compile_options(horizon_cafe_ax_reopen PRIVATE -Wall -Wextra -Werror)
++wut_create_rpx(horizon_cafe_ax_reopen)
+diff --git a/wiiu/audio/tests/reopen/main.c b/wiiu/audio/tests/reopen/main.c
+new file mode 100644
+index 0000000..1e91661
+--- /dev/null
++++ b/wiiu/audio/tests/reopen/main.c
+@@ -0,0 +1,44 @@
++/* Include the bridge so this probe can inspect its callback milestones. */
++#include "../../audio.c"
++
++#include <coreinit/time.h>
++#include <whb/proc.h>
++
++int main(void)
++{
++   WHBProcInit();
++   unsigned failures = 0;
++   for (unsigned session = 1; session <= 3; ++session) {
++      uint32_t frames = 0, sample_rate = 0;
++      HorizonWiiUAudio *audio = horizon_wiiu_audio_open(&frames, &sample_rate);
++      if (!audio) {
++         OSReport("Horizon AX reopen probe session=%u open failed\n", session);
++         failures++;
++         continue;
++      }
++      float stereo[HORIZON_AUDIO_MAX_FRAME_SAMPLES * 2u] = { 0 };
++      stereo[0] = 0.015625f;
++      stereo[1] = -0.015625f;
++      uint32_t seen = 0;
++      for (unsigned poll = 0; poll < 100; ++poll) {
++         horizon_wiiu_audio_submit(audio, stereo, frames);
++         OSSleepTicks(OSMillisecondsToTicks(3));
++         seen = __atomic_load_n(&audio->callback_milestones, __ATOMIC_ACQUIRE);
++         if ((seen & (AUDIO_CALLBACK_SEEN | AUDIO_PCM_DELIVERED)) ==
++             (AUDIO_CALLBACK_SEEN | AUDIO_PCM_DELIVERED)) {
++            break;
++         }
++      }
++      OSReport("Horizon AX reopen probe session=%u rate=%u callback=%u nonzero=%u\n",
++               session, sample_rate, (seen & AUDIO_CALLBACK_SEEN) != 0,
++               (seen & AUDIO_PCM_DELIVERED) != 0);
++      if (seen != (AUDIO_CALLBACK_SEEN | AUDIO_PCM_DELIVERED)) failures++;
++      OSSleepTicks(OSMillisecondsToTicks(4000));
++      horizon_wiiu_audio_close(audio);
++      if (session < 3) OSSleepTicks(OSMillisecondsToTicks(6000));
++   }
++   horizon_wiiu_audio_shutdown();
++   OSReport("Horizon AX reopen probe failures=%u\n", failures);
++   WHBProcShutdown();
++   return failures != 0;
++}
+diff --git a/wiiu/loading_app/main.c b/wiiu/loading_app/main.c
+index a061bd7..e7a169c 100644
+--- a/wiiu/loading_app/main.c
++++ b/wiiu/loading_app/main.c
+@@ -1,3 +1,5 @@
++#include "../audio/audio.h"
++
+ #include <coreinit/debug.h>
+ #include <nn/ac.h>
+ #include <stdint.h>
+@@ -93,7 +95,8 @@ int main(void)
+       break;
+    }
+ 
+-   /* Rust drops the presenter and Loading outcome before returning here. */
++   /* Rust drops the presenter and session streams before returning here. */
++   horizon_wiiu_audio_shutdown();
+    WHBGfxShutdown();
+    WHBProcShutdown();
+    return result == 0 ? 0 : 1;
