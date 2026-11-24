@@ -1,0 +1,60 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 290359d3c1ea4c32b139daf881255eb3e11d0ddc..ccb47f7a5817647810ebf537077d994a61d88061 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -45,6 +45,7 @@ _Static_assert(sizeof(GpuCycleSlot) == 64, "isolate GPU sample cache lines");
+ static GpuCycleSlot gpu_slots[2][2];
+ static bool gpu_cycle_probe;
+ static OSTime gpu_before, gpu_report_at;
++static uint32_t gpu_samples_valid, gpu_samples_unpaired;
+ 
+ typedef struct {
+    uint32_t sequence, phase, start_hi, start_lo, loop_ticks, pacing_ticks;
+@@ -92,7 +93,7 @@ void horizon_gx2_profile_init(void)
+    legacy_terrain_bindings = mode == '2';
+    legacy_terrain_attributes = mode == '3';
+    gpu_cycle_probe = mode == '4';
+-   legacy_terrain_uniforms = mode == '5';
++   legacy_terrain_uniforms = mode == '5' || (mode == '4' && fgetc(marker) == '5');
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -154,9 +155,12 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+       OSReport("Horizon GX2 GPU samples unavailable: submission not verified retired\n");
+       return;
+    }
+-   if (outputs != 3) return;
++   if (outputs != 3) {
++      ++gpu_samples_unpaired;
++      return;
++   }
+ 
+-   uint64_t spans[2];
++   uint64_t endpoints[2][2];
+    for (unsigned target = 0; target < 2; ++target) {
+       const uint64_t top = gpu_slot_read(&gpu_slots[target][0]);
+       const uint64_t bottom = gpu_slot_read(&gpu_slots[target][1]);
+@@ -165,14 +169,20 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+          OSReport("Horizon GX2 GPU samples unavailable: invalid GPU cycle pair\n");
+          return;
+       }
+-      spans[target] = bottom - top;
++      endpoints[target][0] = top;
++      endpoints[target][1] = bottom;
+    }
++   ++gpu_samples_valid;
+ 
+    const OSTime now = OSGetSystemTime();
+    if (now < gpu_report_at) return;
+    gpu_report_at = now + OSMillisecondsToTicks(2000);
+-   OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu\n",
+-            total, (unsigned long long)spans[0], (unsigned long long)spans[1]);
++   OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu valid=%u unpaired=%u\n",
++            total, (unsigned long long)(endpoints[0][1] - endpoints[0][0]),
++            (unsigned long long)(endpoints[1][1] - endpoints[1][0]), gpu_samples_valid, gpu_samples_unpaired);
++   OSReport("Horizon GX2 GPU endpoints seq=%u tv=%016llx/%016llx drc=%016llx/%016llx\n",
++            total, (unsigned long long)endpoints[0][0], (unsigned long long)endpoints[0][1],
++            (unsigned long long)endpoints[1][0], (unsigned long long)endpoints[1][1]);
+ }
+ 
+ bool horizon_gx2_profile_begin(uint32_t phase)

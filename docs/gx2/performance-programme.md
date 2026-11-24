@@ -326,10 +326,18 @@ the probe for that process. A forced-interpreter fixture exercised the
 normal paired present function and confirmed rejection of Cemu's sentinel.
 
 When valid, serial reports the per-output spans in raw ticks, the nominal
-27 MHz clock and the HZP3 sequence once every two seconds. Intermittent CPU
-submission can leave GPU idle time between the markers. The spans still
-need physical gameplay, foreground and scale-transition trials before use
-as a DRS input.
+27 MHz clock and the HZP3 sequence once every two seconds. RC 29 adds the
+four raw endpoints and cumulative valid and unpaired counts. Use marker
+`4` for batched terrain uniforms and `45` for the legacy uniform writes
+with the same GPU probe active. Both modes kept rendering after rejecting
+Cemu's sentinel in the paired fixture.
+
+The top marker precedes the explicit terrain wait in the draw callback.
+The wait can retire the top marker while the CPU is still preparing draws,
+leaving pipeline idle time inside this span. Compare raw endpoints against
+the wall and HZP3 records. Physical gameplay, foreground transitions,
+scale sensitivity and tighter marker placement still need qualification
+before this signal can drive DRS.
 
 ## Hosted benchmark
 

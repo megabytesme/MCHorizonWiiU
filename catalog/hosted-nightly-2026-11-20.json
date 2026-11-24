@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "3c01be75d4ed4427989060ea8fb8fc72620a78cc",
+  "output_tree": "3340b7e5e4e8848f78a1abe9df971e6bfa263ebd",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -472,6 +472,12 @@
       "sha256": "fae6bcb29fe820950fcdede7de5d250ea80cecb9a7e659ee099d0e34c841935b",
       "input_tree": "eb2dcb07a9f02f0d2eb9f9495561ecb68db5d902",
       "output_tree": "3c01be75d4ed4427989060ea8fb8fc72620a78cc"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0078-log-gx2-sample-endpoints-for-hardware-comparison.patch",
+      "sha256": "4461e3b2eb9f94d90452aad7a283f9785d59424b82b8df81bc27fb34f8aa3096",
+      "input_tree": "3c01be75d4ed4427989060ea8fb8fc72620a78cc",
+      "output_tree": "3340b7e5e4e8848f78a1abe9df971e6bfa263ebd"
     }
   ],
   "candidate": {
