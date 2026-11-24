@@ -1,0 +1,134 @@
+diff --git a/wiiu/loading_host/sky_bodies.rs b/wiiu/loading_host/sky_bodies.rs
+index 5883e09db75244281c27dedba1b82d9eea3ecff0..9095775c95f45dfcc10f2922ccf819275dbfc0ef 100644
+--- a/wiiu/loading_host/sky_bodies.rs
++++ b/wiiu/loading_host/sky_bodies.rs
+@@ -1,5 +1,5 @@
+ use crate::TerrainProjection;
+-use horizon_client::{gfx::Frame, mesher::Vertex as SharedVertex};
++use horizon_client::gfx::{Frame, sky_open};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+@@ -19,16 +19,19 @@ unsafe extern "C" {
+     ) -> i32;
+ }
+ 
+-pub(crate) fn stock_bodies(vertices: &[SharedVertex]) -> bool {
+-    geometry::valid_shape(vertices.len(), vertices.iter().map(|vertex| vertex.layer))
++pub(crate) fn stock_bodies(frame: &Frame<'_>) -> bool {
++    geometry::valid_shape(
++        frame.end_sky,
++        frame.celestial.len(),
++        frame.celestial.iter().map(|vertex| vertex.layer),
++    )
+ }
+ 
+ pub(crate) fn unsupported(frame: &Frame<'_>, has_atlas: bool) -> bool {
+-    if frame.title || frame.sky_blocked || frame.celestial.is_empty() {
++    if frame.title || !sky_open(frame) || frame.celestial.is_empty() {
+         return false;
+     }
+-    // End flashes are separate from the resident End sky cube.
+-    frame.end_sky || (frame.skybox && (!has_atlas || !stock_bodies(frame.celestial)))
++    (frame.end_sky || frame.skybox) && (!has_atlas || !stock_bodies(frame))
+ }
+ 
+ #[derive(Default)]
+diff --git a/wiiu/loading_host/sky_bodies_vertices.rs b/wiiu/loading_host/sky_bodies_vertices.rs
+index ac62387b314d399ecdc2b6c2e10636924b0e4e45..647bda6a58c0a3b300b0b5b4eff8545ef9dc2e9d 100644
+--- a/wiiu/loading_host/sky_bodies_vertices.rs
++++ b/wiiu/loading_host/sky_bodies_vertices.rs
+@@ -15,10 +15,15 @@ const _: () = {
+     assert!(std::mem::offset_of!(Vertex, rgba) == 24);
+ };
+ 
+-pub(super) fn valid_shape(count: usize, layers: impl IntoIterator<Item = u32>) -> bool {
++pub(super) fn valid_shape(
++    end_sky: bool,
++    count: usize,
++    layers: impl IntoIterator<Item = u32>,
++) -> bool {
+     count > 0
+         && count <= MAX_SOURCE_VERTICES
+         && count.is_multiple_of(4)
++        && (!end_sky || count == 4)
+         && layers.into_iter().all(|layer| layer & 0xffff == 2)
+ }
+ 
+@@ -43,11 +48,31 @@ mod tests {
+ 
+     #[test]
+     fn accepts_only_complete_sun_and_moon_quads() {
+-        assert!(valid_shape(4, [2 | 4 << 16; 4]));
+-        assert!(valid_shape(8, [2; 8]));
+-        assert!(!valid_shape(7, [2; 7]));
+-        assert!(!valid_shape(12, [2; 12]));
+-        assert!(!valid_shape(4, [2, 2, 2, 37]));
++        assert!(valid_shape(false, 4, [2 | 4 << 16; 4]));
++        assert!(valid_shape(false, 8, [2; 8]));
++        assert!(!valid_shape(false, 7, [2; 7]));
++        assert!(!valid_shape(false, 12, [2; 12]));
++        assert!(!valid_shape(false, 4, [2, 2, 2, 37]));
++    }
++
++    #[test]
++    fn expands_one_end_flash_without_changing_intensity_or_uv() {
++        assert!(valid_shape(true, 4, [2; 4]));
++        assert!(!valid_shape(true, 8, [2; 8]));
++        assert!(!valid_shape(true, 4, [2, 2, 2, 37]));
++        let uv = [[0.25, 0.5], [0.5, 0.5], [0.5, 0.75], [0.25, 0.75]];
++        let mut output = [Vertex::default(); MAX_VERTICES];
++        let count = expand(&mut output, 4, |index| Vertex {
++            uv: uv[index],
++            rgba: [96; 4],
++            ..Vertex::default()
++        });
++        assert_eq!(count, 6);
++        let expected = [uv[0], uv[1], uv[2], uv[0], uv[2], uv[3]];
++        for (vertex, expected_uv) in output[..count].iter().zip(expected) {
++            assert_eq!(vertex.uv, expected_uv);
++            assert_eq!(vertex.rgba, [96; 4]);
++        }
+     }
+ 
+     #[test]
+diff --git a/wiiu/loading_host/stock_sky.rs b/wiiu/loading_host/stock_sky.rs
+index 09a8827223aab4ae42b141b2de4d184243581a35..769e818a7765c54ac1da7651dbe12e3b6270bc2e 100644
+--- a/wiiu/loading_host/stock_sky.rs
++++ b/wiiu/loading_host/stock_sky.rs
+@@ -1,6 +1,8 @@
+ use crate::end_sky::EndSky;
+ use crate::sky_bodies::{SkyBodies, stock_bodies};
+-use horizon_client::gfx::{Frame, SkyVertex, View, fog_uniform, star_triangles, stock_sky_mesh};
++use horizon_client::gfx::{
++    Frame, SkyVertex, View, fog_uniform, sky_open, star_triangles, stock_sky_mesh,
++};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+@@ -69,7 +71,15 @@ impl Sky {
+         atlas: Option<&HorizonPresenter<'_>>,
+     ) -> Result<(), &'static str> {
+         if frame.end_sky {
+-            return self.end.draw(frame, atlas, rect, aspect);
++            self.end.draw(frame, atlas, rect, aspect)?;
++            // The End flash uses the same atlas-backed additive draw as
++            // the Overworld bodies, after the End sky cube.
++            if let Some(atlas) =
++                atlas.filter(|_| !frame.title && sky_open(frame) && stock_bodies(frame))
++            {
++                self.bodies.draw(frame, atlas, target, rect, aspect)?;
++            }
++            return Ok(());
+         }
+         let Some(mesh) = stock_sky_mesh(frame, aspect) else {
+             return Ok(());
+@@ -91,7 +101,7 @@ impl Sky {
+         let [r, g, b] = frame.sky.sky_color;
+         // WHBGfxFinishRender retires both outputs every frame. Each output
+         // owns its vertex storage, and GX2 copies the temporary data here.
+-        let atlas = atlas.filter(|_| stock_bodies(frame.celestial));
++        let atlas = atlas.filter(|_| stock_bodies(frame));
+         let stars = frame.stars.filter(|(_, brightness)| *brightness > 0.0);
+         let draw_dark_separately = atlas.is_some() || stars.is_some();
+         let draw_sky = if draw_dark_separately {
