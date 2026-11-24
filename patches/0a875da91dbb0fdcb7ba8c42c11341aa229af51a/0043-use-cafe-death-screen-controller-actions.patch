@@ -1,0 +1,27 @@
+diff --git a/crates/horizon-client/src/game/interface/pad_menu.rs b/crates/horizon-client/src/game/interface/pad_menu.rs
+index 240aa71d363c2ac21685220b5bab64b8919de599..bfdc7d765f253e05a741c103f1d57ecd0583b6ea 100644
+--- a/crates/horizon-client/src/game/interface/pad_menu.rs
++++ b/crates/horizon-client/src/game/interface/pad_menu.rs
+@@ -793,6 +793,22 @@ impl Game<'_> {
+         }
+         // The pad takes the focus back from the keyboard.
+         self.pad.menu.keyboard = false;
++        #[cfg(target_os = "cafe")]
++        if self.screen == Screen::Dead && !self.prompt_open() {
++            // Use the death screen's own focus and actions on Cafe.
++            let key = match button {
++                Button::DPadUp => Some(KeyCode::ArrowUp),
++                Button::DPadDown => Some(KeyCode::ArrowDown),
++                Button::DPadLeft => Some(KeyCode::ArrowLeft),
++                Button::DPadRight => Some(KeyCode::ArrowRight),
++                Button::South if self.death_focus.is_none() => Some(KeyCode::Tab),
++                Button::South => Some(KeyCode::Enter),
++                _ => None,
++            };
++            if let Some(key) = key {
++                return self.death_key(key);
++            }
++        }
+         // A with LT held over the crafting book is LT + A: LT coming up changes no category.
+         if button == Button::South
+             && let Some(trigger) = &mut self.pad.menu.trigger
