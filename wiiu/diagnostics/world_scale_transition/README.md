@@ -44,7 +44,19 @@ invalidates the physical comparison.
 | 6 | RC 26 repeated with the opposite source pattern. | Compare the two RC 26 arms for stale output and reuse effects. |
 
 If every row passes on hardware, repeat with stock terrain and the original
-frame's target-state changes. For emulator-only source and destination
+frame's target-state changes. If every scaled row stays green, build again
+with `-DHORIZON_SCALE_VISUAL_STORAGE=ON`. The direct, RC 26, depth-off and
+repeat controls remain. The new arms change one step after the depth-off
+control.
+
+| Trial | Storage or context change |
+| --- | --- |
+| 3 | Bind the same offscreen attachments and draw without clearing the color. |
+| 4 | Rebind the WHB color and depth buffers for the composite without restoring the WHB context first. |
+| 5 | Copy the rendered color to a separate GPU texture and composite from the copy. It uses a normal GPU surface and no CPU mapping or readback. |
+| 6 | Reapply the WHB context right after the offscreen clear and then rebind the offscreen attachments before drawing. WHB restores context this way after clearing its own targets. |
+
+For emulator-only source and destination
 readbacks, use a separate build with `-DHORIZON_SCALE_CEMU_READBACK=ON`.
 The original readback build passed all 26 Cemu controls and crashed during
 the first TV readback on physical hardware. Keep it in Cemu.
@@ -54,4 +66,5 @@ Wii U blur path invalidates the source texture before rebinding its next
 color target. These mechanisms motivate the variants. Physical results are
 needed to identify which mechanism affects the hosted renderer.
 [Cemu surface-sync handler](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp) ·
-[RetroArch GX2 passes](https://github.com/libretro/RetroArch/blob/master/gfx/drivers/gx2_gfx.c)
+[RetroArch GX2 passes](https://github.com/libretro/RetroArch/blob/master/gfx/drivers/gx2_gfx.c) ·
+[WHB target and context setup](https://github.com/devkitPro/wut/blob/v1.9.2/libraries/libwhb/src/gfx.c#L469-L480)

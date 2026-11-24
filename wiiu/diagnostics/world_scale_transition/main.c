@@ -1,5 +1,6 @@
 #include <gx2/mem.h>
 #include <gx2/state.h>
+#include <gx2/context.h>
 #include <sysapp/launch.h>
 
 enum TransitionMode { RC26_ORDER, BEFORE_RESTORE, SPLIT_SYNC, DRAINED_SYNC, COPY_TEXTURE };
@@ -12,6 +13,16 @@ static void composite_invalidate(GX2InvalidateMode mode, void *address, uint32_t
       GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, address, bytes);
 }
 
+#ifdef HORIZON_SCALE_VISUAL_STORAGE
+static bool restore_context = true;
+
+static void composite_context(GX2ContextState *context)
+{
+   if (restore_context) GX2SetContextState(context);
+}
+#define GX2SetContextState composite_context
+#endif
+
 /* Reuse the simple pattern draw, while interposing only the synchronization
  * call in the compiled production composite. */
 #define GX2Invalidate composite_invalidate
@@ -19,6 +30,9 @@ static void composite_invalidate(GX2InvalidateMode mode, void *address, uint32_t
 #include "../world_scale/main.c"
 #undef main
 #undef GX2Invalidate
+#ifdef HORIZON_SCALE_VISUAL_STORAGE
+#undef GX2SetContextState
+#endif
 
 static bool reversed_texture(GX2Texture *pattern)
 {
