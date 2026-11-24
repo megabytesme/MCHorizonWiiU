@@ -1,0 +1,30 @@
+--- a/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerX64.cpp
++++ b/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerX64.cpp
+@@ -1365,6 +1365,7 @@
+ 			x64Gen_cmc(x64GenContext);
+ 			// result = operand1 - operand1 -> 0
+ 			x64Gen_sbb_reg64Low32_reg64Low32(x64GenContext, rRegResult, rRegResult);
++			x64Gen_cmc(x64GenContext);
+ 		}
+ 		else if( rRegResult == rRegOperand1 )
+ 		{
+@@ -1373,6 +1374,7 @@
+ 			x64Gen_cmc(x64GenContext);
+ 			// result = result - operand2
+ 			x64Gen_sbb_reg64Low32_reg64Low32(x64GenContext, rRegResult, rRegOperand2);
++			x64Gen_cmc(x64GenContext);
+ 		}
+ 		else if ( rRegResult == rRegOperand2 )
+ 		{
+@@ -1393,8 +1395,9 @@
+ 			x64Gen_cmc(x64GenContext);
+ 			// sub operand2
+ 			x64Gen_sbb_reg64Low32_reg64Low32(x64GenContext, rRegResult, rRegOperand2);
+-		}
+-		// update carry flag (todo: is this actually correct in all cases?)
++			x64Gen_cmc(x64GenContext);
++		}
++		// SBB computes borrow. XER[CA] stores the inverse, as ADC already does.
+ 		x64Gen_setcc_mem8(x64GenContext, X86_CONDITION_CARRY, REG_RSP, offsetof(PPCInterpreter_t, xer_ca));
+ 		// update cr0 if requested
+ 		if( imlInstruction->crRegister != PPC_REC_INVALID_REGISTER )

@@ -1,0 +1,10 @@
+--- a/src/Cafe/CafeSystem.cpp
++++ b/src/Cafe/CafeSystem.cpp
+@@ -829,6 +829,7 @@
+ 		uint32 h = generateHashFromRawRPXData(execData->data(), execData->size());
+ 		sForegroundTitleId = 0xFFFFFFFF00000000ULL | (uint64)h;
+ 		cemuLog_log(LogType::Force, "Generated placeholder TitleId: {:016x}", sForegroundTitleId);
++		gameProfile_load();
+ 		// setup memory space and ppc recompiler
+         SetupMemorySpace();
+         PPCRecompiler_init();

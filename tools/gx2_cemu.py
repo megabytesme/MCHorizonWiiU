@@ -8,10 +8,30 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
+
+
+CPU_MODES = {"interpreter": 0, "single": 1, "multi": 3}
+
+
+def sha256(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def standalone_title_id(rpx):
+    """Match Cemu 2.6's placeholder title ID for a standalone RPX."""
+    checksum = 0x3416DCBF
+    with rpx.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            for byte in block:
+                checksum = (((checksum << 3) | (checksum >> 29)) + byte) & 0xFFFFFFFF
+    return f"ffffffff{checksum:08x}"
 
 
 def paths(lab):
@@ -21,13 +41,19 @@ def paths(lab):
 
 def prepare(args):
     portable, app = paths(args.lab)
-    game = app / "instances/Lab"
+    instance = "default" if args.default_instance else "Lab"
+    game = app if args.default_instance else app / "instances/Lab"
     args.lab.mkdir(parents=True)
     game.mkdir(parents=True)
     (app / "launcher").mkdir()
     shutil.copyfile(args.cemu, args.lab / "Cemu.exe")
     shutil.copyfile(args.rpx, args.lab / "HorizonWiiU.rpx")
-    shutil.copyfile(args.template / "settings.xml", portable / "settings.xml")
+    settings_file = portable / "settings.xml"
+    settings_xml = ET.parse(args.template / "settings.xml")
+    for element in settings_xml.iter():
+        if element.tag.lower() in ("mlc_path", "gamepaths"):
+            element.clear()
+    settings_xml.write(settings_file, encoding="utf-8", xml_declaration=True)
     shutil.copytree(args.template / "controllerProfiles", portable / "controllerProfiles")
     inputs = [args.lab / "Cemu.exe", args.lab / "HorizonWiiU.rpx", portable / "settings.xml"]
     if args.game:
@@ -37,7 +63,8 @@ def prepare(args):
             raise ValueError("fixture game directory has no prepared 26.3 manifest")
         result = subprocess.run(
             ["robocopy", str(resources), str(game / subpath), "/E", "/MT:32",
-             "/NJS", "/NJH", "/NP", "/NFL", "/NDL"], check=False,
+             "/R:1", "/W:1", "/NJS", "/NJH", "/NP", "/NFL", "/NDL"],
+            check=False, timeout=240,
         )
         if result.returncode >= 8:
             raise ValueError(f"resource copy failed ({result.returncode})")
@@ -59,20 +86,17 @@ def prepare(args):
         shutil.copytree(args.scratch_world, copy, ignore=shutil.ignore_patterns("session.lock"))
         inputs.extend(sorted(path for path in copy.rglob("*") if path.is_file()))
     settings = {"schema": 2, "generation": 1, "preferences": {
-        "instance": "Lab", "profile": 0, "profiles": [{"identity": "Player", "name": "Player"}],
+        "instance": instance, "profile": 0, "profiles": [{"identity": "Player", "name": "Player"}],
         "settings": {"swap_ab": False, "swap_xy": False, "touch": True}, "servers": [], "server": None,
     }}
     (app / "launcher/settings.0.json").write_text(json.dumps(settings), encoding="utf-8")
     if args.capture:
         (app / "gx2-profile.enable").touch()
-    hashes = {}
-    for path in inputs:
-        with path.open("rb") as handle:
-            hashes[path.relative_to(args.lab).as_posix()] = hashlib.file_digest(handle, "sha256").hexdigest()
+    hashes = {path.relative_to(args.lab).as_posix(): sha256(path) for path in inputs}
     (args.lab / "input-hashes.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")
 
 
-def start(lab):
+def start(lab, cpu_mode="interpreter", title_id=None):
     if not (lab / "input-hashes.json").is_file() or (lab / "process.txt").exists():
         raise ValueError("prepare a fresh lab before starting Cemu")
     env = os.environ.copy()
@@ -82,19 +106,45 @@ def start(lab):
         scratch.mkdir(parents=True)
         env[key] = str(scratch)
     env.update(HORIZON_NO_AUDIO="1", HORIZON_LAUNCHER_NO_SELF_UPDATE="1")
-    info = subprocess.STARTUPINFO()
-    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    proc = subprocess.Popen([str(lab / "Cemu.exe"), "--force-interpreter", "-g", str(lab / "HorizonWiiU.rpx")],
-                            cwd=lab, env=env, startupinfo=info, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rpx = lab / "HorizonWiiU.rpx"
+    title_id = title_id or standalone_title_id(rpx)
+    if not re.fullmatch(r"[0-9a-f]{16}", title_id):
+        raise ValueError("expected a 16-digit Cemu title ID")
+    profiles = paths(lab)[0] / "gameProfiles"
+    profiles.mkdir(exist_ok=True)
+    profile = profiles / f"{title_id}.ini"
+    with profile.open("x", encoding="ascii") as output:
+        output.write(f"[General]\nstartWithPadView = true\n[CPU]\ncpuMode = {CPU_MODES[cpu_mode]}\n")
+    launch = {
+        "requested_cpu_mode": cpu_mode,
+        "title_id": title_id,
+        "cemu_sha256": sha256(lab / "Cemu.exe"),
+        "rpx_sha256": sha256(rpx),
+        "game_profile_sha256": sha256(profile),
+    }
+    (lab / "launch.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
+    flags = ["--force-interpreter"] if cpu_mode == "interpreter" else []
+    with (lab / "stdout.log").open("xb") as stdout, (lab / "stderr.log").open("xb") as stderr:
+        proc = subprocess.Popen([str(lab / "Cemu.exe"), *flags, "-g", str(rpx)],
+                                cwd=lab, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
     (lab / "process.txt").write_text(str(proc.pid), encoding="ascii")
+    return proc
+
+
+def observed_mode(trace):
+    if "Recompiler disabled. Command line --force-interpreter was passed" in trace:
+        return "interpreter"
+    mode = re.search(r"CPU-Mode:\s*(\d+)(?:\s*\(gameprofile\))?", trace)
+    if mode:
+        return next((name for name, number in CPU_MODES.items() if number == int(mode[1])), None)
+    return None
 
 
 def verified_pid(lab):
     pid = int((lab / "process.txt").read_text(encoding="ascii"))
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-Command", f"(Get-Process -Id {pid} -ErrorAction Stop).Path"],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, timeout=10,
     )
     if Path(result.stdout.strip()) != lab / "Cemu.exe":
         raise ValueError("process does not belong to the lab")
@@ -173,7 +223,7 @@ def run(args):
         prepare(args)
         return
     if args.action == "start":
-        start(args.lab)
+        start(args.lab, args.cpu_mode, args.title_id)
         return
     pid = verified_pid(args.lab)
     portable, _ = paths(args.lab)
@@ -182,10 +232,24 @@ def run(args):
     elif args.action == "wait":
         log = portable / "log.txt"
         deadline = time.monotonic() + args.timeout
-        while time.monotonic() < deadline:
-            if log.is_file() and args.marker in log.read_text(encoding="utf-8", errors="replace"):
-                return
-            time.sleep(0.2)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        process = kernel.OpenProcess(0x00100000, False, pid)
+        if not process:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            while time.monotonic() < deadline:
+                trace = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                if args.marker in trace:
+                    return
+                if "Crashlog for Cemu" in trace or kernel.WaitForSingleObject(process, 200) != 258:
+                    raise ValueError(f"Cemu stopped before marker: {args.marker}")
+        finally:
+            kernel.CloseHandle(process)
         raise ValueError(f"log marker not observed: {args.marker}")
     elif args.action == "shot":
         screenshots = portable / "screenshots"
@@ -221,7 +285,10 @@ def main():
     for name in ("cemu", "rpx", "template", "game", "scratch-world"):
         setup.add_argument(f"--{name}", type=Path, required=name in ("cemu", "rpx", "template"))
     setup.add_argument("--capture", action="store_true")
-    subs.add_parser("start")
+    setup.add_argument("--default-instance", action="store_true")
+    launch = subs.add_parser("start")
+    launch.add_argument("--cpu-mode", choices=CPU_MODES, default="interpreter")
+    launch.add_argument("--title-id", help="override the standalone RPX title ID")
     subs.add_parser("stop")
     wait = subs.add_parser("wait")
     wait.add_argument("marker")
