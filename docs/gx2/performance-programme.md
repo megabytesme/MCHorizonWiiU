@@ -255,6 +255,14 @@ words, draw and index counts, solid and translucent output, and eight
 matched TV and GamePad images. Its Cemu wall-time ranges overlapped.
 Physical submission cost remains to measure.
 
+The [display-list diagnostic](../../wiiu/diagnostics/gx2-display-lists/README.md)
+compares immediate draws, immutable per-section commands with live uniforms,
+and fixed per-output command lists. In forced-interpreter Cemu, 96 samples
+retired and all 1,536 tile checks passed. Per-section construction times
+overlapped the immediate control. Fixed lists reduced command construction
+time for the repeated view. The readback-free package is ready for a
+physical comparison. Hosted terrain still uses immediate GX2 calls.
+
 ## Temporary direct rendering on Wii U
 
 RC 29 keeps the saved resolution and the other preset values. An ordinary
