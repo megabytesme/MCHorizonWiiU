@@ -97,11 +97,22 @@ redraw work in the interpreter. Hardware timing remains open.
 | Benchmark | Night calls the original runner for Standard, Village, Forest, Ocean, Mountain and Travel. The benchmark uses stock Full Performance with an owned disposable world and requires terrain on both outputs. Reports identify omitted passes and distinguish configured and effective dimensions. Host queue tests and the Cafe Rust check passed for the benchmark source. |
 | World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. The current source batches invariant state once per pass and preserves a same-binary per-section reference. Both binding modes passed the fixture. Measured world impact and synchronized buffer reuse remain open. |
 
+## RC 24 native packages
+
 The RC 24 hosted recipe pins client `0.8.0-rc.24`, patch `0.5.0-rc.24`,
-builder `0.7.0-rc.4` and assembled source tree
-`966bb274f40ad7092e5a8e1c819b0c00e7f5ac79`. See the dated hosted catalog
-for the complete patch chain. Native packages and their validation receipts
-are tracked separately from this source identity.
+builder `0.7.0-rc.4`, port commit
+`d9724e6ec97de2d3999c10b63571ee14c4734839` and assembled source tree
+`966bb274f40ad7092e5a8e1c819b0c00e7f5ac79`. Its hosted recipe SHA-256 is
+`eb9738f87fc83aa2a4aa45b7d3cabf94b785d548bd6a9f51b969e396c75be924`.
+
+Two independent native builds produced identical RPX and WUHB bytes.
+The RPX SHA-256 is
+`7d489ca0676d6c306b6c3b014ca1e12f6626852395c8d18b143b0e631042b009`.
+The WUHB SHA-256 is
+`2ef0cca2eb04b989749bed7efe8b30964ad804cc3e5bd877ce376f941e1b9885`.
+Both WUHBs contain the exact standalone RPX. The Aroma code-heap check
+reports 12,986,560 bytes of estimated headroom. Native packages and
+detailed receipts are stored privately. Hardware acceptance is pending.
 
 Keep stock Full Performance, experimental Wii U tuning and distance-12
 regression as different configurations. Record which options affect GX2.
