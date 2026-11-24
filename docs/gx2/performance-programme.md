@@ -186,13 +186,17 @@ Open **Settings → Benchmark** in Night, choose a scenario, then use
 **Start Game**. The run uses an offline profile, reads the selected
 installation's prepared resources and writes report files under its
 `benchmarks` directory. A marked `.benchmark-run` directory owns its scratch
-world. Minus cancels the benchmark and initiates the hosted save barrier
-before returning to Night. The standard version 1 report includes Cafe-specific
-metrics for the native world dimensions and partial passes. Desktop A/B
-switches and GPU timestamp metrics are unavailable in this launcher flow.
+world. Minus during a running benchmark initiates the hosted save barrier.
+Before Game handoff, the RC 25 source also asks resource workers to stop at
+their next safe checkpoint and waits for them to join before returning to
+Night. The standard version 1 report includes Cafe-specific metrics for the
+native world dimensions and partial passes. Desktop A/B switches and GPU
+timestamp metrics are unavailable in this launcher flow.
 
 For acceptance, check that the benchmark reaches its selected scene, submits
 terrain on both outputs, completes its route, writes a standard report and
 restores Night. Repeat with Minus during loading and timed gameplay. Record
 CPU mode, package and fixture hashes alongside the report. The focused host
-fixture exercises the report and pending-command cancellation independently.
+fixtures exercise the report, pending-command cancellation and cooperative
+loader checkpoints. Confirm the loader change on a packaged candidate before
+relying on its response time.

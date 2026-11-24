@@ -1,0 +1,728 @@
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index 0a1254d969c546e7b37a178bfb8264d61e3c7ea8..5a0d0f8d3dcde4dca7e7ad00ca5aa7721bcae580 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -1019,7 +1019,24 @@ impl HudAtlas {
+         defaults: &ResourceSource,
+         mod_image: bool,
+     ) -> Result<Self> {
+-        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
++        Self::build_over_with_image_cancel(root, defaults, mod_image, None)
++    }
++
++    /// Lets a hosted startup stop between image loads and atlas-building stages.
++    pub fn build_over_with_image_cancel(
++        root: &ResourceSource,
++        defaults: &ResourceSource,
++        mod_image: bool,
++        cancel: Option<&std::sync::atomic::AtomicBool>,
++    ) -> Result<Self> {
++        let mut atlas = Self::pack(
++            root,
++            defaults,
++            WALKED_TEXTURE_FOLDERS,
++            true,
++            mod_image,
++            cancel,
++        )?;
+         pack_text::load_shaders(&mut atlas, root, defaults);
+         atlas.sprite_modifiers = std::sync::Arc::new(sprite_modifiers::SpriteModifiers::read(
+             root,
+@@ -1251,11 +1268,23 @@ impl HudAtlas {
+         folders: &[&str],
+         full: bool,
+         mod_image: bool,
++        cancel: Option<&std::sync::atomic::AtomicBool>,
+     ) -> Result<Self> {
++        let cancelled =
++            || cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
++        let checkpoint = || -> Result<()> {
++            if cancelled() {
++                Err("HUD atlas load cancelled".into())
++            } else {
++                Ok(())
++            }
++        };
++        checkpoint()?;
+         let discovery = crate::spans::startup::step("ui.atlas_discovery");
+         let textures = "assets/minecraft/textures";
+         let mut files = Vec::new();
+         for folder in folders {
++            checkpoint()?;
+             walk(root, &format!("{textures}/{folder}"), &mut files);
+         }
+         if folders.contains(&"font") {
+@@ -1272,6 +1301,7 @@ impl HudAtlas {
+             .into_iter()
+             .filter(|namespace| namespace != "minecraft")
+         {
++            checkpoint()?;
+             for folder in ["entity", "mob_effect", "particle", "gui"] {
+                 if ((folder == "entity" || folder == "mob_effect") && folders.contains(&folder))
+                     || (folder == "particle" && folders.contains(&"particle"))
+@@ -1476,6 +1506,7 @@ impl HudAtlas {
+                     || name.starts_with("font/")))
+             .then_some(((name, w, h, pixels), flags, gui_size, animated, maps))
+         };
++        checkpoint()?;
+         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
+         let chunk = files.len().div_ceil(threads).max(1);
+         drop(discovery);
+@@ -1484,7 +1515,12 @@ impl HudAtlas {
+             let handles: Vec<_> = files
+                 .chunks(chunk)
+                 .map(|part| {
+-                    scope.spawn(move || part.iter().filter_map(decode_one).collect::<Vec<_>>())
++                    scope.spawn(move || {
++                        part.iter()
++                            .take_while(|_| !cancelled())
++                            .filter_map(decode_one)
++                            .collect::<Vec<_>>()
++                    })
+                 })
+                 .collect();
+             handles
+@@ -1493,6 +1529,7 @@ impl HudAtlas {
+                 .collect()
+         });
+         drop(decoding);
++        checkpoint()?;
+         let assemble = crate::spans::startup::step("ui.atlas_assemble");
+         let mut flags = HashMap::new();
+         let mut gui_sizes = HashMap::new();
+@@ -3263,6 +3300,16 @@ mod coverage_tests;
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn a_cancelled_startup_refuses_to_build_an_atlas() {
++        let root = ResourceSource::default();
++        let cancelled = std::sync::atomic::AtomicBool::new(true);
++        let error = HudAtlas::build_over_with_image_cancel(&root, &root, false, Some(&cancelled))
++            .err()
++            .expect("a cancelled generation must not publish an atlas");
++        assert_eq!(error.to_string(), "HUD atlas load cancelled");
++    }
++
+     #[test]
+     fn scratch_batch_ignores_view_settings() {
+         let batch = HudBatch::scratch([960, 720]);
+diff --git a/crates/horizon-client/src/game/interface/startup_menu.rs b/crates/horizon-client/src/game/interface/startup_menu.rs
+index aaf3dc2485cefbd6ba45b0d7560d0a8bbe78d849..2962e7b8dff67e8091443378f84774e71e0cf512 100644
+--- a/crates/horizon-client/src/game/interface/startup_menu.rs
++++ b/crates/horizon-client/src/game/interface/startup_menu.rs
+@@ -418,36 +418,41 @@ pub(super) fn spawn_loader(
+     let handle = horizon_guest_stack::builder()
+         .name("resource-loader".into())
+         .spawn(move || {
+-            let mut pack_error = None;
+-            let root =
+-                packs::startup_root(&vanilla_root, &settings.resource_packs, &[], &mod_sources)
+-                    .or_else(|error| {
+-                        pack_error = Some(error.to_string());
+-                        mods::content_root(&vanilla_root, &mod_sources)
+-                    });
+-            let result = root
+-                .and_then(|root| {
+-                    load_resources(
+-                        root,
+-                        super::pack_finders::data_packs(&mod_sources),
+-                        world.as_deref(),
+-                        &vanilla_root,
+-                        &settings,
+-                        started,
+-                        true,
+-                        load_role,
+-                        &progress,
+-                        &mut |gui, root| {
+-                            let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
+-                        },
+-                    )
+-                })
+-                .map(|mut loaded| {
+-                    loaded.pack_error = loaded.pack_error.or(pack_error);
+-                    loaded
+-                })
+-                .map_err(|error| error.to_string());
+-            let _ = sender.send(LoaderMsg::Done(result));
++            let result = (|| -> Result<_> {
++                progress.checkpoint()?;
++                let mut pack_error = None;
++                let root =
++                    packs::startup_root(&vanilla_root, &settings.resource_packs, &[], &mod_sources)
++                        .or_else(|error| {
++                            progress.checkpoint()?;
++                            pack_error = Some(error.to_string());
++                            mods::content_root(&vanilla_root, &mod_sources)
++                        })?;
++                progress.checkpoint()?;
++                let mut loaded = load_resources(
++                    root,
++                    super::pack_finders::data_packs(&mod_sources),
++                    world.as_deref(),
++                    &vanilla_root,
++                    &settings,
++                    started,
++                    true,
++                    load_role,
++                    &progress,
++                    &mut |gui, root| {
++                        let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
++                    },
++                )?;
++                loaded.pack_error = loaded.pack_error.or(pack_error);
++                Ok(loaded)
++            })();
++            if result
++                .as_ref()
++                .is_err_and(|error| error.is::<resource_load::LoadCancelled>())
++            {
++                log::info!("Horizon: stopped resource load at a cancellation checkpoint");
++            }
++            let _ = sender.send(LoaderMsg::Done(result.map_err(|error| error.to_string())));
+         })?;
+     Ok((receiver, handle))
+ }
+diff --git a/crates/horizon-client/src/game/runtime/incoming_tests/resource_load_scope.rs b/crates/horizon-client/src/game/runtime/incoming_tests/resource_load_scope.rs
+index c6c7c521b2a7efe3f81c294ceca2f2dda6659ec1..bed3b720956d3e3d89257df3ebf94e3bd135f077 100644
+--- a/crates/horizon-client/src/game/runtime/incoming_tests/resource_load_scope.rs
++++ b/crates/horizon-client/src/game/runtime/incoming_tests/resource_load_scope.rs
+@@ -89,3 +89,26 @@ fn loader_workers_keep_owning_mod_sets_and_share_only_matching_numeric_payloads(
+     assert!(std::ptr::eq(state(loaded[0]), state(loaded[1])));
+     assert!(!std::ptr::eq(state(loaded[0]), state(loaded[2])));
+ }
++
++#[test]
++fn cancelled_generation_skips_deferred_core_and_a_fresh_generation_runs() {
++    let menu = Progress::new();
++    let worker = menu.clone();
++    let other = Progress::new();
++    std::thread::scope(|scope| {
++        let (entered, began) = std::sync::mpsc::sync_channel(0);
++        let (release, released) = std::sync::mpsc::sync_channel(0);
++        let loader = scope.spawn(move || {
++            let core = Step::Later(Box::new(|| panic!("cancelled startup began its core")));
++            entered.send(()).unwrap();
++            released.recv().unwrap();
++            core.join_if_loading(&worker)
++        });
++        began.recv().unwrap();
++        assert!(menu.request_cancel());
++        release.send(()).unwrap();
++        assert!(loader.join().unwrap().is_err());
++    });
++    let core = Step::Later(Box::new(|| 42));
++    assert_eq!(core.join_if_loading(&other).unwrap(), 42);
++}
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index b57222d32973d5bf3f9eec81b0bd19e70bb8c13b..8a93a2a5cdbc9d4113ce6e757f4b0880ade696b0 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -23,27 +23,67 @@ pub(super) const STAGE_LINES: [&str; 10] = [
+ /// The background loader's checkpoint, read by the loading screen each frame.
+ #[derive(Clone)]
+ pub(super) struct Progress {
+-    pub(super) value: Arc<AtomicU32>,
+-    pub(super) lines: &'static [&'static str],
++    state: Arc<ProgressState>,
++    lines: &'static [&'static str],
+ }
++
++#[derive(Default)]
++struct ProgressState {
++    stage: AtomicU32,
++    cancelled: std::sync::atomic::AtomicBool,
++}
++
++#[derive(Debug)]
++pub(super) struct LoadCancelled;
++
++impl std::fmt::Display for LoadCancelled {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("resource load cancelled")
++    }
++}
++
++impl std::error::Error for LoadCancelled {}
++
+ impl Progress {
+     pub(super) fn new() -> Self {
+         Self::with(&STAGE_LINES)
+     }
+     pub(super) fn with(lines: &'static [&'static str]) -> Self {
+         Self {
+-            value: Arc::new(AtomicU32::new(0)),
++            state: Arc::new(ProgressState::default()),
+             lines,
+         }
+     }
+     pub(super) fn set(&self, stage: u32) {
+-        self.value.store(stage, Ordering::Relaxed);
++        self.state.stage.store(stage, Ordering::Relaxed);
+     }
+     pub(super) fn fraction(&self) -> f32 {
+-        self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
++        self.state.stage.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
+     }
+     pub(super) fn line(&self) -> &'static str {
+-        self.lines[(self.value.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
++        self.lines[(self.state.stage.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
++    }
++
++    #[cfg(any(target_os = "cafe", test))]
++    pub(super) fn request_cancel(&self) -> bool {
++        !self.state.cancelled.swap(true, Ordering::Relaxed)
++    }
++
++    pub(super) fn cancelled(&self) -> bool {
++        self.state.cancelled.load(Ordering::Relaxed)
++    }
++
++    pub(super) fn checkpoint(&self) -> std::result::Result<(), LoadCancelled> {
++        if self.cancelled() {
++            Err(LoadCancelled)
++        } else {
++            Ok(())
++        }
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub(super) fn cancel_flag(&self) -> &std::sync::atomic::AtomicBool {
++        &self.state.cancelled
+     }
+ }
+ 
+@@ -127,6 +167,11 @@ impl<'scope, T: Send + 'scope> Step<'scope, T> {
+             Self::Later(f) => f(),
+         }
+     }
++
++    fn join_if_loading(self, progress: &Progress) -> std::result::Result<T, LoadCancelled> {
++        progress.checkpoint()?;
++        Ok(self.join())
++    }
+ }
+ 
+ /// The world bundle's core tables from one resource root, before
+@@ -167,6 +212,8 @@ pub(super) fn load_core(
+     progress: &Progress,
+     launch_world: Option<&str>,
+ ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
++    let checkpoint = || progress.checkpoint().map_err(|error| error.to_string());
++    checkpoint()?;
+     let role = load_role.execution;
+     let root = resources.prepared();
+     let headless = !role.is_client();
+@@ -195,6 +242,7 @@ pub(super) fn load_core(
+         let entity_models = entity_models.and_then(|step| step.join()).map(Arc::new);
+         (assets, models, entity_models)
+     });
++    checkpoint()?;
+     let assets = match assets {
+         Ok(assets) => assets,
+         Err(e) => return Ok(Err(e.to_string())),
+@@ -202,6 +250,7 @@ pub(super) fn load_core(
+     progress.set(1);
+     let item_data =
+         Arc::new(mods::load_item_data(root, role, load_role.owning).map_err(|e| e.to_string())?);
++    checkpoint()?;
+     let registry = assets.registry;
+     let entity_models_for_render = entity_models.clone();
+     let (render, gameplay, visibility, biomes, environment, collision) = std::thread::scope(
+@@ -209,6 +258,7 @@ pub(super) fn load_core(
+             let assets = &assets;
+             let item_data = &item_data;
+             let render = Step::spawn(scope, parallel, "render", move || {
++                checkpoint()?;
+                 // A server reads no block sprites' pixels, which only the
+                 // renderer draws (32 MB).
+                 let parsed_models = parsed_models;
+@@ -222,11 +272,13 @@ pub(super) fn load_core(
+                     }
+                 })
+                 .map_err(|e| e.to_string())?;
++                checkpoint()?;
+                 let library = render.model_library.clone();
+                 let item_defaults = startup::time("core.item_defaults", || {
+                     horizon_world::item_defaults::shared(root)
+                 })
+                 .map_err(|e| e.to_string())?;
++                checkpoint()?;
+                 let item_renderer = startup::time("core.item_models", || {
+                     if headless {
+                         horizon_client::item_render::ItemRenderer::load_for_server(
+@@ -248,6 +300,7 @@ pub(super) fn load_core(
+             // Nor the face visibility the mesher and the block entity
+             // renderer cull with (19 MB).
+             let visibility = Step::spawn(scope, parallel, "visibility", || {
++                checkpoint()?;
+                 if headless {
+                     return Ok(horizon_world::block_render::FaceVisibility::empty());
+                 }
+@@ -257,6 +310,7 @@ pub(super) fn load_core(
+                 .map_err(|e| e.to_string())
+             });
+             let biomes = Step::spawn(scope, parallel, "biomes", || {
++                checkpoint()?;
+                 let biomes = Arc::new(
+                     startup::time("core.biomes", || {
+                         if headless {
+@@ -287,24 +341,28 @@ pub(super) fn load_core(
+                 Ok::<_, String>(biomes)
+             });
+             let environment = Step::spawn(scope, parallel, "environment", || {
++                checkpoint()?;
+                 startup::time("core.environment", || Environment::load(resources.source()))
+                     .map_err(|e| e.to_string())
+             });
+             let collision = Step::spawn(scope, parallel, "collision", || {
++                checkpoint()?;
+                 startup::time("core.collision", || collisions::load(root, registry))
+                     .map_err(|e| e.to_string())
+             });
+             let gameplay = gameplay_tables(root, assets, parallel, progress);
+-            (
++            checkpoint()?;
++            Ok::<_, String>((
+                 render.join(),
+                 gameplay,
+                 visibility.join(),
+                 biomes.join(),
+                 environment.join(),
+                 collision.join(),
+-            )
++            ))
+         },
+-    );
++    )?;
++    checkpoint()?;
+     // The packs' failure first: it rolls back whatever else failed.
+     let (render, item_renderer, item_defaults) = match render {
+         Ok(render) => render,
+@@ -334,6 +392,7 @@ pub(super) fn gameplay_tables(
+     parallel: bool,
+     progress: &Progress,
+ ) -> std::result::Result<GameplayTables, String> {
++    progress.checkpoint().map_err(|error| error.to_string())?;
+     let facts_step = startup::step("core.block_facts");
+     // Read whole, then parsed from the buffer: `serde_json::from_reader`
+     // pulls through a `BufReader` and is measurably slower on a file this
+@@ -342,10 +401,12 @@ pub(super) fn gameplay_tables(
+     let behaviour_json: serde_json::Value =
+         horizon_world::json_file::read(&root.join("block-behaviours.json"))
+             .map_err(|e| e.to_string())?;
++    progress.checkpoint().map_err(|error| error.to_string())?;
+     let (facts, gameplay_projection) =
+         BlockFacts::load_with_projection(root, assets.registry, &behaviour_json, parallel)
+             .map_err(|e| e.to_string())?;
+     drop(facts_step);
++    progress.checkpoint().map_err(|error| error.to_string())?;
+     progress.set(2);
+     let (light, motion) = std::thread::scope(|scope| {
+         let light = Step::spawn(scope, parallel, "light", || {
+@@ -553,6 +614,7 @@ pub(super) fn load_resources(
+     progress: &Progress,
+     publish: &mut dyn FnMut(UiResources, &std::path::Path),
+ ) -> Result<Loaded> {
++    progress.checkpoint()?;
+     let load_role: mods::LoadRole = role.into();
+     let role = load_role.execution;
+     let mut root = resolved.prepared().to_path_buf();
+@@ -588,7 +650,11 @@ pub(super) fn load_resources(
+         if headless {
+             UiResources::server(source)
+         } else {
+-            UiResources::load(source).map(|ui| {
++            #[cfg(not(target_os = "cafe"))]
++            let ui = UiResources::load(source);
++            #[cfg(target_os = "cafe")]
++            let ui = UiResources::load_with_cancel(source, Some(progress.cancel_flag()));
++            ui.map(|ui| {
+                 ui.with_splashes(
+                     source,
+                     vanilla_root,
+@@ -617,6 +683,7 @@ pub(super) fn load_resources(
+     let mut can_rollback = true;
+     let (core, loaded_gui, resolved) = loop {
+         let (ui, core) = std::thread::scope(|scope| {
++            progress.checkpoint()?;
+             // Cafe keeps the large initial HUD raster and core tables from
+             // reaching their allocation peaks together. Core still uses its
+             // configured workers, and the server only builds a font atlas.
+@@ -637,9 +704,16 @@ pub(super) fn load_resources(
+                     )
+                 })
+             });
+-            let ui = load_ui(resolved.source()).map(|ui| offer(ui, &root));
+-            (ui, core.join())
+-        });
++            let ui = load_ui(resolved.source());
++            // On Cafe core is a deferred Step. Do not start it once the
++            // atlas reports cancellation. A running scoped worker still joins.
++            progress.checkpoint()?;
++            Ok::<_, LoadCancelled>((
++                ui.map(|ui| offer(ui, &root)),
++                core.join_if_loading(progress)?,
++            ))
++        })?;
++        progress.checkpoint()?;
+         let failure = match (ui, core) {
+             (Ok(gui), Ok(Ok(core))) => break (core, gui, resolved),
+             (Err(e), _) if can_rollback => e.to_string(),
+@@ -689,6 +763,7 @@ pub(super) fn load_resources(
+         environment,
+         collision,
+     } = core;
++    progress.checkpoint()?;
+     let assets = Arc::new(assets);
+     let render = Arc::new(render);
+     // The namespaces of the mod block states registered now: what every level.dat saved from
+@@ -717,6 +792,7 @@ pub(super) fn load_resources(
+     api_values::resolve_block_definitions(assets.registry)?;
+     mods::extend_poi_types(assets.registry);
+     mods::register_cauldron_fluid_contents(assets.registry);
++    progress.checkpoint()?;
+     let tables = Arc::new(startup::time("pack.mesh_tables", || {
+         MeshTables::new(
+             &assets,
+@@ -727,6 +803,7 @@ pub(super) fn load_resources(
+         )
+         .map(|tables| tables.with_polytone_colormaps(resolved.source(), assets.registry))
+     })?);
++    progress.checkpoint()?;
+     let pack_step = startup::step("pack.assemble");
+     let mut pack = PackResources::assemble(
+         &resolved,
+@@ -739,6 +816,7 @@ pub(super) fn load_resources(
+     );
+     pack.additional_data = additional_data.into();
+     drop(pack_step);
++    progress.checkpoint()?;
+     log::info!("load pack tables: {:.2}s", started.elapsed().as_secs_f32());
+     progress.set(4);
+     if !menu {
+@@ -776,7 +854,8 @@ pub(super) fn load_resources(
+     // The block entity renderer's face visibility: the meshes' own, whose
+     // shapes already hold their faces, not a second load of the same tables.
+     let visibility = pack.context.tables.visibility.clone();
+-    let rest_loader = if menu {
++    progress.checkpoint()?;
++    let mut rest_loader = if menu {
+         let resources = resources.clone();
+         let resource_root = resolved.clone();
+         #[cfg(not(target_os = "cafe"))]
+@@ -788,7 +867,7 @@ pub(super) fn load_resources(
+             .name("world-rest-loader".into())
+             .spawn(move || {
+                 let _step = startup::step("rest");
+-                let rest = world_rest::load_world_rest(
++                let rest = match world_rest::load_world_rest(
+                     &resource_root,
+                     &resources,
+                     &assets,
+@@ -800,8 +879,12 @@ pub(super) fn load_resources(
+                     &progress,
+                     started,
+                     true,
+-                )
+-                .map_err(|error| error.to_string())?;
++                ) {
++                    Ok(rest) if !progress.cancelled() => rest,
++                    Ok(_) => return Ok(()),
++                    Err(error) if error.is::<LoadCancelled>() => return Ok(()),
++                    Err(error) => return Err(error.to_string()),
++                };
+                 resources
+                     .rest
+                     .set(rest)
+@@ -846,20 +929,23 @@ pub(super) fn load_resources(
+     let (game_cpu, renderer_cpu) = if menu {
+         let (game_cpu, renderer_cpu) = std::thread::scope(|scope| {
+             let textures = Step::spawn(scope, parallel, "textures", || {
+-                startup::time("handoff.renderer_textures", || {
++                progress.checkpoint().ok()?;
++                Some(startup::time("handoff.renderer_textures", || {
+                     prepare_renderer_textures(&pack)
+-                })
++                }))
+             });
+-            let game_cpu = startup::time("handoff.game_cpu", || {
+-                GameCpuResources::load(&resolved, entity_models.as_deref())
++            let game_cpu = progress.checkpoint().map_err(Into::into).and_then(|()| {
++                startup::time("handoff.game_cpu", || {
++                    GameCpuResources::load(&resolved, entity_models.as_deref())
++                })
+             });
+             (game_cpu, textures.join())
+         });
+         let game_cpu = match game_cpu {
+             Ok(game_cpu) => game_cpu,
+             Err(error) => {
+-                if let Some(tail) = rest_loader {
+-                    let _ = tail.handle.join();
++                if let Some(tail) = rest_loader.take() {
++                    let _ = tail.finish();
+                 }
+                 return Err(error);
+             }
+@@ -868,7 +954,7 @@ pub(super) fn load_resources(
+             "Horizon: handoff CPU resources prepared on worker in {} ms",
+             prepared_at.elapsed().as_millis()
+         );
+-        (Some(game_cpu), Some(renderer_cpu))
++        (Some(game_cpu), renderer_cpu)
+     } else {
+         (None, None)
+     };
+@@ -877,6 +963,12 @@ pub(super) fn load_resources(
+     // the same merged root; the game applies them at handoff. A dedicated
+     // server never fires the client event. A failed prepare keeps the game
+     // running without mod reload listeners, like the reload path's rollback.
++    if let Err(error) = progress.checkpoint() {
++        if let Some(tail) = rest_loader.take() {
++            tail.finish()?;
++        }
++        return Err(error.into());
++    }
+     let client_applies = if headless {
+         Vec::new()
+     } else {
+diff --git a/crates/horizon-client/src/game/runtime/resource_tables.rs b/crates/horizon-client/src/game/runtime/resource_tables.rs
+index 4c43f41aab9e4bf15fcc7f9bc07b462d55b107e2..4b01672942b47f8b901d7c92799818072f94a671 100644
+--- a/crates/horizon-client/src/game/runtime/resource_tables.rs
++++ b/crates/horizon-client/src/game/runtime/resource_tables.rs
+@@ -156,6 +156,13 @@ impl UiResources {
+     /// The resolved resource generation, including the base layer and pack filters.
+     /// Its splash pool is empty until `with_splashes`.
+     pub fn load(root: &horizon_assets::resource_source::ResourceSource) -> Result<Self> {
++        Self::load_with_cancel(root, None)
++    }
++
++    pub(super) fn load_with_cancel(
++        root: &horizon_assets::resource_source::ResourceSource,
++        cancel: Option<&std::sync::atomic::AtomicBool>,
++    ) -> Result<Self> {
+         // The title screen waits for both: the panorama's six faces decode
+         // beside the atlas.
+         std::thread::scope(|scope| {
+@@ -166,7 +173,7 @@ impl UiResources {
+             });
+             let mod_image = mod_image_slot();
+             let atlas = startup::time("ui.atlas", || {
+-                HudAtlas::build_over_with_image(root, root, mod_image)
++                HudAtlas::build_over_with_image_cancel(root, root, mod_image, cancel)
+             });
+             #[cfg(target_os = "cafe")]
+             horizon_core::prepared_files::log_io_totals("ui_atlas");
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index 22cb0f5a17ba6cf0dbe4cfdbf6ddaa1731b4f16d..e41f15480542874f734d965c76f59ca0e470a8e5 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -15,6 +15,7 @@ pub(super) fn load_world_rest(
+     // renderer or animate tables (client-side display ticks).
+     draws: bool,
+ ) -> Result<WorldRest> {
++    progress.checkpoint()?;
+     let root = resource_root.prepared();
+     let facts = resources.facts();
+     let biomes = resources.biomes();
+@@ -36,16 +37,19 @@ pub(super) fn load_world_rest(
+         conditions: &conditions,
+         files: &files,
+     };
++    progress.checkpoint()?;
+     progress.set(6);
+     // Independent tables load together, within the worker budget the settings
+     // allow. Only the recipes and the stations read another table: the items.
+     let load_items = || -> Result<_> {
++        progress.checkpoint()?;
+         let mut items = startup::time("rest.items", || {
+             Items::load(root, registry, facts, overlay, resources.item_defaults())
+         })?;
+         items.bind_component_damage_catalog(&resources.motion().health.damage);
+         api_values::resolve_item_registry(&items)?;
+         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
++        progress.checkpoint()?;
+         progress.set(7);
+         // The recipe tables, the stations and the recipe book read one folder:
+         // hold its files so it is read once.
+@@ -73,6 +77,7 @@ pub(super) fn load_world_rest(
+         })
+     };
+     let load_block_entity_render = || -> Result<_> {
++        progress.checkpoint()?;
+         let _step = startup::step("rest.block_entity_render");
+         if !draws {
+             return Ok(Default::default());
+@@ -88,6 +93,7 @@ pub(super) fn load_world_rest(
+     };
+     let load_animate = || resource_tables::load_animate_tables(root, registry, draws, biomes);
+     let load_mobs = || -> Result<_> {
++        progress.checkpoint()?;
+         let _step = startup::step("rest.mobs");
+         let catalog = &resources.motion().attributes;
+         let mut types = if draws {
+@@ -159,6 +165,7 @@ pub(super) fn load_world_rest(
+         Ok((mob_types, mob_data))
+     };
+     let load_transformers = || -> Result<_> {
++        progress.checkpoint()?;
+         let _step = startup::step("rest.transformers_models");
+         let transformers = horizon_client::block_transform::Transformers::load(root, registry)?;
+         let player_type = match entity_models {
+@@ -252,13 +259,25 @@ pub(super) fn load_world_rest(
+             )
+         })
+     } else {
++        let items = text(load_items());
++        progress.checkpoint()?;
++        let behaviours = text(load_behaviours());
++        progress.checkpoint()?;
++        let block_entity_render = text(load_block_entity_render());
++        progress.checkpoint()?;
++        let animate = text(load_animate());
++        progress.checkpoint()?;
++        let mobs = text(load_mobs());
++        progress.checkpoint()?;
++        let transformers = text(load_transformers());
++        progress.checkpoint()?;
+         (
+-            text(load_items()),
+-            text(load_behaviours()),
+-            text(load_block_entity_render()),
+-            text(load_animate()),
+-            text(load_mobs()),
+-            text(load_transformers()),
++            items,
++            behaviours,
++            block_entity_render,
++            animate,
++            mobs,
++            transformers,
+             Providers::load(root),
+             startup::time("rest.music", || {
+                 horizon_client::music::MusicTables::load(root)
+@@ -280,6 +299,7 @@ pub(super) fn load_world_rest(
+             }),
+         )
+     };
++    progress.checkpoint()?;
+     let (items, recipes, stations) = items?;
+     let (animate, fog) = animate?;
+     let (mob_types, mob_data) = mobs?;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 6e5f6af34bb1d0e6ec3d96f0ec81932b86c22d81..b54d4bc24b5a0a890324c1703bad9e577973a6cb 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -218,6 +218,11 @@ impl<'resources> CafeLoadingSession<'resources> {
+     /// The optional world-resource tail can still be in that queued message.
+     #[cfg(target_os = "cafe")]
+     pub fn drain_hosted(&mut self) -> Result<()> {
++        // A session still owning its launch options never handed a game off.
++        // Stop scheduling new load work before joining that generation.
++        if self.loading.options.is_some() && self.loading.progress.request_cancel() {
++            log::info!("Horizon Cafe hosted resource cancellation requested");
++        }
+         let resources = self.loading.handle.take().map(std::thread::JoinHandle::join);
+         let mut tail = self.loading.loaded.as_mut()
+             .and_then(|loaded| loaded.as_mut().ok())
