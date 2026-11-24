@@ -200,3 +200,19 @@ CPU mode, package and fixture hashes alongside the report. The focused host
 fixtures exercise the report, pending-command cancellation and cooperative
 loader checkpoints. Confirm the loader change on a packaged candidate before
 relying on its response time.
+
+### Village diagnostic
+
+The standard Village run on RC 24 reached 42 of its 90 minimum client
+columns before the 25-minute interpreter harness timeout. Terrain was still
+streaming, and the run had yet to reach the timed route or publish a report.
+
+The RC 26 source has an opt-in Village diagnostic for an owned disposable
+benchmark workspace. Put `horizon-benchmark-village-diagnostic.txt` in its
+`.benchmark-run` directory, with the line `Horizon Cafe Village diagnostic v1`
+terminated by LF. Select Village in Night as usual. Only an existing
+owner-marked workspace with that exact opt-in uses the diagnostic. It waits
+for paired terrain at the current camera before timing and keeps the stock
+seed, camera path and 12-second flight. Its report scenario is
+`cafe-diagnostic-village`, with a `Diagnostic` label and an explicit relaxed
+streaming-gate metric. Use standard Village for full-view comparisons.

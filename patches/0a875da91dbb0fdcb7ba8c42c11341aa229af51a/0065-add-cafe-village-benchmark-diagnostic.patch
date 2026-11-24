@@ -1,0 +1,492 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index 8a0dbd970bc951ee0feba00fb5331230fc1ef67c..cd9a7c3ada644a74ad1ff846ce1729f6f7374b3a 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -23,6 +23,17 @@ pub const WORLD: &str = "horizon-benchmark";
+ /// Written into the world so a later run only ever replaces its own world.
+ const MARKER: &str = "horizon-benchmark.txt";
+ const MARKER_CONTENT: &str = "Created by horizon-client --benchmark; replaced by the next run.\n";
++const DIAGNOSTIC_SCENARIO: &str = "cafe-diagnostic-village";
++
++/// The hosted launcher and diagnostic runner agree on the scratch owner's marker.
++#[cfg(any(target_os = "cafe", test))]
++pub const CAFE_WORKSPACE_MARKER: &str = "horizon-benchmark-run.txt";
++#[cfg(any(target_os = "cafe", test))]
++pub const CAFE_WORKSPACE_OWNER: &[u8] = b"Horizon Night benchmark workspace v1\n";
++#[cfg(any(target_os = "cafe", test))]
++const VILLAGE_DIAGNOSTIC_MARKER: &str = "horizon-benchmark-village-diagnostic.txt";
++#[cfg(any(target_os = "cafe", test))]
++const VILLAGE_DIAGNOSTIC_CONTENT: &[u8] = b"Horizon Cafe Village diagnostic v1\n";
+ 
+ /// A straight flight over terrain: name, start, end, pitch (`tools/graphics_bench.py`'s paths).
+ type Scene = (&'static str, [f64; 3], [f64; 3], f64);
+@@ -206,16 +217,19 @@ pub struct HostedRun {
+     completed: mpsc::Receiver<Result<PathBuf, String>>,
+     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+     worker: Option<thread::JoinHandle<()>>,
++    diagnostic: bool,
+ }
+ 
+ #[cfg(any(target_os = "cafe", test))]
+ impl HostedRun {
+     pub fn start(requests: Sender<Request>, setup: Setup) -> std::io::Result<Self> {
++        let diagnostic = cafe_village_diagnostic(&setup.game_dir, &setup.scenario);
+         let (result, completed) = mpsc::sync_channel(1);
+         let (progress_tx, progress) = mpsc::channel();
+         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+         let control = Control {
+             requests,
++            diagnostic,
+             progress: Some(progress_tx),
+             cancelled: Some(cancelled.clone()),
+         };
+@@ -229,9 +243,14 @@ impl HostedRun {
+             progress,
+             cancelled,
+             worker: Some(worker),
++            diagnostic,
+         })
+     }
+ 
++    pub fn diagnostic(&self) -> bool {
++        self.diagnostic
++    }
++
+     pub fn progress(&self) -> Option<Progress> {
+         self.progress.try_iter().last()
+     }
+@@ -256,8 +275,42 @@ impl Drop for HostedRun {
+     }
+ }
+ 
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_village_diagnostic(game_dir: &Path, scenario: &str) -> bool {
++    use std::fs::{File, symlink_metadata};
++    use std::io::Read;
++
++    fn matches_file(path: &Path, expected: &[u8]) -> bool {
++        if !symlink_metadata(path)
++            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected.len() as u64)
++        {
++            return false;
++        }
++        let Ok(file) = File::open(path) else {
++            return false;
++        };
++        let mut content = Vec::new();
++        file.take(expected.len() as u64 + 1)
++            .read_to_end(&mut content)
++            .is_ok()
++            && content == expected
++    }
++
++    scenario == "village"
++        && game_dir
++            .file_name()
++            .is_some_and(|name| name == ".benchmark-run")
++        && symlink_metadata(game_dir).is_ok_and(|metadata| metadata.is_dir())
++        && matches_file(&game_dir.join(CAFE_WORKSPACE_MARKER), CAFE_WORKSPACE_OWNER)
++        && matches_file(
++            &game_dir.join(VILLAGE_DIAGNOSTIC_MARKER),
++            VILLAGE_DIAGNOSTIC_CONTENT,
++        )
++}
++
+ struct Control {
+     requests: Sender<Request>,
++    diagnostic: bool,
+     progress: Option<Sender<Progress>>,
+     cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+ }
+@@ -266,6 +319,7 @@ impl Control {
+     fn new(requests: Sender<Request>) -> Self {
+         Self {
+             requests,
++            diagnostic: false,
+             progress: None,
+             cancelled: None,
+         }
+@@ -391,8 +445,13 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+             && (!cfg!(target_os = "cafe") || s["renderer"]["title_presented"] == true)
+     })?;
+     report.metric("startup.title_ms", &[ms(setup.started.elapsed())]);
+-    #[cfg(target_os = "cafe")]
+-    {
++    if control.diagnostic {
++        report.label =
++            Some("Cafe GX2 Village Diagnostic / Relaxed Streaming Gate / Paired Submissions".into());
++        report.metric("cafe.diagnostic.relaxed_streaming_gate", &[1.0]);
++        report.conditions.backend = Some("gx2".into());
++        log::info!("Cafe Village diagnostic enabled in the owned benchmark workspace");
++    } else if cfg!(target_os = "cafe") {
+         report.label = Some("Cafe GX2 / Stock Full Performance / paired submissions".into());
+         report.conditions.backend = Some("gx2".into());
+     }
+@@ -440,7 +499,11 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+         report.hardware.display = serde_json::from_value(status["display"].clone()).ok();
+     }
+     let c = &mut report.conditions;
+-    c.scenario = Some(setup.scenario.clone());
++    c.scenario = Some(if control.diagnostic {
++        DIAGNOSTIC_SCENARIO.into()
++    } else {
++        setup.scenario.clone()
++    });
+     c.seed = Some(SEED.to_string());
+     c.render_distance = status["render_distance"].as_u64().map(|d| d as u32);
+     c.simulation_distance = Some(setup.simulation_distance);
+@@ -533,7 +596,9 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
+     }
+     control.check_cancelled()?;
+     #[cfg(not(target_os = "cafe"))]
+-    crate::telemetry::keep_benchmark(&crate::logging::game_home(), &report);
++    if !control.diagnostic {
++        crate::telemetry::keep_benchmark(&crate::logging::game_home(), &report);
++    }
+     let written = report
+         .write_to(&setup.game_dir.join("benchmarks"))
+         .map_err(|e| e.to_string())?;
+@@ -587,7 +652,11 @@ fn measure(
+         return Err(error.to_string());
+     }
+     control.call(&format!("open {WORLD} {SEED} creative"))?;
+-    let loaded = wait_loaded(control, |_| true)?;
++    let loaded = if control.diagnostic {
++        wait_for_diagnostic_terrain(control, |_| true, report, "spawn")?
++    } else {
++        wait_loaded(control, |_| true)?
++    };
+     report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
+ 
+     if setup.profile {
+@@ -602,6 +671,9 @@ fn measure(
+                 if !time_passes(control, name, report)? {
+                     control.settle(SETTLE)?;
+                 }
++                if control.diagnostic {
++                    wait_for_diagnostic_terrain(control, near(start), report, "before_flight")?;
++                }
+                 let frames = fly(control, name, start, end, FLIGHT_SECONDS, pitch, steady)?;
+                 fps_metrics(report, name, std::slice::from_ref(&frames));
+                 report.frames.push(frames);
+@@ -677,7 +749,11 @@ fn load_scene(
+     // A zero-length flight holds the player at the start, flying.
+     control.call(&format!("fly {x} {y} {z} {x} {y} {z} 0.1 {pitch}"))?;
+     control.call(&format!("look {:.3} {pitch}", yaw(start, end)))?;
+-    let loaded = wait_loaded(control, near(start))?;
++    let loaded = if control.diagnostic {
++        wait_for_diagnostic_terrain(control, near(start), report, "scene")?
++    } else {
++        wait_loaded(control, near(start))?
++    };
+     let load = loaded - teleported;
+     report.metric(&format!("chunks.{name}.load_ms"), &[ms(load)]);
+     let status = control.status();
+@@ -939,6 +1015,68 @@ fn poll(
+     Err(format!("not ready after {} s", limit.as_secs()))
+ }
+ 
++/// The diagnostic may admit an unfinished view, but the position and the
++/// frame actually submitted by GX2 must both be from the expected view.
++fn diagnostic_terrain(status: &Value, at_view: &impl Fn(&Value) -> bool) -> bool {
++    let renderer = &status["renderer"];
++    let position = &status["player"]["position"];
++    let camera = &renderer["terrain_camera"];
++    let xyz = |value: &Value| -> Option<[f64; 3]> {
++        let [x, y, z] = value.as_array()?.as_slice() else {
++            return None;
++        };
++        Some([x.as_f64()?, y.as_f64()?, z.as_f64()?])
++    };
++    if status["screen"] != "playing"
++        || renderer["backend"] != "gx2"
++        || renderer["terrain_presented"] != true
++        || status["chunks"].as_u64().unwrap_or(0) == 0
++        || !at_view(position)
++    {
++        return false;
++    }
++    let Some((position, camera)) = xyz(position).zip(xyz(camera)) else {
++        return false;
++    };
++    // The player's position is at their feet and the native camera is at eye
++    // height. X/Z must agree and Y must be close enough for that offset.
++    (position[0] - camera[0]).abs() < 2.0
++        && (position[1] - camera[1]).abs() < 3.0
++        && (position[2] - camera[2]).abs() < 2.0
++        && renderer["terrain_sections"]
++            .as_array()
++            .is_some_and(|sections| {
++                sections.len() == 2
++                    && sections
++                        .iter()
++                        .all(|count| count.as_u64().is_some_and(|count| count > 0))
++            })
++}
++
++fn wait_for_diagnostic_terrain(
++    control: &Control,
++    at_view: impl Fn(&Value) -> bool,
++    report: &mut Report,
++    phase: &str,
++) -> Result<Instant, String> {
++    let status = poll(control, LOAD_LIMIT, |status| {
++        diagnostic_terrain(status, &at_view)
++    })?;
++    let observed = Instant::now();
++    let renderer = &status["renderer"];
++    for (name, value) in [
++        ("resident_columns", &status["chunks"]),
++        ("pending_chunks", &status["pending_chunks"]),
++        ("tv_terrain_sections", &renderer["terrain_sections"][0]),
++        ("gamepad_terrain_sections", &renderer["terrain_sections"][1]),
++    ] {
++        if let Some(value) = value.as_f64() {
++            report.metric(&format!("cafe.diagnostic.{phase}.{name}"), &[value]);
++        }
++    }
++    Ok(observed)
++}
++
+ /// Fewer section meshes than this in a second is the game remeshing blocks that change (random
+ /// ticks), not loading.
+ const QUIET_MESHES_PER_S: f64 = 100.0;
+@@ -1098,25 +1236,71 @@ mod tests {
+     #[test]
+     #[ignore = "daily"]
+     fn hosted_completion_returns_a_standard_report() {
++        hosted_completion(false);
++    }
++
++    #[test]
++    fn hosted_diagnostic_requires_fresh_terrain_and_labels_the_report() {
++        hosted_completion(true);
++    }
++
++    fn hosted_completion(diagnostic: bool) {
+         let (requests, game) = mpsc::channel::<Request>();
+-        let directory = std::env::temp_dir().join(format!(
+-            "horizon-benchmark-completion-test-{}",
++        let temp = std::env::temp_dir().join(format!(
++            "horizon-benchmark-completion-test-{}-{diagnostic}",
+             std::process::id()
+         ));
++        let directory = temp.join(".benchmark-run");
++        if diagnostic {
++            std::fs::create_dir_all(&directory).unwrap();
++            let marker = directory.join(VILLAGE_DIAGNOSTIC_MARKER);
++            std::fs::write(&marker, VILLAGE_DIAGNOSTIC_CONTENT).unwrap();
++            assert!(!cafe_village_diagnostic(&directory, "village"));
++            std::fs::write(directory.join(CAFE_WORKSPACE_MARKER), CAFE_WORKSPACE_OWNER).unwrap();
++            assert!(!cafe_village_diagnostic(&directory, "standard"));
++            std::fs::write(&marker, b"wrong content").unwrap();
++            assert!(!cafe_village_diagnostic(&directory, "village"));
++            std::fs::write(&marker, VILLAGE_DIAGNOSTIC_CONTENT).unwrap();
++            assert!(cafe_village_diagnostic(&directory, "village"));
++        }
+         let benchmark = HostedRun::start(requests, hosted_setup(directory.clone())).unwrap();
+         let mock_game = thread::spawn(move || {
+             let mut loaded = false;
+             let mut position = [0.0; 3];
++            let mut scene_statuses = 0;
+             for request in game {
+                 use serde_json::json;
+                 let words: Vec<_> = request.line.split_ascii_whitespace().collect();
+                 let reply = match words[0] {
+-                    "status" => json!({
+-                        "screen": if loaded { "playing" } else { "title" },
+-                        "player": if loaded { json!({"position": position}) } else { Value::Null },
+-                        "pending_chunks": 0,
+-                        "renderer": {"backend": "metal", "size": [1280, 720]},
+-                    }),
++                    "status" => {
++                        let at_scene = position == SCENES[0].1;
++                        scene_statuses += u32::from(at_scene);
++                        let mut result = json!({
++                            "screen": if loaded { "playing" } else { "title" },
++                            "player": if loaded { json!({"position": position}) } else { Value::Null },
++                            "pending_chunks": 0,
++                            "renderer": {"backend": "metal", "size": [1280, 720]},
++                        });
++                        if diagnostic {
++                            result["chunks"] = json!(2);
++                            result["pending_chunks"] = json!(5);
++                            result["render_distance"] = json!(6);
++                            result["renderer"] = json!({
++                                "backend": "gx2",
++                                "size": [1280, 720],
++                                "terrain_presented": loaded,
++                                "terrain_sections": if scene_statuses == 2 { [3, 0] } else { [3, 2] },
++                                "terrain_camera": if scene_statuses == 1 { [0.0; 3] } else { position },
++                            });
++                            if at_scene {
++                                assert_eq!(
++                                    diagnostic_terrain(&result, &near(SCENES[0].1)),
++                                    scene_statuses >= 3
++                                );
++                            }
++                        }
++                        result
++                    }
+                     "open" => {
+                         assert_eq!(&words[1..], [WORLD, "1234", "creative"]);
+                         loaded = true;
+@@ -1129,7 +1313,11 @@ mod tests {
+                     }
+                     "fly" if words.last() == Some(&"raw") => {
+                         assert_eq!(position, SCENES[0].1);
+-                        assert_eq!(words[7].parse::<f64>().unwrap(), FLIGHT_SECONDS);
++                        assert_eq!(
++                            &words[1..9],
++                            ["-960", "125", "80", "-960", "125", "272", "12", "35"]
++                        );
++                        assert!(!diagnostic || scene_statuses >= 4);
+                         json!({"frame_ms": [33.0, 36.0, 40.0], "cpu_ms": [21.0, 22.0, 25.0]})
+                     }
+                     _ => json!({"ok": true}),
+@@ -1149,12 +1337,29 @@ mod tests {
+             matches!(benchmark.progress(), Some(Progress::MeasuringScene(scene)) if scene == "village")
+         );
+         let report = Report::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+-        assert_eq!(report.conditions.scenario.as_deref(), Some("village"));
++        let expected = if diagnostic {
++            DIAGNOSTIC_SCENARIO
++        } else {
++            "village"
++        };
++        assert_eq!(report.conditions.scenario.as_deref(), Some(expected));
++        if diagnostic {
++            assert!(report.label.as_deref().unwrap().contains("Diagnostic"));
++            assert_eq!(
++                report.metrics["cafe.diagnostic.before_flight.tv_terrain_sections"].mean,
++                3.0
++            );
++            assert_eq!(
++                report.metrics["cafe.diagnostic.before_flight.gamepad_terrain_sections"].mean,
++                2.0
++            );
++        }
++        assert_eq!(report.frames[0].phase, "village");
+         assert_eq!(report.frames[0].frames, 3);
+         assert_eq!(report.frames[0].gpu_p50_ms, None);
+         drop(benchmark);
+         mock_game.join().unwrap();
+-        std::fs::remove_dir_all(directory).unwrap();
++        std::fs::remove_dir_all(temp).unwrap();
+     }
+ 
+     #[test]
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 17f00bb5c8635843a7758a73a2742682c1b82531..7bcd99ff70a5d7efa750f5af9c03d23cb66327a6 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1645,6 +1645,8 @@ impl Game<'_> {
+                     "entity_distance_percent": self.settings.entity_distance * 100.0,
+                     "title_presented": frames.title_presented,
+                     "terrain_presented": frames.terrain_presented,
++                    "terrain_sections": frames.terrain_sections,
++                    "terrain_camera": frames.terrain_camera,
+                     "omitted_pass_mask": frames.omitted_pass_mask,
+                     "partial_frames": frames.partial_frames,
+                 "effective_scale": frames.world_resolution.map(|r| r.effective_scale),
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index b54d4bc24b5a0a890324c1703bad9e577973a6cb..8d38bafe70d201fba8bf841cf04aeb1a23af053a 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -548,6 +548,8 @@ impl<'resources> CafeLoadingSession<'resources> {
+ pub(super) struct BenchmarkFrames {
+     pub(super) title_presented: bool,
+     pub(super) terrain_presented: bool,
++    pub(super) terrain_sections: [usize; 2],
++    pub(super) terrain_camera: Option<[f64; 3]>,
+     pub(super) omitted_pass_mask: u32,
+     pub(super) partial_frames: u64,
+     pub(super) world_resolution: Option<horizon_client::presentation::WorldResolution>,
+@@ -616,12 +618,18 @@ impl CafeGameSession<'_> {
+             .into_iter()
+             .map(|name| Text::literal(name.clone()))
+             .collect();
+-        self.game
+-            .send_overlay_message(Text::translate_with_fallback(
+-                &format!("horizon.benchmark.{key}"),
+-                fallback,
+-                &args,
+-            ));
++        let message =
++            Text::translate_with_fallback(&format!("horizon.benchmark.{key}"), fallback, &args);
++        let message = if benchmark.diagnostic() {
++            Text::translate_with_fallback(
++                "horizon.benchmark.diagnostic",
++                "Diagnostic %s",
++                &[message],
++            )
++        } else {
++            message
++        };
++        self.game.send_overlay_message(message);
+         self.next_benchmark_status = now + Duration::from_secs(2);
+     }
+ 
+@@ -866,6 +874,12 @@ impl CafeGameSession<'_> {
+             state.terrain_presented = paired
+                 && phase == performance::Phase::Gameplay
+                 && work.terrain_sections.iter().all(|sections| *sections > 0);
++            state.terrain_camera = work.terrain_camera.filter(|_| state.terrain_presented);
++            state.terrain_sections = if state.terrain_presented {
++                work.terrain_sections
++            } else {
++                [0; 2]
++            };
+             if state.terrain_presented {
+                 state.omitted_pass_mask |= work.omitted_pass_mask;
+                 state.partial_frames += u64::from(work.omitted_pass_mask != 0);
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index e3290b6b359b3c57cf9ed522de590575a8a236ae..d6e8fdda3984503511f64078bf0c5a7d59cb630f 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -11,6 +11,7 @@ pub struct CafeFrameWork {
+     pub uploaded_sections: u64,
+     pub uploaded_bytes: u64,
+     pub terrain_sections: [usize; 2],
++    pub terrain_camera: Option<[f64; 3]>,
+     pub omitted_pass_mask: u32,
+     pub world_resolution: Option<WorldResolution>,
+ }
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 5dcf8bd4f9bed0f32a9adfa6a45642a6a6424486..0c240403e6446874465df573eb81242b2c7d1eff 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -376,16 +376,16 @@ impl<G: GameFiles> LocalService<G> {
+         let game = self.game_dir(&self.preferences.instance);
+         if let Some(scene) = self.benchmark.take() {
+             let scratch = game.join(".benchmark-run");
+-            let owner = scratch.join("horizon-benchmark-run.txt");
+-            const MARKER: &[u8] = b"Horizon Night benchmark workspace v1\n";
++            use horizon_client::benchmark::{CAFE_WORKSPACE_MARKER, CAFE_WORKSPACE_OWNER};
++            let owner = scratch.join(CAFE_WORKSPACE_MARKER);
+             match fs::create_dir(&scratch) {
+-                Ok(()) => fs::write(&owner, MARKER).map_err(|_| 5_u8)?,
++                Ok(()) => fs::write(&owner, CAFE_WORKSPACE_OWNER).map_err(|_| 5_u8)?,
+                 Err(error)
+                     if error.kind() == std::io::ErrorKind::AlreadyExists
+                         && plain(&scratch, true)
+                         && plain(&owner, false)
+-                        && store::read_limited(&owner, MARKER.len() as u64)
+-                            .is_ok_and(|value| value == MARKER) => {}
++                        && store::read_limited(&owner, CAFE_WORKSPACE_OWNER.len() as u64)
++                            .is_ok_and(|value| value == CAFE_WORKSPACE_OWNER) => {}
+                 Err(_) => return Err(5),
+             }
+             return Ok(Launch {
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 4edeadcb314719f51add12dc693c23ef5ff2ba10..07437754acc3805f3cd0c08f209cf947219ffdc3 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1832,6 +1832,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         self.last_frame_partial = false;
+         self.frame_work.terrain_sections = [0; 2];
++        self.frame_work.terrain_camera = (!frame.title).then(|| frame.camera.to_array());
+         self.frame_work.omitted_pass_mask = 0;
+         let crumbling_overflow = !frame.title && self.crumbling.prepare(frame.entities);
+         let hand_partial = !frame.title && self.models.prepare_hand(frame);
