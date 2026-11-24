@@ -14,37 +14,36 @@ powerpc-eabi-cmake -S wiiu/diagnostics/world_scale_transition -B "$build" -G Nin
   -DCAFEGLSL_COMPILER_EXECUTABLE="$cafeglsl_bin"
 cmake --build "$build" --parallel "$(nproc)"
 wuhbtool "$build/gx2_world_scale_transition.rpx" "$build/HorizonGX2Scale.wuhb" \
-  --name=Horizon_GX2_Scale_Diagnostic --short-name=GX2_Scale --author=MCHorizonWiiU
+  --name='Horizon GX2 Scale Visual' --short-name='GX2 Scale Visual' --author=MCHorizonWiiU
 sha256sum "$build/gx2_world_scale_transition.rpx" "$build/HorizonGX2Scale.wuhb"
 ```
 
 Run the RPX in forced-interpreter Cemu or put the WUHB in its own application
-directory, `sd:/wiiu/apps/HorizonGX2Scale/`. The app exits automatically.
-Capture the serial records from `GX2 transitions` through `GX2 scale
-transition diagnostic done`. A 1080p TV and a standard GamePad yield
-1440×809 and 641×360 world surfaces. The first direct WHB control checks
-both outputs with the same shader and a CPU-filled texture. The six trials
-then reuse the scaled target and alternate patterns to test fresh samples.
-In forced-interpreter Cemu, both direct controls and all 24 trial readbacks
-passed at those dimensions and the process exited successfully.
+directory, `sd:/wiiu/apps/HorizonGX2Scale/`. The physical build presents
+six seven-second still windows and requests the Wii U Menu through ProcUI
+when finished. It performs no surface copy or CPU readback.
+
+A 1080p TV and a standard GamePad yield 1440×809 and 641×360 world
+surfaces. Capture one output still per `GX2 scale still` serial record.
+`reverse=0` expects red above blue and `reverse=1` expects blue above red.
+The `SUBMITTED` line confirms all arms ran. Check the stills for pixels.
+All twelve PNG stills matched the expected colors in forced-interpreter
+Cemu. A failed direct control invalidates the physical comparison.
 
 | Trial | Transition | What a pass indicates when the RC 26 arm fails |
 | --- | --- | --- |
-| 0 | RC 26. Restore WHB, then invalidate source color and texture. | A failing destination with a passing source reproduces the transition fault on first use. |
-| 1 | Invalidate source color and texture while it is bound, then restore WHB. | Moving the same operation before rebinding is sufficient for this workload. |
-| 2 | Invalidate color before restoring WHB and texture after restoration. | Separating the producer and consumer cache operations is sufficient for this workload. |
-| 3 | Invalidate color and texture before restoring WHB, then wait for retirement. | The extra retirement wait changes the observed result. It also adds synchronization cost. |
-| 4 | Invalidate the source, copy to an independent linear texture and sample that copy. | Sampling independent backing changes the result. The copy also changes layout and adds bandwidth and allocation. |
-| 5 | RC 26 repeated with the opposite source pattern. | Correct output on one RC 26 arm and stale output on the other calls for repeat and reuse checks. |
+| 0 | Direct WHB draw of the CPU-filled pattern. | The control validates the shader, pattern and output. |
+| 1 | RC 26. Restore WHB, then invalidate source color and texture. | A failure isolates the difference to the scaled path in this fixture. |
+| 2 | Invalidate source color and texture while it is bound, then restore WHB. | Moving the same operation before rebinding is sufficient for this workload. |
+| 3 | Invalidate color before restoring WHB and texture after restoration. | Separating the producer and consumer cache operations is sufficient for this workload. |
+| 4 | Invalidate color and texture before restoring WHB, then wait for retirement. | The extra retirement wait changes the observed result and adds synchronization cost. |
+| 5 | RC 26 repeated with the opposite source pattern. | Compare the two RC 26 arms for stale output and reuse effects. |
 
-`GX2 scale source` describes offscreen pixels. `GX2 scale output` describes
-the corresponding composed pixels. The probe reads the destination first
-so that copying the source for CPU access cannot fix its transition. Keep
-all trial records on failure. A failed direct control calls for checking
-basic shader and readback behavior. A failed source calls for checking the
-offscreen draw and readback. If every row passes on hardware, the next
-comparison must preserve the stock terrain draw and the original frame's
-target state changes.
+If every row passes on hardware, repeat with stock terrain and the original
+frame's target-state changes. For emulator-only source and destination
+readbacks, use a separate build with `-DHORIZON_SCALE_CEMU_READBACK=ON`.
+The original readback build passed all 26 Cemu controls and crashed during
+the first TV readback on physical hardware. Keep it in Cemu.
 
 Cemu's implementation models texture invalidation by address. The RetroArch
 Wii U blur path invalidates the source texture before rebinding its next

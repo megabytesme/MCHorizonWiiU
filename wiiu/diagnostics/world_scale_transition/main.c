@@ -1,5 +1,6 @@
 #include <gx2/mem.h>
 #include <gx2/state.h>
+#include <sysapp/launch.h>
 
 enum TransitionMode { RC26_ORDER, BEFORE_RESTORE, SPLIT_SYNC, DRAINED_SYNC, COPY_TEXTURE };
 static enum TransitionMode transition_mode;
@@ -36,12 +37,26 @@ static bool reversed_texture(GX2Texture *pattern)
    return true;
 }
 
+#ifdef HORIZON_SCALE_CEMU_READBACK
 #include "transitions.h"
+#else
+#include "visual.h"
+
+static void return_to_menu(void)
+{
+   if (!WHBProcIsRunning()) return;
+   SYSLaunchMenu();
+   while (WHBProcIsRunning()) OSSleepTicks(OSMillisecondsToTicks(16));
+}
+#endif
 
 int main(void)
 {
    WHBProcInit();
    if (!WHBGfxInit()) {
+#ifndef HORIZON_SCALE_CEMU_READBACK
+      return_to_menu();
+#endif
       WHBProcShutdown();
       return 1;
    }
@@ -50,7 +65,12 @@ int main(void)
    GX2Surface *outputs[] = {&WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetDRCColourBuffer()->surface};
    const bool ok = ready && check_transitions(outputs, &pattern);
    if (pattern.surface.image) GX2RDestroySurfaceEx(&pattern.surface, 0);
+#ifdef HORIZON_SCALE_CEMU_READBACK
    OSReport("GX2 scale transition diagnostic done result=%s\n", ok ? "PASS" : "FAIL");
+#else
+   OSReport("GX2 scale transition diagnostic done result=%s\n", ok ? "SUBMITTED" : "INTERRUPTED");
+   return_to_menu();
+#endif
    WHBGfxShutdown();
    WHBProcShutdown();
    return ok ? 0 : 3;
