@@ -128,6 +128,14 @@ confirms the composite can display the source clear. The tests leave open
 whether the pattern draws fail at the offscreen target or the sampler sees
 the clear before those draws become visible.
 
+The second visual scale WUHB (`76cdfc82…`, RPX `8f3589c5…`) also completed
+and returned to the Menu. The direct control showed red and blue. Both
+RC 26 controls and all four depth and attachment-order variants stayed
+green in HDMI stills, consistent with the owner's observation. Disabling
+depth writes and tests, switching the depth comparison to `ALWAYS`, and
+binding attachments before clearing did not recover the pattern. All
+fourteen TV and GamePad pixel checks passed in Cemu for this same probe.
+
 ## Physical GPU timing probe
 
 The visual timing WUHB (`dbf6ed9b…`, RPX `72a58a12…`) produced both
