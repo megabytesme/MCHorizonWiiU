@@ -1,0 +1,39 @@
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index 7030d6499147293d7ddde0dec1c486c340ec895c..d03885ecc4a6c3158d2d4d091e177d4c52963749 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -295,16 +295,29 @@ fn write_region_layer(
+     size: u32,
+     out: &mut Vec<u8>,
+ ) {
++    out.clear();
++    out.reserve(size as usize * size as usize * 4);
++    let stride_bytes = stride as usize * 4;
++    let left = x as usize * 4;
++
++    if w == size && h == size {
++        let row_bytes = size as usize * 4;
++        for row in 0..size {
++            let start = (y as usize + row as usize) * stride_bytes + left;
++            out.extend_from_slice(&pixels[start..start + row_bytes]);
++        }
++        return;
++    }
++
+     let side = u64::from(w.max(h));
+     let pick = |i: u32, extent: u32| {
+         (u64::from(i) * side / u64::from(size) * u64::from(extent) / side) as usize
+     };
+-    out.clear();
+-    out.reserve(size as usize * size as usize * 4);
++    let columns: Vec<_> = (0..size).map(|column| left + pick(column, w) * 4).collect();
+     for row in 0..size {
+-        let source_row = y as usize + pick(row, h);
+-        for column in 0..size {
+-            let at = (source_row * stride as usize + x as usize + pick(column, w)) * 4;
++        let start = (y as usize + pick(row, h)) * stride_bytes;
++        for column in &columns {
++            let at = start + column;
+             out.extend_from_slice(&pixels[at..at + 4]);
+         }
+     }

@@ -286,7 +286,7 @@ allocated color-only target with a dedicated context. RPX `38514e9c…`
 passed 40 RGB comparisons across 10 Cemu stills. It performs no CPU
 framebuffer readback.
 
-## Gameplay GPU timing probe
+## Gameplay wall time and GPU timing
 
 The RC 29 `cafe_performance.wall_ms_per_recorded_iteration` and serial wall
 records use one denominator for game idle, artwork, redraw, native submission,
@@ -304,6 +304,15 @@ aggregate residual. Earlier scaled entry captures recorded a 77.86 ms
 median artwork span on 64 paired gameplay rows, with a 77.80 ms median
 nested texture-upload span. That earlier sample motivates measuring terrain
 animation preparation separately in the next stationary run.
+
+RC 29 copies equal-size sprite crops by row and reuses the source column
+offsets across rows when resampling. It also copies padded GX2 atlas rows
+in bulk and duplicates only their edge pixels. The sprite harness matched
+13 complete outputs byte for byte, and the atlas crate passed 14 host
+tests, including padded edges and untouched neighboring bytes. Both
+kernels took less time in x86-64 host comparisons. Gameplay animation cost
+also includes cache maintenance and synchronization, which remain to be
+measured on Wii U.
 
 ### Counter sampling
 

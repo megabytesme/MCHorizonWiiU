@@ -1,0 +1,84 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index ea4949925e7b9d38a95975775d83e533ede2b7f8..3040b595b6a500cb7971731d4161f876a0cd1aa5 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -515,14 +515,28 @@ impl TerrainAtlasLayout {
+             return Err("invalid writable GX2 atlas storage");
+         }
+         let side = self.sprite_size;
+-        let [cx, cy, _, _] = self.layer_rect(layer)?;
+-        for y in 0..self.cell_size {
++        let [cx, cy, cell_size, _] = self.layer_rect(layer)?;
++        if cell_size == 0 {
++            return Ok(());
++        }
++        let source_row_bytes = side as usize * 4;
++        let cell_row_bytes = cell_size as usize * 4;
++        let interior_bytes = (cell_row_bytes - 4).min(source_row_bytes);
++        let cell_x_bytes = cx as usize * 4;
++        for y in 0..cell_size {
++            // The first and last cell rows repeat the corresponding sprite row.
+             let sy = y.saturating_sub(1).min(side - 1) as usize;
+-            for x in 0..self.cell_size {
+-                let sx = x.saturating_sub(1).min(side - 1) as usize;
+-                let from = (sy * side as usize + sx) * 4;
+-                let to = (cy + y) as usize * pitch + (cx + x) as usize * 4;
+-                pixels[to..to + 4].copy_from_slice(&source[from..from + 4]);
++            let from = sy * source_row_bytes;
++            let to = (cy + y) as usize * pitch + cell_x_bytes;
++            let source_row = &source[from..from + source_row_bytes];
++            let target_row = &mut pixels[to..to + cell_row_bytes];
++            let (left, remainder) = target_row.split_at_mut(4);
++            let (interior, right) = remainder.split_at_mut(interior_bytes);
++            left.copy_from_slice(&source_row[..4]);
++            interior.copy_from_slice(&source_row[..interior_bytes]);
++            let right_pixel = &source_row[source_row_bytes - 4..];
++            for pixel in right.chunks_exact_mut(4) {
++                pixel.copy_from_slice(right_pixel);
+             }
+         }
+         Ok(())
+@@ -686,6 +700,43 @@ mod indexed_vertex_tests {
+         assert!(layout.write_layers(&source, &mut pixels, pitch - 1).is_err());
+     }
+ 
++    #[test]
++    fn layer_updates_match_clamped_texels_and_leave_other_cells_untouched() {
++        for (side, padding) in [(1, 0), (3, 4), (16, 12), (64, 144)] {
++            let layout = TerrainAtlasLayout::for_layers(side, 13).unwrap();
++            let pitch = layout.width as usize * 4 + padding;
++            let mut pixels = alloc::vec![0xbd; pitch * layout.height as usize];
++            let mut expected = pixels.clone();
++            let layer_bytes = layout.layer_bytes().unwrap();
++            let source: Vec<_> = (0..layer_bytes)
++                .map(|index| (index * 37 + index / 7 * 17) as u8)
++                .collect();
++
++            for layer in [0, 6, 12] {
++                let x = ((layer % layout.columns) * (side + 2)) as usize;
++                let y = ((layer / layout.columns) * (side + 2)) as usize;
++                let side = side as usize;
++                for dy in 0..side + 2 {
++                    for dx in 0..side + 2 {
++                        let sx = dx.clamp(1, side) - 1;
++                        let sy = dy.clamp(1, side) - 1;
++                        let source_offset = (sy * side + sx) * 4;
++                        let target_offset = (y + dy) * pitch + (x + dx) * 4;
++                        expected[target_offset..target_offset + 4]
++                            .copy_from_slice(&source[source_offset..source_offset + 4]);
++                    }
++                }
++                layout.write_layer(layer, &source, &mut pixels, pitch).unwrap();
++                assert_eq!(pixels, expected, "side={side}, pitch={pitch}, layer={layer}");
++            }
++
++            assert!(layout.write_layer(13, &source, &mut pixels, pitch).is_err());
++            assert!(layout.write_layer(0, &source[..layer_bytes - 1], &mut pixels, pitch).is_err());
++            assert!(layout.write_layer(0, &source, &mut pixels, pitch - 1).is_err());
++            assert_eq!(pixels, expected);
++        }
++    }
++
+     #[test]
+     fn mapped_writes_handle_empty_quads_and_reject_invalid_input() {
+         let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
