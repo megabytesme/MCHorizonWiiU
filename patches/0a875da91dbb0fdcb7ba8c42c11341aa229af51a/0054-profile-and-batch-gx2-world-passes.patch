@@ -1,0 +1,585 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index f53eec5f7b4a7a0b8a82b2a76c1cecb347bc2982..6b9068bcccbc6328c9cc8d1ae64b717118778a0f 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -32,6 +32,22 @@ pub enum Stage {
+     SolidTerrainDrc,
+     HudSubmitTv,
+     HudSubmitDrc,
++    WorldSetupTv,
++    WorldSetupDrc,
++    TranslucentTerrainTv,
++    TranslucentTerrainDrc,
++    OutlineTv,
++    OutlineDrc,
++    CrumblingTv,
++    CrumblingDrc,
++    FirstPersonTv,
++    FirstPersonDrc,
++    WorldCompositeTv,
++    WorldCompositeDrc,
++    WorldSkyTv,
++    WorldSkyDrc,
++    WorldEntitiesTv,
++    WorldEntitiesDrc,
+ }
+ 
+ #[repr(u32)]
+@@ -85,6 +101,9 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
+     fn horizon_gx2_profile_count(counter: u32, value: u32);
++    fn horizon_gx2_profile_world(requested: u32, effective: u32, dimensions: *const u32, bytes: u32);
++    fn horizon_gx2_profile_sorted_index_bytes(bytes: u32);
++    fn horizon_gx2_profile_legacy_terrain_bindings() -> bool;
+ }
+ 
+ pub struct Frame(bool, PhantomData<*mut ()>);
+@@ -111,6 +130,20 @@ pub fn count(counter: Counter, value: usize) {
+     unsafe { horizon_gx2_profile_count(counter as u32, value as u32) }
+ }
+ 
++pub fn world_resolution(requested: u32, effective: u32, dimensions: [[u32; 2]; 2], bytes: u32) {
++    unsafe {
++        horizon_gx2_profile_world(requested, effective, dimensions.as_flattened().as_ptr(), bytes);
++    }
++}
++
++pub fn sorted_index_bytes(bytes: usize) {
++    unsafe { horizon_gx2_profile_sorted_index_bytes(bytes as u32) }
++}
++
++pub fn legacy_terrain_bindings() -> bool {
++    unsafe { horizon_gx2_profile_legacy_terrain_bindings() }
++}
++
+ pub struct Span {
+     stage: Stage,
+     started: u64,
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 17794b682b01629263742c3c264be87b4c542c15..f8bd81934119a6e313076f289da2f232a55ab4db 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -233,32 +233,21 @@ void horizon_gx2_terrain_draw_quads(HorizonGx2Terrain *terrain, uint32_t vertex_
+ }
+ 
+ void horizon_gx2_terrain_wait_idle(void) { GX2DrawDone(); }
+-int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+-                            uint32_t target_width, uint32_t target_height,
++int horizon_gx2_terrain_bind(HorizonGx2Terrain *t, uint32_t target_width, uint32_t target_height,
+                             uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+-                            const float clip_rows[16], const float section_origin[4],
+-                            const float fog_color[4], const float fog_ranges[4])
++                            const float fog_color[4], const float fog_ranges[4], bool translucent)
+ {
+-   if (!t || !s || !target_width || !target_height || !width || !height ||
++   if (!t || !target_width || !target_height || !width || !height ||
+        x > target_width || y > target_height || width > target_width-x || height > target_height-y ||
+-       !clip_rows || !section_origin || !fog_color || !fog_ranges) return -1;
+-   if (!s->vertex_count) return 0;
+-   const bool translucent = GX2RBufferExists(&s->sorted_indices);
+-   if (translucent && !s->sorted_indices_ready) return -1;
++       !fog_color || !fog_ranges) return -1;
+    const float material[4] = { translucent ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+    GX2SetShaderMode(t->shader.vertexShader->mode);
+    GX2SetVertexShader(t->shader.vertexShader); GX2SetPixelShader(t->shader.pixelShader);
+-   for (uint32_t row = 0; row < 4; ++row)
+-      GX2SetVertexUniformReg(t->clip_offsets[row], 4, &clip_rows[row * 4]);
+-   GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
+    GX2SetPixelUniformReg(t->fog_color_offset, 4, fog_color);
+    GX2SetPixelUniformReg(t->fog_ranges_offset, 4, fog_ranges);
+    GX2SetPixelUniformReg(t->material_offset, 4, material);
+    GX2SetViewport(x, y, width, height, 0, 1); GX2SetScissor(x, y, width, height);
+    GX2SetFetchShader(&t->shader.fetchShader);
+-   GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+-   GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
+-   GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
+    horizon_gx2_terrain_bind_lightmap(t, t->lightmap_slot);
+    GX2SetPixelTexture(&t->texture, t->sampler_slot); GX2SetPixelSampler(&t->sampler, t->sampler_slot);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+@@ -274,6 +263,22 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, translucent ? 1 : 0, FALSE, TRUE);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
++   return 0;
++}
++
++int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                                  const float clip_rows[16], const float section_origin[4])
++{
++   if (!t || !s || !clip_rows || !section_origin) return -1;
++   if (!s->vertex_count) return 0;
++   const bool translucent = GX2RBufferExists(&s->sorted_indices);
++   if (translucent && !s->sorted_indices_ready) return -1;
++   for (uint32_t row = 0; row < 4; ++row)
++      GX2SetVertexUniformReg(t->clip_offsets[row], 4, &clip_rows[row * 4]);
++   GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
++   GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
++   GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
++   GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
+    if (translucent)
+       GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
+                       s->sorted_indices.elemCount, 0, 0, 1);
+@@ -281,3 +286,16 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+       horizon_gx2_terrain_draw_quads(t, s->vertex_count);
+    return 0;
+ }
++
++int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                            uint32_t target_width, uint32_t target_height,
++                            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
++                            const float clip_rows[16], const float section_origin[4],
++                            const float fog_color[4], const float fog_ranges[4])
++{
++   if (!s || !clip_rows || !section_origin) return -1;
++   const bool translucent = GX2RBufferExists(&s->sorted_indices);
++   const int bound = horizon_gx2_terrain_bind(t, target_width, target_height, x, y, width, height,
++                                              fog_color, fog_ranges, translucent);
++   return bound ? bound : horizon_gx2_terrain_draw_bound(t, s, clip_rows, section_origin);
++}
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 10c4869cbe2053ee7f307605be990fb791cbb6a8..b87b35566e605a6fa6a4605350c636fa58155956 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <stddef.h>
++#include <stdbool.h>
+ #include <stdint.h>
+ 
+ typedef struct HorizonTerrainVertex {
+@@ -48,6 +49,13 @@ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ /* Caller has completed every submitted use of this section. */
+ void horizon_gx2_terrain_section_destroy_after_wait(HorizonGx2TerrainSection *section);
++/* Bind once before drawing an ordered solid or translucent pass. The caller
++ * preserves this state until all geometry from the same pass has drawn. */
++int horizon_gx2_terrain_bind(HorizonGx2Terrain *terrain, uint32_t target_width, uint32_t target_height,
++                            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
++                            const float fog_color[4], const float fog_ranges[4], bool translucent);
++int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *terrain, HorizonGx2TerrainSection *section,
++                                  const float clip_rows[16], const float section_origin[4]);
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *terrain,
+                             HorizonGx2TerrainSection *section,
+                             uint32_t target_width, uint32_t target_height,
+diff --git a/wiiu/loading_host/crumbling.rs b/wiiu/loading_host/crumbling.rs
+index a68fdad74537f050d432fef63d81b9632e0a6b68..a81bdc0049e643fa54449b5ecbb2977304cde72e 100644
+--- a/wiiu/loading_host/crumbling.rs
++++ b/wiiu/loading_host/crumbling.rs
+@@ -6,6 +6,7 @@ use horizon_client::{
+     gfx::{fog_uniform, Frame},
+     mesher::Vertex as SharedVertex,
+ };
++use horizon_client_platform::cafe_profile::{Span, Stage};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+@@ -153,6 +154,7 @@ impl Crumbling {
+         if count == 0 {
+             return Ok(());
+         }
++        let _span = Span::new([Stage::CrumblingTv, Stage::CrumblingDrc][target as usize]);
+         let native = self.native.ok_or("GX2 crumbling geometry is not staged")?;
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+         let result = hud.with_native_atlas(|atlas| {
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 3adfc91606219c8b6833fd4da65650d73f4c1156..352d88fa449084b9fa7b02f30964df90eeacfee0 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -14,6 +14,8 @@
+ #define WORKERS 4
+ #define EXTRA_STAGES 8
+ #define EXTRA_COUNTERS 14
++#define WORLD_STAGES 16
++#define WORLD_COUNTERS 8
+ #define SCREENSHOT_STAGE 16
+ #define PLAYING_PHASE 5
+ 
+@@ -33,9 +35,10 @@ typedef struct {
+    uint32_t stages[STAGES], counters[COUNTERS];
+    uint32_t workers[WORKERS][2];
+    uint32_t extra_stages[EXTRA_STAGES], extra_counters[EXTRA_COUNTERS];
++   uint32_t world_stages[WORLD_STAGES], world_counters[WORLD_COUNTERS];
+ } ProfileFrame;
+ 
+-_Static_assert(sizeof(ProfileFrame) == 256, "HZP2 record size");
++_Static_assert(sizeof(ProfileFrame) == 352, "HZP3 record size");
+ 
+ typedef struct {
+    uint32_t magic, version, ticks_per_second, frame_size, capacity, count, total;
+@@ -47,7 +50,7 @@ static ProfileFrame ring[CAPACITY], current;
+ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+-static bool recording, legacy_pacing;
++static bool recording, legacy_pacing, legacy_terrain_bindings;
+ static struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+@@ -67,7 +70,9 @@ void horizon_gx2_profile_init(void)
+    FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
+    if (!marker) return;
+    // A leading '1' opts into the old Poll delay for matched capture runs.
+-   legacy_pacing = fgetc(marker) == '1';
++   const int mode = fgetc(marker);
++   legacy_pacing = mode == '1';
++   legacy_terrain_bindings = mode == '2';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -79,6 +84,11 @@ bool horizon_gx2_profile_legacy_pacing(void)
+    return legacy_pacing;
+ }
+ 
++bool horizon_gx2_profile_legacy_terrain_bindings(void)
++{
++   return legacy_terrain_bindings;
++}
++
+ bool horizon_gx2_profile_begin(uint32_t phase)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+@@ -102,8 +112,14 @@ uint64_t horizon_gx2_profile_stamp(void)
+ /* A render span is host-thread-only. Worker spans use the separate atomics. */
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin)
+ {
+-   if (!begin || !recording || stage >= STAGES + EXTRA_STAGES) return;
+-   uint32_t *value = stage < STAGES ? &current.stages[stage] : &current.extra_stages[stage - STAGES];
++   if (!begin || !recording || stage >= STAGES + EXTRA_STAGES + WORLD_STAGES) return;
++   uint32_t *value;
++   if (stage < STAGES)
++      value = &current.stages[stage];
++   else if (stage < STAGES + EXTRA_STAGES)
++      value = &current.extra_stages[stage - STAGES];
++   else
++      value = &current.world_stages[stage - STAGES - EXTRA_STAGES];
+    uint32_t cost = ticks(begin, (uint64_t)OSGetSystemTime());
+    uint32_t sum = *value + cost;
+    *value = sum < cost ? UINT32_MAX : sum;
+@@ -156,6 +172,23 @@ void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4])
+    previous_output.known = true;
+ }
+ 
++void horizon_gx2_profile_world(uint32_t requested, uint32_t effective,
++                               const uint32_t dimensions[4], uint32_t surface_bytes)
++{
++   if (!recording) return;
++   current.world_counters[0] = requested;
++   current.world_counters[1] = effective;
++   memcpy(current.world_counters + 2, dimensions, sizeof(uint32_t) * 4);
++   current.world_counters[6] = surface_bytes;
++}
++
++void horizon_gx2_profile_sorted_index_bytes(uint32_t bytes)
++{
++   if (!recording) return;
++   const uint32_t sum = current.world_counters[7] + bytes;
++   current.world_counters[7] = sum < bytes ? UINT32_MAX : sum;
++}
++
+ void horizon_gx2_profile_finish(void)
+ {
+    if (!recording) return;
+@@ -189,7 +222,7 @@ void horizon_gx2_profile_finish(void)
+ 
+ static ProfileHeader header(void)
+ {
+-   return (ProfileHeader){0x485A5032, 2, OSTimerClockSpeed, sizeof(ProfileFrame),
++   return (ProfileHeader){0x485A5033, 3, OSTimerClockSpeed, sizeof(ProfileFrame),
+                           CAPACITY, total < CAPACITY ? total : CAPACITY, total};
+ }
+ 
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 0ffcbb389dc272e0f4bd4651a40a3158466a23e2..726b4dce931fe715103e4a70de692506f6b0ee79 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -19,6 +19,7 @@ enum {
+ 
+ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_legacy_pacing(void);
++bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+@@ -26,6 +27,9 @@ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);
+ void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin);
+ void horizon_gx2_profile_count(uint32_t counter, uint32_t value);
+ void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4]);
++void horizon_gx2_profile_world(uint32_t requested, uint32_t effective,
++                               const uint32_t dimensions[4], uint32_t surface_bytes);
++void horizon_gx2_profile_sorted_index_bytes(uint32_t bytes);
+ void horizon_gx2_profile_finish(void);
+ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
+ void horizon_gx2_profile_flush(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index aa163d3289d64c7318f961b6b797b50ac76d4c39..f52e6e2843109de5b6d3b4869398e910a6dd65a4 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -240,19 +240,23 @@ extern "C" {
+     fn horizon_gx2_terrain_section_destroy_after_wait(section: *mut c_void);
+     fn horizon_gx2_terrain_section_estimate(count: u32, bytes: *mut u32) -> i32;
+     fn horizon_wiiu_memory_can_upload_terrain(bytes: u32) -> i32;
+-    fn horizon_gx2_terrain_draw(
++    fn horizon_gx2_terrain_bind(
+         terrain: *mut c_void,
+-        section: *mut c_void,
+         target_width: u32,
+         target_height: u32,
+         x: u32,
+         y: u32,
+         width: u32,
+         height: u32,
+-        clip_rows: *const f32,
+-        section_origin: *const f32,
+         fog_color: *const f32,
+         fog_ranges: *const f32,
++        translucent: bool,
++    ) -> i32;
++    fn horizon_gx2_terrain_draw_bound(
++        terrain: *mut c_void,
++        section: *mut c_void,
++        clip_rows: *const f32,
++        section_origin: *const f32,
+     ) -> i32;
+ }
+ 
+@@ -1802,6 +1806,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             self.world_scale.release();
+         } else {
+             self.world_scale.prepare(self.requested_world_scale, targets);
++            if let Some(world) = self.world_scale.resolution() {
++                cafe_profile::world_resolution(
++                    world.requested_scale, world.effective_scale, world.dimensions, world.surface_bytes,
++                );
++            }
+         }
+         struct Draw<'a, 'frame, 'shader> {
+             presenter: &'a mut Gx2LoadingPresenter<'shader>,
+@@ -1843,7 +1852,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     .terrain_wait_ns
+                     .saturating_add(elapsed_ns(wait_start));
+             }
+-            let world_target = draw.presenter.world_scale.bind(target, rect, &draw.clear);
++            let world_target = {
++                let _span = Span::new([Stage::WorldSetupTv, Stage::WorldSetupDrc][index]);
++                draw.presenter.world_scale.bind(target, rect, &draw.clear)
++            };
+             let (world_width, world_height, world_rect) = match &world_target {
+                 Some(binding) => {
+                     let [w, h] = binding.size;
+@@ -1852,7 +1864,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 None => (width, height, rect),
+             };
+             let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+-            if let Err(error) = draw.presenter.stock_sky.draw(draw.frame, target, world_rect, aspect) {
++            let sky_result = {
++                let _span = Span::new([Stage::WorldSkyTv, Stage::WorldSkyDrc][index]);
++                draw.presenter.stock_sky.draw(draw.frame, target, world_rect, aspect)
++            };
++            if let Err(error) = sky_result {
+                 draw.result = Err(error);
+                 return -1;
+             }
+@@ -1905,6 +1921,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.profile.projection_ns =
+                         draw.profile.projection_ns.saturating_add(elapsed_ns(start));
+                 }
++                let legacy_bindings = cafe_profile::legacy_terrain_bindings();
++                let mut bound = false;
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+                 let mut sections_tested = 0usize;
+@@ -1935,20 +1953,33 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             draw.profile.projection_ns.saturating_add(elapsed_ns(start));
+                     }
+                     let submit_start = GX2_PROFILE_ENABLED.then(Instant::now);
++                    if !bound || legacy_bindings {
++                        if unsafe {
++                            horizon_gx2_terrain_bind(
++                                terrain.as_ptr(),
++                                world_width,
++                                world_height,
++                                world_rect[0],
++                                world_rect[1],
++                                world_rect[2],
++                                world_rect[3],
++                                fog_color.as_ptr(),
++                                fog_ranges.as_ptr(),
++                                false,
++                            )
++                        } != 0
++                        {
++                            draw.result = Err("GX2 solid terrain state failed");
++                            return -1;
++                        }
++                        bound = true;
++                    }
+                     if unsafe {
+-                        horizon_gx2_terrain_draw(
++                        horizon_gx2_terrain_draw_bound(
+                             terrain.as_ptr(),
+                             section.native.as_ptr(),
+-                            world_width,
+-                            world_height,
+-                            world_rect[0],
+-                            world_rect[1],
+-                            world_rect[2],
+-                            world_rect[3],
+                             clip_rows.rows.as_ptr().cast(),
+                             section_origin.as_ptr(),
+-                            fog_color.as_ptr(),
+-                            fog_ranges.as_ptr(),
+                         )
+                     } != 0
+                     {
+@@ -1987,14 +2018,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         .hud
+                         .as_ref()
+                         .ok_or("GX2 HUD atlas is not prepared")?;
+-                    draw.presenter.models.draw_world(
+-                        draw.frame,
+-                        target,
+-                        world_rect,
+-                        &projection.clip,
+-                        hud,
+-                        terrain,
+-                    )?;
++                    {
++                        let _span = Span::new([Stage::WorldEntitiesTv, Stage::WorldEntitiesDrc][index]);
++                        draw.presenter.models.draw_world(
++                            draw.frame,
++                            target,
++                            world_rect,
++                            &projection.clip,
++                            hud,
++                            terrain,
++                        )?;
++                    }
+                     draw.presenter.crumbling.upload(target)?;
+                     draw.presenter
+                         .crumbling
+@@ -2005,6 +2039,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .draw(draw.frame, projection, target, world_rect, rect[2])?;
+                     }
+                     let [tested, drawn] = draw.presenter.translucent_terrain.draw(
++                        target,
++                        legacy_bindings,
+                         &mut draw.presenter.sections,
+                         terrain,
+                         projection,
+@@ -2023,6 +2059,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.presenter
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, true)?;
++                    let _span = Span::new([Stage::FirstPersonTv, Stage::FirstPersonDrc][index]);
+                     draw.presenter
+                         .models
+                         .draw_hand(draw.frame, target, world_rect, aspect, hud, terrain)
+@@ -2042,6 +2079,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 draw.presenter.frame_work.terrain_sections[index] = sections_drawn;
+             }
+             if let Some(world_target) = world_target {
++                let _span = Span::new([Stage::WorldCompositeTv, Stage::WorldCompositeDrc][index]);
+                 world_target.composite();
+             }
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+diff --git a/wiiu/loading_host/outline.rs b/wiiu/loading_host/outline.rs
+index 01375b4098a6c1d82d0070d5adb6b576e5be9fe4..5de211dc85038e13def60bd30285ce8cae7f7921 100644
+--- a/wiiu/loading_host/outline.rs
++++ b/wiiu/loading_host/outline.rs
+@@ -2,6 +2,7 @@
+ 
+ use crate::TerrainProjection;
+ use horizon_client::gfx::{fog_uniform, outline_width, Frame};
++use horizon_client_platform::cafe_profile::{Span, Stage};
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+ #[path = "outline_vertices.rs"]
+@@ -45,6 +46,7 @@ impl Outline {
+             return Ok(());
+         }
+ 
++        let _span = Span::new([Stage::OutlineTv, Stage::OutlineDrc][target as usize]);
+         let [_, _, width, height] = rect;
+         let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
+         let raster_scale = width as f32 / output_width.max(1) as f32;
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index c0ce00c8249e0a3c6ea9fc750bd03c8bac9fb6cb..95a2e030f04348299f9f6f5a7a58fc2aabdc72d7 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -210,6 +210,8 @@ pub(super) struct TranslucentTerrain {
+ impl TranslucentTerrain {
+     pub(super) fn draw(
+         &mut self,
++        target: u32,
++        legacy_bindings: bool,
+         sections: &mut HashMap<SectionKey, TerrainSection>,
+         terrain: NonNull<c_void>,
+         projection: &TerrainProjection,
+@@ -218,7 +220,11 @@ impl TranslucentTerrain {
+         fog_color: &[f32; 4],
+         fog_ranges: &[f32; 4],
+     ) -> Result<[usize; 2], &'static str> {
++        let _span = cafe_profile::Span::new(
++            [cafe_profile::Stage::TranslucentTerrainTv, cafe_profile::Stage::TranslucentTerrainDrc][target as usize],
++        );
+         self.visible.clear();
++        let mut index_upload_bytes = 0;
+         let mut additional_tested = 0;
+         let mut additional_drawn = 0;
+         self.visible
+@@ -244,6 +250,7 @@ impl TranslucentTerrain {
+             .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+ 
+         let mut indices_drawn = 0usize;
++        let mut bound = false;
+         for &(_, key) in &self.visible {
+             let section = sections
+                 .get_mut(&key)
+@@ -270,24 +277,29 @@ impl TranslucentTerrain {
+                     section.sort.retry_upload();
+                     return Err("GX2 translucent terrain index upload failed");
+                 }
++                index_upload_bytes += std::mem::size_of_val(indices);
+             }
+             let origin = projection.section_origin(key);
+             let rows = projection.clip_rows(origin);
+             let [x, y, z] = origin.map(|v| v as f32);
++            if !bound || legacy_bindings {
++                if unsafe {
++                    horizon_gx2_terrain_bind(
++                        terrain.as_ptr(), size[0], size[1], rect[0], rect[1], rect[2], rect[3],
++                        fog_color.as_ptr(), fog_ranges.as_ptr(), true,
++                    )
++                } != 0
++                {
++                    return Err("GX2 translucent terrain state failed");
++                }
++                bound = true;
++            }
+             if unsafe {
+-                horizon_gx2_terrain_draw(
++                horizon_gx2_terrain_draw_bound(
+                     terrain.as_ptr(),
+                     section.buffer.native.as_ptr(),
+-                    size[0],
+-                    size[1],
+-                    rect[0],
+-                    rect[1],
+-                    rect[2],
+-                    rect[3],
+                     rows.rows.as_ptr().cast(),
+                     [x, y, z, 0.0].as_ptr(),
+-                    fog_color.as_ptr(),
+-                    fog_ranges.as_ptr(),
+                 )
+             } != 0
+             {
+@@ -295,6 +307,7 @@ impl TranslucentTerrain {
+             }
+             indices_drawn += section.buffer.vertex_count as usize / 4 * 6;
+         }
++        cafe_profile::sorted_index_bytes(index_upload_bytes);
+         cafe_profile::count(Counter::Indices, indices_drawn);
+         cafe_profile::count(Counter::SectionDraws, self.visible.len());
+         Ok([additional_tested, additional_drawn])

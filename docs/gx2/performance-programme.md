@@ -56,17 +56,29 @@ camera and resources in each matched run.
 
 | Work | Current status |
 | --- | --- |
-| Capture and live diagnostics | HZP2 extends the existing ring with output outcomes, observed flip progress, output surface sizes and GX2 submission spans. Authenticated `cafe_performance` status and serial windows retain host pacing tails, paired and partial counts, and effective world dimensions. |
-| Renderer parity | The [coverage inventory](coverage.md) tracks stock passes. Isolated interpreter diagnostics verify selection, crumbling, basic first-person geometry and native sorted translucent terrain on both outputs. The integrated candidate retains partial reporting for unsupported first-person materials and world passes. |
+| Capture and live diagnostics | HZP3 preserves the earlier capture layout and adds CPU submission spans for the native world passes, target allocation, effective dimensions and translucent index uploads. Authenticated `cafe_performance` status and serial windows retain host pacing tails, paired and partial counts, and effective world dimensions. The native fixture verified 126 decoded records with phase and display distinctions. |
+| Renderer parity | The [coverage inventory](coverage.md) tracks stock passes. Isolated interpreter diagnostics cover selection, crumbling, basic first-person geometry, sorted translucent terrain, stock sky discs, ordinary entities, precipitation, animated atlas cells and repeated terrain UVs on both outputs. Hosted gameplay and unsupported passes remain separately tracked. |
 | Fixed scaling and DRS | Fixed world scaling uses a bounded pair of native color/depth surfaces per display and composites before native-size HUD. Host tests drive the original controller through 75–100% on synthetic GPU samples. Without qualified GPU timing on Cafe, automatic mode holds the configured floor. |
 | Benchmark | Night calls the original runner for Standard, Village, Forest, Ocean, Mountain and Travel. The benchmark uses stock Full Performance with an owned disposable world and requires terrain on both outputs. Reports identify omitted passes and distinguish configured and effective dimensions. Host queue tests and the Cafe Rust check passed for the benchmark source. |
-| World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. Compare measured submission and waits on matched workloads before changing these paths. |
+| World performance | The RC 21 culling loop tests resident sections per display, binds state per visible section and explicitly waits once per display before terrain. The current source batches invariant state once per pass and preserves a same-binary per-section reference. The fixture qualifies this change; measured world impact and synchronized buffer reuse remain open. |
+
+The RC 24 hosted recipe pins client `0.8.0-rc.24`, patch `0.5.0-rc.24`,
+builder `0.7.0-rc.4` and assembled source tree
+`966bb274f40ad7092e5a8e1c819b0c00e7f5ac79`. See the dated hosted catalog
+for the complete patch chain. Native packages and their validation receipts
+are tracked separately from this source identity.
 
 Keep stock Full Performance, experimental Wii U tuning and distance-12
 regression as different configurations. Record which options affect GX2.
 Avoid using interpreter cadence to select a physical resolution floor or
 target frame rate. Use a warmed scene and a streaming replay for each
 comparison and retain matching output captures outside the timed window.
+
+| Comparison configuration | Settings and purpose |
+| --- | --- |
+| Stock Full Performance | Use the original settings listed above, with 75% fixed scale and the same gameplay and rendering inputs. |
+| Wii U-tuned experiment | Use the stock distances and effects with a 75% floor and a 30 FPS target. Enable DRS for controller validation. Until a GPU signal is qualified, this holds at 75%. Compare fixed 100%, 75%, and 50% on matched hardware scenes before tuning the floor. |
+| Distance-12 regression | Keep render and simulation at 12 with the existing disposable save fixture. Exercise streaming, teardown, audio, save and same-process reopen separately from the 6/5 reference. |
 
 ## Physical testing queue
 
@@ -100,6 +112,16 @@ Both enabled runs wrote a valid 126-record HZP2 capture. The decoder
 distinguished Night, loading, complete gameplay, partial gameplay and TV-only
 outcomes. This measures a clear-and-copy fixture. Matched in-game and
 physical capture overhead are pending.
+
+## Terrain state binding experiment
+
+The native fixture submitted the same 128 solid draws per arm in forced
+interpreter Cemu. Rebinding invariant terrain state per section took 604
+and 678 µs of CPU submission time. Binding once per pass took 354 and
+296 µs. Both outputs passed the separate depth, alpha-discard and blending
+readbacks using the split binding API. Completion waits were outside the
+timed spans. The result qualifies the command reduction on this fixture.
+Matched world frame time and hardware benefit remain pending.
 
 ## Hosted benchmark
 

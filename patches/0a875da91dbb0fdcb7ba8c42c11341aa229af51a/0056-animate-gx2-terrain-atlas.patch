@@ -1,0 +1,421 @@
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index d5e76b7e88d4221df4883bfea6ecf3cedd473e9d..7030d6499147293d7ddde0dec1c486c340ec895c 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -108,11 +108,18 @@ impl SpriteAnimation {
+     /// A frame as its layer shows it at `side` x `side`: its square of its longer side,
+     /// nearest-resampled to `side` (the texels squaring then `resample` picked).
+     pub fn frame_at(&self, frame: usize, side: u32) -> Vec<u8> {
++        let mut out = Vec::new();
++        self.write_frame_at(frame, side, &mut out);
++        out
++    }
++
++    /// Sample a frame into an existing buffer, keeping its allocation for the next tick.
++    pub fn write_frame_at(&self, frame: usize, side: u32, out: &mut Vec<u8>) {
+         let source = self.pixels(frame);
+         let [w, h] = self
+             .shape
+             .unwrap_or_else(|| [(source.len() / 4).isqrt() as u32; 2]);
+-        region_layer(source, w, [0, 0, w, h], side)
++        write_region_layer(source, w, [0, 0, w, h], side, out);
+     }
+     pub fn frame_count(&self) -> usize {
+         self.frames.len()
+@@ -275,12 +282,25 @@ fn hash_square(frame: &[u8], [w, h]: [u32; 2], hasher: &mut impl std::hash::Hash
+ /// wide. Its texels are those of the region nearest-resampled to a square of its longer side and
+ /// that square nearest-resampled to `size` (`resample`), picked in one pass, so the square of
+ /// the longer side is never made.
+-fn region_layer(pixels: &[u8], stride: u32, [x, y, w, h]: [u32; 4], size: u32) -> Vec<u8> {
++fn region_layer(pixels: &[u8], stride: u32, region: [u32; 4], size: u32) -> Vec<u8> {
++    let mut out = Vec::new();
++    write_region_layer(pixels, stride, region, size, &mut out);
++    out
++}
++
++fn write_region_layer(
++    pixels: &[u8],
++    stride: u32,
++    [x, y, w, h]: [u32; 4],
++    size: u32,
++    out: &mut Vec<u8>,
++) {
+     let side = u64::from(w.max(h));
+     let pick = |i: u32, extent: u32| {
+         (u64::from(i) * side / u64::from(size) * u64::from(extent) / side) as usize
+     };
+-    let mut out = Vec::with_capacity(size as usize * size as usize * 4);
++    out.clear();
++    out.reserve(size as usize * size as usize * 4);
+     for row in 0..size {
+         let source_row = y as usize + pick(row, h);
+         for column in 0..size {
+@@ -288,7 +308,6 @@ fn region_layer(pixels: &[u8], stride: u32, [x, y, w, h]: [u32; 4], size: u32) -
+             out.extend_from_slice(&pixels[at..at + 4]);
+         }
+     }
+-    out
+ }
+ /// Reduce data maps by selecting whole texels: material IDs and sentinel bytes cannot be averaged.
+ fn shrink_map(frame: Vec<u8>, side: u32, max: u32) -> (u32, Vec<u8>) {
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index b28346f6392d64a04a514e44bff881f6c231fc00..94515fe49c0d12569d12393a4c4c07fe5f828eb9 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -17,6 +17,8 @@ pub struct CafeGameArtwork<'a> {
+     pub cit_glints: Option<&'a horizon_client::hud::cit_glint::GlintTextures>,
+     pub panorama: Option<&'a horizon_client::gfx::panorama::Faces>,
+     pub terrain_pixels: &'a horizon_client::assets::SpritePixels,
++    pub terrain_animations: &'a [horizon_client::sprites::SpriteAnimation],
++    pub terrain_animation_tick: Option<u64>,
+     pub terrain_sprite_size: u32,
+     pub terrain_layers: u32,
+     pub hud_generation: u64,
+@@ -805,6 +807,9 @@ impl CafeGameSession<'_> {
+                 .map(|cit| &cit.glint_textures),
+             panorama: self.game.title.as_ref().map(|_| self.game.gui.panorama.as_ref()),
+             terrain_pixels: &self.game.pack.render.pixels,
++            terrain_animations: &self.game.pack.render.animations,
++            terrain_animation_tick: (self.game.title.is_none() && self.game.settings.horizon.animated_textures)
++                .then(|| self.game.texture_clock()),
+             terrain_sprite_size: self.game.pack.render.sprite_size,
+             terrain_layers: self.game.pack.render.texture_layers,
+             hud_generation: self.game.gui.atlas.revision,
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 59162b97c789ebb472bfb1235e5fafb2c2faf227..4c2fc2799070d069bfd34f1ea3242ec7a4b860e2 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -484,6 +484,19 @@ impl TerrainAtlasLayout {
+             .ok_or("Horizon sprite byte count overflow")
+     }
+ 
++    /// Padded atlas region for one sprite, expressed in pixels.
++    pub fn layer_rect(&self, layer: u32) -> Result<[u32; 4], &'static str> {
++        if layer >= self.layers {
++            return Err("Horizon sprite layer mismatch");
++        }
++        Ok([
++            (layer % self.columns) * self.cell_size,
++            (layer / self.columns) * self.cell_size,
++            self.cell_size,
++            self.cell_size,
++        ])
++    }
++
+     /// Copy a layer from the original source and extrude the same border.
+     pub fn write_layer(
+         &self,
+@@ -492,7 +505,7 @@ impl TerrainAtlasLayout {
+         pixels: &mut [u8],
+         pitch: usize,
+     ) -> Result<(), &'static str> {
+-        if layer >= self.layers || source.len() != self.layer_bytes()? {
++        if source.len() != self.layer_bytes()? {
+             return Err("Horizon sprite layer mismatch");
+         }
+         if pitch < self.width as usize * 4
+@@ -501,8 +514,7 @@ impl TerrainAtlasLayout {
+             return Err("invalid writable GX2 atlas storage");
+         }
+         let side = self.sprite_size;
+-        let cx = (layer % self.columns) * self.cell_size;
+-        let cy = (layer / self.columns) * self.cell_size;
++        let [cx, cy, _, _] = self.layer_rect(layer)?;
+         for y in 0..self.cell_size {
+             let sy = y.saturating_sub(1).min(side - 1) as usize;
+             for x in 0..self.cell_size {
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index f8bd81934119a6e313076f289da2f232a55ab4db..961fe41887b7d30a0b6bf25495a4c5b4b8ea5706 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -1,10 +1,12 @@
+ #include "terrain.h"
+ #include <stdlib.h>
+ #include <string.h>
++#include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
++#include <gx2/mem.h>
+ #include <gx2/registers.h>
+ #include <gx2/sampler.h>
+ #include <gx2/shaders.h>
+@@ -209,6 +211,40 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+    return horizon_gx2_terrain_create_mapped(out, gfd, width, height, fill_atlas_rows, &rows);
+ }
+ 
++int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *t, HorizonTerrainFillTexture fill,
++                                    void *context, const uint32_t (*rects)[4], size_t count)
++{
++   if (!t || !fill || (count && !rects)) return -1;
++   if (!count) return 0;
++   const GX2Surface *s = &t->texture.surface;
++   if (!t->atlas_storage || s->image != t->atlas_storage ||
++       s->tileMode != GX2_TILE_MODE_LINEAR_ALIGNED || s->pitch < s->width ||
++       (size_t)s->pitch * s->height * 4 > s->imageSize) return -1;
++   for (size_t i = 0; i < count; ++i) {
++      const uint32_t *rect = rects[i];
++      if (!rect[2] || !rect[3] || rect[0] >= s->width || rect[1] >= s->height ||
++          rect[2] > s->width - rect[0] || rect[3] > s->height - rect[1]) return -1;
++   }
++
++   int result = fill(context, t->atlas_storage, s->pitch);
++   // Flush only cache lines touched by these cells. A barrier makes all
++   // stores visible before issuing the texture-cache invalidation.
++   const uintptr_t cache_mask = 31;
++   for (size_t i = 0; i < count; ++i) {
++      const uint32_t *rect = rects[i];
++      for (uint32_t y = rect[1]; y < rect[1] + rect[3]; ++y) {
++         const uintptr_t start = (uintptr_t)t->atlas_storage +
++            ((size_t)y * s->pitch + rect[0]) * 4;
++         const uintptr_t aligned_start = start & ~cache_mask;
++         const uintptr_t aligned_end = (start + rect[2] * 4 + cache_mask) & ~cache_mask;
++         DCStoreRangeNoSync((void *)aligned_start, (uint32_t)(aligned_end - aligned_start));
++      }
++   }
++   OSMemoryBarrier();
++   GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->atlas_storage, s->imageSize);
++   return result;
++}
++
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *t, const uint8_t rgba[16 * 16 * 4])
+ {
+    if (!t || !rgba) return -1;
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index b87b35566e605a6fa6a4605350c636fa58155956..ab8858dc6e38446fb02a64a5352724f786fdf394 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -39,6 +39,11 @@ int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
+ /* Call only after the preceding consumers have retired. */
+ int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
+                                                const uint32_t *indices, uint32_t count);
++/* The synchronous callback updates only rects (x, y, width, height in
++ * pixels), including their sprite borders. Call after all atlas draws retire. */
++int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *terrain,
++                                    HorizonTerrainFillTexture fill, void *context,
++                                    const uint32_t (*rects)[4], size_t count);
+ /* Upload before drawing a new frame, after the preceding WHB finish. */
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_t slot);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index ca9b2737ef7b682e94d636667c391114834269b9..1a80b4681187078afc2dfd2941da9925c37cc587 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -482,6 +482,7 @@ fn panorama_vertices(
+     }))
+ }
+ 
++mod terrain_animation;
+ mod terrain_residency;
+ use terrain_residency::{RESIDENT_VERTEX_BYTES, RETIRE_BATCH_BYTES};
+ 
+@@ -593,6 +594,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     precipitation: precipitation::Precipitation,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+     terrain_generation: Option<u64>,
++    terrain_animation: terrain_animation::TerrainAnimation,
+     terrain_min_y: Option<i32>,
+     sections: HashMap<SectionKey, TerrainSection>,
+     terrain_resident_bytes: usize,
+@@ -660,6 +662,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             precipitation: precipitation::Precipitation::default(),
+             terrain_atlas: None,
+             terrain_generation: None,
++            terrain_animation: terrain_animation::TerrainAnimation::default(),
+             terrain_min_y: None,
+             sections: HashMap::new(),
+             terrain_resident_bytes: 0,
+@@ -1429,8 +1432,14 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             });
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
++            self.terrain_animation.reset();
+             self.clear_native_sections();
+         }
++        if let Some(tick) = artwork.terrain_animation_tick {
++            let terrain = self.terrain.as_ref().ok_or("GX2 terrain is not prepared")?;
++            let layout = self.terrain_atlas.as_ref().ok_or("GX2 terrain atlas is not prepared")?;
++            self.terrain_animation.update(terrain.native, layout, artwork.terrain_animations, tick)?;
++        }
+         Ok(())
+     }
+ }
+@@ -1758,6 +1767,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.world_scale.release();
+         self.clear_native_sections();
+         self.terrain = None;
++        self.terrain_animation = terrain_animation::TerrainAnimation::default();
+         self.outline = outline::Outline::default();
+         self.crumbling = crumbling::Crumbling::default();
+         self.models = hand::Models::default();
+diff --git a/wiiu/loading_host/terrain_animation.rs b/wiiu/loading_host/terrain_animation.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d8026cefe87f9a70b9e9590dfd13873c842d1c9
+--- /dev/null
++++ b/wiiu/loading_host/terrain_animation.rs
+@@ -0,0 +1,164 @@
++//! Update padded terrain cells in place using Horizon's decoded animation clips.
++
++use horizon_client::sprites::{FrameBlend, SpriteAnimation};
++use horizon_client_platform::cafe_profile::{Span, Stage};
++use horizon_wiiu_gx2_terrain::TerrainAtlasLayout;
++use std::{ffi::c_void, ptr::NonNull};
++
++const ATLAS_BYTES_PER_UPDATE: usize = 1024 * 1024;
++
++unsafe extern "C" {
++    fn horizon_gx2_terrain_patch_atlas(
++        terrain: *mut c_void,
++        fill: unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32,
++        context: *mut c_void,
++        rects: *const [u32; 4],
++        count: usize,
++    ) -> i32;
++}
++
++#[derive(Clone, Copy)]
++struct Job {
++    animation: usize,
++    blend: FrameBlend,
++}
++
++#[derive(Default)]
++pub(super) struct TerrainAnimation {
++    shown: Vec<Option<FrameBlend>>,
++    settled_tick: Option<u64>,
++    cursor: usize,
++    jobs: Vec<Job>,
++    rects: Vec<[u32; 4]>,
++    current: Vec<u8>,
++    next: Vec<u8>,
++}
++
++impl TerrainAnimation {
++    pub(super) fn reset(&mut self) {
++        self.shown.clear();
++        self.settled_tick = None;
++        self.cursor = 0;
++    }
++
++    pub(super) fn update(
++        &mut self,
++        terrain: NonNull<c_void>,
++        layout: &TerrainAtlasLayout,
++        animations: &[SpriteAnimation],
++        tick: u64,
++    ) -> horizon_client::Result<()> {
++        if animations.is_empty() || self.settled_tick == Some(tick) {
++            return Ok(());
++        }
++        self.shown.resize(animations.len(), None);
++        self.jobs.clear();
++        self.rects.clear();
++        let cell_bytes = (layout.cell_size as usize).pow(2) * 4;
++        let limit = (ATLAS_BYTES_PER_UPDATE / cell_bytes).max(1);
++        let mut remaining = animations.len();
++        let mut cursor = self.cursor % animations.len();
++        while remaining > 0 && self.jobs.len() < limit {
++            let animation = &animations[cursor];
++            let blend = animation.blend(tick);
++            if self.shown[cursor] != Some(blend) {
++                self.rects.push(layout.layer_rect(animation.layer)?);
++                self.jobs.push(Job {
++                    animation: cursor,
++                    blend,
++                });
++            }
++            cursor = (cursor + 1) % animations.len();
++            remaining -= 1;
++        }
++        if !self.jobs.is_empty() {
++            let _upload = Span::new(Stage::TextureUpload);
++            let mut update = AtlasPatch {
++                layout,
++                animations,
++                jobs: &self.jobs,
++                current: &mut self.current,
++                next: &mut self.next,
++                error: None,
++            };
++            // The previous WHB FinishRender retired both outputs' atlas reads.
++            // Only the padded cells supplied in rects change during this callback.
++            let result = unsafe {
++                horizon_gx2_terrain_patch_atlas(
++                    terrain.as_ptr(),
++                    write_atlas_patch,
++                    std::ptr::from_mut(&mut update).cast(),
++                    self.rects.as_ptr(),
++                    self.rects.len(),
++                )
++            };
++            if result != 0 {
++                return Err(update
++                    .error
++                    .unwrap_or("GX2 animated terrain upload failed")
++                    .into());
++            }
++            for job in &self.jobs {
++                self.shown[job.animation] = Some(job.blend);
++            }
++        }
++        self.cursor = cursor;
++        if remaining == 0 {
++            self.settled_tick = Some(tick);
++        }
++        Ok(())
++    }
++}
++
++struct AtlasPatch<'a> {
++    layout: &'a TerrainAtlasLayout,
++    animations: &'a [SpriteAnimation],
++    jobs: &'a [Job],
++    current: &'a mut Vec<u8>,
++    next: &'a mut Vec<u8>,
++    error: Option<&'static str>,
++}
++
++unsafe extern "C" fn write_atlas_patch(context: *mut c_void, pixels: *mut u8, pitch: u32) -> i32 {
++    let patch = unsafe { &mut *context.cast::<AtlasPatch<'_>>() };
++    let pitch = pitch as usize * 4;
++    // C validated the backing and ensured the linear surface covers these rows.
++    let pixels =
++        unsafe { std::slice::from_raw_parts_mut(pixels, pitch * patch.layout.height as usize) };
++    for job in patch.jobs {
++        let animation = &patch.animations[job.animation];
++        let side = patch.layout.sprite_size;
++        animation.write_frame_at(job.blend.frame, side, patch.current);
++        if job.blend.millis != 0 {
++            animation.write_frame_at(job.blend.next, side, patch.next);
++            interpolate(patch.current, patch.next, job.blend.millis);
++        }
++        if let Err(error) = patch
++            .layout
++            .write_layer(animation.layer, patch.current, pixels, pitch)
++        {
++            patch.error = Some(error);
++            return -1;
++        }
++    }
++    0
++}
++
++/// The same thousandth-step RGBA interpolation as the shared terrain animator.
++fn interpolate(current: &mut [u8], next: &[u8], millis: u32) {
++    for (a, &b) in current.iter_mut().zip(next) {
++        *a = ((u32::from(*a) * (1000 - millis) + u32::from(b) * millis + 500) / 1000) as u8;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::interpolate;
++
++    #[test]
++    fn animation_mix_rounds_every_rgba_channel() {
++        let mut a = [255, 0, 31, 64];
++        interpolate(&mut a, &[0, 255, 32, 191], 500);
++        assert_eq!(a, [128, 128, 32, 128]);
++    }
++}

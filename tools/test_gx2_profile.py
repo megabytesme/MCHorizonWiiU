@@ -1,3 +1,4 @@
+import struct
 import unittest
 
 import gx2_profile as profile
@@ -61,6 +62,20 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(playing["frame_pacing_ms"], {
             "samples": 2, "median": 17, "p95": 54, "p99": 54, "max": 54,
         })
+
+    def test_hzp3_measures_world_targets_separately_from_output_surfaces(self):
+        original = row(0, 5, 0)
+        output = struct.pack(">22I", *([0] * 18), 1920, 1080, 854, 480)
+        world = struct.pack(">24I", *range(16), 75, 75, 1440, 810, 636, 358, 11018240, 512)
+        header = profile.HEADER.pack(0x485A5033, 3, 1000, 352, 4096, 1, 1)
+        metadata, frames = profile.read(header + original + output + world)
+        playing = profile.summarize(frames, 0, 1)["playing"]
+        self.assertEqual(metadata["version"], 3)
+        self.assertEqual(frames[0]["tv_width"], 1920)
+        self.assertEqual(playing["world_targets"]["tv_world_width"]["median"], 1440)
+        self.assertEqual(playing["world_targets"]["world_effective_scale"]["median"], 75)
+        self.assertEqual(playing["workload"]["translucent_index_upload_bytes"]["median"], 512)
+        self.assertEqual(playing["stages_ms_on_presented_loops"]["world_entities_drc"]["median"], 15)
 
     def test_reads_wrapped_counters_and_the_retained_tail(self):
         metadata, frames = profile.read(capture(

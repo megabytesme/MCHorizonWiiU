@@ -1,0 +1,294 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 4c2fc2799070d069bfd34f1ea3242ec7a4b860e2..ea4949925e7b9d38a95975775d83e533ede2b7f8 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -22,7 +22,8 @@ const _: () = assert!(core::mem::size_of::<TerrainGpuVertex>() == 40);
+ 
+ /// Mapped indexed vertex for GX2. The color stream fetches four UNORM bytes:
+ /// the original RGB channels followed by the cutout flag. Position, packed
+-/// light and atlas UVs retain the float representation used by the shader.
++/// light and UVs retain the attribute layout used by the shader. Each UV
++/// packs its original 16 bits with eight bits of the sprite layer.
+ #[repr(C)]
+ #[derive(Clone, Copy, Debug)]
+ pub struct IndexedTerrainVertex {
+@@ -554,10 +555,15 @@ impl TerrainAtlasLayout {
+         if source.len() % 4 != 0 || source.len() != output.len() {
+             return Err("GX2 terrain quad vertex count mismatch");
+         }
+-        for (&source, dest) in source.iter().zip(output) {
+-            let mut vertex = source;
+-            self.remap_vertex(&mut vertex)?;
++        for (&vertex, dest) in source.iter().zip(output) {
++            let layer = u32::from(vertex.layer & 0x7fff);
++            if layer >= self.layers {
++                return Err("terrain vertex references absent sprite layer");
++            }
++            let [u, v] = vertex.uv.map(u32::from);
+             let [x, y, z] = vertex.pos;
++            // Both packed integers are exactly representable as f32.
++            let uv = [u | ((layer & 0xff) << 16), v | ((layer >> 8) << 16)].map(|n| n as f32);
+             let [r, g, b, a] = vertex.rgba();
+             let material = if translucent {
+                 a
+@@ -568,37 +574,12 @@ impl TerrainAtlasLayout {
+             };
+             dest.write(IndexedTerrainVertex {
+                 position: [x, y, z, f32::from(vertex.light)],
+-                uv: vertex.uv(),
++                uv,
+                 color_cutout: [r, g, b, material],
+             });
+         }
+         Ok(())
+     }
+-
+-    pub fn remap_vertex(&self, vertex: &mut TerrainVertex) -> Result<(), &'static str> {
+-        let layer = u32::from(vertex.layer & !0x8000);
+-        if layer >= self.layers {
+-            return Err("terrain vertex references absent sprite layer");
+-        }
+-        let x = (layer % self.columns) * self.cell_size;
+-        let y = (layer / self.columns) * self.cell_size;
+-        let [u, v] = vertex.uv();
+-        let span = (self.sprite_size - 1) as f32;
+-        let uv = [
+-            (x as f32 + 1.5 + u.clamp(0.0, 1.0) * span) / self.width as f32,
+-            (y as f32 + 1.5 + v.clamp(0.0, 1.0) * span) / self.height as f32,
+-        ];
+-        vertex.uv = TerrainVertex::new(
+-            vertex.pos,
+-            uv,
+-            vertex.layer & 0x8000,
+-            vertex.color,
+-            vertex.light,
+-        )
+-        .uv;
+-        vertex.layer &= 0x8000;
+-        Ok(())
+-    }
+ }
+ 
+ #[cfg(all(test, feature = "atlas"))]
+@@ -618,12 +599,6 @@ mod indexed_vertex_tests {
+                 0x1245u16.rotate_left(i as u32),
+             )
+         });
+-        let mut remapped = source;
+-        for (old, vertex) in source.iter().zip(&mut remapped) {
+-            atlas.remap_vertex(vertex).unwrap();
+-            assert_eq!(vertex.layer, old.layer & 0x8000);
+-            assert_eq!(vertex.light, old.light);
+-        }
+         let order = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+         for quads in 1..=2 {
+             let vertices = quads * 4;
+@@ -634,7 +609,7 @@ mod indexed_vertex_tests {
+                 .unwrap();
+             let mut expanded = [TerrainGpuVertex::default(); 12];
+             assert_eq!(
+-                expand_quads_into(&remapped[..vertices], [0.0; 3], &mut expanded),
++                expand_quads_into(&source[..vertices], [0.0; 3], &mut expanded),
+                 Some(triangles)
+             );
+             for (i, &index) in order[..triangles].iter().enumerate() {
+@@ -645,13 +620,17 @@ mod indexed_vertex_tests {
+                 let [r, g, b, cutout] = indexed.color_cutout.map(|v| f32::from(v) / 255.0);
+                 assert_eq!(indexed.position, expanded[i].position);
+                 assert_eq!([r, g, b], expanded[i].color);
+-                assert_eq!(indexed.uv.map(f32::to_bits), expanded[i].uv.map(f32::to_bits));
++                let packed = indexed.uv.map(|v| v as u32);
++                let layer = (packed[0] >> 16) | ((packed[1] >> 16) << 8);
++                assert_eq!(layer, u32::from(source[index].layer & 0x7fff));
++                let original_uv = packed.map(|v| (v & 0xffff) as f32 / horizon_terrain_data::UV_STEPS);
++                assert_eq!(original_uv, expanded[i].uv);
+                 assert_eq!(cutout, expanded[i].cutout);
+                 assert_eq!(cutout, if index < 4 { 0.0 } else { 1.0 });
+             }
+         }
+         let mut next = 0;
+-        for_each_quad_vertex(&remapped, [0.0; 3], |_, uv| {
++        for_each_quad_vertex(&source, [0.0; 3], |_, uv| {
+             assert_eq!(uv, light_uv(source[order[next]].light));
+             next += 1;
+         })
+@@ -659,6 +638,15 @@ mod indexed_vertex_tests {
+         assert_eq!(next, order.len());
+     }
+ 
++    #[test]
++    fn packed_uv_keeps_full_coordinates_and_high_sprite_bits() {
++        let layout = TerrainAtlasLayout::for_layers(1, 0x7fff).unwrap();
++        let source = [TerrainVertex::packed_uv([0.0; 3], [0xffff, 0xffff], 0xfffe, 0, 0); 4];
++        let mut mapped = [MaybeUninit::uninit(); 4];
++        layout.write_quad_vertices(&source, &mut mapped).unwrap();
++        assert_eq!(unsafe { mapped[0].assume_init() }.uv, [0x00fe_ffff as f32, 0x007f_ffff as f32]);
++    }
++
+     #[test]
+     fn translucent_packing_preserves_tint_alpha_on_both_sprite_flags() {
+         let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 961fe41887b7d30a0b6bf25495a4c5b4b8ea5706..d624a0f4c2c338fe14638862e8051ec0f44510db 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -33,6 +33,8 @@ struct HorizonGx2Terrain {
+    uint32_t lightmap_slot;
+    uint32_t clip_offsets[4];
+    uint32_t section_origin_offset;
++   uint32_t atlas_grid_offset;
++   float atlas_grid[4];
+    uint32_t fog_color_offset;
+    uint32_t fog_ranges_offset;
+    uint32_t material_offset;
+@@ -147,6 +149,7 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+          result = -3; goto fail;
+       }
+    if (!uniform_offset(GX2GetVertexUniformVar(vs, "uSectionOrigin"), &t->section_origin_offset) ||
++       !uniform_offset(GX2GetVertexUniformVar(vs, "uAtlasGrid"), &t->atlas_grid_offset) ||
+        !uniform_offset(GX2GetPixelUniformVar(ps, "uFogColor"), &t->fog_color_offset) ||
+        !uniform_offset(GX2GetPixelUniformVar(ps, "uFogRanges"), &t->fog_ranges_offset) ||
+        !uniform_offset(GX2GetPixelUniformVar(ps, "uMaterial"), &t->material_offset)) {
+@@ -211,6 +214,19 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+    return horizon_gx2_terrain_create_mapped(out, gfd, width, height, fill_atlas_rows, &rows);
+ }
+ 
++int horizon_gx2_terrain_set_sprite_grid(HorizonGx2Terrain *t,
++                                        uint32_t columns, uint32_t cell_size)
++{
++   if (!t || !columns || cell_size <= 2) return -1;
++   const GX2Surface *surface = &t->texture.surface;
++   if ((uint64_t)columns * cell_size != surface->width || surface->height % cell_size) return -1;
++   t->atlas_grid[0] = (float)columns;
++   t->atlas_grid[1] = (float)cell_size;
++   t->atlas_grid[2] = 1.0f / (float)columns;
++   t->atlas_grid[3] = 1.0f;
++   return 0;
++}
++
+ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *t, HorizonTerrainFillTexture fill,
+                                     void *context, const uint32_t (*rects)[4], size_t count)
+ {
+@@ -276,9 +292,12 @@ int horizon_gx2_terrain_bind(HorizonGx2Terrain *t, uint32_t target_width, uint32
+    if (!t || !target_width || !target_height || !width || !height ||
+        x > target_width || y > target_height || width > target_width-x || height > target_height-y ||
+        !fog_color || !fog_ranges) return -1;
+-   const float material[4] = { translucent ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
++   const float material[4] = { translucent ? 1.0f : 0.0f,
++      t->atlas_grid[0] ? t->atlas_grid[1] - 2.0f : 0.0f,
++      1.0f / (float)t->texture.surface.width, 1.0f / (float)t->texture.surface.height };
+    GX2SetShaderMode(t->shader.vertexShader->mode);
+    GX2SetVertexShader(t->shader.vertexShader); GX2SetPixelShader(t->shader.pixelShader);
++   GX2SetVertexUniformReg(t->atlas_grid_offset, 4, t->atlas_grid);
+    GX2SetPixelUniformReg(t->fog_color_offset, 4, fog_color);
+    GX2SetPixelUniformReg(t->fog_ranges_offset, 4, fog_ranges);
+    GX2SetPixelUniformReg(t->material_offset, 4, material);
+diff --git a/wiiu/gx2_terrain/terrain.frag b/wiiu/gx2_terrain/terrain.frag
+index 98016b1dfc488c014383fa8363c5c4f5859daa42..6f186265e59ad5eeff5a51ed1e409b45aa6af93e 100644
+--- a/wiiu/gx2_terrain/terrain.frag
++++ b/wiiu/gx2_terrain/terrain.frag
+@@ -4,7 +4,7 @@ uniform vec4 uFogColor;
+ uniform vec4 uFogRanges;
+ uniform vec4 uMaterial;
+ in vec3 vColor;
+-in vec2 vUv;
++in vec4 vUv;
+ in float vCutout;
+ in vec2 vFogDistance;
+ out vec4 fragColor;
+@@ -16,7 +16,14 @@ float linearFog(float distance, float start, float end) {
+ }
+ 
+ void main() {
+-    vec4 texel = texture(uTerrain, vUv);
++    // This vertex format carries [0, 2) UVs. Keep 1 exactly at the
++    // leading face's edge and wrap the next representable float onward.
++    vec2 local = vUv.xy - step(vec2(1.0000001192092896), vUv.xy);
++    float side = max(uMaterial.y, 1.0);
++    vec2 pixel = clamp(local * side, vec2(0.5), vec2(side - 0.5));
++    vec2 atlas_uv = (vUv.zw + pixel) * uMaterial.zw;
++    vec2 uv = mix(vUv.xy, atlas_uv, step(1.0, uMaterial.y));
++    vec4 texel = texture(uTerrain, uv);
+     float alpha = texel.a;
+     if (uMaterial.x > 0.5) {
+         alpha *= vCutout;
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index ab8858dc6e38446fb02a64a5352724f786fdf394..225b0d4410fdbee1193b9eee599c4dce3b364991 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -23,6 +23,10 @@ int horizon_gx2_terrain_create_mapped(HorizonGx2Terrain **out, const void *gfd,
+ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+                                uint32_t width, uint32_t height,
+                                const uint8_t *rgba, size_t length);
++/* Enable the hosted packed UV layout, before uploading any sections.
++ * A plain RGBA fixture leaves layout unset and submits direct atlas UVs. */
++int horizon_gx2_terrain_set_sprite_grid(HorizonGx2Terrain *terrain,
++                                        uint32_t columns, uint32_t cell_size);
+ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain);
+ uint32_t horizon_gx2_terrain_index_allocation_bytes(const HorizonGx2Terrain *terrain);
+ /* Count is the canonical four vertices per quad. On error the output handle
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index e17485ae83f8022b4719dbd818d87a5c628d0e6a..1ec41cc19e1c73dfba8f20979a36f20daad45c9b 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -8,8 +8,9 @@ uniform vec4 uClipY;
+ uniform vec4 uClipZ;
+ uniform vec4 uClipW;
+ uniform vec4 uSectionOrigin;
++uniform vec4 uAtlasGrid;
+ out vec3 vColor;
+-out vec2 vUv;
++out vec4 vUv;
+ out float vCutout;
+ out vec2 vFogDistance;
+ void main() {
+@@ -22,7 +23,15 @@ void main() {
+     vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
+     vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
+     vColor = aColor.rgb * textureLod(uLightmap, lightUv, 0.0).rgb;
+-    vUv = aUv;
++    vec2 high = floor(aUv * (1.0 / 65536.0));
++    vec2 local_uv = (aUv - high * 65536.0) * (1.0 / 32768.0);
++    float layer = high.x + high.y * 256.0;
++    float row = floor(layer * uAtlasGrid.z);
++    float column = layer - row * uAtlasGrid.x;
++    // Compensate for reciprocal rounding across an exact row boundary.
++    float correction = step(uAtlasGrid.x, column) + step(0.0, column) - 1.0;
++    vec2 tile = vec2(column - correction * uAtlasGrid.x, row + correction) * uAtlasGrid.y + vec2(1.0);
++    vUv = vec4(mix(aUv, local_uv, uAtlasGrid.w), tile);
+     vCutout = aColor.a;
+     vec3 relative = local + uSectionOrigin.xyz;
+     vFogDistance = vec2(length(relative), max(length(relative.xz), abs(relative.y)));
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index efa3c6ff2ed4c894305b464921ccdf7bba2dcf72..b11c4d06c0d77b52191c7a8c7208d452e4b3177d 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -214,6 +214,7 @@ extern "C" {
+         fill: unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32,
+         context: *mut c_void,
+     ) -> i32;
++    fn horizon_gx2_terrain_set_sprite_grid(terrain: *mut c_void, columns: u32, cell_size: u32) -> i32;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+     fn horizon_gx2_terrain_section_create(
+@@ -1438,11 +1439,18 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 return Err(format!("GX2 terrain atlas creation failed ({code})").into());
+             }
+             let native = NonNull::new(native).ok_or("GX2 terrain returned a null resource")?;
+-            self.terrain = Some(Terrain {
++            let terrain = Terrain {
+                 native,
+                 _shader: PhantomData,
+                 _thread: PhantomData,
+-            });
++            };
++            if unsafe {
++                horizon_gx2_terrain_set_sprite_grid(native.as_ptr(), layout.columns, layout.cell_size)
++            } != 0
++            {
++                return Err("GX2 terrain rejected its sprite grid".into());
++            }
++            self.terrain = Some(terrain);
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
+             self.terrain_animation.reset();

@@ -1,0 +1,17 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index c45e61a02a5b336a23822a8bb9e6f5608712b671..0f600c42641ad57793275ce9d9960d329e6caf12 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -54,7 +54,12 @@ pub const SCENES: [Scene; 4] = [
+ ];
+ const FLIGHT_SECONDS: f64 = 12.0;
+ const SETTLE: Duration = Duration::from_secs(2);
++#[cfg(not(target_os = "cafe"))]
+ const LOAD_LIMIT: Duration = Duration::from_secs(600);
++// The hosted interpreter can spend over ten minutes in resource and world
++// preparation. Keep a bounded startup wait without changing the timed route.
++#[cfg(target_os = "cafe")]
++const LOAD_LIMIT: Duration = Duration::from_secs(1500);
+ 
+ /// Where the trip starts and ends: 512 blocks at 16 blocks/s, the pace that scrambles section ids.
+ const TRAVEL_FROM: [f64; 3] = [-960.0, 150.0, -176.0];

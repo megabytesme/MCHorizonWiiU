@@ -30,10 +30,21 @@ V2_COUNTERS = (
     "gx2_flip_delta", "gx2_flip_interval_ticks", "tv_sections_tested", "drc_sections_tested",
     "tv_sections_drawn", "drc_sections_drawn", "tv_width", "tv_height", "drc_width", "drc_height",
 )
+V3_STAGES = (
+    "world_setup_tv", "world_setup_drc", "translucent_terrain_tv", "translucent_terrain_drc",
+    "outline_tv", "outline_drc", "crumbling_tv", "crumbling_drc", "first_person_tv",
+    "first_person_drc", "world_composite_tv", "world_composite_drc", "world_sky_tv",
+    "world_sky_drc", "world_entities_tv", "world_entities_drc",
+)
+V3_COUNTERS = (
+    "world_requested_scale", "world_effective_scale", "tv_world_width", "tv_world_height",
+    "drc_world_width", "drc_world_height", "world_surface_bytes", "translucent_index_upload_bytes",
+)
 HEADER = struct.Struct(">7I")
 ROW = struct.Struct(f">{6 + len(STAGES) + len(COUNTERS) + 2 * len(WORKERS)}I")
 V2_ROW = struct.Struct(f">{ROW.size // 4 + len(V2_STAGES) + len(V2_COUNTERS)}I")
-FORMATS = {(0x485A5031, 1): ROW, (0x485A5032, 2): V2_ROW}
+V3_ROW = struct.Struct(f">{V2_ROW.size // 4 + len(V3_STAGES) + len(V3_COUNTERS)}I")
+FORMATS = {(0x485A5031, 1): ROW, (0x485A5032, 2): V2_ROW, (0x485A5033, 3): V3_ROW}
 
 
 def read(data):
@@ -71,14 +82,20 @@ def read(data):
             frame[f"{name}_ms"] = None if previous is None else (
                 (workers[i + 1] - previous[i + 1]) % 2**32
             ) * scale
-        if version == 2:
+        if version >= 2:
             end_extra_stages = ROW.size // 4 + len(V2_STAGES)
             frame.update((f"{key}_ms", cost * scale) for key, cost in zip(
                 V2_STAGES, row[ROW.size // 4:end_extra_stages],
             ))
-            frame.update(zip(V2_COUNTERS, row[end_extra_stages:]))
+            frame.update(zip(V2_COUNTERS, row[end_extra_stages:V2_ROW.size // 4]))
             interval = frame.pop("gx2_flip_interval_ticks")
             frame["gx2_flip_interval_ms"] = interval * scale if interval else None
+        if version >= 3:
+            end_world_stages = V2_ROW.size // 4 + len(V3_STAGES)
+            frame.update((f"{key}_ms", cost * scale) for key, cost in zip(
+                V3_STAGES, row[V2_ROW.size // 4:end_world_stages],
+            ))
+            frame.update(zip(V3_COUNTERS, row[end_world_stages:]))
         frames.append(frame)
         previous = workers
     return {"version": version, "clock_hz": hz, "ring_capacity": capacity,
@@ -145,6 +162,17 @@ def summarize(frames, start, end, stall_ms=50):
                 name: stats(row[f"{name}_ms"] for row in presented) for name in V2_STAGES
             })
             summary["workload"].update({key: stats(row[key] for row in presented) for key in V2_COUNTERS[6:]})
+        if "world_effective_scale" in selected[0]:
+            summary["stages_ms_on_presented_loops"].update({
+                name: stats(row[f"{name}_ms"] for row in presented) for name in V3_STAGES
+            })
+            world_frames = [row for row in presented if row["world_effective_scale"]]
+            summary["world_targets"] = {
+                key: stats(row[key] for row in world_frames) for key in V3_COUNTERS[:-1]
+            }
+            summary["workload"]["translucent_index_upload_bytes"] = stats(
+                row["translucent_index_upload_bytes"] for row in world_frames
+            )
     return summaries
 
 

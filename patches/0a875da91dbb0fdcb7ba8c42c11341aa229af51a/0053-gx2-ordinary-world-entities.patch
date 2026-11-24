@@ -1,0 +1,551 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 8cc427727e3c1f0d698421eb647d941472b1b2ec..17794b682b01629263742c3c264be87b4c542c15 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -227,6 +227,11 @@ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_
+    GX2SetVertexSampler(&terrain->lightmap_sampler, slot);
+ }
+ 
++void horizon_gx2_terrain_draw_quads(HorizonGx2Terrain *terrain, uint32_t vertex_count)
++{
++   terrain_draw_indexed(&terrain->quad_indices, vertex_count);
++}
++
+ void horizon_gx2_terrain_wait_idle(void) { GX2DrawDone(); }
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                             uint32_t target_width, uint32_t target_height,
+@@ -273,6 +278,6 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+       GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
+                       s->sorted_indices.elemCount, 0, 0, 1);
+    else
+-      terrain_draw_indexed(&t->quad_indices, s->vertex_count);
++      horizon_gx2_terrain_draw_quads(t, s->vertex_count);
+    return 0;
+ }
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 5b659c30d5e3ddae561f9f47b498af01ae09fde5..10c4869cbe2053ee7f307605be990fb791cbb6a8 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -41,6 +41,8 @@ int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section
+ /* Upload before drawing a new frame, after the preceding WHB finish. */
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_t slot);
++/* Draw a bound vertex stream made of canonical four-vertex quads. */
++void horizon_gx2_terrain_draw_quads(HorizonGx2Terrain *terrain, uint32_t vertex_count);
+ void horizon_gx2_terrain_wait_idle(void);
+ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+diff --git a/wiiu/loading_host/hand.c b/wiiu/loading_host/hand.c
+index 09e3ecb43cf50ced0e9e3093207e87d62e3d59cd..c6d2f5fc79456bfca0dd48bcb0924b9219a6d123 100644
+--- a/wiiu/loading_host/hand.c
++++ b/wiiu/loading_host/hand.c
+@@ -29,11 +29,12 @@ _Static_assert(offsetof(HandVertex, uv) == 16, "hand UV offset changed");
+ _Static_assert(offsetof(HandVertex, color) == 24, "hand color offset changed");
+ _Static_assert(offsetof(HandVertex, normal) == 28, "hand normal offset changed");
+ 
+-enum { DEPTH_TRIANGLE_VERTICES = 3, HAND_MAX_VERTICES = 4096 * 6 };
++enum { DEPTH_TRIANGLE_VERTICES = 3, HAND_MAX_VERTICES = 4096 * 6, WORLD_MAX_VERTICES = 8192 * 4 };
+ 
+ typedef struct HorizonGx2Hand {
+    WHBGfxShaderGroup shader;
+-   GX2RBuffer vertices[2];
++   /* Separate backing for world and first-person draws on each output. */
++   GX2RBuffer vertices[4];
+    GX2Sampler sampler;
+    uint32_t vertex_uniforms[5];
+    uint32_t pixel_uniforms[2];
+@@ -104,7 +105,7 @@ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+ {
+    if (!hand) return;
+    GX2DrawDone();
+-   for (unsigned i = 0; i < 2; ++i) {
++   for (unsigned i = 0; i < 4; ++i) {
+       GX2RBuffer *buffer = &hand->vertices[i];
+       if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
+    }
+@@ -112,14 +113,14 @@ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+    free(hand);
+ }
+ 
+-static int upload(GX2RBuffer *buffer, const HandVertex *vertices, uint32_t count)
++static int upload(GX2RBuffer *buffer, const HandVertex *vertices, uint32_t count,
++                  uint32_t first, uint32_t limit)
+ {
+-   const uint32_t needed = count + DEPTH_TRIANGLE_VERTICES;
++   const uint32_t needed = count + first;
+    if (needed > buffer->elemCount) {
+       uint32_t capacity = buffer->elemCount ? buffer->elemCount : 64;
+       while (capacity < needed) capacity *= 2;
+-      if (capacity > HAND_MAX_VERTICES + DEPTH_TRIANGLE_VERTICES)
+-         capacity = HAND_MAX_VERTICES + DEPTH_TRIANGLE_VERTICES;
++      if (capacity > limit + first) capacity = limit + first;
+       GX2RBuffer replacement = {
+          .flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_WRITE |
+                   GX2R_RESOURCE_USAGE_GPU_READ,
+@@ -136,22 +137,26 @@ static int upload(GX2RBuffer *buffer, const HandVertex *vertices, uint32_t count
+       {.position_light = { 3.0f, -1.0f, 1.0f, 0}},
+       {.position_light = {-1.0f,  3.0f, 1.0f, 0}},
+    };
+-   memcpy(mapped, reset, sizeof(reset));
+-   memcpy(mapped + DEPTH_TRIANGLE_VERTICES, vertices, count * sizeof(*mapped));
++   if (first) memcpy(mapped, reset, sizeof(reset));
++   memcpy(mapped + first, vertices, count * sizeof(*mapped));
+    GX2RUnlockBufferEx(buffer, 0);
+    return 0;
+ }
+ 
+-int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+-                          const GX2Texture *atlas, const HorizonGx2Terrain *terrain,
+-                          const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+-                          const float fog_color[4], const float fog_ranges[4], uint32_t nether)
++int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                             const GX2Texture *atlas, HorizonGx2Terrain *terrain,
++                             const HandVertex *vertices, uint32_t count, const float clip_rows[16],
++                             const float fog_color[4], const float fog_ranges[4], uint32_t nether,
++                             uint32_t first_person)
+ {
+-   if (!hand || target > 1 || !rect || !rect[2] || !rect[3] || !atlas || !atlas->surface.image ||
+-       !terrain || !vertices || !count || count % 6 || count > HAND_MAX_VERTICES ||
++   const uint32_t limit = first_person ? HAND_MAX_VERTICES : WORLD_MAX_VERTICES;
++   const uint32_t first = first_person ? DEPTH_TRIANGLE_VERTICES : 0;
++   if (!hand || target > 1 || first_person > 1 || !rect || !rect[2] || !rect[3] ||
++       !atlas || !atlas->surface.image || !terrain || !vertices || !count ||
++       count % (first_person ? 6 : 4) || count > limit ||
+        !clip_rows || !fog_color || !fog_ranges) return -1;
+-   GX2RBuffer *buffer = &hand->vertices[target];
+-   int result = upload(buffer, vertices, count);
++   GX2RBuffer *buffer = &hand->vertices[target + (first_person ? 0 : 2)];
++   int result = upload(buffer, vertices, count, first, limit);
+    if (result) return result;
+ 
+    WHBGfxShaderGroup *shader = &hand->shader;
+@@ -169,21 +174,30 @@ int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t
+    GX2SetPixelTexture(atlas, hand->atlas_slot);
+    GX2SetPixelSampler(&hand->sampler, hand->atlas_slot);
+    GX2RSetAttributeBuffer(buffer, 0, sizeof(HandVertex), 0);
+-   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   if (first_person) {
++      GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   } else {
++      /* The stock entity bias breaks ties with terrain; GX2 uses forward depth. */
++      GX2SetPolygonOffset(-128.0f, 0.0f, -128.0f, 0.0f, 0.0f);
++      GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, FALSE, FALSE, GX2_POLYGON_MODE_TRIANGLE,
++                           GX2_POLYGON_MODE_TRIANGLE, TRUE, TRUE, FALSE);
++   }
+    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
+ 
+-   /* Clear the bound world depth without changing attachments or colour. */
+-   float options[4] = {(float)(nether != 0), 1.0f, 0, 0};
+-   GX2SetVertexUniformReg(hand->vertex_uniforms[4], 4, options);
+-   GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
+-   GX2SetTargetChannelMasks((GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+-                            (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+-                            (GX2ChannelMask)0, (GX2ChannelMask)0);
+-   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, DEPTH_TRIANGLE_VERTICES, 0, 1);
+-
+-   options[1] = 0.0f;
++   float options[4] = {(float)(nether != 0), 0, 0, 0};
++   if (first_person) {
++      /* Clear the bound world depth without changing attachments or colour. */
++      options[1] = 1.0f;
++      GX2SetVertexUniformReg(hand->vertex_uniforms[4], 4, options);
++      GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
++      GX2SetTargetChannelMasks((GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                               (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                               (GX2ChannelMask)0, (GX2ChannelMask)0);
++      GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, first, 0, 1);
++      options[1] = 0.0f;
++   }
+    GX2SetVertexUniformReg(hand->vertex_uniforms[4], 4, options);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
+@@ -192,6 +206,18 @@ int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t
+    GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+                       GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
+                       GX2_BLEND_MODE_INV_SRC_ALPHA, GX2_BLEND_COMBINE_MODE_ADD);
+-   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count, DEPTH_TRIANGLE_VERTICES, 1);
++   if (first_person)
++      GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count, first, 1);
++   else
++      horizon_gx2_terrain_draw_quads(terrain, count);
+    return 0;
++}
++
++int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                          const GX2Texture *atlas, HorizonGx2Terrain *terrain,
++                          const HandVertex *vertices, uint32_t count, const float clip_rows[16],
++                          const float fog_color[4], const float fog_ranges[4], uint32_t nether)
++{
++   return horizon_gx2_draw_models(hand, target, rect, atlas, terrain, vertices, count,
++                                  clip_rows, fog_color, fog_ranges, nether, 1);
+ }
+\ No newline at end of file
+diff --git a/wiiu/loading_host/hand.rs b/wiiu/loading_host/hand.rs
+index 10fc559dcbdff644462f697a71abf0f601edb6c1..4531e312134597a0ae78c405b455b1fc9957a253 100644
+--- a/wiiu/loading_host/hand.rs
++++ b/wiiu/loading_host/hand.rs
+@@ -1,14 +1,18 @@
+-//! First-person arm and held items from the shared frame.
++//! Atlas-backed models in the world and first-person passes.
+ 
+ use horizon_client::{
+     camera,
+-    gfx::{Frame, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, fog_uniform},
++    gfx::{
++        Frame, OIT_ENTITY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, fog_uniform,
++    },
++    mesher::Vertex as SharedVertex,
+ };
+-use horizon_wiiu_gx2_terrain::terrain_view_rows;
++use horizon_wiiu_gx2_terrain::{TerrainClipRows, terrain_view_rows};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+-const MAX_QUADS: usize = 4096;
++const MAX_HAND_QUADS: usize = 4096;
++const MAX_WORLD_QUADS: usize = 8192;
+ const CORNERS: [usize; 6] = [0, 1, 2, 0, 2, 3];
+ 
+ #[repr(C)]
+@@ -27,10 +31,22 @@ const _: () = {
+     assert!(std::mem::offset_of!(Vertex, normal) == 28);
+ };
+ 
++impl From<SharedVertex> for Vertex {
++    fn from(vertex: SharedVertex) -> Self {
++        let [x, y, z] = vertex.pos;
++        Self {
++            position_light: [x, y, z, (vertex.light & 0xffff) as f32],
++            uv: vertex.uv,
++            color: vertex.color.to_le_bytes(),
++            normal: vertex.normal,
++        }
++    }
++}
++
+ unsafe extern "C" {
+     fn horizon_gx2_hand_create(out: *mut *mut c_void) -> i32;
+     fn horizon_gx2_hand_destroy(hand: *mut c_void);
+-    fn horizon_gx2_hand_draw(
++    fn horizon_gx2_draw_models(
+         hand: *mut c_void,
+         target: u32,
+         rect: *const u32,
+@@ -42,26 +58,28 @@ unsafe extern "C" {
+         fog_color: *const f32,
+         fog_ranges: *const f32,
+         nether_lighting: u32,
++        first_person: u32,
+     ) -> i32;
+ }
+ 
+ #[derive(Default)]
+-pub(crate) struct Hand {
++pub(crate) struct Models {
+     native: Option<NonNull<c_void>>,
+-    vertices: Vec<Vertex>,
++    hand: Vec<Vertex>,
++    world: Vec<Vertex>,
+ }
+ 
+-impl Hand {
++impl Models {
+     pub(crate) fn is_empty(&self) -> bool {
+-        self.vertices.is_empty()
++        self.hand.is_empty() && self.world.is_empty()
+     }
+ 
+     /// Return true if active material effects or geometry exceeded this path.
+-    pub(crate) fn prepare(&mut self, frame: &Frame<'_>) -> bool {
+-        self.vertices.clear();
++    pub(crate) fn prepare_hand(&mut self, frame: &Frame<'_>) -> bool {
++        self.hand.clear();
+         let mut partial = !frame.hand.len().is_multiple_of(4);
+-        for quad in frame.hand.chunks_exact(4) {
+-            if self.vertices.len() == MAX_QUADS * CORNERS.len() {
++        for quad in frame.hand.as_chunks::<4>().0 {
++            if self.hand.len() == MAX_HAND_QUADS * CORNERS.len() {
+                 return true;
+             }
+             match quad[0].layer & 0xffff {
+@@ -75,21 +93,41 @@ impl Hand {
+                     continue;
+                 }
+             }
+-            let vertices = [quad[0], quad[1], quad[2], quad[3]].map(|vertex| {
+-                let [x, y, z] = vertex.pos;
+-                Vertex {
+-                    position_light: [x, y, z, (vertex.light & 0xffff) as f32],
+-                    uv: vertex.uv,
+-                    color: vertex.color.to_le_bytes(),
+-                    normal: vertex.normal,
++            let vertices = quad.map(Vertex::from);
++            self.hand.extend(CORNERS.map(|corner| vertices[corner]));
++        }
++        partial
++    }
++
++    /// Preserve the original order of ordinary camera-relative atlas quads.
++    /// Draw supported base geometry even when a material effect is omitted.
++    pub(crate) fn prepare_world(&mut self, frame: &Frame<'_>) -> bool {
++        self.world.clear();
++        let mut partial = !frame.entities.len().is_multiple_of(4);
++        for quad in frame.entities.as_chunks::<4>().0 {
++            let layer = quad[0].layer;
++            if crate::crumbling::is_crack(layer) {
++                continue;
++            }
++            partial |= match layer & 0xffff {
++                0 => layer & OIT_ENTITY != 0,
++                7 => frame.glint_alpha > 0.0,
++                // Hurt, white and enchanted hurt overlays use the base atlas.
++                1 | 5 | 8 | 16..=31 => true,
++                _ => {
++                    partial = true;
++                    continue;
+                 }
+-            });
+-            self.vertices.extend(CORNERS.map(|corner| vertices[corner]));
++            };
++            if self.world.len() == MAX_WORLD_QUADS * 4 {
++                return true;
++            }
++            self.world.extend(quad.map(Vertex::from));
+         }
+         partial
+     }
+ 
+-    pub(crate) fn draw(
++    pub(crate) fn draw_hand(
+         &mut self,
+         frame: &Frame<'_>,
+         target: u32,
+@@ -98,21 +136,9 @@ impl Hand {
+         hud: &HorizonPresenter<'_>,
+         terrain: NonNull<c_void>,
+     ) -> Result<(), &'static str> {
+-        if self.is_empty() {
++        if self.hand.is_empty() {
+             return Ok(());
+         }
+-        let native = match self.native {
+-            Some(native) => native,
+-            None => {
+-                let mut resource = std::ptr::null_mut();
+-                if unsafe { horizon_gx2_hand_create(&mut resource) } != 0 {
+-                    return Err("could not create the GX2 first-person pipeline");
+-                }
+-                let native = NonNull::new(resource).ok_or("missing GX2 first-person pipeline")?;
+-                self.native = Some(native);
+-                native
+-            }
+-        };
+         // The shared hand vertices are in camera-relative world space. Match
+         // the hand projection and bob without applying the level's spin.
+         let view = frame.bob * camera::view_matrix(frame.yaw, frame.pitch);
+@@ -131,36 +157,83 @@ impl Hand {
+             perspective[10],
+             perspective[14],
+         );
++        self.draw(frame, target, rect, &projection, hud, terrain, true)
++    }
++
++    pub(crate) fn draw_world(
++        &mut self,
++        frame: &Frame<'_>,
++        target: u32,
++        rect: [u32; 4],
++        projection: &TerrainClipRows,
++        hud: &HorizonPresenter<'_>,
++        terrain: NonNull<c_void>,
++    ) -> Result<(), &'static str> {
++        self.draw(frame, target, rect, projection, hud, terrain, false)
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn draw(
++        &mut self,
++        frame: &Frame<'_>,
++        target: u32,
++        rect: [u32; 4],
++        projection: &TerrainClipRows,
++        hud: &HorizonPresenter<'_>,
++        terrain: NonNull<c_void>,
++        first_person: bool,
++    ) -> Result<(), &'static str> {
++        let vertices = if first_person {
++            &self.hand
++        } else {
++            &self.world
++        };
++        if vertices.is_empty() {
++            return Ok(());
++        }
++        let native = match self.native {
++            Some(native) => native,
++            None => {
++                let mut resource = std::ptr::null_mut();
++                if unsafe { horizon_gx2_hand_create(&mut resource) } != 0 {
++                    return Err("could not create the GX2 model pipeline");
++                }
++                let native = NonNull::new(resource).ok_or("missing GX2 model pipeline")?;
++                self.native = Some(native);
++                native
++            }
++        };
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+         let result = hud.with_native_atlas(|atlas| {
+             // The active output has completed its previous frame's uses.
+-            // This copies the scratch vertices, binds the existing textures,
+-            // and resets only the depth of the currently bound world target.
++            // Copy the scratch vertices and bind the existing textures here.
++            // Only the first-person invocation resets the active depth.
+             unsafe {
+-                horizon_gx2_hand_draw(
++                horizon_gx2_draw_models(
+                     native.as_ptr(),
+                     target,
+                     rect.as_ptr(),
+                     atlas,
+                     terrain.as_ptr(),
+-                    self.vertices.as_ptr(),
+-                    self.vertices.len() as u32,
++                    vertices.as_ptr(),
++                    vertices.len() as u32,
+                     projection.rows.as_ptr().cast(),
+                     fog_color.as_ptr(),
+                     fog_ranges.as_ptr(),
+                     u32::from(frame.nether_lighting),
++                    u32::from(first_person),
+                 )
+             }
+         });
+         if result == 0 {
+             Ok(())
+         } else {
+-            Err("GX2 first-person draw failed")
++            Err("GX2 model draw failed")
+         }
+     }
+ }
+ 
+-impl Drop for Hand {
++impl Drop for Models {
+     fn drop(&mut self) {
+         if let Some(native) = self.native.take() {
+             unsafe { horizon_gx2_hand_destroy(native.as_ptr()) };
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index fd1d278669b479b0d2bfd80851f33a2cfdd9a89f..aa163d3289d64c7318f961b6b797b50ac76d4c39 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -583,7 +583,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain: Option<Terrain<'shader>>,
+     outline: outline::Outline,
+     crumbling: crumbling::Crumbling,
+-    hand: hand::Hand,
++    models: hand::Models,
+     stock_sky: stock_sky::Sky,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+     terrain_generation: Option<u64>,
+@@ -649,7 +649,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain: None,
+             outline: outline::Outline::default(),
+             crumbling: crumbling::Crumbling::default(),
+-            hand: hand::Hand::default(),
++            models: hand::Models::default(),
+             stock_sky: stock_sky::Sky::default(),
+             terrain_atlas: None,
+             terrain_generation: None,
+@@ -1206,15 +1206,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+         (frame.stars.is_some(), 1 << 1, "stars"),
+         (frame.clouds.is_some(), 1 << 2, "clouds"),
+         (!frame.weather.is_empty(), 1 << 3, "weather"),
+-        (
+-            frame
+-                .entities
+-                .chunks_exact(4)
+-                .any(|quad| !crumbling::is_crack(quad[0].layer))
+-                || !frame.glowing.is_empty(),
+-            1 << 4,
+-            "entities",
+-        ),
+         (
+             !frame.static_block_entities.is_empty(),
+             1 << 5,
+@@ -1267,7 +1258,7 @@ fn log_unsupported_world_pass(name: &str) {
+         "stars" => "Horizon GX2: skipped unsupported stars pass\n\0",
+         "clouds" => "Horizon GX2: skipped unsupported clouds pass\n\0",
+         "weather" => "Horizon GX2: skipped unsupported weather pass\n\0",
+-        "entities" => "Horizon GX2: skipped unsupported entities pass\n\0",
++        "entity materials" => "Horizon GX2: omitted world entity materials or effects\n\0",
+         "crumbling budget" => "Horizon GX2: crumbling geometry exceeded its upload budget\n\0",
+         "outline budget" => "Horizon GX2: selection outline exceeded its upload budget\n\0",
+         "block entities" => "Horizon GX2: skipped unsupported block-entities pass\n\0",
+@@ -1763,7 +1754,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.terrain = None;
+         self.outline = outline::Outline::default();
+         self.crumbling = crumbling::Crumbling::default();
+-        self.hand = hand::Hand::default();
++        self.models = hand::Models::default();
+         self.stock_sky = stock_sky::Sky::default();
+         self.hud = None;
+         self.panorama = None;
+@@ -1795,8 +1786,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.frame_work.terrain_sections = [0; 2];
+         self.frame_work.omitted_pass_mask = 0;
+         let crumbling_overflow = !frame.title && self.crumbling.prepare(frame.entities);
+-        let hand_partial = !frame.title && self.hand.prepare(frame);
++        let hand_partial = !frame.title && self.models.prepare_hand(frame);
++        let world_partial =
++            !frame.title && (self.models.prepare_world(frame) || !frame.glowing.is_empty());
+         let unsupported = unsupported_world_passes(frame)
++            .chain(world_partial.then_some((1 << 4, "entity materials")))
+             .chain(hand_partial.then_some((1 << 6, "first-person materials")))
+             .chain(crumbling_overflow.then_some((1 << 22, "crumbling budget")))
+             .filter(|_| !frame.title);
+@@ -1878,7 +1872,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 .map(|terrain| terrain.native)
+             {
+                 if index == 0
+-                    && !draw.presenter.hand.is_empty()
++                    && !draw.presenter.models.is_empty()
+                     && !draw.frame.hud.patches.is_empty()
+                 {
+                     let Some(hud) = draw.presenter.hud.as_mut() else {
+@@ -1886,7 +1880,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         return -1;
+                     };
+                     // The existing wait has completed every use of this shared atlas.
+-                    // Publish dynamic map texels before either output samples them.
++                    // Publish dynamic atlas texels before either output samples them.
+                     if let Err(error) =
+                         unsafe { hud.apply_atlas_patches_after_wait(draw.frame.hud) }
+                     {
+@@ -1993,6 +1987,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         .hud
+                         .as_ref()
+                         .ok_or("GX2 HUD atlas is not prepared")?;
++                    draw.presenter.models.draw_world(
++                        draw.frame,
++                        target,
++                        world_rect,
++                        &projection.clip,
++                        hud,
++                        terrain,
++                    )?;
+                     draw.presenter.crumbling.upload(target)?;
+                     draw.presenter
+                         .crumbling
+@@ -2022,8 +2024,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, true)?;
+                     draw.presenter
+-                        .hand
+-                        .draw(draw.frame, target, world_rect, aspect, hud, terrain)
++                        .models
++                        .draw_hand(draw.frame, target, world_rect, aspect, hud, terrain)
+                 })();
+                 if let Err(error) = overlays {
+                     draw.result = Err(error);

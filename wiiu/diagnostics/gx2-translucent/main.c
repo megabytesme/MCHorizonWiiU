@@ -1,5 +1,8 @@
 #include "terrain.h"
 #include <coreinit/debug.h>
+#ifdef HORIZON_TEST_BOUND_TERRAIN
+#include <coreinit/time.h>
+#endif
 #include <gx2/event.h>
 #include <gx2/surface.h>
 #include <gx2r/surface.h>
@@ -63,6 +66,38 @@ static bool readback(const GX2ColorBuffer *buffer, unsigned target)
    return ok;
 }
 
+#ifdef HORIZON_TEST_BOUND_TERRAIN
+static bool measure_bindings(HorizonGx2Terrain *terrain, HorizonGx2TerrainSection *section,
+                             const float matrix[16], const float zero[4], const float ranges[4])
+{
+   const bool per_section[] = {true, false, false, true};
+   bool ok = true;
+   for (unsigned arm = 0; arm < 4; ++arm) {
+      WHBGfxBeginRender();
+      WHBGfxBeginRenderTV();
+      WHBGfxClearColor(0, 0, 0, 1);
+      GX2ColorBuffer *color = WHBGfxGetTVColourBuffer();
+      const uint32_t w = color->surface.width, h = color->surface.height;
+      GX2DrawDone();
+      const OSTime start = OSGetSystemTime();
+      for (unsigned section_index = 0; section_index < 128; ++section_index) {
+         if (section_index == 0 || per_section[arm])
+            ok &= horizon_gx2_terrain_bind(terrain, w, h, 0, 0, w, h, zero, ranges, false) == 0;
+         ok &= horizon_gx2_terrain_draw_bound(terrain, section, matrix, zero) == 0;
+      }
+      const OSTime elapsed = OSGetSystemTime() - start;
+      OSReport("GX2 terrain binding fixture arm=%u per_section=%u submission_us=%u draws=128\n",
+               arm, (unsigned)per_section[arm], (unsigned)OSTicksToMicroseconds(elapsed));
+      WHBGfxFinishRenderTV();
+      WHBGfxBeginRenderDRC();
+      WHBGfxClearColor(0, 0, 0, 1);
+      WHBGfxFinishRenderDRC();
+      WHBGfxFinishRender();
+   }
+   return ok;
+}
+#endif
+
 int main(void)
 {
    WHBProcInit();
@@ -94,7 +129,10 @@ int main(void)
    if (ok) {
       const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
       const float zero[4] = {0}, ranges[4] = {10, 20, 10, 20};
-      const HorizonGx2TerrainSection *sequence[] = {front, sorted, rear};
+      HorizonGx2TerrainSection *sequence[] = {front, sorted, rear};
+#ifdef HORIZON_TEST_BOUND_TERRAIN
+      ok &= measure_bindings(terrain, front, identity, zero, ranges);
+#endif
       WHBGfxBeginRender();
       for (unsigned i = 0; i < 2; ++i) {
          if (i == 0) WHBGfxBeginRenderTV();
@@ -103,8 +141,13 @@ int main(void)
          GX2ColorBuffer *color = i == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer();
          const uint32_t w = color->surface.width, h = color->surface.height;
          for (unsigned j = 0; j < 3; ++j) {
-            ok &= horizon_gx2_terrain_draw(terrain, (HorizonGx2TerrainSection *)sequence[j],
+#ifdef HORIZON_TEST_BOUND_TERRAIN
+            ok &= horizon_gx2_terrain_bind(terrain, w, h, 0, 0, w, h, zero, ranges, j == 1) == 0;
+            ok &= horizon_gx2_terrain_draw_bound(terrain, sequence[j], identity, zero) == 0;
+#else
+            ok &= horizon_gx2_terrain_draw(terrain, sequence[j],
                  w, h, 0, 0, w, h, identity, zero, zero, ranges) == 0;
+#endif
          }
          ok &= readback(color, i);
          if (i == 0) WHBGfxFinishRenderTV();

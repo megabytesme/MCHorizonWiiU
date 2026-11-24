@@ -48,9 +48,10 @@ int main(void)
       }
    }
    const OSTime elapsed = OSGetSystemTime() - started;
-   uint32_t snapshot[(28 + 256) / sizeof(uint32_t)];
+   uint32_t snapshot[512 / sizeof(uint32_t)];
    uint32_t bytes = horizon_gx2_profile_snapshot(snapshot, sizeof(snapshot));
-   bool valid = enabled ? bytes == sizeof(snapshot) && snapshot[0] == 0x485A5032 &&
+   bool valid = enabled ? bytes >= 28 && bytes == 28 + snapshot[3] &&
+      (snapshot[0] == 0x485A5032 || snapshot[0] == 0x485A5033) &&
       snapshot[5] == 1 && snapshot[6] == 3 * PHASE_FRAMES : bytes == 0;
    if (enabled) horizon_gx2_profile_flush();
    OSReport("Horizon GX2 diagnostic enabled=%u loop_us=%u recorder_us=%u snapshot=%u\n",

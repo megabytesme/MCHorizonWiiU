@@ -1,0 +1,841 @@
+diff --git a/crates/horizon-client-render/src/block_entity_render.rs b/crates/horizon-client-render/src/block_entity_render.rs
+index 10c422ebe56b8bae6e4731cf628ea45186e8d8ad..e4a8996f287a9e0952f99e0b6cdb91dfb95285b8 100644
+--- a/crates/horizon-client-render/src/block_entity_render.rs
++++ b/crates/horizon-client-render/src/block_entity_render.rs
+@@ -1873,6 +1873,37 @@ impl BlockEntityRenderer {
+             None,
+         );
+     }
++    /// Append complete models up to the caller's vertex budget. A model that
++    /// would cross the limit ends this frame's extraction without a partial model.
++    pub fn render_bounded<'a>(
++        &self,
++        scene: &Scene,
++        blocks: impl Iterator<Item = &'a ([i32; 3], u32)>,
++        out: &mut Vec<Vertex>,
++        vertex_budget: usize,
++    ) -> bool {
++        let first = out.len();
++        let exhausted = std::cell::Cell::new(false);
++        let _ = self.render_inner(
++            scene,
++            blocks.take_while(|_| !exhausted.get()),
++            CacheOptions::default(),
++            out,
++            |_, _, _| {},
++            |_, _, start, vertices| {
++                if vertices.len() - first > vertex_budget {
++                    vertices.truncate(start);
++                    exhausted.set(true);
++                }
++            },
++            false,
++            None,
++            false,
++            None,
++        );
++        exhausted.get()
++    }
++
+     /// Renders cacheable block-entity models into per-section snapshots. The
+     /// frustum-visible set controls only which section buffers draw; it does
+     /// not change their geometry or force an upload.
+diff --git a/crates/horizon-client-render/src/gfx/view.rs b/crates/horizon-client-render/src/gfx/view.rs
+index a44435b8f88c1ebb5368f126bc6344e50323bf13..ad8e98ff9ddb2bfbba5130429260702968201118 100644
+--- a/crates/horizon-client-render/src/gfx/view.rs
++++ b/crates/horizon-client-render/src/gfx/view.rs
+@@ -40,6 +40,13 @@ impl View {
+         self.projection * pose * self.view
+     }
+ 
++    /// Camera-relative culling for a presenter with a shared view and no portal views.
++    pub fn frustum(&self, pose: Mat4) -> super::Frustum {
++        super::Frustum {
++            planes: super::frustum(self.view_proj(pose)),
++        }
++    }
++
+     /// The view matrix the sky shares with the world. `GameRenderer.renderLevel`
+     /// multiplies this pose (the hurt bob, the view bob and the nausea spin)
+     /// into the projection before the level, sky included, is drawn.
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index b08b1134df557cd567dd18ae7f7e743adc1b7edd..4672103fade28358edd6f0a941b127dc15650f8d 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -5253,11 +5253,117 @@ impl Game<'_> {
+         self.entity_motion_posed.borrow_mut().push(posed);
+     }
+     /// ItemEntityRenderer: items bob and spin; blocks render as small cubes.
++    fn with_block_entity_scene<T>(
++        &self,
++        camera: glam::DVec3,
++        partial: f32,
++        dynamic_visible: Option<&dyn Fn([i32; 3], u32, glam::DVec3, glam::DVec3) -> bool>,
++        sign_text: bool,
++        render: impl FnOnce(&BlockEntityScene<'_>) -> T,
++    ) -> T {
++        let anim = |pos| self.block_anim(pos, partial);
++        let scene = BlockEntityScene {
++            camera,
++            spyglass_outline: self.camera_type.is_first_person() && self.scoping(),
++            orientation: self.camera_orientation(),
++            anim: &anim,
++            texts: None,
++            partial,
++            game_time: self.world.game_time,
++            max_y: self.world.shape.max_y() - 1,
++            world: &self.world,
++            sprites: &self.gui.atlas.sprites,
++            emissive: &self.gui.atlas.emissive,
++            translucent_sprites: &self.gui.atlas.translucent,
++            atlas_revision: self.gui.atlas.revision,
++            nether: self.nether_lighting(),
++            lid: &|pos| self.chest_lid(pos, partial),
++            sign: &|[x, y, z]| {
++                if !sign_text {
++                    return None;
++                }
++                match self.world.block_entities.get(&(x, y, z)) {
++                    Some(BlockEntity::Sign(sign)) => Some(sign),
++                    _ => None,
++                }
++            },
++            banner: &|pos| self.banner_layers_at(pos),
++            skull: &|pos| self.skull_skin_at(pos),
++            glyph: &|c| self.gui.atlas.glyph_cell(c),
++            glyphs: self.gui.atlas.font.epoch(),
++            font: Some(&self.gui.atlas.font),
++            dynamic_visible,
++        };
++        render(&scene)
++    }
++
++    #[cfg(target_os = "cafe")]
++    fn cafe_block_entity_geometry(
++        &self,
++        sections: &CafeBlockEntitySections,
++        camera: glam::DVec3,
++        alpha: f32,
++        cracks: &[([i32; 3], horizon_client::breaking::CrackSprite)],
++        out: &mut Vec<Vertex>,
++    ) -> bool {
++        const VERTEX_BUDGET: usize = 16 * 1024;
++        let reach = block_entity_reach(&self.res);
++        let (visible, mut partial) = sections.select(|(pos, state)| {
++            let flags = reach.get(state as usize).copied().unwrap_or(0);
++            let relative = glam::DVec3::from_array(pos.map(f64::from)) - camera;
++            let squared = (relative + 0.5).length_squared();
++            let distance: f64 = if flags & 2 != 0 { 256.0 } else { 64.0 };
++            if squared > distance * distance {
++                return None;
++            }
++            let at = relative.as_vec3();
++            if flags & 1 == 0
++                && self.view_frustum.is_some_and(|view| {
++                    !view.intersects(at - glam::Vec3::ONE, at + glam::Vec3::splat(2.0))
++                })
++            {
++                return None;
++            }
++            self.live_block_entity_render(pos, state).then_some(squared)
++        });
++        partial |= self.world.block_entities.has_mods()
++            || visible.iter().any(|&([x, y, z], _)| {
++                matches!(
++                    self.world.block_entities.get(&(x, y, z)),
++                    Some(BlockEntity::Sign(sign))
++                        if [&sign.front, &sign.back].into_iter().any(|side| {
++                            side.lines.iter().any(|line| !line.is_empty())
++                                || side.saved.iter().any(Option::is_some)
++                        })
++                )
++            });
++
++        let first = out.len();
++        self.with_block_entity_scene(camera, alpha, None, false, |scene| {
++            let renderer = self.res.block_entity_render();
++            partial |= renderer.render_bounded(scene, visible.iter(), out, VERTEX_BUDGET);
++            self.lit_block_entity(first..out.len());
++            self.mark_stage(out.len(), "DESTROY");
++            for &(pos, stage) in cracks {
++                let start = out.len();
++                let state = self.world.block(pos[0], pos[1], pos[2]).0;
++                renderer.render_breaking(scene, pos, state, stage, out);
++                if out.len() - first > VERTEX_BUDGET {
++                    out.truncate(start);
++                    partial = true;
++                    break;
++                }
++            }
++        });
++        partial
++    }
++
+     fn entity_geometry(
+         &mut self,
+         camera: glam::DVec3,
+         alpha: f64,
+         billboard_frustum: Option<horizon_client::gfx::JoinedFrusta>,
++        #[cfg(target_os = "cafe")] cafe_blocks: Option<(&CafeBlockEntitySections, &mut bool)>,
+         mut out: Vec<Vertex>,
+     ) -> (
+         Vec<Vertex>,
+@@ -5602,122 +5708,103 @@ impl Game<'_> {
+                 );
+                 !self.block_entity_occluded(bounds)
+             };
+-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
+-            let scene = BlockEntityScene {
+-                camera,
+-                spyglass_outline: self.camera_type.is_first_person() && self.scoping(),
+-                orientation: self.camera_orientation(),
+-                anim: &anim,
+-                texts: None,
+-                partial: alpha as f32,
+-                game_time: self.world.game_time,
+-                max_y: self.world.shape.max_y() - 1,
+-                world: &self.world,
+-                sprites: &self.gui.atlas.sprites,
+-                emissive: &self.gui.atlas.emissive,
+-                translucent_sprites: &self.gui.atlas.translucent,
+-                atlas_revision: self.gui.atlas.revision,
+-                nether: self.nether_lighting(),
+-                lid: &|p: [i32; 3]| self.chest_lid(p, alpha as f32),
+-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+-                    Some(BlockEntity::Sign(sign)) => Some(sign),
+-                    _ => None,
+-                },
+-                banner: &|p| self.banner_layers_at(p),
+-                skull: &|p| self.skull_skin_at(p),
+-                glyph: &|c| self.gui.atlas.glyph_cell(c),
+-                glyphs: self.gui.atlas.font.epoch(),
+-                font: Some(&self.gui.atlas.font),
+-                dynamic_visible: Some(&dynamic_visible),
+-            };
+-            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
+-            let block_entity_cache = CacheOptions {
+-                shulker_boxes: self.settings.horizon.cache_shulker_boxes,
+-                signs: self.settings.horizon.cache_signs,
+-                decorated_pots: self.settings.horizon.cache_decorated_pots,
+-                bells: self.settings.horizon.cache_bells,
+-                chests: self.settings.horizon.cache_chests,
+-                banners: self.settings.horizon.cache_banners,
+-                copper_golem_statues: self.settings.horizon.cache_copper_golem_statues,
+-            };
+-            // Entity occlusion is for ordinary entity meshes. Block entities
+-            // already have section and per-block frustum culling; routing them
+-            // through the per-vertex occlusion callback both repeats that work
+-            // and disables their per-section GPU cache. Shader packs still need
+-            // per-entity span marks, so they keep the callback path.
+-            let block_entities = out.len();
+-            if self.pack_ids.is_some() {
+-                let section_revision = |pos| r.block_entity_section_revision(pos);
+-                static_block_entity_stats = self
+-                    .res
+-                    .block_entity_render()
+-                    .render_with_cache_options_and_callbacks(
+-                        &scene,
+-                        visible,
+-                        block_entity_cache,
+-                        r.block_entity_revision(),
+-                        Some(&section_revision),
+-                        &mut out,
+-                        |pos, state, start| {
+-                            self.mark_block_entity(start, state);
+-                            self.mark_motion(start, motion_block_entity(pos));
+-                        },
+-                        |pos, _, start, out| {
+-                            if shadow_only_at.contains(&pos) {
+-                                self.hide_spans_from(start, out.len());
+-                            }
+-                        },
+-                    );
+-            } else {
+-                let cache_candidates = r
+-                    .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, None, None)
+-                    .filter(|(block, _)| self.live_block_entity_render(block.0, block.1))
+-                    .map(|(block, _)| block);
+-                (
+-                    static_block_entities,
+-                    visible_static_block_entity_sections,
+-                    static_block_entity_stats,
+-                ) = self
+-                    .res
+-                    .block_entity_render()
+-                    .render_with_gpu_cache_options(
+-                        &scene,
+-                        visible,
+-                        cache_candidates,
+-                        block_entity_cache,
+-                        r.block_entity_revision(),
+-                        |pos| r.block_entity_section_revision(pos),
+-                        &mut out,
+-                    );
+-            }
+-            // Mod block entities: their mods draw them (`native_block_entity_submit`),
+-            // culled by the bounds they give. A world without any (`has_mods`) has none
+-            // to find among its other unrendered block entities (furnaces, hoppers...).
+-            let mods = self
+-                .world
+-                .block_entities
+-                .has_mods()
+-                .then(|| {
+-                    r.visible_block_entities(self.settings.chunk_fade)
+-                        .filter(|(_, state)| !self.res.block_entity_render().renders(*state))
+-                })
+-                .into_iter()
+-                .flatten();
+-            let untemplated = self.untemplated_mod_block_entities(camera);
+-            self.mod_block_entity_geometry(
+-                mods.chain(untemplated.iter()),
+-                camera,
+-                alpha as f32,
+-                &mut out,
+-            );
+-            self.lit_block_entity(block_entities..out.len());
+-            self.mark_stage(out.len(), "DESTROY");
+-            for &(pos, stage) in &cracks {
+-                let state = self.world.block(pos[0], pos[1], pos[2]);
+-                self.res
+-                    .block_entity_render()
+-                    .render_breaking(&scene, pos, state.0, stage, &mut out);
+-            }
++            self.with_block_entity_scene(camera, alpha as f32, Some(&dynamic_visible), true, |scene| {
++                let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
++                let block_entity_cache = CacheOptions {
++                    shulker_boxes: self.settings.horizon.cache_shulker_boxes,
++                    signs: self.settings.horizon.cache_signs,
++                    decorated_pots: self.settings.horizon.cache_decorated_pots,
++                    bells: self.settings.horizon.cache_bells,
++                    chests: self.settings.horizon.cache_chests,
++                    banners: self.settings.horizon.cache_banners,
++                    copper_golem_statues: self.settings.horizon.cache_copper_golem_statues,
++                };
++                // Entity occlusion is for ordinary entity meshes. Block entities
++                // already have section and per-block frustum culling; routing them
++                // through the per-vertex occlusion callback both repeats that work
++                // and disables their per-section GPU cache. Shader packs still need
++                // per-entity span marks, so they keep the callback path.
++                let block_entities = out.len();
++                if self.pack_ids.is_some() {
++                    let section_revision = |pos| r.block_entity_section_revision(pos);
++                    static_block_entity_stats = self
++                        .res
++                        .block_entity_render()
++                        .render_with_cache_options_and_callbacks(
++                            scene,
++                            visible,
++                            block_entity_cache,
++                            r.block_entity_revision(),
++                            Some(&section_revision),
++                            &mut out,
++                            |pos, state, start| {
++                                self.mark_block_entity(start, state);
++                                self.mark_motion(start, motion_block_entity(pos));
++                            },
++                            |pos, _, start, out| {
++                                if shadow_only_at.contains(&pos) {
++                                    self.hide_spans_from(start, out.len());
++                                }
++                            },
++                        );
++                } else {
++                    let cache_candidates = r
++                        .visible_block_entities_in_frustum(self.settings.chunk_fade, camera, None, None)
++                        .filter(|(block, _)| self.live_block_entity_render(block.0, block.1))
++                        .map(|(block, _)| block);
++                    (
++                        static_block_entities,
++                        visible_static_block_entity_sections,
++                        static_block_entity_stats,
++                    ) = self
++                        .res
++                        .block_entity_render()
++                        .render_with_gpu_cache_options(
++                            scene,
++                            visible,
++                            cache_candidates,
++                            block_entity_cache,
++                            r.block_entity_revision(),
++                            |pos| r.block_entity_section_revision(pos),
++                            &mut out,
++                        );
++                }
++                // Mod block entities: their mods draw them (`native_block_entity_submit`),
++                // culled by the bounds they give. A world without any (`has_mods`) has none
++                // to find among its other unrendered block entities (furnaces, hoppers...).
++                let mods = self
++                    .world
++                    .block_entities
++                    .has_mods()
++                    .then(|| {
++                        r.visible_block_entities(self.settings.chunk_fade)
++                            .filter(|(_, state)| !self.res.block_entity_render().renders(*state))
++                    })
++                    .into_iter()
++                    .flatten();
++                let untemplated = self.untemplated_mod_block_entities(camera);
++                self.mod_block_entity_geometry(
++                    mods.chain(untemplated.iter()),
++                    camera,
++                    alpha as f32,
++                    &mut out,
++                );
++                self.lit_block_entity(block_entities..out.len());
++                self.mark_stage(out.len(), "DESTROY");
++                for &(pos, stage) in &cracks {
++                    let state = self.world.block(pos[0], pos[1], pos[2]);
++                    self.res
++                        .block_entity_render()
++                        .render_breaking(scene, pos, state.0, stage, &mut out);
++                }
++            });
++        }
++        #[cfg(target_os = "cafe")]
++        if self.renderer.is_none()
++            && let Some((sections, partial)) = cafe_blocks
++        {
++            *partial =
++                self.cafe_block_entity_geometry(sections, camera, alpha as f32, &cracks, &mut out);
+         }
+         laps.lap("eg_block_entities");
+         self.mark_entity(out.len(), "minecraft:experience_orb");
+@@ -7907,10 +7994,16 @@ impl Game<'_> {
+             &self.dynamic_resolution,
+         ));
+         let mut built = false;
+-        let rendered = self.render_to(Some(backend.viewport_size()), |_, frame| {
+-            built = true;
+-            horizon_client::spans::time("renderer", || backend.present_frame(frame))
+-        })?;
++        let block_entities = backend.block_entity_sections();
++        let rendered = self.render_to(
++            Some(backend.viewport_size()),
++            block_entities.as_deref(),
++            |_, frame, block_entities_partial| {
++                built = true;
++                backend.set_block_entity_models_partial(block_entities_partial);
++                horizon_client::spans::time("renderer", || backend.present_frame(frame))
++            },
++        )?;
+         self.cafe_frame_built = built;
+         self.frame_drawn = rendered;
+         self.finish_render_frame(elapsed);
+@@ -7932,16 +8025,22 @@ impl Game<'_> {
+         &mut self,
+         consume: impl FnOnce(&mut Renderer, &Frame<'_>) -> Result<bool>,
+     ) -> Result<bool> {
+-        self.render_to(None, |renderer, frame| {
+-            let renderer = renderer.ok_or("renderer")?;
+-            consume(renderer, frame)
+-        })
++        self.render_to(
++            None,
++            #[cfg(target_os = "cafe")]
++            None,
++            |renderer, frame, _| {
++                let renderer = renderer.ok_or("renderer")?;
++                consume(renderer, frame)
++            },
++        )
+     }
+ 
+     fn render_to(
+         &mut self,
+         native_size: Option<[u32; 2]>,
+-        consume: impl FnOnce(Option<&mut Renderer>, &Frame<'_>) -> Result<bool>,
++        #[cfg(target_os = "cafe")] block_entity_sections: Option<&CafeBlockEntitySections>,
++        consume: impl FnOnce(Option<&mut Renderer>, &Frame<'_>, bool) -> Result<bool>,
+     ) -> Result<bool> {
+         self.begin_frame_draws();
+         let prepare = spans::guard("prepare");
+@@ -8001,7 +8100,7 @@ impl Game<'_> {
+                     let frame = loading_frame(&hud);
+                 return match self.renderer.as_mut() {
+                     Some(renderer) => renderer.render(&frame),
+-                    None => consume(None, &frame),
++                    None => consume(None, &frame, false),
+                 };
+                 }
+                 return Ok(false);
+@@ -8049,7 +8148,7 @@ impl Game<'_> {
+                 let frame = loading_frame(&hud);
+                 return match self.renderer.as_mut() {
+                     Some(renderer) => renderer.render(&frame),
+-                    None => consume(None, &frame),
++                    None => consume(None, &frame, false),
+                 };
+             }
+             return Ok(false);
+@@ -8074,7 +8173,7 @@ impl Game<'_> {
+                 let frame = loading_frame(&hud);
+                 return match self.renderer.as_mut() {
+                     Some(renderer) => renderer.render(&frame),
+-                    None => consume(None, &frame),
++                    None => consume(None, &frame, false),
+                 };
+             }
+             return Ok(false);
+@@ -8099,7 +8198,7 @@ impl Game<'_> {
+                 let frame = loading_frame(&hud);
+                 return match self.renderer.as_mut() {
+                     Some(renderer) => renderer.render(&frame),
+-                    None => consume(None, &frame),
++                    None => consume(None, &frame, false),
+                 };
+             }
+             return Ok(false);
+@@ -8514,7 +8613,18 @@ impl Game<'_> {
+         };
+         self.view_frustum =
+             self.world_view_frustum(camera, [fov_degrees, yaw, pitch], bob * spin, depth_far);
+-        let billboard_frustum = if self.settings.horizon.taa {
++        #[cfg(target_os = "cafe")]
++        if self.view_frustum.is_none() && let Some([width, height]) = native_size {
++            // Both GX2 outputs fit the same layout aspect, with pixel-rounding
++            // differences. Expand the horizontal bound conservatively.
++            let aspect = width as f32 / height.max(1) as f32 * 1.005;
++            self.view_frustum = Some(
++                horizon_client::gfx::View::screen(yaw, pitch, fov_degrees, aspect, depth_far)
++                    .frustum(bob * spin)
++                    .into(),
++            );
++        }
++        let billboard_frustum = if self.settings.horizon.taa && self.renderer.is_some() {
+             self.renderer.as_ref().map(|r| {
+                 r.camera_frustum_with_jitter(fov_degrees, yaw, pitch, bob * spin, depth_far)
+             })
+@@ -8538,10 +8648,21 @@ impl Game<'_> {
+         } else {
+             self.shader_pack_inputs(camera, alpha as f32, &sky)
+         };
++        #[cfg(target_os = "cafe")]
++        let mut block_entities_partial = false;
++        #[cfg(not(target_os = "cafe"))]
++        let block_entities_partial = false;
+         if !title {
+             let (built, static_sections, visible_static_sections, static_stats) =
+                 spans::time("entity_geometry", || {
+-                    self.entity_geometry(camera, alpha, billboard_frustum, entities)
++                    self.entity_geometry(
++                        camera,
++                        alpha,
++                        billboard_frustum,
++                        #[cfg(target_os = "cafe")]
++                        block_entity_sections.map(|sections| (sections, &mut block_entities_partial)),
++                        entities,
++                    )
+                 });
+             entities = built;
+             static_block_entities = static_sections;
+@@ -8845,9 +8966,9 @@ impl Game<'_> {
+                 });
+                 self.native_shaders.hand_over(renderer);
+                 renderer.stage_prepared_draws(&prepared_draws);
+-                consume(Some(renderer), &frame)
++                consume(Some(renderer), &frame, false)
+             }
+-            None => consume(None, &frame),
++            None => consume(None, &frame, block_entities_partial),
+         };
+         prepared_draws.clear();
+         *self.prepared_model_draws.borrow_mut() = prepared_draws;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 94515fe49c0d12569d12393a4c4c07fe5f828eb9..07f12648e7d0b903ae9cfc5d32b2e68c2a803c25 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -2,6 +2,10 @@
+ use super::*;
+ use horizon_client_platform::{ClientDeviceEvent, ClientWindowEvent};
+ 
++#[path = "cafe_block_entities.rs"]
++mod cafe_block_entities;
++pub use cafe_block_entities::CafeBlockEntitySections;
++
+ pub struct CafeLoadingArtwork<'a> {
+     pub atlas: &'a HudAtlas,
+     pub panorama: Option<&'a horizon_client::gfx::panorama::Faces>,
+@@ -80,6 +84,12 @@ pub trait CafeGameBackend:
+ {
+     fn prepare_game_artwork(&mut self, artwork: CafeGameArtwork<'_>) -> Result<()>;
+ 
++    fn block_entity_sections(&self) -> Option<Arc<CafeBlockEntitySections>> {
++        None
++    }
++
++    fn set_block_entity_models_partial(&mut self, _partial: bool) {}
++
+     /// Storage retained by the native terrain presenter.
+     fn terrain_buffer_census(&self) -> Option<CafeTerrainBuffers> {
+         None
+diff --git a/crates/horizon-client/src/platform/cafe_block_entities.rs b/crates/horizon-client/src/platform/cafe_block_entities.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..bfd47599679e90d817eb6686fc1de40a78b369f1
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_block_entities.rs
+@@ -0,0 +1,152 @@
++//! Bounded renderable-position snapshots from admitted Cafe section meshes.
++
++use std::collections::{BTreeMap, BinaryHeap, HashSet};
++
++type SectionKey = (i32, i32, i32);
++type Block = ([i32; 3], u32);
++
++const MAX_SECTIONS: usize = 4096;
++const MAX_POSITIONS: usize = 16 * 1024;
++const MAX_PER_FRAME: usize = 256;
++
++#[derive(Clone)]
++struct Section {
++    blocks: Box<[Block]>,
++    incomplete: bool,
++}
++
++#[derive(Clone, Default)]
++pub struct CafeBlockEntitySections {
++    sections: BTreeMap<SectionKey, Section>,
++    positions: usize,
++    incomplete_sections: usize,
++    saturated: bool,
++}
++
++impl CafeBlockEntitySections {
++    pub fn replace(&mut self, key: SectionKey, blocks: &[Block]) {
++        self.remove(key);
++        if blocks.is_empty() {
++            return;
++        }
++        if self.sections.len() == MAX_SECTIONS {
++            self.saturated = true;
++            return;
++        }
++        let count = blocks.len().min(MAX_POSITIONS - self.positions);
++        let incomplete = count < blocks.len();
++        self.sections.insert(
++            key,
++            Section {
++                blocks: blocks[..count].into(),
++                incomplete,
++            },
++        );
++        self.positions += count;
++        self.incomplete_sections += usize::from(incomplete);
++    }
++
++    pub fn remove(&mut self, key: SectionKey) {
++        if let Some(section) = self.sections.remove(&key) {
++            self.positions -= section.blocks.len();
++            self.incomplete_sections -= usize::from(section.incomplete);
++        }
++    }
++
++    pub fn remove_columns(&mut self, gone: &HashSet<(i32, i32)>) {
++        self.sections.retain(|&(x, _, z), section| {
++            if !gone.contains(&(x, z)) {
++                return true;
++            }
++            self.positions -= section.blocks.len();
++            self.incomplete_sections -= usize::from(section.incomplete);
++            false
++        });
++    }
++
++    pub fn clear(&mut self) {
++        *self = Self::default();
++    }
++
++    /// Keep the closest eligible models. The caller supplies nonnegative squared
++    /// distances and filters live state and visibility before they enter the heap.
++    pub fn select(&self, mut rank: impl FnMut(Block) -> Option<f64>) -> (Vec<Block>, bool) {
++        let mut nearest = BinaryHeap::new();
++        let mut partial = self.saturated || self.incomplete_sections != 0;
++        for block in self.sections.values().flat_map(|section| &*section.blocks) {
++            let Some(distance) = rank(*block) else {
++                continue;
++            };
++            let entry = (distance.to_bits(), *block);
++            if nearest.len() < MAX_PER_FRAME {
++                nearest.push(entry);
++            } else {
++                partial = true;
++                let mut farthest = nearest.peek_mut().unwrap();
++                if entry < *farthest {
++                    *farthest = entry;
++                }
++            }
++        }
++        (
++            nearest
++                .into_sorted_vec()
++                .into_iter()
++                .map(|(_, block)| block)
++                .collect(),
++            partial,
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn model(x: i32) -> Block {
++        ([x, 64, 0], 7)
++    }
++
++    #[test]
++    fn replacement_empty_section_unload_and_clear_remove_old_marks() {
++        let mut index = CafeBlockEntitySections::default();
++        index.replace((0, 0, 0), &[model(1), model(2)]);
++        index.replace((2, 0, 0), &[model(32)]);
++        index.replace((0, 0, 0), &[model(3)]);
++        assert_eq!(
++            index.select(|(pos, _)| Some(pos[0] as f64)).0,
++            [model(3), model(32)]
++        );
++        index.remove_columns(&HashSet::from([(2, 0)]));
++        assert_eq!(index.select(|_| Some(0.0)).0, [model(3)]);
++        index.replace((0, 0, 0), &[]);
++        assert!(index.select(|_| Some(0.0)).0.is_empty());
++        index.replace((1, 0, 0), &[model(16)]);
++        index.clear();
++        assert_eq!(index.select(|_| Some(0.0)), (vec![], false));
++    }
++
++    #[test]
++    fn selection_keeps_nearest_after_filtering_and_reports_overflow() {
++        let mut index = CafeBlockEntitySections::default();
++        let blocks: Vec<_> = (0..350).rev().map(model).collect();
++        index.replace((0, 0, 0), &blocks);
++        let (selected, partial) = index.select(|(pos, _)| (pos[0] != 4).then(|| f64::from(pos[0])));
++        assert!(partial);
++        assert_eq!(
++            selected,
++            (0..257).filter(|&x| x != 4).map(model).collect::<Vec<_>>()
++        );
++    }
++
++    #[test]
++    fn metadata_budget_marks_and_removes_truncation() {
++        let mut index = CafeBlockEntitySections::default();
++        let blocks = vec![model(1); MAX_POSITIONS + 1];
++        index.replace((0, 0, 0), &blocks);
++        assert_eq!(index.positions, MAX_POSITIONS);
++        assert_eq!(index.select(|_| None), (vec![], true));
++        index.remove((0, 0, 0));
++        assert_eq!(index.select(|_| None), (vec![], false));
++    }
++}
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 1a80b4681187078afc2dfd2941da9925c37cc587..efa3c6ff2ed4c894305b464921ccdf7bba2dcf72 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -21,8 +21,8 @@ use horizon_client::mesher::{SectionMesh, TerrainVertex};
+ use horizon_client::sprites::SpriteAnimation;
+ use horizon_client::{
+     game::{
+-        CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork, CafeLoadingPresenter,
+-        CafeScreenshot, CafeScreenshotOutput, CafeTerrainBuffers,
++        CafeBlockEntitySections, CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeLoadingArtwork,
++        CafeLoadingPresenter, CafeScreenshot, CafeScreenshotOutput, CafeTerrainBuffers,
+     },
+     gfx::{Frame, panorama},
+     presentation::{HudBackend, PresentationBackend, TerrainBackend, WorldResolution},
+@@ -42,6 +42,7 @@ use std::{
+     marker::PhantomData,
+     mem::MaybeUninit,
+     ptr::NonNull,
++    sync::Arc,
+     time::{Duration, Instant},
+ };
+ 
+@@ -597,6 +598,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_animation: terrain_animation::TerrainAnimation,
+     terrain_min_y: Option<i32>,
+     sections: HashMap<SectionKey, TerrainSection>,
++    block_entity_sections: Arc<CafeBlockEntitySections>,
++    block_entity_models_partial: bool,
+     terrain_resident_bytes: usize,
+     terrain_retired_bytes: usize,
+     retired_terrain: Vec<TerrainSection>,
+@@ -665,6 +668,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_animation: terrain_animation::TerrainAnimation::default(),
+             terrain_min_y: None,
+             sections: HashMap::new(),
++            block_entity_sections: Arc::default(),
++            block_entity_models_partial: false,
+             terrain_resident_bytes: 0,
+             terrain_retired_bytes: 0,
+             retired_terrain: Vec::new(),
+@@ -1270,7 +1275,7 @@ fn log_unsupported_world_pass(name: &str) {
+         "entity materials" => "Horizon GX2: omitted world entity materials or effects\n\0",
+         "crumbling budget" => "Horizon GX2: crumbling geometry exceeded its upload budget\n\0",
+         "outline budget" => "Horizon GX2: selection outline exceeded its upload budget\n\0",
+-        "block entities" => "Horizon GX2: skipped unsupported block-entities pass\n\0",
++        "block entities" => "Horizon GX2: omitted block-entity models or effects\n\0",
+         "first-person materials" => {
+             "Horizon GX2: hand materials or geometry exceeded the supported pass\n\0"
+         }
+@@ -1295,6 +1300,14 @@ fn log_unsupported_world_pass(name: &str) {
+ }
+ 
+ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
++    fn block_entity_sections(&self) -> Option<Arc<CafeBlockEntitySections>> {
++        Some(Arc::clone(&self.block_entity_sections))
++    }
++
++    fn set_block_entity_models_partial(&mut self, partial: bool) {
++        self.block_entity_models_partial = partial;
++    }
++
+     fn terrain_buffer_census(&self) -> Option<CafeTerrainBuffers> {
+         let terrain = self.terrain.as_ref()?;
+         if self.terrain_evictions != 0 || !self.deferred_terrain.is_empty() {
+@@ -1490,6 +1503,7 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
++        Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
+         if self.terrain_ranks.is_some() {
+             let rank = self.section_rank(key, section.bounds);
+@@ -1521,6 +1535,7 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn clear_native_sections(&mut self) {
++        self.block_entity_sections = Arc::default();
+         self.retired_terrain
+             .extend(self.sections.drain().map(|(_, section)| section));
+         self.terrain_resident_bytes = 0;
+@@ -1567,6 +1582,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+             }
++            Arc::make_mut(&mut self.block_entity_sections).replace(key, &mesh.block_entities);
+             self.deferred_terrain.remove(&key);
+             return Ok(());
+         }
+@@ -1673,6 +1689,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        Arc::make_mut(&mut self.block_entity_sections).replace(key, &mesh.block_entities);
+         self.frame_work.uploaded_sections += 1;
+         self.frame_work.uploaded_bytes += gpu_bytes as u64;
+         self.deferred_terrain.remove(&key);
+@@ -1734,6 +1751,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+ 
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
+         let removed: HashSet<_> = columns.collect();
++        Arc::make_mut(&mut self.block_entity_sections).remove_columns(&removed);
+         let expired: Vec<_> = self
+             .sections
+             .keys()
+@@ -1815,6 +1833,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let unsupported = unsupported_world_passes(frame)
+             .chain(world_partial.then_some((1 << 4, "entity materials")))
+             .chain(weather_partial.then_some((1 << 3, "weather")))
++            .chain(self.block_entity_models_partial.then_some((1 << 5, "block entities")))
+             .chain(hand_partial.then_some((1 << 6, "first-person materials")))
+             .chain(crumbling_overflow.then_some((1 << 22, "crumbling budget")))
+             .filter(|_| !frame.title);

@@ -107,6 +107,11 @@ python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summar
   individual output results, combined swap and flip deltas, observed
   flip interval and section and surface counters. The decoder reads both
   formats. Surface sizes refer to WHB output surfaces.
+- `HZP3` keeps the 256-byte HZP2 prefix in each 352-byte record. It adds
+  effective world dimensions, requested and effective scale, target bytes,
+  sorted translucent index upload bytes and per-display world-pass CPU spans.
+  Use an empty marker for the usual per-pass terrain binding. A first marker
+  byte of ASCII `2` enables per-section binding for matched A/B runs.
 - One combined flip interval is available when successive same-phase
   submissions advance one flip and the driver returns progressing flip
   timestamps. Zero, missing or multi-flip intervals are omitted from the
@@ -124,7 +129,7 @@ python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summar
   duration and start-to-start duration, then stage, workload and cumulative
   worker arrays in the order enumerated in `tools/gx2_profile.py`.
   Each HZP1 row is 168 bytes. The static ring reserves 672 KiB in HZP1
-  and 1 MiB in HZP2. Disabled
+  and 1 MiB in HZP2. HZP3 reserves 1.375 MiB. Disabled
   profiling skips clock reads, capture writes and per-frame allocation.
   Spans use `OSGetSystemTime` with the installed WUT timebase frequency
   `OSGetSystemInfo()->busClockSpeed / 4` in the file header. Nominal tick

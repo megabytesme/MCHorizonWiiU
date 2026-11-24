@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "e36fdb4c50fad715505a95c58f363775efc8f17d",
+  "output_tree": "966bb274f40ad7092e5a8e1c819b0c00e7f5ac79",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -316,12 +316,60 @@
       "sha256": "7cc68912a866bd93a1978c6721a69cb61c3d81dc510f0a5d468d8dd64632cd85",
       "input_tree": "152fae0158b6734ca546c77a963b4d11d6877723",
       "output_tree": "e36fdb4c50fad715505a95c58f363775efc8f17d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0052-gx2-stock-overworld-sky.patch",
+      "sha256": "164524c19f2a73abe81cc6ff0f816e22cc0604c9d27681ad8bb6e13f0b390332",
+      "input_tree": "e36fdb4c50fad715505a95c58f363775efc8f17d",
+      "output_tree": "7b9a92f4db6d815a52b4c49e71888af84d77b557"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0053-gx2-ordinary-world-entities.patch",
+      "sha256": "f3d3706985ee0eb3c11f763eceb89824b4fd35b57b15fe5c8d6ae75370641a74",
+      "input_tree": "7b9a92f4db6d815a52b4c49e71888af84d77b557",
+      "output_tree": "cb3535ca39ebcbd1187b863f3c56d2c922d0af1d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0054-profile-and-batch-gx2-world-passes.patch",
+      "sha256": "55801b1828c46538a43711ddf9533f4844deae2d620a3a7dbfb826695d94bc8f",
+      "input_tree": "cb3535ca39ebcbd1187b863f3c56d2c922d0af1d",
+      "output_tree": "4aeb9b9e12fa5208549c07bd42e4bfb7c4747f9c"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0055-gx2-stock-precipitation.patch",
+      "sha256": "20bc2415a05e1b0cd7ad2118de3ba6a73e98fd52dbc0600995a861b7a020ed96",
+      "input_tree": "4aeb9b9e12fa5208549c07bd42e4bfb7c4747f9c",
+      "output_tree": "e173a050b5559763982dab44ea994434ca33ac33"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0056-animate-gx2-terrain-atlas.patch",
+      "sha256": "b768fde63a2f4aa5175de24f918e931d0350c3dac8a2fa8d69e93a322c1e8b56",
+      "input_tree": "e173a050b5559763982dab44ea994434ca33ac33",
+      "output_tree": "35bf9b3501f826aa945edb1a587d9757eda0ab9b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0057-bound-cafe-block-entity-preparation.patch",
+      "sha256": "66d2e99bd8041f893718f04ad410ed4743d4e5d8297ffa859e5cf301822b8185",
+      "input_tree": "35bf9b3501f826aa945edb1a587d9757eda0ab9b",
+      "output_tree": "f762d00281f0d109c9c4b6143c78e1c3d048abbc"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0058-bound-cafe-benchmark-world-entry.patch",
+      "sha256": "488e62f44aefe05b06729e92af41ce8dbbaa15af63bc9ab40b79c7dbb6fff3b2",
+      "input_tree": "f762d00281f0d109c9c4b6143c78e1c3d048abbc",
+      "output_tree": "5a1240e54f179895249b41705e2ec46b78678509"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0059-repeat-gx2-terrain-texture-coordinates.patch",
+      "sha256": "3751239642fcab7516437476df4353a77eef32be2d8ee38a483e8b0909623aa7",
+      "input_tree": "5a1240e54f179895249b41705e2ec46b78678509",
+      "output_tree": "966bb274f40ad7092e5a8e1c819b0c00e7f5ac79"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.23",
-    "patch": "0.5.0-rc.23"
+    "client": "0.8.0-rc.24",
+    "patch": "0.5.0-rc.24"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
