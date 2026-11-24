@@ -1,5 +1,9 @@
 # Wii U renderer performance programme
 
+The [RC 26 physical record](physical-rc26.md) covers the verified console
+boot, live MCP, the visible 100% baseline, save recovery and the scaled
+world, readback and Menu handoff failures.
+
 ## Reference and validation
 
 The baseline is client `0.8.0-rc.21` at port commit
