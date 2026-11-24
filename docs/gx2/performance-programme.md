@@ -133,6 +133,39 @@ during PNG decoding and returned in 10.210 seconds. Both runs released the
 loading resources, recovered 234,880,920 free GX2 bulk-heap bytes and left
 the report list empty. Cancellation during timed gameplay remains pending.
 
+## RC 26 packages and authenticated gameplay
+
+The hosted recipe pins client `0.8.0-rc.26`, patch `0.5.0-rc.26`,
+builder `0.7.0-rc.4`, port commit
+`aa8d4601cb2d0a4421b10a0aed5342c6f2edd2cb` and assembled tree
+`1f405190dbff9428f2585cee478efc0d9fb0307c`. The recipe SHA-256 is
+`be7ba74511454c33e76f0acc229a4572fad1f8ccef3cc11afdb4d0d3ee794499`.
+
+Two native build directories produced byte-identical packages. The second
+resumed its own build after a host interruption. The RPX SHA-256 is
+`7ad154a161e42cde0094ba9e92fe59181a89dfcc65797de8d69f0fcf0882d137`.
+The WUHB SHA-256 is
+`cf62fef35c9bdf38017190dc33d43bedf263a190dd687ce8a54e722c78a3df03`.
+Both WUHBs embed the exact 37,493,740-byte RPX at offset 512. The Aroma
+code-heap check reports 12,957,312 bytes of estimated headroom.
+
+In forced-interpreter Cemu, the exact RPX passed Codex MCP pairing with
+GamePad consent, authenticated world entry, durable Save & Quit, return to
+Night and launcher close. `game_state` returned the live gameplay window,
+both output workloads and configured graphics. One captured window had
+five terrain sections on each output and one partial paired submission.
+This replay used distance 6/5 with custom 100% scale. The fitted world
+viewports were 1920×1079 on TV and 854×480 on GamePad, with zero extra
+world-target bytes. The guest reported nonzero AX PCM, a peak of 326,518,366
+requested Rust bytes and recovery to 234,880,920 free GX2 bulk-heap bytes.
+
+The final HZP3 capture decoded 4,096 retained rows, including 39 partial
+gameplay presentations. Across 37 gameplay pacing intervals the median was
+7,084.776 ms, p95 was 8,464.491 ms, and p99/max was 8,844.001 ms. Another
+emulator and a native rebuild overlapped the replay. Use these timings as
+instrumentation evidence. A controlled RC 26 replay and same-process
+saved-world reopen remain pending.
+
 Keep stock Full Performance, experimental Wii U tuning and distance-12
 regression as different configurations. Record which options affect GX2.
 Avoid using interpreter cadence to select a physical resolution floor or
