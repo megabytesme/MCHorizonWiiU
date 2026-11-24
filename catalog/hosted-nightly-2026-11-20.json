@@ -9,7 +9,7 @@
   },
   "base_recipe_sha256": "4cd11a1d9cf77af06f1a6f0948122af7e96ee4c78a732e2bfdecede2e74631e2",
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "45e78150bc53cfc1295250f091c67b721d49892d",
+  "output_tree": "b4f3ab45c3fb1442520eaff8ad2b5215fcbfda18",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -382,12 +382,18 @@
       "sha256": "dc1dcdf2b84036f52ad49d05fa701a7d34ffdcccd432d82b2957e69631fe16db",
       "input_tree": "f9107760a975cfed1ebd7fcb53fd06e1b86f5b6b",
       "output_tree": "45e78150bc53cfc1295250f091c67b721d49892d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0063-draw-gx2-sun-and-moon.patch",
+      "sha256": "eaf80f87b29b8a252903d0b502f018a48b9e44082a3df74beba9e7f131d25494",
+      "input_tree": "45e78150bc53cfc1295250f091c67b721d49892d",
+      "output_tree": "b4f3ab45c3fb1442520eaff8ad2b5215fcbfda18"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.4",
-    "client": "0.8.0-rc.25",
-    "patch": "0.5.0-rc.25"
+    "client": "0.8.0-rc.26",
+    "patch": "0.5.0-rc.26"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

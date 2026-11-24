@@ -1,0 +1,728 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 3e6d6a27e2999d114e260f5ab7b260925f1ef624..770a44d193dd3976e44fc53f2cd5ee1967d4a6b8 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -122,15 +122,25 @@ add_custom_command(
+    DEPENDS precipitation.vert precipitation.frag
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(SKY_BODIES_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/sky_bodies_gfd.o")
++add_custom_command(
++   OUTPUT "${SKY_BODIES_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/sky_bodies.vert"
++      -ps "${CMAKE_CURRENT_SOURCE_DIR}/sky_bodies.frag" -o sky_bodies.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common sky_bodies.gsh sky_bodies_gfd.o
++   DEPENDS sky_bodies.vert sky_bodies.frag
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" "${STOCK_SKY_GFD_OBJECT}"
+-   "${PRECIPITATION_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+-   stock_sky.c precipitation.c
++   stock_sky.c precipitation.c sky_bodies.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}"
+-   "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}")
++   "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 17d7f93bec5a3bc4097c07cacbbada0b6d4e1e04..4edeadcb314719f51add12dc693c23ef5ff2ba10 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -11,6 +11,7 @@ mod crumbling;
+ mod hand;
+ mod outline;
+ mod precipitation;
++mod sky_bodies;
+ mod stock_sky;
+ 
+ use horizon_client::chunk::ColumnLayout;
+@@ -1213,13 +1214,16 @@ impl TerrainProjection {
+ 
+ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'static str)> {
+     [
+-        (!frame.celestial.is_empty(), 1 << 0, "celestial"),
+         (
+             horizon_client::gfx::sky_open(frame) && frame.end_sky,
+             1 << 21,
+             "sky surfaces",
+         ),
+-        (frame.stars.is_some(), 1 << 1, "stars"),
++        (
++            frame.skybox && horizon_client::gfx::sky_open(frame) && frame.stars.is_some(),
++            1 << 1,
++            "stars",
++        ),
+         (frame.clouds.is_some(), 1 << 2, "clouds"),
+         (
+             !frame.static_block_entities.is_empty(),
+@@ -1844,6 +1848,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 !frame.weather.is_empty()
+             };
+         let unsupported = unsupported_world_passes(frame)
++            .chain(sky_bodies::unsupported(frame, self.hud.is_some()).then_some((1 << 0, "celestial")))
+             .chain(world_partial.then_some((1 << 4, "entity materials")))
+             .chain(models.particles_partial.then_some((1 << 26, "particles budget")))
+             .chain(weather_partial.then_some((1 << 3, "weather")))
+@@ -1919,7 +1924,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let aspect = rect[2] as f32 / rect[3].max(1) as f32;
+             let sky_result = {
+                 let _span = Span::new([Stage::WorldSkyTv, Stage::WorldSkyDrc][index]);
+-                draw.presenter.stock_sky.draw(draw.frame, target, world_rect, aspect)
++                draw.presenter.stock_sky.draw(
++                    draw.frame,
++                    target,
++                    world_rect,
++                    aspect,
++                    draw.presenter.hud.as_ref(),
++                )
+             };
+             if let Err(error) = sky_result {
+                 draw.result = Err(error);
+diff --git a/wiiu/loading_host/sky_bodies.c b/wiiu/loading_host/sky_bodies.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d62e62e83e8c336d7933a9084ed92a9e7e3c0c2
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies.c
+@@ -0,0 +1,127 @@
++#include "sky_bodies.h"
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <gx2/draw.h>
++#include <gx2/event.h>
++#include <gx2/registers.h>
++#include <gx2/sampler.h>
++#include <gx2/shaders.h>
++#include <gx2/texture.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_sky_bodies_gsh_start[];
++
++enum { MAX_VERTICES = 2 * 6 };
++
++_Static_assert(sizeof(HorizonSkyBodyVertex) == 28, "sky body vertex ABI changed");
++_Static_assert(offsetof(HorizonSkyBodyVertex, uv) == 16, "sky body UV offset changed");
++_Static_assert(offsetof(HorizonSkyBodyVertex, rgba) == 24, "sky body color offset changed");
++
++struct HorizonGx2SkyBodies {
++   WHBGfxShaderGroup shader;
++   GX2RBuffer vertices[2];
++   GX2Sampler sampler;
++   uint32_t atlas_slot;
++};
++
++static void release(HorizonGx2SkyBodies *bodies)
++{
++   for (unsigned i = 0; i < 2; ++i)
++      if (GX2RBufferExists(&bodies->vertices[i])) GX2RDestroyBufferEx(&bodies->vertices[i], 0);
++   if (bodies->shader.vertexShader) WHBGfxFreeShaderGroup(&bodies->shader);
++   free(bodies);
++}
++
++int horizon_gx2_sky_bodies_create(HorizonGx2SkyBodies **out)
++{
++   if (!out) return -1;
++   *out = NULL;
++   HorizonGx2SkyBodies *bodies = calloc(1, sizeof(*bodies));
++   if (!bodies) return -2;
++   WHBGfxShaderGroup *shader = &bodies->shader;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_sky_bodies_gsh_start) ||
++       !shader->vertexShader || !shader->pixelShader ||
++       shader->vertexShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       shader->pixelShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       !WHBGfxInitShaderAttribute(shader, "aClip", 0, offsetof(HorizonSkyBodyVertex, clip),
++                                  GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aUv", 0, offsetof(HorizonSkyBodyVertex, uv),
++                                  GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aColor", 0, offsetof(HorizonSkyBodyVertex, rgba),
++                                  GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
++       !WHBGfxInitFetchShader(shader)) {
++      release(bodies);
++      return -3;
++   }
++   const GX2PixelShader *ps = shader->pixelShader;
++   const GX2SamplerVar *sampler = ps->samplerVars;
++   if (ps->samplerVarCount != 1 || !sampler || !sampler->name ||
++       strcmp(sampler->name, "uAtlas") || sampler->type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D) {
++      release(bodies);
++      return -3;
++   }
++   bodies->atlas_slot = sampler->location;
++   GX2InitSampler(&bodies->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++   for (unsigned i = 0; i < 2; ++i) {
++      GX2RBuffer *buffer = &bodies->vertices[i];
++      *buffer = (GX2RBuffer){
++         .flags = flags, .elemSize = sizeof(HorizonSkyBodyVertex), .elemCount = MAX_VERTICES,
++      };
++      if (!GX2RCreateBuffer(buffer)) {
++         release(bodies);
++         return -2;
++      }
++   }
++   *out = bodies;
++   return 0;
++}
++
++void horizon_gx2_sky_bodies_destroy(HorizonGx2SkyBodies *bodies)
++{
++   if (!bodies) return;
++   GX2DrawDone();
++   release(bodies);
++}
++
++int horizon_gx2_sky_bodies_draw(HorizonGx2SkyBodies *bodies, uint32_t target, const uint32_t rect[4],
++                                const GX2Texture *atlas, const HorizonSkyBodyVertex *vertices,
++                                uint32_t count)
++{
++   if (!bodies || target > 1 || !rect || !rect[2] || !rect[3] || !atlas ||
++       !atlas->surface.image || !vertices || !count || count % 6 || count > MAX_VERTICES) return -1;
++   GX2RBuffer *buffer = &bodies->vertices[target];
++   void *mapped = GX2RLockBufferEx(buffer, 0);
++   if (!mapped) return -2;
++   memcpy(mapped, vertices, count * sizeof(*vertices));
++   GX2RUnlockBufferEx(buffer, 0);
++
++   WHBGfxShaderGroup *shader = &bodies->shader;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   GX2SetPixelTexture(atlas, bodies->atlas_slot);
++   GX2SetPixelSampler(&bodies->sampler, bodies->atlas_slot);
++   GX2RSetAttributeBuffer(buffer, 0, sizeof(HorizonSkyBodyVertex), 0);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
++   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ZERO,
++                      GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_ADD);
++   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count, 0, 1);
++   return 0;
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/sky_bodies.frag b/wiiu/loading_host/sky_bodies.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c098d43242e71fba66432e58df6259f85b4ff54
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies.frag
+@@ -0,0 +1,12 @@
++#version 330
++
++uniform sampler2D uAtlas;
++in vec2 vUv;
++in vec4 vColor;
++out vec4 fragColor;
++
++void main() {
++    vec4 color = texture(uAtlas, vUv) * vColor;
++    // Stock SDR celestial output is premultiplied and added to the sky.
++    fragColor = vec4(color.rgb * color.a, 0.0);
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/sky_bodies.h b/wiiu/loading_host/sky_bodies.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..592c4d47dd55012c078c07b84280c74a658516bb
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies.h
+@@ -0,0 +1,20 @@
++#ifndef HORIZON_GX2_SKY_BODIES_H
++#define HORIZON_GX2_SKY_BODIES_H
++
++#include <stdint.h>
++
++typedef struct HorizonGx2SkyBodies HorizonGx2SkyBodies;
++typedef struct GX2Texture GX2Texture;
++
++typedef struct HorizonSkyBodyVertex {
++   float clip[4], uv[2];
++   uint8_t rgba[4];
++} HorizonSkyBodyVertex;
++
++int horizon_gx2_sky_bodies_create(HorizonGx2SkyBodies **out);
++void horizon_gx2_sky_bodies_destroy(HorizonGx2SkyBodies *bodies);
++int horizon_gx2_sky_bodies_draw(HorizonGx2SkyBodies *bodies, uint32_t target, const uint32_t rect[4],
++                                const GX2Texture *atlas, const HorizonSkyBodyVertex *vertices,
++                                uint32_t count);
++
++#endif
+\ No newline at end of file
+diff --git a/wiiu/loading_host/sky_bodies.rs b/wiiu/loading_host/sky_bodies.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9918198fe70e4ae17562984436343587f31cd281
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies.rs
+@@ -0,0 +1,95 @@
++use crate::TerrainProjection;
++use horizon_client::{gfx::Frame, mesher::Vertex as SharedVertex};
++use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
++use std::{ffi::c_void, ptr::NonNull};
++
++#[path = "sky_bodies_vertices.rs"]
++mod geometry;
++
++unsafe extern "C" {
++    fn horizon_gx2_sky_bodies_create(out: *mut *mut c_void) -> i32;
++    fn horizon_gx2_sky_bodies_destroy(bodies: *mut c_void);
++    fn horizon_gx2_sky_bodies_draw(
++        bodies: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        atlas: *const c_void,
++        vertices: *const geometry::Vertex,
++        count: u32,
++    ) -> i32;
++}
++
++pub(crate) fn stock_bodies(vertices: &[SharedVertex]) -> bool {
++    geometry::valid_shape(vertices.len(), vertices.iter().map(|vertex| vertex.layer))
++}
++
++pub(crate) fn unsupported(frame: &Frame<'_>, has_atlas: bool) -> bool {
++    if frame.title || frame.sky_blocked || frame.celestial.is_empty() {
++        return false;
++    }
++    // The End submits separate flash geometry. Leave its explicit omission
++    // until there is a matching native sky and layered flash pass.
++    frame.end_sky || (frame.skybox && (!has_atlas || !stock_bodies(frame.celestial)))
++}
++
++#[derive(Default)]
++pub(crate) struct SkyBodies(Option<NonNull<c_void>>);
++
++impl SkyBodies {
++    pub(crate) fn draw(
++        &mut self,
++        frame: &Frame<'_>,
++        atlas: &HorizonPresenter<'_>,
++        target: u32,
++        rect: [u32; 4],
++        aspect: f32,
++    ) -> Result<(), &'static str> {
++        let projection = TerrainProjection::new(frame, 0, aspect);
++        let mut vertices = [geometry::Vertex::default(); geometry::MAX_VERTICES];
++        let count = geometry::expand(&mut vertices, frame.celestial.len(), |index| {
++            let vertex = &frame.celestial[index];
++            geometry::Vertex {
++                clip: projection.clip.transform(vertex.pos),
++                uv: vertex.uv,
++                rgba: vertex.color.to_le_bytes(),
++            }
++        });
++        let native = match self.0 {
++            Some(native) => native,
++            None => {
++                let mut native = std::ptr::null_mut();
++                if unsafe { horizon_gx2_sky_bodies_create(&mut native) } != 0 {
++                    return Err("could not create the GX2 celestial pipeline");
++                }
++                let native = NonNull::new(native).ok_or("missing GX2 celestial pipeline")?;
++                self.0 = Some(native);
++                native
++            }
++        };
++        // Each output keeps its own upload storage. WHBGfxFinishRender has
++        // already retired both views from the preceding frame.
++        let result = atlas.with_native_atlas(|texture| unsafe {
++            horizon_gx2_sky_bodies_draw(
++                native.as_ptr(),
++                target,
++                rect.as_ptr(),
++                texture,
++                vertices.as_ptr(),
++                count as u32,
++            )
++        });
++        if result == 0 {
++            Ok(())
++        } else {
++            Err("GX2 celestial draw failed")
++        }
++    }
++}
++
++impl Drop for SkyBodies {
++    fn drop(&mut self) {
++        if let Some(native) = self.0.take() {
++            unsafe { horizon_gx2_sky_bodies_destroy(native.as_ptr()) };
++        }
++    }
++}
+diff --git a/wiiu/loading_host/sky_bodies.vert b/wiiu/loading_host/sky_bodies.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..f66cf276f238b86e2b1ac453c188df3b1af0e3db
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies.vert
+@@ -0,0 +1,13 @@
++#version 330
++
++in vec4 aClip;
++in vec2 aUv;
++in vec4 aColor;
++out vec2 vUv;
++out vec4 vColor;
++
++void main() {
++    gl_Position = aClip;
++    vUv = aUv;
++    vColor = aColor;
++}
+\ No newline at end of file
+diff --git a/wiiu/loading_host/sky_bodies_vertices.rs b/wiiu/loading_host/sky_bodies_vertices.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac62387b314d399ecdc2b6c2e10636924b0e4e45
+--- /dev/null
++++ b/wiiu/loading_host/sky_bodies_vertices.rs
+@@ -0,0 +1,68 @@
++const MAX_SOURCE_VERTICES: usize = 2 * 4;
++pub(super) const MAX_VERTICES: usize = 2 * 6;
++
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++pub(super) struct Vertex {
++    pub(super) clip: [f32; 4],
++    pub(super) uv: [f32; 2],
++    pub(super) rgba: [u8; 4],
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<Vertex>() == 28);
++    assert!(std::mem::offset_of!(Vertex, uv) == 16);
++    assert!(std::mem::offset_of!(Vertex, rgba) == 24);
++};
++
++pub(super) fn valid_shape(count: usize, layers: impl IntoIterator<Item = u32>) -> bool {
++    count > 0
++        && count <= MAX_SOURCE_VERTICES
++        && count.is_multiple_of(4)
++        && layers.into_iter().all(|layer| layer & 0xffff == 2)
++}
++
++pub(super) fn expand(
++    output: &mut [Vertex; MAX_VERTICES],
++    source_vertices: usize,
++    mut vertex: impl FnMut(usize) -> Vertex,
++) -> usize {
++    const TRIANGLES: [usize; 6] = [0, 1, 2, 0, 2, 3];
++    let count = source_vertices / 4 * 6;
++    for (quad, vertices) in output[..count].chunks_exact_mut(6).enumerate() {
++        for (destination, corner) in vertices.iter_mut().zip(TRIANGLES) {
++            *destination = vertex(quad * 4 + corner);
++        }
++    }
++    count
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn accepts_only_complete_sun_and_moon_quads() {
++        assert!(valid_shape(4, [2 | 4 << 16; 4]));
++        assert!(valid_shape(8, [2; 8]));
++        assert!(!valid_shape(7, [2; 7]));
++        assert!(!valid_shape(12, [2; 12]));
++        assert!(!valid_shape(4, [2, 2, 2, 37]));
++    }
++
++    #[test]
++    fn preserves_sprite_corners_and_rain_alpha_when_expanding_two_quads() {
++        let mut output = [Vertex::default(); MAX_VERTICES];
++        let count = expand(&mut output, 8, |index| Vertex {
++            uv: [index as f32, 0.0],
++            rgba: [255, 255, 255, 127],
++            ..Vertex::default()
++        });
++        assert_eq!(count, 12);
++        assert_eq!(
++            output.map(|vertex| vertex.uv[0]),
++            [0.0, 1.0, 2.0, 0.0, 2.0, 3.0, 4.0, 5.0, 6.0, 4.0, 6.0, 7.0]
++        );
++        assert!(output.iter().all(|vertex| vertex.rgba[3] == 127));
++    }
++}
+diff --git a/wiiu/loading_host/stock_sky.c b/wiiu/loading_host/stock_sky.c
+index 39f0e5b2ad76c17207bd9333d271e42c3cc4a4c0..678c06ec0aed816d2dfa324f7898be2c629082e2 100644
+--- a/wiiu/loading_host/stock_sky.c
++++ b/wiiu/loading_host/stock_sky.c
+@@ -89,21 +89,18 @@ void horizon_gx2_stock_sky_destroy(HorizonGx2StockSky *sky)
+    release(sky);
+ }
+ 
+-int horizon_gx2_stock_sky_draw(HorizonGx2StockSky *sky, uint32_t target,
+-                              const uint32_t rect[4], const HorizonSkyVertex *vertices,
+-                              const uint32_t counts[3], const float fog[4], float sky_end,
+-                              const float top[4], const float sunrise[4])
++static bool valid_target(const HorizonGx2StockSky *sky, uint32_t target,
++                         const uint32_t rect[4], const uint32_t counts[3],
++                         const float fog[4])
+ {
+-   if (!sky || target > 1 || !rect || !rect[2] || !rect[3] ||
+-       !vertices || !counts || !fog || !top || !sunrise ||
+-       counts[0] != 24 || (counts[1] != 0 && counts[1] != 48) ||
+-       (counts[2] != 0 && counts[2] != 24)) return -1;
+-   GX2RBuffer *buffer = &sky->vertices[target];
+-   void *mapped = GX2RLockBufferEx(buffer, 0);
+-   if (!mapped) return -2;
+-   memcpy(mapped, vertices, (counts[0] + counts[1] + counts[2]) * sizeof(*vertices));
+-   GX2RUnlockBufferEx(buffer, 0);
++   return sky && target < 2 && rect && rect[2] && rect[3] && counts && fog &&
++      counts[0] == 24 && (counts[1] == 0 || counts[1] == 48) &&
++      (counts[2] == 0 || counts[2] == 24);
++}
+ 
++static void bind_sky(HorizonGx2StockSky *sky, uint32_t target, const uint32_t rect[4],
++                     const float fog[4])
++{
+    WHBGfxShaderGroup *shader = &sky->shader;
+    GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
+    GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
+@@ -112,7 +109,7 @@ int horizon_gx2_stock_sky_draw(HorizonGx2StockSky *sky, uint32_t target,
+    GX2SetVertexShader(shader->vertexShader);
+    GX2SetPixelShader(shader->pixelShader);
+    GX2SetPixelUniformReg(sky->fog, 4, fog);
+-   GX2RSetAttributeBuffer(buffer, 0, sizeof(HorizonSkyVertex), 0);
++   GX2RSetAttributeBuffer(&sky->vertices[target], 0, sizeof(HorizonSkyVertex), 0);
+    GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+@@ -121,19 +118,68 @@ int horizon_gx2_stock_sky_draw(HorizonGx2StockSky *sky, uint32_t target,
+    GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+                       GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ZERO,
+                       GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_ADD);
++}
++
++static void draw_layer(const HorizonGx2StockSky *sky, uint32_t count, uint32_t first,
++                       const float color[4], float sky_end, bool blend)
++{
++   const float settings[4] = {sky_end, blend ? 1.0f : 0.0f, 0, 0};
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, blend ? 1 : 0, FALSE, TRUE);
++   GX2SetPixelUniformReg(sky->color, 4, color);
++   GX2SetPixelUniformReg(sky->settings, 4, settings);
++   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, count, first, 1);
++}
+ 
++static void draw_dark(const HorizonGx2StockSky *sky, const uint32_t counts[3], float sky_end)
++{
+    const float dark[4] = {0, 0, 0, 1};
+-   const float *colors[] = {top, sunrise, dark};
+-   uint32_t first = 0;
+-   for (unsigned i = 0; i < 3; ++i) {
+-      if (counts[i] == 0) continue;
+-      const bool blend = i == 1;
+-      const float settings[4] = {sky_end, blend ? 1.0f : 0.0f, 0, 0};
+-      GX2SetColorControl(GX2_LOGIC_OP_COPY, blend ? 1 : 0, FALSE, TRUE);
+-      GX2SetPixelUniformReg(sky->color, 4, colors[i]);
+-      GX2SetPixelUniformReg(sky->settings, 4, settings);
+-      GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, counts[i], first, 1);
+-      first += counts[i];
++   draw_layer(sky, counts[2], counts[0] + counts[1], dark, sky_end, false);
++}
++
++static int draw_background(HorizonGx2StockSky *sky, uint32_t target,
++                           const uint32_t rect[4], const HorizonSkyVertex *vertices,
++                           const uint32_t counts[3], const float fog[4], float sky_end,
++                           const float top[4], const float sunrise[4], bool include_dark)
++{
++   if (!valid_target(sky, target, rect, counts, fog) || !vertices || !top || !sunrise)
++      return -1;
++   GX2RBuffer *buffer = &sky->vertices[target];
++   void *mapped = GX2RLockBufferEx(buffer, 0);
++   if (!mapped) return -2;
++   memcpy(mapped, vertices, (counts[0] + counts[1] + counts[2]) * sizeof(*vertices));
++   GX2RUnlockBufferEx(buffer, 0);
++
++   bind_sky(sky, target, rect, fog);
++   draw_layer(sky, counts[0], 0, top, sky_end, false);
++   if (counts[1]) draw_layer(sky, counts[1], counts[0], sunrise, sky_end, true);
++   if (include_dark && counts[2]) draw_dark(sky, counts, sky_end);
++   return 0;
++}
++
++int horizon_gx2_stock_sky_draw(HorizonGx2StockSky *sky, uint32_t target,
++                              const uint32_t rect[4], const HorizonSkyVertex *vertices,
++                              const uint32_t counts[3], const float fog[4], float sky_end,
++                              const float top[4], const float sunrise[4])
++{
++   return draw_background(sky, target, rect, vertices, counts, fog, sky_end, top, sunrise, true);
++}
++
++int horizon_gx2_stock_sky_draw_base(HorizonGx2StockSky *sky, uint32_t target,
++                                   const uint32_t rect[4], const HorizonSkyVertex *vertices,
++                                   const uint32_t counts[3], const float fog[4], float sky_end,
++                                   const float top[4], const float sunrise[4])
++{
++   return draw_background(sky, target, rect, vertices, counts, fog, sky_end, top, sunrise, false);
++}
++
++int horizon_gx2_stock_sky_draw_dark(HorizonGx2StockSky *sky, uint32_t target,
++                                   const uint32_t rect[4], const uint32_t counts[3],
++                                   const float fog[4], float sky_end)
++{
++   if (!valid_target(sky, target, rect, counts, fog)) return -1;
++   if (counts[2]) {
++      bind_sky(sky, target, rect, fog);
++      draw_dark(sky, counts, sky_end);
+    }
+    return 0;
+ }
+diff --git a/wiiu/loading_host/stock_sky.h b/wiiu/loading_host/stock_sky.h
+index 2083961b7cc714395831c05d1d4b3be559873551..7b84ee5cb938fbf84c5f1b08d19273221f402557 100644
+--- a/wiiu/loading_host/stock_sky.h
++++ b/wiiu/loading_host/stock_sky.h
+@@ -16,5 +16,13 @@ int horizon_gx2_stock_sky_draw(HorizonGx2StockSky *sky, uint32_t target,
+                               const uint32_t rect[4], const HorizonSkyVertex *vertices,
+                               const uint32_t counts[3], const float fog[4], float sky_end,
+                               const float top[4], const float sunrise[4]);
++int horizon_gx2_stock_sky_draw_base(HorizonGx2StockSky *sky, uint32_t target,
++                                   const uint32_t rect[4], const HorizonSkyVertex *vertices,
++                                   const uint32_t counts[3], const float fog[4], float sky_end,
++                                   const float top[4], const float sunrise[4]);
++/* Draw the final disc from the buffer previously uploaded by draw_base. */
++int horizon_gx2_stock_sky_draw_dark(HorizonGx2StockSky *sky, uint32_t target,
++                                   const uint32_t rect[4], const uint32_t counts[3],
++                                   const float fog[4], float sky_end);
+ 
+ #endif
+diff --git a/wiiu/loading_host/stock_sky.rs b/wiiu/loading_host/stock_sky.rs
+index 0497495c4aaa725e6ade7eeecb44a065fde16fd4..5ddd9bf5ad7b6da6ff900df16573eb2f37f40a53 100644
+--- a/wiiu/loading_host/stock_sky.rs
++++ b/wiiu/loading_host/stock_sky.rs
+@@ -1,4 +1,6 @@
++use crate::sky_bodies::{SkyBodies, stock_bodies};
+ use horizon_client::gfx::{Frame, SkyVertex, fog_uniform, stock_sky_mesh};
++use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+ unsafe extern "C" {
+@@ -15,10 +17,32 @@ unsafe extern "C" {
+         top: *const f32,
+         sunrise: *const f32,
+     ) -> i32;
++    fn horizon_gx2_stock_sky_draw_base(
++        sky: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        vertices: *const SkyVertex,
++        counts: *const u32,
++        fog: *const f32,
++        sky_end: f32,
++        top: *const f32,
++        sunrise: *const f32,
++    ) -> i32;
++    fn horizon_gx2_stock_sky_draw_dark(
++        sky: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        counts: *const u32,
++        fog: *const f32,
++        sky_end: f32,
++    ) -> i32;
+ }
+ 
+ #[derive(Default)]
+-pub(crate) struct Sky(Option<NonNull<c_void>>);
++pub(crate) struct Sky {
++    native: Option<NonNull<c_void>>,
++    bodies: SkyBodies,
++}
+ 
+ impl Sky {
+     pub(crate) fn draw(
+@@ -27,11 +51,12 @@ impl Sky {
+         target: u32,
+         rect: [u32; 4],
+         aspect: f32,
++        atlas: Option<&HorizonPresenter<'_>>,
+     ) -> Result<(), &'static str> {
+         let Some(mesh) = stock_sky_mesh(frame, aspect) else {
+             return Ok(());
+         };
+-        let native = match self.0 {
++        let native = match self.native {
+             Some(native) => native,
+             None => {
+                 let mut native = std::ptr::null_mut();
+@@ -39,7 +64,7 @@ impl Sky {
+                     return Err("could not create the GX2 stock sky pipeline");
+                 }
+                 let native = NonNull::new(native).ok_or("missing GX2 stock sky pipeline")?;
+-                self.0 = Some(native);
++                self.native = Some(native);
+                 native
+             }
+         };
+@@ -48,8 +73,14 @@ impl Sky {
+         let [r, g, b] = frame.sky.sky_color;
+         // WHBGfxFinishRender retires both outputs every frame. Each output
+         // owns its vertex storage, and GX2 copies the temporary data here.
++        let atlas = atlas.filter(|_| !frame.end_sky && stock_bodies(frame.celestial));
++        let draw_sky = if atlas.is_some() {
++            horizon_gx2_stock_sky_draw_base
++        } else {
++            horizon_gx2_stock_sky_draw
++        };
+         let result = unsafe {
+-            horizon_gx2_stock_sky_draw(
++            draw_sky(
+                 native.as_ptr(),
+                 target,
+                 rect.as_ptr(),
+@@ -61,17 +92,33 @@ impl Sky {
+                 frame.sky.sunrise_color.as_ptr(),
+             )
+         };
+-        if result == 0 {
+-            Ok(())
+-        } else {
+-            Err("GX2 stock sky draw failed")
++        if result != 0 {
++            return Err("GX2 stock sky draw failed");
++        }
++        if let Some(atlas) = atlas {
++            self.bodies.draw(frame, atlas, target, rect, aspect)?;
++            if mesh.counts[2] != 0
++                && unsafe {
++                    horizon_gx2_stock_sky_draw_dark(
++                        native.as_ptr(),
++                        target,
++                        rect.as_ptr(),
++                        mesh.counts.as_ptr(),
++                        fog_color.as_ptr(),
++                        sky_end,
++                    )
++                } != 0
++            {
++                return Err("GX2 dark sky disc draw failed");
++            }
+         }
++        Ok(())
+     }
+ }
+ 
+ impl Drop for Sky {
+     fn drop(&mut self) {
+-        if let Some(native) = self.0.take() {
++        if let Some(native) = self.native.take() {
+             unsafe { horizon_gx2_stock_sky_destroy(native.as_ptr()) };
+         }
+     }
