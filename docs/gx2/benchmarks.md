@@ -143,6 +143,16 @@ workload. Keep captures from consecutive game sessions separate when the
 sequence resets. A correlation labels the measured pipeline span as
 unqualified for automatic resolution.
 
+Pass an archived UWP Serial COM Monitor segment or its capture directory
+with `--gpu-serial-capture`. Select the inclusive serial event sequence range
+for the matching hosted session when the serial capture covers multiple
+launches. The `seq` numbers come from the serial JSONL events. The decoder
+reassembles their byte chunks before matching the HZP3 frame sequence.
+
+```powershell
+python tools/gx2_profile.py $capture --gpu-serial-capture $serialDirectory --serial-first-seq $first --serial-last-seq $last
+```
+
 The [hosted RC 29 validation](rc29-validation.md) saved an HZP3 capture
 with both displays rendering at 75% in forced-interpreter Cemu. Its 17
 retained playing presentations all reported the scaled world dimensions

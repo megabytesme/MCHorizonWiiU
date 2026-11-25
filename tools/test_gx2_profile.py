@@ -1,4 +1,8 @@
+import base64
+import json
+from pathlib import Path
 import struct
+from tempfile import TemporaryDirectory
 import unittest
 
 import gx2_profile as profile
@@ -48,6 +52,14 @@ def gpu_capture():
     count = len(rows)
     header = profile.HEADER.pack(0x485A5033, 3, 1000, profile.V3_ROW.size, 4096, count, count)
     return profile.read(header + b"".join(rows))[1]
+
+
+def uwp_event(sequence, payload=None):
+    event = {"seq": sequence, "time": "2026-11-24T20:20:01Z", "port": "COM3",
+             "kind": "capture_start" if payload is None else "rx"}
+    if payload is not None:
+        event["bytes"] = base64.b64encode(payload).decode("ascii")
+    return json.dumps(event) + "\n"
 
 
 class ProfileTests(unittest.TestCase):
@@ -152,6 +164,45 @@ class ProfileTests(unittest.TestCase):
         different = gpu_serial(0, [100, 120, 130, 150])
         with self.assertRaisesRegex(ValueError, "conflicting GPU serial records"):
             profile.correlate_gpu_spans(frames, [first, different], 0, 1)
+
+    def test_uwp_serial_capture_restores_split_lines_across_segments(self):
+        trace = gpu_serial(0, [27, 108_027, 81_027, 162_027]).replace("\n", "\r\n").encode()
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            marker = b"Horizon Wii U startup: Cafe Game handoff begin\r"
+            first = marker + b"\x1b[36m" + trace[:19]
+            (root / "serial-00000001.jsonl").write_text(uwp_event(1) + uwp_event(2, first), encoding="utf-8")
+            (root / "serial-00000002.jsonl").write_text(uwp_event(3, trace[19:]), encoding="utf-8")
+            lines = profile.one_uwp_game_session(profile.uwp_serial_lines(root))
+            report = profile.correlate_gpu_spans(gpu_capture(), lines, 0, 1)
+        self.assertEqual(report["matched_samples"], 1)
+        self.assertEqual(report["samples"][0]["tv_span_ms"], 4.0)
+
+    def test_uwp_serial_capture_rejects_two_games_and_accepts_a_bounded_run(self):
+        start = b"Horizon Wii U startup: Cafe Game handoff begin\r"
+        previous = gpu_serial(0, [100, 120, 130, 150]).encode()
+        next_game = gpu_serial(0, [27, 108_027, 81_027, 162_027]).encode()
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "serial-00000001.jsonl"
+            path.write_text(
+                uwp_event(10, start + previous + b"hosted save barrier completed\rpartial")
+                + uwp_event(11, b" message\r" + start + next_game)
+                + uwp_event(12, b"hosted save barrier completed\r"),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "more than one game session"):
+                list(profile.one_uwp_game_session(profile.uwp_serial_lines(path)))
+            lines = list(profile.one_uwp_game_session(profile.uwp_serial_lines(path, 11, 12)))
+        self.assertEqual(lines[0], start.decode().rstrip())
+        report = profile.correlate_gpu_spans(gpu_capture(), lines, 0, 1)
+        self.assertEqual(report["matched_samples"], 1)
+        self.assertEqual(report["samples"][0]["tv_span_ms"], 4.0)
+
+    def test_plain_serial_reader_rejects_raw_uwp_jsonl(self):
+        with self.assertRaisesRegex(ValueError, "requires --gpu-serial-capture"):
+            list(profile.plain_serial_lines([uwp_event(1)]))
+        lines = ["[11:22:33.456] [OSConsole] Horizon GX2 capture enabled\n", '{"phase":"menu"}\n']
+        self.assertEqual(list(profile.plain_serial_lines(lines)), lines)
 
     def test_rejects_a_truncated_capture_or_inconsistent_sequence(self):
         with self.assertRaisesRegex(ValueError, "length"):

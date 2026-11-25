@@ -2,6 +2,7 @@
 """Summarize a hosted Cafe HZP capture or export its samples as CSV."""
 
 import argparse
+import base64
 import csv
 import json
 import math
@@ -53,6 +54,8 @@ GPU_ENDPOINTS = re.compile(
     r"Horizon GX2 GPU endpoints seq=(\d+) tv=([0-9a-fA-F]{16})/([0-9a-fA-F]{16})"
     r" drc=([0-9a-fA-F]{16})/([0-9a-fA-F]{16})\b"
 )
+SERIAL_DELIMITER = re.compile(rb"\r\n|\r|\n")
+SERIAL_ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def read(data):
@@ -189,6 +192,101 @@ def _remember_gpu_record(records, sequence, record):
         raise ValueError(f"conflicting GPU serial records at HZP sequence {sequence}")
 
 
+def _is_uwp_event(event):
+    return (isinstance(event, dict) and type(event.get("seq")) is int
+            and isinstance(event.get("kind"), str) and "time" in event and "port" in event)
+
+
+def plain_serial_lines(source):
+    for line in source:
+        candidate = line.lstrip("\ufeff \t")
+        if candidate.startswith("{"):
+            try:
+                event = json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if _is_uwp_event(event):
+                    raise ValueError("UWP capture JSONL requires --gpu-serial-capture")
+        yield line
+
+
+def _uwp_rx_chunks(path, last):
+    segments = sorted(path.glob("serial-*.jsonl")) if path.is_dir() else [path]
+    if not segments:
+        raise ValueError("UWP capture directory contains no serial segments")
+    previous = None
+    for segment in segments:
+        with segment.open(encoding="utf-8-sig") as source:
+            for number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                    if not _is_uwp_event(event):
+                        raise ValueError("expected a UWP serial event")
+                    sequence = event["seq"]
+                    if previous is not None and sequence <= previous:
+                        raise ValueError("serial event sequences must increase across segments")
+                    if last is not None and sequence > last:
+                        return
+                    previous = sequence
+                    if event["kind"] == "rx":
+                        yield sequence, base64.b64decode(event["bytes"], validate=True)
+                except (ValueError, KeyError, TypeError) as error:
+                    raise ValueError(f"invalid UWP serial event in {segment.name}:{number}: {error}") from error
+
+
+def uwp_serial_lines(path, first=None, last=None):
+    pending = b""
+    drop_prefix = False
+    emitted = False
+    for sequence, payload in _uwp_rx_chunks(path, last):
+        if first is not None and sequence < first:
+            if payload:
+                drop_prefix = not payload.endswith((b"\r", b"\n"))
+            continue
+        complete = SERIAL_DELIMITER.split(pending + payload)
+        pending = complete.pop()
+        if complete and drop_prefix:
+            # The first line started in an RX event before the chosen boundary.
+            complete = complete[1:]
+            drop_prefix = False
+        for raw in complete:
+            line = SERIAL_ANSI.sub(b"", raw).decode("utf-8", errors="replace")
+            if line:
+                emitted = True
+                yield line
+    if not emitted:
+        raise ValueError("no complete UWP serial lines in the selected event range")
+
+
+def one_uwp_game_session(lines):
+    seen_session = False
+    active_session = False
+    last_span = None
+    error = ("UWP serial range spans more than one game session. Select one session using "
+             "--serial-first-seq and --serial-last-seq")
+    for line in lines:
+        if ("Horizon GX2 capture enabled," in line or "Horizon pregame: frame.loading" in line
+                or "hosted save barrier completed" in line):
+            active_session = False
+        span = GPU_SPAN.search(line)
+        if (span or GPU_ENDPOINTS.search(line)
+                or "Horizon Wii U startup: Cafe Game handoff begin" in line
+                or "Horizon Cafe first original Game frame begin" in line):
+            if not active_session:
+                if seen_session:
+                    raise ValueError(error)
+                seen_session = active_session = True
+        if span:
+            sequence = int(span[2])
+            if last_span is not None and sequence < last_span:
+                raise ValueError(error)
+            last_span = sequence
+        yield line
+
+
 def correlate_gpu_spans(frames, serial_lines, start, end):
     """Join a same-run serial log to its HZP3 frame sequence."""
     spans, endpoints = {}, {}
@@ -277,21 +375,34 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--csv", type=Path, help="write all retained rows")
-    parser.add_argument("--gpu-serial", type=Path, help="join GX2 timer messages from the same HZP3 run")
+    serial = parser.add_mutually_exclusive_group()
+    serial.add_argument("--gpu-serial", type=Path, help="join plain serial text from the same HZP3 run")
+    serial.add_argument("--gpu-serial-capture", type=Path, help="join a UWP COM Monitor segment or capture directory")
+    parser.add_argument("--serial-first-seq", type=int, help="first UWP serial event in the selected run, inclusive")
+    parser.add_argument("--serial-last-seq", type=int, help="last UWP serial event in the selected run, inclusive")
     parser.add_argument("--start", type=float, default=0, help="start in seconds after capture activation")
     parser.add_argument("--end", type=float, default=math.inf, help="end in seconds after capture activation")
     parser.add_argument("--stall-ms", type=float, default=50, help="pacing stall threshold")
     args = parser.parse_args()
     if not (0 <= args.start < args.end and 0 < args.stall_ms < math.inf):
         parser.error("invalid interval or stall threshold")
+    first, last = args.serial_first_seq, args.serial_last_seq
+    if first is not None or last is not None:
+        if args.gpu_serial_capture is None or first is None or last is None or not 1 <= first <= last:
+            parser.error("use both serial sequence bounds with --gpu-serial-capture, in increasing order")
     try:
         metadata, frames = read(args.capture.read_bytes())
         report = {**metadata, "phases": summarize(frames, args.start, args.end, args.stall_ms)}
+        if (args.gpu_serial is not None or args.gpu_serial_capture is not None) and metadata["version"] != 3:
+            raise ValueError("GPU serial correlation requires HZP3")
         if args.gpu_serial is not None:
-            if metadata["version"] != 3:
-                raise ValueError("GPU serial correlation requires HZP3")
             with args.gpu_serial.open(encoding="utf-8", errors="replace") as serial:
-                report["gx2_gpu_correlation"] = correlate_gpu_spans(frames, serial, args.start, args.end)
+                report["gx2_gpu_correlation"] = correlate_gpu_spans(
+                    frames, plain_serial_lines(serial), args.start, args.end,
+                )
+        elif args.gpu_serial_capture is not None:
+            lines = one_uwp_game_session(uwp_serial_lines(args.gpu_serial_capture, first, last))
+            report["gx2_gpu_correlation"] = correlate_gpu_spans(frames, lines, args.start, args.end)
         if args.csv is not None and frames:
             with args.csv.open("w", encoding="utf-8", newline="") as target:
                 writer = csv.DictWriter(target, fieldnames=frames[0].keys())
