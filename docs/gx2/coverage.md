@@ -36,6 +36,21 @@ Baseline port `cf2ac8cbbad809a878e59aa4b20288a551294283`, hosted tree
 `build-hosted` staging tree. The corresponding port files and older
 [checkpoint](../../wiiu/RENDERER_CHECKPOINT.md) can differ from the hosted inputs.
 
+## Repeated GamePad frame controls
+
+A contained HUD test rendered one direct pair and then seven more without
+guest render-surface copy or readback. Native RPX `1142d1006b86…` kept the
+same expected RGB at the TV and GamePad sample coordinates in forced-
+interpreter Cemu with both Vulkan and OpenGL. Repeating the guest-readback
+fixture reproduced additive accumulation on the GamePad even in the
+original direct path, in both backends.
+
+The archived three-object border geometry was also tested with the
+readback removed. RPX `a8d77e9a8e1e…` passed 40 external scanout RGB checks
+across Vulkan and OpenGL. All eight checks at the previously stale GamePad
+positions passed. These stills cover RGB scanout. Guest readback is part of
+the reproducing controls. Hosted and physical border coverage is still open.
+
 ## RC 17 corrections to the historical matrix
 
 The physical reference is RC 17, assembled tree

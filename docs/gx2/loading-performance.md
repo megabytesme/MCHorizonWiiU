@@ -83,6 +83,13 @@ ZIP and indexed packs. It avoids the repeated directory walks even when
 the archive serves all file reads. No prepared-format change or persistent
 cache is required.
 
+On Ben-Desktop, six calls through the actual resource listing API returned
+identical matches from a private prepared tree. The broad searches listed
+69,624 paths. Across 25 warm runs, median host time fell from 334.956 ms
+to 0.171 ms. The p95 fell from 359.085 ms to 0.204 ms. These are host
+folder-enumeration costs and exclude atlas construction, worldgen and
+the interaction with CafeOS SD I/O.
+
 The new pack child timings identify any remaining bottleneck within
 assembly. A previous stage's full wall time includes work that still has
 to happen. For example, eliminating 67.17 s from a 235.46 s existing-world

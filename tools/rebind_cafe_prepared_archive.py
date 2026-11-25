@@ -164,12 +164,14 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--output", type=Path, help="create a separately bound archive")
     mode.add_argument("--check", action="store_true", help="verify an archive without modifying it")
-    parser.add_argument("--guest-root", default=DEFAULT_ROOT)
+    parser.add_argument("--guest-root", help="exact Cafe resource path of the intended deployment")
     parser.add_argument("--archive", type=Path, help="check this archive instead of the preparation's default")
     parser.add_argument("--recipe", type=Path, help="check compatibility with this hosted source recipe")
     parser.add_argument("--sha256", help="check the archive against a previously verified copy")
     parser.add_argument("--payload-from", type=Path, help="check that rebinding preserved an original archive's contents")
     args = parser.parse_args()
+    if args.check and not args.guest_root:
+        parser.error("--check requires the intended deployment path in --guest-root")
     if not args.check and any((args.archive, args.recipe, args.sha256, args.payload_from)):
         parser.error("--archive, --recipe, --sha256 and --payload-from require --check")
     try:
@@ -180,7 +182,7 @@ def main():
             )
             print(json.dumps(result, indent=2))
         else:
-            rebind(args.preparation, args.output, args.guest_root)
+            rebind(args.preparation, args.output, args.guest_root or DEFAULT_ROOT)
             with args.output.open("rb") as archive:
                 print(file_digest(archive, "sha256").hexdigest())
     except (OSError, ValueError, struct.error) as error:

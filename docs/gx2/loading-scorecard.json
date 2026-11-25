@@ -324,5 +324,19 @@
       }
     ]
   },
-  "candidate_measurements": []
+  "candidate_measurements": [],
+  "host_microbenchmarks": [
+    {
+      "id": "polytone_scoped_directory_queries",
+      "execution": "Ben-Desktop, WSL x86-64, debug horizon-assets example",
+      "workload": "Six exact ResourceSource lookups against the private prepared Horizon 26.3 tree",
+      "iterations": 25,
+      "broad_paths_listed": 69624,
+      "matches_equal": true,
+      "broad_median_ms": 334.956,
+      "scoped_median_ms": 0.171,
+      "broad_p95_ms": 359.085,
+      "scoped_p95_ms": 0.204
+    }
+  ]
 }

@@ -99,8 +99,14 @@ markers leave the fixed camera and stock distances intact.
 Host tests cover transient fallback, display resizing, missing metadata
 and insufficient coverage. The packaged RC 30 displayed the diagnostic
 on the last page of Night's benchmark menu and accepted its selection in
-Cemu. The timed run and physical checks are pending. Automatic resolution
-remains inactive. Village keeps its original route and acceptance rules.
+Cemu. The same RC 30 RPX reached paired terrain in a later run with the
+correctly bound archive. The fresh world had 11 resident columns at the
+600-second spawn-readiness deadline, below the original gate of 90.
+The run was cancelled, completed the save barrier, restored Night with
+234,880,920 GX2 heap bytes free and left the report list empty. The RC 32
+host harness passed all 33 benchmark and control tests. Timed gameplay
+on the console remains pending. Village keeps its original route and
+acceptance rules.
 
 ## Capture format and interpretation
 

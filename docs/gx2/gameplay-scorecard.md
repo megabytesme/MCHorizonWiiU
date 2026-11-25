@@ -129,9 +129,10 @@ Wii U Menu.
 
 The recorder reported 8,192 bytes of section-list payload, 12,032 bytes
 per fixed-output list and 66,048 bytes of reserved command-list memory.
-Section lists recover the one-time CPU construction after approximately
-eight paired frames in this fixture. Fixed frame lists take approximately
-two pairs. The latter rely on immutable output-specific uniform and draw
+Summing TV and GamePad CPU build ticks within each physical pair gives
+medians of 38.186 µs direct, 24.334 µs with section lists, and 0.274 µs
+with fixed frame lists. The one-time record cost breaks even on the ninth
+whole pair for section lists and the second pair for fixed frame lists. The latter rely on immutable output-specific uniform and draw
 commands. Real hosted terrain changes projection, residency and translucent
 sort order. A simple scaling of the section-list saving to 294 draws per
 display is about 64 µs per pair, roughly 0.05% of the stock interval. This
