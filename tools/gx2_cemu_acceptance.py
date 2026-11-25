@@ -26,6 +26,8 @@ GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
 DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
 HEALTH_TAG = b"\x05\x00\x06Health"
 GROUND_TAG = b"\x01\x00\x08OnGround"
+MENU_PHASE = r'"phase":"menu"|Horizon Cafe cadence: .*\bphase=menu\b'
+GAMEPLAY_PHASE = r'"phase":"gameplay"|Horizon Cafe cadence: .*\bphase=gameplay\b'
 
 
 def timestamp():
@@ -181,7 +183,7 @@ def configure_fixture_controls(root, respawn=False):
 
 def respawn_fixture(lab, start, hold):
     lab.phase = "wait-for-death"
-    lab.wait(r'"phase":"menu"', 240, start)
+    lab.wait(MENU_PHASE, 240, start)
     lab.show("after-fall")
     time.sleep(2)  # The death screen intentionally ignores immediate input.
     lab.phase = "respawn"
@@ -190,25 +192,25 @@ def respawn_fixture(lab, start, hold):
     lab.show("death-focused")
     lab.send("key", key=90, hold=hold)
     try:
-        lab.wait(r'"phase":"gameplay"', 85, offset)
+        lab.wait(GAMEPLAY_PHASE, 85, offset)
     except TimeoutError:
         lab.show("confirm-retry-state")
         lab.send("key", key=90, hold=hold)
-        lab.wait(r'"phase":"gameplay"', 85, offset)
+        lab.wait(GAMEPLAY_PHASE, 85, offset)
     lab.show("respawned")
 
     lab.phase = "inventory"
     offset = lab.mark()
     lab.send("key", key=73, hold=hold)
     try:
-        lab.wait(r'"phase":"menu"', 45, offset)
+        lab.wait(MENU_PHASE, 45, offset)
     except TimeoutError:
         lab.record("inventory-missing")
         return False
     lab.show("inventory")
     offset = lab.mark()
     lab.send("key", key=80, hold=hold)
-    lab.wait(r'"phase":"gameplay"', 45, offset)
+    lab.wait(GAMEPLAY_PHASE, 45, offset)
     lab.record("inventory-closed")
     return True
 
@@ -298,7 +300,7 @@ def exercise(args):
             lab.phase = f"session-{index}-save"
             pause = lab.mark()
             lab.send("key", key=80, hold=game_hold)
-            lab.wait(r'"phase":"menu"|Horizon Cafe cadence: .*\bphase=menu\b', 25, pause)
+            lab.wait(MENU_PHASE, 25, pause)
             lab.show(f"session-{index}-pause")
             save = lab.mark()
             deadline = time.monotonic() + args.save_timeout
