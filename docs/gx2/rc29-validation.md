@@ -200,6 +200,26 @@ the GX2 backend, stock seed `1234`, distances 6/5, both world target sizes,
 and eligible frame-time p50 of 236.0 ms and p95 of 347.5 ms. The measured
 terrain gaps limit comparisons against runs with steadier coverage.
 
+### Terrain-uniform comparison
+
+The same RC 29 executable ran modes `4` and `45` on the test fixture at
+50%. Both modes retained the GPU endpoint probe. The saved player position
+matched exactly. The camera changed just before the baseline run exited,
+so the 30-second windows differ in visible terrain. The `45` run saved,
+recovered the GX2 heap, wrote a gameplay checkpoint, and returned to the
+Wii U Menu. The card was restored to mode `4` after exporting its captures.
+
+| Uniforms | Wall time | Terrain sections per output | Paired submissions/s | CPU submission outside measured waits |
+| --- | ---: | ---: | ---: | ---: |
+| Batched | 30.69 s | 294 | 9.78 | 39.64 ms |
+| Legacy | 30.93 s | 275 | 9.96 | 37.19 ms |
+
+One 2.08-second batched window after the camera change drew 275 sections
+and reported 35.22 ms of submission CPU time. The short matched interval
+and the coverage difference in the longer windows leave the measured
+uniform optimisation effect inconclusive. The binding and attribute
+experiments still need their own matched runs.
+
 ## Console procedure
 
 Perform this queue with the owner present. Stage the approved hosted package
