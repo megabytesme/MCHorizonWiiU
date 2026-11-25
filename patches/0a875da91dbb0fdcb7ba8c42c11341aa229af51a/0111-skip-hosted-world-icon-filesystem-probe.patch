@@ -1,0 +1,17 @@
+diff --git a/crates/horizon-client/src/game/world/saving.rs b/crates/horizon-client/src/game/world/saving.rs
+--- a/crates/horizon-client/src/game/world/saving.rs
++++ b/crates/horizon-client/src/game/world/saving.rs
+@@ -320,8 +320,11 @@
+     /// saved icon is on the screen, grab the rendered frame once a second until
+     /// the save has one. The Select World list shows it as the world's preview.
+     pub(super) fn tick_world_icon(&mut self) {
+-        // Its grab would take a sequence's frame.
+-        if self.screenshot_sequence.is_some() {
++        // Only the desktop renderer takes automatic world icons. On Cafe,
++        // checking a missing icon before this guard would issue FSStat on
++        // every frame, with no capture to start the one-second throttle.
++        // A sequence already owns the desktop screenshot for its frame.
++        if self.renderer.is_none() || self.screenshot_sequence.is_some() {
+             return;
+         }
+         let Some(icon) = self.world_icon.as_ref() else {

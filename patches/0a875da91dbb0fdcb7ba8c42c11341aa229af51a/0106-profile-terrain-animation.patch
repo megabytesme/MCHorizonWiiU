@@ -1,0 +1,270 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index ff15f139a73a660781baf8b2a1216020ff88c50b..093828331d77b21dbacd46df4e1e45fcb740073b 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -4,6 +4,7 @@
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
++#include <coreinit/time.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
+ #include <gx2/mem.h>
+@@ -244,6 +245,13 @@ int horizon_gx2_terrain_set_sprite_grid(HorizonGx2Terrain *t,
+ 
+ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *t, HorizonTerrainFillTexture fill,
+                                     void *context, const uint32_t (*rects)[4], size_t count)
++{
++   return horizon_gx2_terrain_patch_atlas_profiled(t, fill, context, rects, count, NULL);
++}
++
++int horizon_gx2_terrain_patch_atlas_profiled(HorizonGx2Terrain *t, HorizonTerrainFillTexture fill,
++                                             void *context, const uint32_t (*rects)[4],
++                                             size_t count, uint64_t phases[3])
+ {
+    if (!t || !fill || (count && !rects)) return -1;
+    if (!count) return 0;
+@@ -257,7 +265,9 @@ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *t, HorizonTerrainFillText
+           rect[2] > s->width - rect[0] || rect[3] > s->height - rect[1]) return -1;
+    }
+ 
++   const uint64_t fill_start = phases ? (uint64_t)OSGetSystemTime() : 0;
+    int result = fill(context, t->atlas_storage, s->pitch);
++   const uint64_t cache_start = phases ? (uint64_t)OSGetSystemTime() : 0;
+    // Flush only cache lines touched by these cells. A barrier makes all
+    // stores visible before issuing the texture-cache invalidation.
+    const uintptr_t cache_mask = 31;
+@@ -272,7 +282,13 @@ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *t, HorizonTerrainFillText
+       }
+    }
+    OSMemoryBarrier();
++   const uint64_t invalidate_start = phases ? (uint64_t)OSGetSystemTime() : 0;
+    GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->atlas_storage, s->imageSize);
++   if (phases) {
++      phases[0] = cache_start - fill_start;
++      phases[1] = invalidate_start - cache_start;
++      phases[2] = (uint64_t)OSGetSystemTime() - invalidate_start;
++   }
+    return result;
+ }
+ 
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 171f820ccc82fa5c05327f4894a93eb9dd4b1014..f8b9d1268e81304f3faeb77c348549528abd2f70 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -48,6 +48,12 @@ int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section
+ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *terrain,
+                                     HorizonTerrainFillTexture fill, void *context,
+                                     const uint32_t (*rects)[4], size_t count);
++/* Optional CPU wall time in OS ticks: callback, cache writeback/barrier,
++ * and the call that queues native texture invalidation. */
++int horizon_gx2_terrain_patch_atlas_profiled(HorizonGx2Terrain *terrain,
++                                             HorizonTerrainFillTexture fill,
++                                             void *context, const uint32_t (*rects)[4],
++                                             size_t count, uint64_t phases[3]);
+ /* Upload before drawing a new frame, after the preceding WHB finish. */
+ int horizon_gx2_terrain_lightmap(HorizonGx2Terrain *terrain, const uint8_t rgba[16 * 16 * 4]);
+ void horizon_gx2_terrain_bind_lightmap(const HorizonGx2Terrain *terrain, uint32_t slot);
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index cdcff1e660d98d5ef19596976ca63f3d12105492..43f111996ca8a194e03dd6e4a06210a4660a02ba 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -30,7 +30,9 @@ enum {
+    SWAP_DELTA,
+    FLIP_DELTA,
+    FLIP_INTERVAL_TICKS,
+-   TV_WIDTH = 10,
++   TV_SECTIONS_DRAWN = 8,
++   DRC_SECTIONS_DRAWN,
++   TV_WIDTH,
+ };
+ #define PROFILE_VOLUME "/vol/external01"
+ #define ROOT PROFILE_VOLUME "/wiiu/apps/HorizonWiiU/"
+@@ -75,7 +77,19 @@ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+-static bool legacy_terrain_uniforms, shared_hud_upload;
++static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
++
++typedef struct {
++   uint64_t phases[3];
++   uint32_t cells, bytes, stores;
++} TerrainAnimationSample;
++
++static TerrainAnimationSample animation_sample;
++static struct {
++   uint64_t begin;
++   uint32_t first, pairs, updates;
++   TerrainAnimationSample sum;
++} animation_window;
+ static struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+@@ -103,6 +117,7 @@ void horizon_gx2_profile_init(void)
+    const int variant = gpu_cycle_probe ? fgetc(marker) : EOF;
+    legacy_terrain_uniforms = mode == '5' || variant == '5';
+    shared_hud_upload = variant == 'h';
++   profile_terrain_animation = variant == 'a';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -110,6 +125,7 @@ void horizon_gx2_profile_init(void)
+    if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
+    if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
++   if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+ }
+ 
+@@ -237,6 +253,7 @@ bool horizon_gx2_profile_begin(uint32_t phase)
+    if (!atomic_load_explicit(&enabled, memory_order_acquire)) return false;
+    started = (uint64_t)OSGetSystemTime();
+    current = (ProfileFrame){.phase = phase};
++   if (profile_terrain_animation) animation_sample = (TerrainAnimationSample){0};
+    recording = true;
+    return true;
+ }
+@@ -332,6 +349,57 @@ void horizon_gx2_profile_sorted_index_bytes(uint32_t bytes)
+    current.world_counters[7] = sum < bytes ? UINT32_MAX : sum;
+ }
+ 
++bool horizon_gx2_profile_terrain_animation_enabled(void)
++{
++   return profile_terrain_animation && recording && current.phase == PLAYING_PHASE;
++}
++
++void horizon_gx2_profile_terrain_animation(const uint64_t phases[3], uint32_t cells,
++                                           uint32_t bytes, uint32_t stores)
++{
++   animation_sample = (TerrainAnimationSample){
++      {phases[0], phases[1], phases[2]}, cells, bytes, stores
++   };
++}
++
++static void report_animation_window(uint64_t now)
++{
++   if (current.phase != PLAYING_PHASE || current.stages[SCREENSHOT_STAGE] ||
++       !current.extra_counters[TV_SUBMISSIONS] || !current.extra_counters[DRC_SUBMISSIONS] ||
++       !current.extra_counters[TV_SECTIONS_DRAWN] || !current.extra_counters[DRC_SECTIONS_DRAWN]) {
++      memset(&animation_window, 0, sizeof(animation_window));
++      return;
++   }
++   if (!animation_window.pairs) {
++      animation_window.begin = started;
++      animation_window.first = current.sequence;
++   }
++   ++animation_window.pairs;
++   animation_window.updates += animation_sample.cells != 0;
++   TerrainAnimationSample *sum = &animation_window.sum;
++   for (unsigned phase = 0; phase < 3; ++phase)
++      sum->phases[phase] += animation_sample.phases[phase];
++   sum->cells += animation_sample.cells;
++   sum->bytes += animation_sample.bytes;
++   sum->stores += animation_sample.stores;
++   const uint64_t elapsed = now - animation_window.begin;
++   if (elapsed < (uint64_t)OSMillisecondsToTicks(2000)) return;
++   OSReport("Horizon GX2 terrain animation: first_seq=%u last_seq=%u wall_ticks=%llu hz=%u "
++            "pairs=%u updates=%u cells=%u bytes=%u store_calls=%u\n",
++            animation_window.first, current.sequence, (unsigned long long)elapsed,
++            OSTimerClockSpeed, animation_window.pairs, animation_window.updates,
++            sum->cells, sum->bytes, sum->stores);
++   OSReport("Horizon GX2 terrain animation spans: last_seq=%u fill_ticks=%llu "
++            "writeback_ticks=%llu invalidate_ticks=%llu\n", current.sequence,
++            (unsigned long long)sum->phases[0], (unsigned long long)sum->phases[1],
++            (unsigned long long)sum->phases[2]);
++   memset(&animation_window, 0, sizeof(animation_window));
++   // The serial write happened after the captured loop. Leave its delay out
++   // of the next start-to-start and flip intervals as with file checkpoints.
++   previous_phase = 0;
++   previous_output.phase = 0;
++}
++
+ void horizon_gx2_profile_finish(void)
+ {
+    if (!recording) return;
+@@ -349,6 +417,7 @@ void horizon_gx2_profile_finish(void)
+          current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
+    ring[total++ % CAPACITY] = current;
+    recording = false;
++   if (profile_terrain_animation) report_animation_window(now);
+ 
+    // One bounded checkpoint per phase survives a forced emulator stop.
+    // Skip the next start-to-start interval so the export I/O is excluded.
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 87260e0ef36564ef5c5153b947bddadc763534cf..611f62dac9e88fc7a5b0005c2f12a3cc5173a713 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -54,6 +54,9 @@ void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4]);
+ void horizon_gx2_profile_world(uint32_t requested, uint32_t effective,
+                                const uint32_t dimensions[4], uint32_t surface_bytes);
+ void horizon_gx2_profile_sorted_index_bytes(uint32_t bytes);
++bool horizon_gx2_profile_terrain_animation_enabled(void);
++void horizon_gx2_profile_terrain_animation(const uint64_t phases[3], uint32_t cells,
++                                           uint32_t bytes, uint32_t stores);
+ void horizon_gx2_profile_finish(void);
+ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
+ void horizon_gx2_profile_checkpoint_session(void);
+diff --git a/wiiu/loading_host/terrain_animation.rs b/wiiu/loading_host/terrain_animation.rs
+index 1d6f893bbf312076afc0b3a92624b013f31a3194..9a4ccee0d9051c2982439223be319f1bf570f081 100644
+--- a/wiiu/loading_host/terrain_animation.rs
++++ b/wiiu/loading_host/terrain_animation.rs
+@@ -8,13 +8,21 @@ use std::{ffi::c_void, ptr::NonNull};
+ const ATLAS_BYTES_PER_UPDATE: usize = 1024 * 1024;
+ 
+ unsafe extern "C" {
+-    fn horizon_gx2_terrain_patch_atlas(
++    fn horizon_gx2_terrain_patch_atlas_profiled(
+         terrain: *mut c_void,
+         fill: unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32,
+         context: *mut c_void,
+         rects: *const [u32; 4],
+         count: usize,
++        phases: *mut [u64; 3],
+     ) -> i32;
++    fn horizon_gx2_profile_terrain_animation_enabled() -> bool;
++    fn horizon_gx2_profile_terrain_animation(
++        phases: *const [u64; 3],
++        cells: u32,
++        bytes: u32,
++        stores: u32,
++    );
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -83,13 +91,16 @@ impl TerrainAnimation {
+             };
+             // The previous WHB FinishRender retired both outputs' atlas reads.
+             // Only the padded cells supplied in rects change during this callback.
++            let trace = unsafe { horizon_gx2_profile_terrain_animation_enabled() };
++            let mut phases = [0; 3];
+             let result = unsafe {
+-                horizon_gx2_terrain_patch_atlas(
++                horizon_gx2_terrain_patch_atlas_profiled(
+                     terrain.as_ptr(),
+                     write_atlas_patch,
+                     std::ptr::from_mut(&mut update).cast(),
+                     self.rects.as_ptr(),
+                     self.rects.len(),
++                    if trace { &mut phases } else { std::ptr::null_mut() },
+                 )
+             };
+             if result != 0 {
+@@ -98,6 +109,17 @@ impl TerrainAnimation {
+                     .unwrap_or("GX2 animated terrain upload failed")
+                     .into());
+             }
++            if trace {
++                let cells = self.rects.len() as u32;
++                unsafe {
++                    horizon_gx2_profile_terrain_animation(
++                        &phases,
++                        cells,
++                        cells * cell_bytes as u32,
++                        cells * layout.cell_size,
++                    );
++                }
++            }
+             for job in &self.jobs {
+                 self.shown[job.animation] = Some(job.blend);
+             }

@@ -1,0 +1,87 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -10349,7 +10349,13 @@
+                             backend.remove_columns(&mut unloaded.into_iter());
+                         }
+                     }
++                    #[cfg(target_os = "cafe")]
++                    use horizon_client_platform::cafe_profile::{Span, Stage};
+                     if self.title.is_none() {
++                        #[cfg(target_os = "cafe")]
++                        let _world_update = cafe_backend
++                            .is_some()
++                            .then(|| Span::new(Stage::WorldUpdate));
+                         horizon_client::spans::time("update_world", || {
+                             self.update_world_inner(
+                                 #[cfg(target_os = "cafe")]
+@@ -10368,7 +10374,11 @@
+                     // Once per frame, whatever `steps` is: `tick` never runs on the title, and a frame with
+                     // no client tick would leave a queued `request_world` waiting. The title draws after this.
+                     self.drain_native_world_request()?;
+-                    self.client_tick_steps(steps, Some(event_loop))?;
++                    {
++                        #[cfg(target_os = "cafe")]
++                        let _tick = cafe_backend.is_some().then(|| Span::new(Stage::Tick));
++                        self.client_tick_steps(steps, Some(event_loop))?;
++                    }
+                     self.extras_frame(elapsed);
+                     self.extras_retry()?;
+                     self.apply_mouse_look();
+diff --git a/crates/horizon-client/src/game/world/world_update.rs b/crates/horizon-client/src/game/world/world_update.rs
+--- a/crates/horizon-client/src/game/world/world_update.rs
++++ b/crates/horizon-client/src/game/world/world_update.rs
+@@ -256,25 +256,34 @@
+             }
+         }
+         self.streaming.upload_backlog = self.pending_uploads.len();
+-        let plan = horizon_client::spans::time("streaming_plan", || {
+-            let mut step = self.streaming.begin_plan_update(&mut self.world);
+-            loop {
+-                match step {
+-                    horizon_client::streaming::PlanStep::Ready(plan) => break plan,
+-                    horizon_client::streaming::PlanStep::Save { chunk, resume } => {
+-                        self.native_late_full_chunk_snapshot(&chunk);
+-                        self.streaming.save_finished(chunk);
+-                        step = self.streaming.resume_plan_update(&mut self.world, resume);
+-                    }
+-                }
+-            }
+-        });
+-        let (commit, protos) = self.streaming.prepare_commit(&mut self.world, plan);
+-        self.native_proto_snapshots(&protos);
+-        self.streaming.submit_protos(protos);
+-        let (uploads, unloaded) = horizon_client::spans::time("streaming", || {
+-            self.streaming.complete_commit(&mut self.world, commit)
+-        });
++        let (uploads, unloaded) = {
++            // This is nested in the hosted redraw's WorldUpdate span.
++            // Headless callers can update a world on another thread.
++            #[cfg(target_os = "cafe")]
++            let _streaming = cafe.is_some().then(|| {
++                use horizon_client_platform::cafe_profile::{Span, Stage};
++                Span::new(Stage::Streaming)
++            });
++            let plan = horizon_client::spans::time("streaming_plan", || {
++                let mut step = self.streaming.begin_plan_update(&mut self.world);
++                loop {
++                    match step {
++                        horizon_client::streaming::PlanStep::Ready(plan) => break plan,
++                        horizon_client::streaming::PlanStep::Save { chunk, resume } => {
++                            self.native_late_full_chunk_snapshot(&chunk);
++                            self.streaming.save_finished(chunk);
++                            step = self.streaming.resume_plan_update(&mut self.world, resume);
++                        }
++                    }
++                }
++            });
++            let (commit, protos) = self.streaming.prepare_commit(&mut self.world, plan);
++            self.native_proto_snapshots(&protos);
++            self.streaming.submit_protos(protos);
++            horizon_client::spans::time("streaming", || {
++                self.streaming.complete_commit(&mut self.world, commit)
++            })
++        };
+         self.streaming.extra.truncate(areas);
+         // The viewed levels' meshing, queued after the player's level's (nothing while no view
+         // names one).

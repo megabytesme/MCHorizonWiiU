@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "b5bb7217763685f06e95847a06d90d774bcb8968",
+  "output_tree": "b70497fe3ac3a7321ab89cdc5bab056c7d62b1d9",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -620,12 +620,72 @@
       "sha256": "86aa3fd5712291d03dfdc9e472815612a5aedc650d4d0bc363dbedd4027fa6e0",
       "input_tree": "7fa9a86d8609abe01b93cbae73e9d6b77b8b7988",
       "output_tree": "b5bb7217763685f06e95847a06d90d774bcb8968"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0102-reuse-cafe-worldgen-block-facts.patch",
+      "sha256": "16734aac7ecbd40539718b5bbe37eeb2028d2d262d08ac9ffc058b5f9702bd81",
+      "input_tree": "b5bb7217763685f06e95847a06d90d774bcb8968",
+      "output_tree": "96d696adfaffe72f4da26570468ef9aee3c461b0"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0103-reuse-cafe-block-collision-grids.patch",
+      "sha256": "e497c5948e74ce1915abbca9a3a668e5f32111f44ef1708a0c99e52cf360da2c",
+      "input_tree": "96d696adfaffe72f4da26570468ef9aee3c461b0",
+      "output_tree": "8986dc61e9696d11e2e55bcd6df44602f0f7b99d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0104-list-prepared-optifine-entity-textures.patch",
+      "sha256": "27bb10fc74eab07757850500095eeebf93a303b7232ca9de55448352350069a2",
+      "input_tree": "8986dc61e9696d11e2e55bcd6df44602f0f7b99d",
+      "output_tree": "0fae51b3830ca8c56c4364e80bce14f6e18d81dd"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0105-direct-padded-terrain-animation.patch",
+      "sha256": "cfcd9865c1ef32c2b2210c12fe88b37f96c025d2083aedd333d59927991db281",
+      "input_tree": "0fae51b3830ca8c56c4364e80bce14f6e18d81dd",
+      "output_tree": "636686fa570213c2ccef8a8818a1738efa14c478"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0106-profile-terrain-animation.patch",
+      "sha256": "4a9ec1e464b178a6f5aff42fb4e073acc4d4725a2e61b35cfee130c15d383c86",
+      "input_tree": "636686fa570213c2ccef8a8818a1738efa14c478",
+      "output_tree": "b5858cfc827246aac09e7b75d5c2f08df0ccd6fa"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0107-report-direct-hud-wait.patch",
+      "sha256": "da664fce8f4557433d7f2270b0658e69309e402c29b99ea042070c379a4a4fa7",
+      "input_tree": "b5858cfc827246aac09e7b75d5c2f08df0ccd6fa",
+      "output_tree": "62350a35294d46065c3485efb6639a9a71ee8632"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0108-redraw-shared-preparation.patch",
+      "sha256": "4f5897f1e15cada6c7021a0e3e413dd6c7600a2794b7e84cd5f53c060acc0f49",
+      "input_tree": "62350a35294d46065c3485efb6639a9a71ee8632",
+      "output_tree": "f890d409be31f1719b5ca7f9516482de1e72723d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0109-profile-cafe-world-update-and-tick.patch",
+      "sha256": "5a4e286991d569184682c9c452d8de9bd9e45217188ad5a5728d73f8696fc85d",
+      "input_tree": "f890d409be31f1719b5ca7f9516482de1e72723d",
+      "output_tree": "2a4a58061052a3e2a64101a44f48403721da8189"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0110-avoid-repeated-cafe-shader-path-io.patch",
+      "sha256": "360b82731324c63183e2efcf068e9aaab6c70cf04dcf0afb96256541f3f63cc5",
+      "input_tree": "2a4a58061052a3e2a64101a44f48403721da8189",
+      "output_tree": "b2305ce97e369c1b2ce06928e527e61dfa834eba"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0111-skip-hosted-world-icon-filesystem-probe.patch",
+      "sha256": "aea9e63eaac9950392fdee0420d5093ce9ffc6b88fc21e779b21de9a9666765c",
+      "input_tree": "b2305ce97e369c1b2ce06928e527e61dfa834eba",
+      "output_tree": "b70497fe3ac3a7321ab89cdc5bab056c7d62b1d9"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.33",
-    "patch": "0.5.0-rc.33"
+    "client": "0.8.0-rc.34",
+    "patch": "0.5.0-rc.34"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

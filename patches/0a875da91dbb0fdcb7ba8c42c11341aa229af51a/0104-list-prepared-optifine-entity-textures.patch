@@ -1,0 +1,87 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index c2e4958..5c68cb8 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -570,6 +570,27 @@ impl ResourceSource {
+         }
+         Ok(bytes)
+     }
++    /// Files under a prepared archive's asset directory, from the layer root.
++    ///
++    /// This omits sounds and loose files that may be imported after preparation.
++    /// Callers doing a general listing should use [Self::list].
++    pub fn list_prepared_assets(&self, dir: &str) -> Option<Vec<String>> {
++        if !dir.starts_with("assets/") || !stays_inside(dir) {
++            return None;
++        }
++        let Storage::Directory(root) = self.0.as_ref() else {
++            return None;
++        };
++        let names = horizon_core::prepared_files::files_under(&root.join(dir))?;
++        Some(
++            names
++                .into_iter()
++                .filter(|name| stays_inside(name))
++                .map(|name| format!("{dir}/{name}"))
++                .collect(),
++        )
++    }
++
+     /// File names from the layer root, in name order. A directory prefix ends
+     /// with `/`; partial file-name prefixes are supported for archives too.
+     pub fn list(&self, prefix: &str) -> Vec<String> {
+diff --git a/crates/horizon-optifine/src/paths.rs b/crates/horizon-optifine/src/paths.rs
+index 41a49c8..9fe1fd9 100644
+--- a/crates/horizon-optifine/src/paths.rs
++++ b/crates/horizon-optifine/src/paths.rs
+@@ -74,7 +74,16 @@ pub fn properties_files_in(root: &ResourceSource, tops: &[&str], feature: &str)
+ 
+ /// Matching files beneath a resource folder, in name order.
+ pub fn files_under(root: &ResourceSource, dir: &str, endings: &[&str]) -> Vec<String> {
+-    root.list(&format!("{dir}/"))
++    let archive_owns_matches = endings
++        .iter()
++        .all(|ending| ending.ends_with(".png") || ending.ends_with(".properties"));
++    let names = if archive_owns_matches {
++        root.list_prepared_assets(dir)
++            .unwrap_or_else(|| root.list(&format!("{dir}/")))
++    } else {
++        root.list(&format!("{dir}/"))
++    };
++    names
+         .into_iter()
+         .filter(|name| endings.iter().any(|ending| name.ends_with(ending)))
+         .collect()
+@@ -154,6 +163,32 @@ mod tests {
+         fs::remove_dir_all(&root).unwrap();
+     }
+ 
++    #[test]
++    fn archive_discovery_uses_packed_textures_and_preserves_loose_suffixes() {
++        let temp =
++            std::env::temp_dir().join(format!("horizon-optifine-prepared-{}", std::process::id()));
++        let dir = "assets/minecraft/textures/entity";
++        let textures = temp.join(dir);
++        fs::create_dir_all(&textures).unwrap();
++        fs::write(temp.join("horizon-resources.json"), "{}").unwrap();
++        fs::write(textures.join("packed_blink.png"), [1]).unwrap();
++        horizon_core::prepared_files::write(&temp).unwrap();
++        fs::remove_file(textures.join("packed_blink.png")).unwrap();
++        fs::write(textures.join("import.ogg"), [2]).unwrap();
++
++        let root = ResourceSource::directory(temp.clone());
++        assert_eq!(
++            files_under(&root, dir, &["_blink.png"]),
++            [format!("{dir}/packed_blink.png")],
++        );
++        assert_eq!(root.read(&format!("{dir}/packed_blink.png")).unwrap(), [1],);
++        assert_eq!(
++            files_under(&root, dir, &[".ogg"]),
++            [format!("{dir}/import.ogg")],
++        );
++        fs::remove_dir_all(&temp).unwrap();
++    }
++
+     #[cfg(unix)]
+     #[test]
+     fn a_link_loop_is_read_once() {

@@ -1,0 +1,170 @@
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index 23c304742f618d330eceab41bd6aa90dacc4e8bd..e72516e5214da180810ab4db3b5e9860807cd5d7 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -143,6 +143,28 @@ impl SpriteAnimation {
+         scratch
+     }
+ 
++    /// Read a smaller square power-of-two animation frame for a native atlas
++    /// that can expand and pad it in one write. Keep interpolation on source
++    /// pixels so all nearest-neighbour copies have identical channel rounding.
++    pub fn blend_smaller_square<'a>(
++        &'a self,
++        blend: FrameBlend,
++        side: u32,
++        scratch: &'a mut Vec<u8>,
++    ) -> Option<(u32, &'a [u8])> {
++        let source = self.pixels(blend.frame);
++        let [w, h] = self.frame_dimensions(source);
++        if w != h || w >= side || !w.is_power_of_two() || !side.is_power_of_two() {
++            return None;
++        }
++        if blend.millis == 0 {
++            return Some((w, source));
++        }
++        scratch.resize(source.len(), 0);
++        mix_pixels(scratch, source, self.pixels(blend.next), blend.millis);
++        Some((w, scratch))
++    }
++
+     /// Read the selected blend in the atlas's dimensions. For upsampling, mixing
+     /// before nearest-neighbour sampling rounds each output channel identically
+     /// and only blends the source texels once.
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 3040b595b6a500cb7971731d4161f876a0cd1aa5..a6f515cbb88298697f39d8d23eea531058a6ed83 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -542,6 +542,63 @@ impl TerrainAtlasLayout {
+         Ok(())
+     }
+ 
++    /// Expand a smaller square texture straight into its padded native cell.
++    pub fn write_upsampled_layer(
++        &self,
++        layer: u32,
++        source: &[u8],
++        source_side: u32,
++        pixels: &mut [u8],
++        pitch: usize,
++    ) -> Result<(), &'static str> {
++        let side = self.sprite_size;
++        if !source_side.is_power_of_two() || !side.is_power_of_two() || source_side >= side {
++            return Err("invalid GX2 atlas layer expansion");
++        }
++        let source_side = source_side as usize;
++        let source_bytes = source_side
++            .checked_pow(2)
++            .and_then(|texels| texels.checked_mul(4));
++        if source_bytes != Some(source.len()) {
++            return Err("Horizon sprite layer mismatch");
++        }
++        if pitch < self.width as usize * 4
++            || pitch.checked_mul(self.height as usize) != Some(pixels.len())
++        {
++            return Err("invalid writable GX2 atlas storage");
++        }
++        let [cx, cy, cell_size, _] = self.layer_rect(layer)?;
++        let factor = side as usize / source_side;
++        let start = cx as usize * 4;
++        let end = start + cell_size as usize * 4;
++        let mut rows = pixels
++            .chunks_exact_mut(pitch)
++            .skip(cy as usize)
++            .take(cell_size as usize)
++            .map(|row| &mut row[start..end]);
++        for (index, source_row) in source.chunks_exact(source_side * 4).enumerate() {
++            let first = rows.next().unwrap();
++            let (left, rest) = first.split_at_mut(4);
++            let (interior, right) = rest.split_at_mut(side as usize * 4);
++            left.copy_from_slice(&source_row[..4]);
++            right.copy_from_slice(&source_row[source_row.len() - 4..]);
++            for (run, &pixel) in interior
++                .as_chunks_mut::<4>()
++                .0
++                .chunks_exact_mut(factor)
++                .zip(source_row.as_chunks::<4>().0)
++            {
++                run.fill(pixel);
++            }
++            let copies =
++                factor - 1 + usize::from(index == 0) + usize::from(index + 1 == source_side);
++            for row in rows.by_ref().take(copies) {
++                row.copy_from_slice(first);
++            }
++        }
++        Ok(())
++    }
++
+     /// Fill mapped native storage from canonical quads, without an intermediate
+     /// copy. The index buffer chooses the same triangles as `expand_quads_into`.
+     pub fn write_quad_vertices(
+@@ -737,6 +794,36 @@ mod indexed_vertex_tests {
+         }
+     }
+ 
++    #[test]
++    fn upsampled_layer_repeats_rgba_texels_and_preserves_other_cells() {
++        for (source_side, side) in [(1, 2), (2, 8), (16, 64), (32, 64)] {
++            let layout = TerrainAtlasLayout::for_layers(side, 13).unwrap();
++            let pitch = layout.width as usize * 4 + 32;
++            let mut pixels = alloc::vec![0xbd; pitch * layout.height as usize];
++            let mut expected = pixels.clone();
++            let source: Vec<_> = (0..source_side * source_side * 4)
++                .map(|index| (index * 37 + index / 7 * 17) as u8)
++                .collect();
++
++            for layer in [0, 6, 12] {
++                let [x, y, width, height] = layout.layer_rect(layer).unwrap();
++                for dy in 0..height {
++                    for dx in 0..width {
++                        let sx = (dx.clamp(1, side) - 1) * source_side / side;
++                        let sy = (dy.clamp(1, side) - 1) * source_side / side;
++                        let offset = ((sy * source_side + sx) * 4) as usize;
++                        let dest = (y + dy) as usize * pitch + ((x + dx) * 4) as usize;
++                        expected[dest..dest + 4].copy_from_slice(&source[offset..offset + 4]);
++                    }
++                }
++                layout
++                    .write_upsampled_layer(layer, &source, source_side, &mut pixels, pitch)
++                    .unwrap();
++            }
++            assert_eq!(pixels, expected, "{source_side}px to {side}px");
++        }
++    }
++
+     #[test]
+     fn mapped_writes_handle_empty_quads_and_reject_invalid_input() {
+         let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
+diff --git a/wiiu/loading_host/terrain_animation.rs b/wiiu/loading_host/terrain_animation.rs
+index 1d6f893bbf312076afc0b3a92624b013f31a3194..2b7cba1871625fa3cd85de57447a0e1b84ce268b 100644
+--- a/wiiu/loading_host/terrain_animation.rs
++++ b/wiiu/loading_host/terrain_animation.rs
+@@ -127,16 +127,18 @@ unsafe extern "C" fn write_atlas_patch(context: *mut c_void, pixels: *mut u8, pi
+         unsafe { std::slice::from_raw_parts_mut(pixels, pitch * patch.layout.height as usize) };
+     for job in patch.jobs {
+         let animation = &patch.animations[job.animation];
+-        let frame = animation.blend_at_reusing(
+-            job.blend,
+-            patch.layout.sprite_size,
+-            patch.current,
+-            patch.next,
+-        );
+-        if let Err(error) = patch
+-            .layout
+-            .write_layer(animation.layer, frame, pixels, pitch)
++        let side = patch.layout.sprite_size;
++        let result = if let Some((source_side, frame)) =
++            animation.blend_smaller_square(job.blend, side, patch.current)
+         {
++            patch
++                .layout
++                .write_upsampled_layer(animation.layer, frame, source_side, pixels, pitch)
++        } else {
++            let frame = animation.blend_at_reusing(job.blend, side, patch.current, patch.next);
++            patch.layout.write_layer(animation.layer, frame, pixels, pitch)
++        };
++        if let Err(error) = result {
+             patch.error = Some(error);
+             return -1;
+         }

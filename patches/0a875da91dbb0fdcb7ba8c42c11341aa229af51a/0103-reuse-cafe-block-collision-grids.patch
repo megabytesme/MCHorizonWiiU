@@ -1,0 +1,255 @@
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 89b77d9..226f80f 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -779,10 +779,11 @@ pub(super) fn load_resources(
+             .map(|state| state.name.as_str());
+         level_mods::set_block_namespaces(Some(level_mods::mod_namespaces(names)));
+     }
+-    let behaviour_inputs = Arc::new(horizon_world::level::BlockBehaviourInputs::new(
+-        behaviour_json,
+-        gameplay_projection,
+-    ));
++    let behaviour_inputs =
++        horizon_world::level::BlockBehaviourInputs::new(behaviour_json, gameplay_projection);
++    #[cfg(target_os = "cafe")]
++    let behaviour_inputs = behaviour_inputs.with_collision(&root, collision.clone());
++    let behaviour_inputs = Arc::new(behaviour_inputs);
+     if let Some(folder) = launch_world {
+         world_loading::preload_launch_world(
+             folder,
+diff --git a/crates/horizon-world/src/collision.rs b/crates/horizon-world/src/collision.rs
+index e4e566a..8661007 100644
+--- a/crates/horizon-world/src/collision.rs
++++ b/crates/horizon-world/src/collision.rs
+@@ -369,6 +369,45 @@ impl<'r> CachedCollisionRegistry<'r> {
+             Some(&self.shapes[id as usize])
+         })
+     }
++    /// The behaviour table's dense shape indices, assigned in first-state-use
++    /// order. The export reader gives every shape entry a distinct identity,
++    /// even when different entries share the same geometry.
++    pub(crate) fn behaviour_shapes(
++        &self,
++        independent_identities: bool,
++    ) -> (Vec<VoxelShape>, Vec<i32>) {
++        let mut index = vec![-1; self.shapes.len()];
++        let mut shapes = Vec::new();
++        let canonical = [VoxelShape::empty(), VoxelShape::block()];
++        let states = self
++            .state_shapes
++            .iter()
++            .map(|&id| {
++                if id < 0 {
++                    return -1;
++                }
++                let new = &mut index[id as usize];
++                if *new < 0 {
++                    let shape = &self.shapes[id as usize];
++                    *new = shapes.len() as i32;
++                    shapes.push(
++                        if independent_identities
++                            && !canonical
++                                .iter()
++                                .any(|singleton| singleton.same_identity(shape))
++                        {
++                            shape.fresh_identity()
++                        } else {
++                            shape.clone()
++                        },
++                    );
++                }
++                *new
++            })
++            .collect();
++        (shapes, states)
++    }
++
+     pub fn section_shape(
+         &self,
+         section: &BlockSection<'_>,
+@@ -388,6 +427,41 @@ mod pipe_tests {
+     use horizon_core::geometry::ShapeOp;
+     use std::path::PathBuf;
+ 
++    #[test]
++    fn behaviour_shapes_reuse_exported_aliases_without_sharing_noncanonical_identities() {
++        let (registry, _) = BlockRegistry::from_facts_json_bytes(
++            br#"{"states":[["minecraft:air",true,false,"x","minecraft:air"]],
++                    "defaults":{"minecraft:air":0}}"#,
++        )
++        .unwrap();
++        let block = VoxelShape::block();
++        let ordinary = block.fresh_identity();
++        let equivalent = ordinary.fresh_identity();
++        let cached = CachedCollisionRegistry {
++            registry: &registry,
++            shapes: vec![ordinary.clone(), equivalent.clone(), block.clone()],
++            state_shapes: vec![1, -1, 2, 1, 0, 2, 0],
++            grid_count: 1,
++            canonical_identities: true,
++            contexts: HashMap::new(),
++            outline_edges: HashMap::new(),
++        };
++        let (local, indices) = cached.behaviour_shapes(false);
++        assert_eq!(indices, [0, -1, 1, 0, 2, 1, 2]);
++        assert!(local[0].same_identity(&equivalent));
++        assert!(local[1].same_identity(&block));
++        assert!(local[2].same_identity(&ordinary));
++
++        let (separate, indices) = cached.behaviour_shapes(true);
++        assert_eq!(indices, [0, -1, 1, 0, 2, 1, 2]);
++        assert!(!separate[0].same_identity(&equivalent));
++        assert!(!separate[2].same_identity(&ordinary));
++        assert!(!separate[0].same_identity(&separate[2]));
++        assert!(separate[1].same_identity(&block));
++        assert_eq!(separate[0].boxes(), local[0].boxes());
++        assert_eq!(separate[2].boxes(), local[2].boxes());
++    }
++
+     /// `pipe_shape` at the chorus plant's 10 pixels is vanilla's own shape for
+     /// each of its 64 states.
+     #[test]
+diff --git a/crates/horizon-world/src/level/behaviour_inputs.rs b/crates/horizon-world/src/level/behaviour_inputs.rs
+index fca11ab..116cf19 100644
+--- a/crates/horizon-world/src/level/behaviour_inputs.rs
++++ b/crates/horizon-world/src/level/behaviour_inputs.rs
+@@ -1,6 +1,9 @@
+ //! Validated block facts already decoded by the current resource load.
+-use super::{Behaviours, data::GameplayProjection};
+-use crate::registry::BlockRegistry;
++use super::{
++    Behaviours,
++    data::{self, GameplayProjection},
++};
++use crate::{block_collision::BlockCollisionRegistry, registry::BlockRegistry};
+ use std::{
+     cell::RefCell,
+     io,
+@@ -11,6 +14,7 @@ use std::{
+ pub struct BlockBehaviourInputs {
+     definition: serde_json::Value,
+     gameplay: Vec<GameplayProjection>,
++    collision: Option<(PathBuf, Arc<BlockCollisionRegistry<'static>>)>,
+ }
+ 
+ struct Preload {
+@@ -28,12 +32,32 @@ impl BlockBehaviourInputs {
+         Self {
+             definition,
+             gameplay,
++            collision: None,
+         }
+     }
+ 
++    /// The immutable collision grids already loaded for this resource root.
++    pub fn with_collision(
++        mut self,
++        root: &Path,
++        collision: Arc<BlockCollisionRegistry<'static>>,
++    ) -> Self {
++        self.collision = Some((root.to_owned(), collision));
++        self
++    }
++
+     /// Each consumer builds its own mutable world behaviour state.
+     pub fn load(&self, registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {
+-        Behaviours::load_with_gameplay(registry, root, &self.definition, &self.gameplay)
++        data::load_with_gameplay_and_collision(
++            registry,
++            root,
++            &self.definition,
++            &self.gameplay,
++            self.collision
++                .as_ref()
++                .filter(|(source, _)| source == root)
++                .map(|(_, collision)| collision.cached_shapes()),
++        )
+     }
+ 
+     /// Make these inputs available to the named-world preload without
+diff --git a/crates/horizon-world/src/level/data.rs b/crates/horizon-world/src/level/data.rs
+index b38b47d..fdc294d 100644
+--- a/crates/horizon-world/src/level/data.rs
++++ b/crates/horizon-world/src/level/data.rs
+@@ -660,9 +660,19 @@ pub(super) fn load_with_gameplay<G: GameplayStateSource>(
+     root: &Path,
+     behaviour: &Value,
+     gameplay_states: &[G],
++) -> io::Result<Behaviours> {
++    load_with_gameplay_and_collision(registry, root, behaviour, gameplay_states, None)
++}
++
++pub(super) fn load_with_gameplay_and_collision<G: GameplayStateSource>(
++    registry: &BlockRegistry,
++    root: &Path,
++    behaviour: &Value,
++    gameplay_states: &[G],
++    collision: Option<&CachedCollisionRegistry<'_>>,
+ ) -> io::Result<Behaviours> {
+     cached(registry, root, || {
+-        build_with_gameplay(registry, root, behaviour, gameplay_states)
++        build_with_gameplay(registry, root, behaviour, gameplay_states, collision)
+     })
+ }
+ 
+@@ -696,7 +706,7 @@ fn build_with_behaviour_json(
+         let file = fs::File::open(&path)?;
+         let states = gameplay_projection::streamed::read(io::BufReader::new(file))
+             .map_err(|e| invalid(format!("{}: {e}", path.display())))?;
+-        build_with_gameplay(registry, root, behaviour, &states)
++        build_with_gameplay(registry, root, behaviour, &states, None)
+     }
+     #[cfg(not(target_os = "cafe"))]
+     {
+@@ -704,7 +714,7 @@ fn build_with_behaviour_json(
+         let states = gameplay["states"]
+             .as_array()
+             .ok_or_else(|| fail("missing gameplay states"))?;
+-        build_with_gameplay(registry, root, behaviour, states)
++        build_with_gameplay(registry, root, behaviour, states, None)
+     }
+ }
+ 
+@@ -713,6 +723,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
+     root: &Path,
+     behaviour: &Value,
+     gameplay_states: &[G],
++    collision: Option<&CachedCollisionRegistry<'_>>,
+ ) -> io::Result<Behaviours> {
+     let mut table = StateTable::new(registry)?;
+     let props = Props::resolve(&mut table);
+@@ -783,24 +794,15 @@ fn build_with_gameplay<G: GameplayStateSource>(
+     };
+ 
+     // Collision shapes.
+-    let collision_file = BlockTableFile::open(&root.join("cached-collision.nbt"), registry)?;
+-    let cached = CachedCollisionRegistry::from_table(collision_file.table("collision")?)?;
+-    let mut shapes: Vec<VoxelShape> = Vec::new();
+-    let mut shape_ids = Vec::with_capacity(table.state_count());
+-    for id in 0..table.state_count() {
+-        let Some(shape) = cached.cached_shape(BlockStateId(id as u32))? else {
+-            shape_ids.push(-1);
+-            continue;
+-        };
+-        let index = match shapes.iter().position(|s| s.same_identity(shape)) {
+-            Some(index) => index,
+-            None => {
+-                shapes.push(shape.clone());
+-                shapes.len() - 1
+-            }
+-        };
+-        shape_ids.push(index as i32);
+-    }
++    let (shapes, shape_ids) = match collision
++        .filter(|cached| std::ptr::eq(cached.registry(), registry))
++    {
++        Some(cached) => cached.behaviour_shapes(true),
++        None => {
++            let file = BlockTableFile::open(&root.join("cached-collision.nbt"), registry)?;
++            CachedCollisionRegistry::from_table(file.table("collision")?)?.behaviour_shapes(false)
++        }
++    };
+ 
+     let shape_info = shapes
+         .iter()

@@ -1,0 +1,87 @@
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index db824b8870eff46c9a9f3de8d45b265f1d999b1e..93a07122407fdf009d172f9195afa9b080ae8252 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -78,6 +78,8 @@ pub struct CafeFrameWork {
+     pub presented: [bool; 2],
+     pub submission: Duration,
+     pub gpu_wait: Duration,
++    /// The direct HUD fence, already included in `gpu_wait`.
++    pub hud_wait: Duration,
+     pub gpu_sample: Option<CafeGpuSample>,
+     pub uploaded_sections: u64,
+     pub uploaded_bytes: u64,
+@@ -233,6 +235,7 @@ struct Window {
+     cpu: Duration,
+     submission: Duration,
+     gpu_wait: Duration,
++    hud_wait: Duration,
+     wall: WallTimes,
+     uploaded_sections: u64,
+     uploaded_bytes: u64,
+@@ -273,6 +276,7 @@ impl CafePerformance {
+                 cpu: Duration::ZERO,
+                 submission: Duration::ZERO,
+                 gpu_wait: Duration::ZERO,
++                hud_wait: Duration::ZERO,
+                 wall: WallTimes::default(),
+                 uploaded_sections: 0,
+                 uploaded_bytes: 0,
+@@ -328,6 +332,7 @@ impl CafePerformance {
+         window.cpu += spans.redraw.saturating_sub(work.submission);
+         window.submission += work.submission.saturating_sub(work.gpu_wait);
+         window.gpu_wait += work.gpu_wait;
++        window.hud_wait += work.hud_wait;
+         window.uploaded_sections += work.uploaded_sections;
+         window.uploaded_bytes += work.uploaded_bytes;
+         if now.duration_since(window.start) < Duration::from_secs(2) {
+@@ -412,10 +417,11 @@ impl Sample {
+             let mean =
+                 |duration: Duration| duration.as_secs_f64() * 1000.0 / f64::from(window.frames);
+             log::info!(
+-                "Horizon Cafe CPU per frame: t_ms={at} redraw_ms={:.2} submit_ms={:.2} gx2_wait_ms={:.2}",
++                "Horizon Cafe CPU per frame: t_ms={at} redraw_ms={:.2} submit_ms={:.2} gx2_wait_ms={:.2} hud_wait_ms={:.2}",
+                 mean(window.cpu),
+                 mean(window.submission),
+                 mean(window.gpu_wait),
++                mean(window.hud_wait),
+             );
+         }
+         let wall = &window.wall;
+@@ -501,6 +507,7 @@ impl Sample {
+             "redraw_outside_submission_ms_per_game_frame": mean_ms(window.cpu),
+             "submission_outside_measured_waits_ms_per_game_frame": mean_ms(window.submission),
+             "measured_gx2_wait_ms_per_game_frame": mean_ms(window.gpu_wait),
++            "measured_hud_wait_ms_per_game_frame": mean_ms(window.hud_wait),
+             "wall_ms_per_recorded_iteration": window.wall.per_iteration(
+                 self.end.duration_since(window.start),
+                 window.iterations,
+@@ -664,6 +671,7 @@ mod tests {
+             CafeFrameWork {
+                 submission: ms(30),
+                 gpu_wait: ms(5),
++                hud_wait: ms(2),
+                 ..Default::default()
+             },
+         );
+@@ -702,6 +710,8 @@ mod tests {
+             json["submission_outside_measured_waits_ms_per_game_frame"],
+             25.0
+         );
++        assert_eq!(json["measured_gx2_wait_ms_per_game_frame"], 5.0);
++        assert_eq!(json["measured_hud_wait_ms_per_game_frame"], 2.0);
+     }
+ 
+     #[test]
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index b38f75ccdf77a58199cb6b91ad0a983f681003a8..09c6c73ede4b191520ce79f596be200544e1226a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -2372,6 +2372,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.frame_work.gpu_sample =
+             unsafe { horizon_gx2_profile_take_gpu_sample(&mut gpu_sample) }.then_some(gpu_sample);
+         self.frame_work.submission = elapsed;
++        self.frame_work.hud_wait = Duration::from_nanos(profile.hud_wait_ns);
+         self.frame_work.gpu_wait = Duration::from_nanos(
+             profile
+                 .terrain_wait_ns

@@ -1,0 +1,284 @@
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 8a93a2a..89b77d9 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -336,6 +336,7 @@ pub(super) fn load_core(
+                         biomes.clone(),
+                         item_data.clone(),
+                         additional_data,
++                        None,
+                     );
+                 }
+                 Ok::<_, String>(biomes)
+@@ -778,6 +779,10 @@ pub(super) fn load_resources(
+             .map(|state| state.name.as_str());
+         level_mods::set_block_namespaces(Some(level_mods::mod_namespaces(names)));
+     }
++    let behaviour_inputs = Arc::new(horizon_world::level::BlockBehaviourInputs::new(
++        behaviour_json,
++        gameplay_projection,
++    ));
+     if let Some(folder) = launch_world {
+         world_loading::preload_launch_world(
+             folder,
+@@ -787,6 +792,7 @@ pub(super) fn load_resources(
+             biomes.clone(),
+             item_data.clone(),
+             &additional_data,
++            cfg!(target_os = "cafe").then(|| behaviour_inputs.clone()),
+         );
+     }
+     api_values::resolve_block_definitions(assets.registry)?;
+@@ -871,8 +877,7 @@ pub(super) fn load_resources(
+                     &resource_root,
+                     &resources,
+                     &assets,
+-                    &behaviour_json,
+-                    &gameplay_projection,
++                    &behaviour_inputs,
+                     entity_models.as_deref(),
+                     item_defaults.as_ref(),
+                     visibility,
+@@ -907,8 +912,7 @@ pub(super) fn load_resources(
+             &resolved,
+             &resources,
+             &assets,
+-            &behaviour_json,
+-            &gameplay_projection,
++            &behaviour_inputs,
+             entity_models.as_deref(),
+             item_defaults.as_ref(),
+             visibility,
+diff --git a/crates/horizon-client/src/game/world/world_loading.rs b/crates/horizon-client/src/game/world/world_loading.rs
+index a727d42..77feb76 100644
+--- a/crates/horizon-client/src/game/world/world_loading.rs
++++ b/crates/horizon-client/src/game/world/world_loading.rs
+@@ -547,6 +547,7 @@ pub(super) fn preload_world_data(
+ /// opening. Read for the world's own data packs and preset, the bundle and
+ /// decoration `make_streaming` asks for; a world they don't fit (one its
+ /// upgrade rewrites) reads its own when it opens.
++#[allow(clippy::too_many_arguments)]
+ pub(super) fn preload_launch_world(
+     folder: &str,
+     resources: &std::path::Path,
+@@ -555,6 +556,7 @@ pub(super) fn preload_launch_world(
+     biomes: Arc<horizon_client::biome::Biomes>,
+     item_data: Arc<ItemData>,
+     additional: &[Arc<horizon_client::datapack::DataPack>],
++    behaviour_inputs: Option<Arc<horizon_world::level::BlockBehaviourInputs>>,
+ ) {
+     let mut preload = PRELOAD.lock().unwrap_or_else(|e| e.into_inner());
+     if !matches!(*preload, Preload::Idle) {
+@@ -585,12 +587,21 @@ pub(super) fn preload_launch_world(
+                 &enabled_features,
+                 &additional,
+             );
+-            if let Ok(data) = horizon_client::vanillagen::shared_data_from(
+-                &resources.join("worldgen"),
+-                &overrides,
+-                registry,
+-                &data_source,
+-            ) {
++            let generator = startup::time("world.preload.generator", || {
++                let load = || {
++                    horizon_client::vanillagen::shared_data_from(
++                        &resources.join("worldgen"),
++                        &overrides,
++                        registry,
++                        &data_source,
++                    )
++                };
++                match behaviour_inputs {
++                    Some(inputs) => inputs.with_worldgen(&resources, registry, load),
++                    None => load(),
++                }
++            });
++            if let Ok(data) = generator {
+                 let preset = horizon_client::save::WorldGen::preset(&world_root);
+                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
+             }
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index e41f154..6ac714c 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -4,8 +4,7 @@ pub(super) fn load_world_rest(
+     resource_root: &horizon_assets::resource_source::ResourceRoot,
+     resources: &Resources,
+     assets: &Assets,
+-    behaviour_json: &serde_json::Value,
+-    gameplay_projection: &[horizon_client::blocks::GameplayProjection],
++    behaviour_inputs: &horizon_world::level::BlockBehaviourInputs,
+     entity_models: Option<&horizon_client::mobs::EntityModelDocument>,
+     item_defaults: &horizon_world::item_defaults::ItemDefaults,
+     visibility: horizon_world::block_render::FaceVisibility,
+@@ -73,7 +72,7 @@ pub(super) fn load_world_rest(
+     };
+     let load_behaviours = || {
+         startup::time("rest.behaviours", || {
+-            Behaviours::load_with_gameplay(registry, root, behaviour_json, gameplay_projection)
++            behaviour_inputs.load(registry, root)
+         })
+     };
+     let load_block_entity_render = || -> Result<_> {
+diff --git a/crates/horizon-world/src/level/behaviour_inputs.rs b/crates/horizon-world/src/level/behaviour_inputs.rs
+new file mode 100644
+index 0000000..fca11ab
+--- /dev/null
++++ b/crates/horizon-world/src/level/behaviour_inputs.rs
+@@ -0,0 +1,114 @@
++//! Validated block facts already decoded by the current resource load.
++use super::{Behaviours, data::GameplayProjection};
++use crate::registry::BlockRegistry;
++use std::{
++    cell::RefCell,
++    io,
++    path::{Path, PathBuf},
++    sync::Arc,
++};
++
++pub struct BlockBehaviourInputs {
++    definition: serde_json::Value,
++    gameplay: Vec<GameplayProjection>,
++}
++
++struct Preload {
++    root: PathBuf,
++    registry: &'static BlockRegistry,
++    inputs: Arc<BlockBehaviourInputs>,
++}
++
++thread_local! {
++    static PRELOAD: RefCell<Option<Preload>> = const { RefCell::new(None) };
++}
++
++impl BlockBehaviourInputs {
++    pub fn new(definition: serde_json::Value, gameplay: Vec<GameplayProjection>) -> Self {
++        Self {
++            definition,
++            gameplay,
++        }
++    }
++
++    /// Each consumer builds its own mutable world behaviour state.
++    pub fn load(&self, registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {
++        Behaviours::load_with_gameplay(registry, root, &self.definition, &self.gameplay)
++    }
++
++    /// Make these inputs available to the named-world preload without
++    /// changing the worldgen loader's replaceable entry point or cache keys.
++    pub fn with_worldgen<T>(
++        self: &Arc<Self>,
++        root: &Path,
++        registry: &'static BlockRegistry,
++        load: impl FnOnce() -> T,
++    ) -> T {
++        struct Restore(Option<Preload>);
++        impl Drop for Restore {
++            fn drop(&mut self) {
++                PRELOAD.with(|current| current.replace(self.0.take()));
++            }
++        }
++        let _scope = Restore(PRELOAD.with(|current| {
++            current.replace(Some(Preload {
++                root: root.to_owned(),
++                registry,
++                inputs: self.clone(),
++            }))
++        }));
++        load()
++    }
++}
++
++/// The generator calls this on the preloader thread before spawning work.
++pub(crate) fn for_worldgen(
++    root: &Path,
++    registry: &BlockRegistry,
++) -> Option<Arc<BlockBehaviourInputs>> {
++    PRELOAD.with(|current| {
++        let current = current.borrow();
++        let selected = current.as_ref()?;
++        (selected.root == root && std::ptr::eq(selected.registry, registry))
++            .then(|| selected.inputs.clone())
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn named_world_preload_inputs_are_scoped_to_the_root_and_registry() {
++        let facts = br#"{"states":[["minecraft:air",true,false,"x","minecraft:air"]],
++            "defaults":{"minecraft:air":0}}"#;
++        let registry = || {
++            Box::leak(Box::new(
++                BlockRegistry::from_facts_json_bytes(facts).unwrap().0,
++            ))
++        };
++        let first: &'static BlockRegistry = registry();
++        let second: &'static BlockRegistry = registry();
++        let inputs = Arc::new(BlockBehaviourInputs::new(
++            serde_json::Value::Null,
++            Vec::new(),
++        ));
++        let root = Path::new("preparation");
++        assert!(for_worldgen(root, first).is_none());
++        inputs.with_worldgen(root, first, || {
++            assert!(Arc::ptr_eq(&inputs, &for_worldgen(root, first).unwrap()));
++            assert!(for_worldgen(root, second).is_none());
++            assert!(for_worldgen(Path::new("other preparation"), first).is_none());
++            let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                inputs.with_worldgen(root, second, || {
++                    assert!(for_worldgen(root, first).is_none());
++                    panic!("unwind the nested preload");
++                })
++            }));
++            assert!(nested.is_err());
++            assert!(Arc::ptr_eq(&inputs, &for_worldgen(root, first).unwrap()));
++        });
++        assert!(for_worldgen(root, first).is_none());
++        assert_eq!(Arc::strong_count(&inputs), 1);
++    }
++}
+diff --git a/crates/horizon-world/src/level/mod.rs b/crates/horizon-world/src/level/mod.rs
+index 1f6bdd1..b3217dd 100644
+--- a/crates/horizon-world/src/level/mod.rs
++++ b/crates/horizon-world/src/level/mod.rs
+@@ -119,6 +119,8 @@ use std::{collections::HashMap, io, path::Path, sync::Arc, sync::RwLock};
+ 
+ pub use block_maps::BlockMaps;
+ pub mod classes;
++pub(crate) mod behaviour_inputs;
++pub use behaviour_inputs::BlockBehaviourInputs;
+ pub mod data;
+ pub mod states;
+ pub mod ticks;
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index 8d1bdb6..8df303e 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -231,10 +231,21 @@ impl GeneratorData {
+         })?;
+         let behaviours = loading({
+             let root = dir.parent().map(Path::to_owned);
++            let inputs = root
++                .as_deref()
++                .and_then(|root| crate::level::behaviour_inputs::for_worldgen(root, registry));
+             move || {
+-                root.filter(|root| root.join("block-behaviours.json").exists())
+-                    .and_then(|root| crate::level::Behaviours::load(registry, &root).ok())
+-                    .map(Arc::new)
++                let root = root.filter(|root| root.join("block-behaviours.json").exists())?;
++                let behaviours = match inputs {
++                    Some(inputs) => {
++                        log::info!("Horizon: worldgen reusing loaded block behaviour inputs");
++                        inputs
++                            .load(registry, &root)
++                            .or_else(|_| crate::level::Behaviours::load(registry, &root))
++                    }
++                    None => crate::level::Behaviours::load(registry, &root),
++                };
++                behaviours.ok().map(Arc::new)
+             }
+         })?;
+         let tag_set = |name: &str| -> Result<BTreeSet<&str>, GeneratorError> {

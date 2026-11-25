@@ -606,3 +606,32 @@ directories already served by the archive. Host tests cover the
 network output for stock and nested modded recipes, archive and loose
 reload behavior, and cache rollback. The changes keep the prepared
 resource schema and release pins. [Loading record](loading-performance.md)
+
+## RC 34 follow-up from physical RC 33
+
+The RC 33 direct capture puts texture work at about 7.5 ms per pair and
+pre-native HUD, entity and particle construction below 1 ms combined in
+the 75% stock window. The outer redraw still has about 17 ms beyond those
+builders. World service, streaming and fixed client ticks now have HZP3
+spans. Streaming nests within world service. Live telemetry exposes the
+existing HUD fence as part of the aggregate GX2 wait. Profile mode `4a`
+splits animated atlas fill, CPU cache writeback and the native texture
+invalidation call under matching HZP3 sequence bounds.
+
+The redraw changes skip Cafe filesystem queries for empty shader picks
+and desktop-only automatic world icons. They also defer screen-overlay
+projection work, reuse a biome-column lookup and compute each lightmap
+level factor once. Sprite animation expands smaller square frames directly
+into padded cells with matching texture bytes and dirty rectangles.
+Five focused host runs reduced callback CPU time by 5–15%. The benchmark
+excludes native writeback and invalidation.
+
+The first physical RC 33 load spent 44.09 s building block behaviours
+and 40.19 s on mobs. World preload overlapped both. Named-world preload
+can now reuse the validated facts and the core collision grids while
+each world owns its mutable behaviours and shape identities. On the
+qualification preparation the two paths agreed for all 35,723 states.
+Indexed collision remapping replaces 44.7 million identity comparisons
+per build. Mob and HUD texture discovery use the archive's index for
+matching assets, with resource pack and loose-file paths preserved.
+These paths retain prepared schema 7. [Physical loading record](loading-performance.md)

@@ -1,0 +1,133 @@
+diff --git a/crates/horizon-client/src/game/modding/native_shaders.rs b/crates/horizon-client/src/game/modding/native_shaders.rs
+--- a/crates/horizon-client/src/game/modding/native_shaders.rs
++++ b/crates/horizon-client/src/game/modding/native_shaders.rs
+@@ -92,12 +92,18 @@
+         renderer.take_ray_only(self.ray_only.get_mut(), self.ray_runs.get_mut());
+     }
+ 
+-    pub fn resolve_path(&mut self, dir: &Path, picked: &str, filesystem: bool) -> PathBuf {
++    pub fn resolve_path(
++        &mut self,
++        directory: impl FnOnce() -> PathBuf,
++        picked: &str,
++        filesystem: bool,
++    ) -> PathBuf {
+         if self.selection != picked || self.resolved_at.is_none_or(|t| t.elapsed() >= LOOK_EVERY) {
++            let dir = directory();
+             let resolved = if filesystem {
+                 dir.join(picked)
+             } else {
+-                horizon_client::shader_pack_list::resolve(dir, picked).1
++                horizon_client::shader_pack_list::resolve(&dir, picked).1
+             };
+             // A manifest being edited may be temporarily invalid. Keep its path so the
+             // reload reports the error.
+@@ -436,13 +442,13 @@
+             "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"post.wgsl\"\n").unwrap();
+         std::fs::write(pack.join("post.wgsl"), "fixture").unwrap();
+         let mut state = NativeShaders::default();
+-        assert_eq!(state.resolve_path(&dir, "horizon:p", false), pack);
++        assert_eq!(state.resolve_path(|| dir.clone(), "horizon:p", false), pack);
+         let first = fingerprint(&pack).unwrap();
+         let manifest_path = pack.join(horizon_shader_api::MANIFEST);
+         let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+         std::fs::write(&manifest_path, "temporarily invalid").unwrap();
+         state.resolved_at = Some(std::time::Instant::now() - super::LOOK_EVERY);
+-        assert_eq!(state.resolve_path(&dir, "horizon:p", false), pack);
++        assert_eq!(state.resolve_path(|| dir.clone(), "horizon:p", false), pack);
+         assert_ne!(fingerprint(&pack).unwrap(), first);
+         std::fs::write(&manifest_path, manifest).unwrap();
+         let first = fingerprint(&pack).unwrap();
+@@ -454,7 +460,7 @@
+         std::fs::rename(&pack, dir.join("renamed")).unwrap();
+         state.resolved_at = None;
+         assert_eq!(
+-            state.resolve_path(&dir, "horizon:p", false),
++            state.resolve_path(|| dir.clone(), "horizon:p", false),
+             dir.join("renamed")
+         );
+         let manifest_path = dir.join("renamed").join(horizon_shader_api::MANIFEST);
+@@ -464,17 +470,48 @@
+         std::fs::write(manifest_path, text).unwrap();
+         state.resolved_at = Some(std::time::Instant::now() - super::LOOK_EVERY);
+         assert_eq!(
+-            state.resolve_path(&dir, "horizon:p", false),
++            state.resolve_path(|| dir.clone(), "horizon:p", false),
+             dir.join("horizon:p"),
+             "a valid different manifest ID must not replace the selected identity"
+         );
+         let mut override_state = NativeShaders::default();
+         assert_eq!(
+-            override_state.resolve_path(&dir, "native-test_mod", true),
++            override_state.resolve_path(|| dir.clone(), "native-test_mod", true),
+             pack,
+             "an explicit missing filesystem override must not switch to another installed pack"
+         );
+         std::fs::remove_dir_all(dir).unwrap();
++    }
++
++    #[test]
++    fn cached_shader_pick_reuses_its_root_until_refresh() {
++        use std::{cell::Cell, path::PathBuf};
++        let calls = Cell::new(0);
++        let directory = || {
++            calls.set(calls.get() + 1);
++            PathBuf::from(format!("shaderpacks-{}", calls.get()))
++        };
++        let mut state = super::NativeShaders::default();
++        assert_eq!(
++            state.resolve_path(directory, "example.zip", true),
++            PathBuf::from("shaderpacks-1/example.zip")
++        );
++        assert_eq!(
++            state.resolve_path(directory, "example.zip", true),
++            PathBuf::from("shaderpacks-1/example.zip")
++        );
++        assert_eq!(calls.get(), 1);
++
++        state.resolved_at = Some(std::time::Instant::now() - super::LOOK_EVERY);
++        assert_eq!(
++            state.resolve_path(directory, "example.zip", true),
++            PathBuf::from("shaderpacks-2/example.zip")
++        );
++        assert_eq!(
++            state.resolve_path(directory, "different.zip", true),
++            PathBuf::from("shaderpacks-3/different.zip")
++        );
++        assert_eq!(calls.get(), 3);
+     }
+ 
+     /// Every way a manifest is refused stops the pack that ran: another API line, what isn't
+diff --git a/crates/horizon-client/src/game/interface/shader_packs.rs b/crates/horizon-client/src/game/interface/shader_packs.rs
+--- a/crates/horizon-client/src/game/interface/shader_packs.rs
++++ b/crates/horizon-client/src/game/interface/shader_packs.rs
+@@ -349,7 +349,16 @@
+         }
+         let selected = picked_pack(&self.settings).to_owned();
+         let path = self.native_shaders.resolve_path(
+-            &Self::shader_packs_dir(),
++            || {
++                // Cafe's current_dir issues a synchronous FSGetCwd command.
++                // The native presenter has no shader directory to look up when
++                // no pack is selected.
++                if cfg!(target_os = "cafe") && self.renderer.is_none() && selected.is_empty() {
++                    Default::default()
++                } else {
++                    Self::shader_packs_dir()
++                }
++            },
+             &selected,
+             dev_pack().is_some(),
+         );
+diff --git a/crates/horizon-client/src/game/interface/render_settings.rs b/crates/horizon-client/src/game/interface/render_settings.rs
+--- a/crates/horizon-client/src/game/interface/render_settings.rs
++++ b/crates/horizon-client/src/game/interface/render_settings.rs
+@@ -78,7 +78,7 @@
+         }
+         let picked = shader_packs::picked_pack(&self.settings);
+         let path = self.native_shaders.resolve_path(
+-            &Self::shader_packs_dir(),
++            Self::shader_packs_dir,
+             picked,
+             shader_packs::dev_pack().is_some(),
+         );
