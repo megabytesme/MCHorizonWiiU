@@ -201,3 +201,6 @@ foreground changes still need qualification.
 
 The controlled gameplay scale sweep, functional DRS and a valid standard
 benchmark report remain open.
+
+The [RC 29 validation record](rc29-validation.md) carries forward the
+post-clear correction and the pending hosted hardware checks.

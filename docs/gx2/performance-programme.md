@@ -184,6 +184,10 @@ comparison and retain matching output captures outside the timed window.
 
 ## Physical testing queue
 
+The [RC 29 validation record](rc29-validation.md) lists the current hosted
+identity, standalone packages and the order for the next console session.
+The RC 21 comparison below remains a separate reference.
+
 1. With the console owner present, prepare a dedicated test SD with the
    existing compatible resources and a disposable copy of the saved-world
    fixture. Keep the normal SD separate. Verify the candidate RPX and WUHB
