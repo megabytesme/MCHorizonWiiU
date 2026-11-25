@@ -1,0 +1,90 @@
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index d03885ecc4a6c3158d2d4d091e177d4c52963749..0994f269f6a7e22afea3c555f7404f02ad0d5d6f 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -121,6 +121,25 @@ impl SpriteAnimation {
+             .unwrap_or_else(|| [(source.len() / 4).isqrt() as u32; 2]);
+         write_region_layer(source, w, [0, 0, w, h], side, out);
+     }
++
++    /// Read an atlas-sized frame without copying or resample it into reusable storage.
++    pub fn frame_at_reusing<'a>(
++        &'a self,
++        frame: usize,
++        side: u32,
++        scratch: &'a mut Vec<u8>,
++    ) -> &'a [u8] {
++        let source = self.pixels(frame);
++        let bytes = (side as usize)
++            .checked_pow(2)
++            .and_then(|len| len.checked_mul(4));
++        if self.shape.unwrap_or([side; 2]) == [side; 2] && bytes == Some(source.len()) {
++            return source;
++        }
++        self.write_frame_at(frame, side, scratch);
++        scratch
++    }
++
+     pub fn frame_count(&self) -> usize {
+         self.frames.len()
+     }
+@@ -2012,6 +2031,31 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn animation_reuses_atlas_sized_frames_and_resamples_other_shapes() {
++        let square = test_animation(2, 0);
++        let mut scratch = vec![17; 8];
++        let borrowed = square.frame_at_reusing(1, 2, &mut scratch);
++        assert_eq!(
++            borrowed,
++            &[0, 0, 99, 255, 1, 0, 99, 255, 0, 1, 99, 255, 1, 1, 99, 255]
++        );
++        assert_eq!(borrowed.as_ptr(), square.pixels(1).as_ptr());
++        assert_eq!(scratch, [17; 8]);
++
++        // This strip has the same byte count as a 2x2 image, but its rows differ.
++        let mut strip = square.clone();
++        strip.shape = Some([1, 4]);
++        assert_eq!(
++            strip.frame_at_reusing(1, 2, &mut scratch),
++            &[0, 0, 99, 255, 0, 0, 99, 255, 0, 1, 99, 255, 0, 1, 99, 255],
++        );
++        assert_eq!(
++            square.frame_at_reusing(1, 1, &mut scratch),
++            &[0, 0, 99, 255],
++        );
++    }
++
+     #[test]
+     fn interpolated_animations_blend_towards_the_next_frame() {
+         let animation = test_clip(16, 0, r#"{"frametime":4,"interpolate":true}"#);
+diff --git a/wiiu/loading_host/terrain_animation.rs b/wiiu/loading_host/terrain_animation.rs
+index 1d8026cefe87f9a70b9e9590dfd13873c842d1c9..d8d9dd1b733974a9d8c76732a72663356bb77ea3 100644
+--- a/wiiu/loading_host/terrain_animation.rs
++++ b/wiiu/loading_host/terrain_animation.rs
+@@ -128,14 +128,17 @@ unsafe extern "C" fn write_atlas_patch(context: *mut c_void, pixels: *mut u8, pi
+     for job in patch.jobs {
+         let animation = &patch.animations[job.animation];
+         let side = patch.layout.sprite_size;
+-        animation.write_frame_at(job.blend.frame, side, patch.current);
+-        if job.blend.millis != 0 {
+-            animation.write_frame_at(job.blend.next, side, patch.next);
+-            interpolate(patch.current, patch.next, job.blend.millis);
+-        }
++        let frame = if job.blend.millis == 0 {
++            animation.frame_at_reusing(job.blend.frame, side, patch.current)
++        } else {
++            animation.write_frame_at(job.blend.frame, side, patch.current);
++            let next = animation.frame_at_reusing(job.blend.next, side, patch.next);
++            interpolate(patch.current, next, job.blend.millis);
++            patch.current.as_slice()
++        };
+         if let Err(error) = patch
+             .layout
+-            .write_layer(animation.layer, patch.current, pixels, pitch)
++            .write_layer(animation.layer, frame, pixels, pitch)
+         {
+             patch.error = Some(error);
+             return -1;

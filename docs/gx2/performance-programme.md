@@ -339,6 +339,15 @@ kernels took less time in x86-64 host comparisons. Gameplay animation cost
 also includes cache maintenance and synchronization, which remain to be
 measured on Wii U.
 
+RC 31 borrows atlas-sized terrain animation frames directly. This removes
+one tile-sized scratch copy for each matching stepped frame or matching
+read-only interpolation input. Resized tiles still use the existing
+resampling path. Host comparisons verified identical padded atlas bytes
+and dirty rectangles through stepped frames, interpolation, unchanged
+ticks and reset. Cafe Toolchain 1.1.0 compiled the same callback to
+PowerPC. The runtime effect on the physical texture-upload span remains
+to be measured.
+
 ### Counter sampling
 
 The physical [RC 26 timing trials](physical-rc26.md#physical-gpu-timing-probe)
