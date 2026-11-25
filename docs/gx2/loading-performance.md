@@ -131,6 +131,11 @@ block-tag ingredient. Both the ordered tag lists and membership sets use
 the same resolved tags. The recipe duration trace now has separate
 catalog and acceptance measurements. The old alias projection alone
 took a median of 238.563 ms across eleven warm x86-64 release runs.
+The existing-world recipe spans were 29.61 s at first entry and 29.29 s
+on reopening. Server adoption waited 8.149 s and 8.319 s, respectively,
+because recipe preparation overlapped server construction and world
+opening. Village's adoption call took 32 µs. Compare the adoption
+wait and end-to-end entry when evaluating the new loader.
 
 The corrected RC 29 run read an existing sprite cache even though the SD
 staging source contained none. The incorrect-root attempt had run

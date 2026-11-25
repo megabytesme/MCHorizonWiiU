@@ -549,6 +549,9 @@ CPU guard at both targets. Hardware qualification remains open.
 
 ## RC 32 integration
 
+The [native candidate record](rc32-validation.md) identifies the frozen
+package, its exact source tree and the verification results.
+
 Terrain animation blends the original texels before nearest-neighbor
 expansion and copies each expanded row into its repeated atlas rows.
 The host callback fixture compared complete padded atlas bytes and dirty
