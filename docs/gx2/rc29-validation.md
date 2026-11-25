@@ -92,8 +92,9 @@ monitor for evidence.
 The test SD was staged with all three WUHB hashes checked and safely
 ejected. The `RC29-Qualification` instance has its own prepared resources,
 graphics settings and `Reopen Fixture` save. It starts at fixed 100% with
-render distance 6 and simulation distance 5. Its experimental scaling marker
-enables the fixed-scale sweep and profile mode `4` records GPU endpoints.
+render distance 6 and simulation distance 5. The app-wide experimental
+marker enables the **Graphics → Quality → Resolution Scale** control for
+the fixed-scale sweep. Profile mode `4` records GPU endpoints.
 The previous RC 26 executable and its profile captures were backed up
 off-card. The scale diagnostic is the first console launch.
 

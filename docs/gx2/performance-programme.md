@@ -474,3 +474,28 @@ fitted TV label and an identical GamePad image.
 The timed run and physical acceptance are pending. The
 [RC 29 queue](rc29-validation.md) uses the independently reproduced
 package for console qualification.
+
+The RC 30 follow-up built the same engine tree from frozen port commit
+`c2e4ed6bc2e22e50cb463a195485a723c632046a` using Cafe Toolchain 1.1.0.
+The 37,523,565-byte RPX has SHA-256
+`9ed2a6f42a5485c2e18c9158c015b2f6be1d7d5d5e11dfd35c34fa63e615146e`.
+The WUHB has SHA-256
+`37a09cb9886bcf125501efbb4ebedda45f53a51cbccda4f2bb11a41df898fa5a`
+and embeds the exact RPX at byte 512. Estimated Aroma code-heap headroom
+is 12,908,480 bytes. The exact follow-up RPX displayed the fitted title
+and started the stationary diagnostic in forced-interpreter Cemu.
+Minus cancelled loading and returned to the Night reports screen without
+creating a benchmark report. The timed measurement is still pending.
+
+## RC 31 assembled source
+
+The canonical recipe reconstructs engine tree
+`ba1fa77cf44e9d8cd03ba70ac4c6834c42dbe2cd` from the pinned upstream and
+patch series. The Cafe 1.1.0 Rust check passed for the assembled program,
+and the native C, C++ and CafeGLSL build passed for the loading host.
+The two new patches add the world border and remove same-size animation
+scratch copies. The world-border single-object fixture passed 20 RGBA
+checks through two consecutive frames on each display. A separate
+three-object fixture retained stale pixels on its second GamePad frame
+unless it read back the clear before drawing. The hosted border scene
+and physical performance of both changes remain open.
