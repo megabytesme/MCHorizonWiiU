@@ -125,6 +125,19 @@ longest consecutive run of ineligible attempts, independent of retained
 frame times. Stock readiness thresholds and the original route remain in
 effect. The coverage line also appears when a route has no valid intervals.
 
+After a Village or stationary run saves a report, inspect the retained
+frame series, effective target dimensions and measured coverage together.
+
+```powershell
+python tools/gx2_benchmark_report.py $report
+```
+
+The audit gives the fraction of measured wall time covered by adjacent
+paired terrain submissions. Older reports can lack coverage evidence.
+Village reports retain the original route and report their gaps and wall
+time without an additional pass threshold. The stationary result also
+reports whether the captured coverage met its existing minimums.
+
 The RC 28 source also writes `gx2-profile-session.hzp` after a hosted
 session with presented gameplay returns to Night. The snapshot is taken
 after teardown and before Night can overwrite that gameplay in the ring.
