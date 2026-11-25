@@ -1,0 +1,538 @@
+diff --git a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+index 2a4bdc88cfb6046f5d16ebc65c95b223d75744b4..b74ba0adfb63839c2d4673cb7b80330deab25fe9 100644
+--- a/crates/horizon-client-render/src/gfx.rs
++++ b/crates/horizon-client-render/src/gfx.rs
+@@ -1369,6 +1369,8 @@ pub struct BorderDraw {
+     /// The cached wall buffer; uploaded only when `rebuilt`.
+     pub vertices: [crate::border_render::BorderVertex; 16],
+     pub rebuilt: bool,
++    #[cfg(target_os = "cafe")]
++    pub forcefield: std::sync::Arc<(u32, u32, Vec<u8>)>,
+     pub transforms: crate::border_render::BorderTransforms,
+     /// Walls to draw (indices of four-vertex quads), nearest first.
+     pub sides: Vec<usize>,
+diff --git a/crates/horizon-client/src/game/interface/screen_backgrounds.rs b/crates/horizon-client/src/game/interface/screen_backgrounds.rs
+index 059e19bc8c28b11475a7df49e8029959d5e4b74f..84288788e8668870f63af40b61bc31d2ae9e7a83 100644
+--- a/crates/horizon-client/src/game/interface/screen_backgrounds.rs
++++ b/crates/horizon-client/src/game/interface/screen_backgrounds.rs
+@@ -162,6 +162,8 @@ impl Game<'_> {
+         Some(horizon_client::gfx::BorderDraw {
+             vertices: self.border_renderer.vertices,
+             rebuilt: self.border_renderer.take_rebuilt(),
++            #[cfg(target_os = "cafe")]
++            forcefield: Arc::clone(&self.pack.forcefield),
+             transforms: self
+                 .border_renderer
+                 .transforms(&self.border_state, camera, millis),
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 2669fb97d47823e519cf3fc1faed2e51f1659469..18382e19e8fd56d144dab678f22f6ff1a6d5b684 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -162,18 +162,28 @@ add_custom_command(
+    DEPENDS lightning.vert lightning.frag
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(WORLD_BORDER_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/world_border_gfd.o")
++add_custom_command(
++   OUTPUT "${WORLD_BORDER_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/world_border.vert"
++      -ps "${CMAKE_CURRENT_SOURCE_DIR}/world_border.frag" -o world_border.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common world_border.gsh world_border_gfd.o
++   DEPENDS world_border.vert world_border.frag
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" "${STOCK_SKY_GFD_OBJECT}"
+    "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}" "${END_SKY_GFD_OBJECT}"
+-   "${LIGHTNING_GFD_OBJECT}"
++   "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+-   stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c
++   stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c world_border.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+-   "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}")
++   "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 4589bdaa04c8bbdf6db39bec5a30dabe8d6ab41f..1883a740853aa99eaa6d433d095ef0cc9c4e8bba 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -11,6 +11,7 @@ mod crumbling;
+ mod end_sky;
+ mod hand;
+ mod lightning;
++mod world_border;
+ mod outline;
+ mod precipitation;
+ mod sky_bodies;
+@@ -602,6 +603,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     crumbling: crumbling::Crumbling,
+     models: hand::Models,
+     lightning: lightning::Lightning,
++    world_border: world_border::WorldBorder,
+     stock_sky: stock_sky::Sky,
+     precipitation: precipitation::Precipitation,
+     terrain_atlas: Option<TerrainAtlasLayout>,
+@@ -673,6 +675,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             crumbling: crumbling::Crumbling::default(),
+             models: hand::Models::default(),
+             lightning: lightning::Lightning::default(),
++            world_border: world_border::WorldBorder::default(),
+             stock_sky: stock_sky::Sky::default(),
+             precipitation: precipitation::Precipitation::default(),
+             terrain_atlas: None,
+@@ -1240,7 +1243,6 @@ fn unsupported_world_passes(frame: &Frame<'_>) -> impl Iterator<Item = (u32, &'s
+             "debug lines",
+         ),
+         (!frame.screen.is_empty(), 1 << 9, "screen effects"),
+-        (frame.border.is_some(), 1 << 10, "world border"),
+         (
+             !frame.additive.is_empty() || !frame.see_through.is_empty(),
+             1 << 11,
+@@ -1285,7 +1287,7 @@ fn log_unsupported_world_pass(name: &str) {
+         }
+         "debug lines" => "Horizon GX2: skipped unsupported debug-lines pass\n\0",
+         "screen effects" => "Horizon GX2: skipped unsupported screen-effects pass\n\0",
+-        "world border" => "Horizon GX2: skipped unsupported world-border pass\n\0",
++        "world border" => "Horizon GX2: world border lacked a usable texture or geometry buffer\n\0",
+         "translucent geometry" => "Horizon GX2: skipped unsupported translucent-geometry pass\n\0",
+         "world primitives" => "Horizon GX2: skipped unsupported world-primitives pass\n\0",
+         "shadow pass" => "Horizon GX2: skipped unsupported shadow pass\n\0",
+@@ -1811,6 +1813,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.crumbling = crumbling::Crumbling::default();
+         self.models = hand::Models::default();
+         self.lightning = lightning::Lightning::default();
++        self.world_border = world_border::WorldBorder::default();
+         self.stock_sky = stock_sky::Sky::default();
+         self.precipitation = precipitation::Precipitation::default();
+         self.hud = None;
+@@ -1863,11 +1866,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             } else {
+                 !frame.weather.is_empty()
+             };
++        let border_partial = !frame.title && if self.terrain.is_some() {
++            self.world_border.prepare(frame.border.as_ref())
++        } else {
++            frame.border.is_some()
++        };
+         let unsupported = unsupported_world_passes(frame)
+             .chain(sky_bodies::unsupported(frame, self.hud.is_some()).then_some((1 << 0, "celestial")))
+             .chain(end_sky::unsupported(frame, self.hud.is_some()).then_some((1 << 21, "sky surfaces")))
+             .chain(world_partial.then_some((1 << 4, "entity materials")))
+             .chain(lightning_partial.then_some((1 << 17, "lightning")))
++            .chain(border_partial.then_some((1 << 10, "world border")))
+             .chain(models.particles_partial.then_some((1 << 26, "particles budget")))
+             .chain(weather_partial.then_some((1 << 3, "weather")))
+             .chain(self.block_entity_models_partial.then_some((1 << 5, "block entities")))
+@@ -2158,6 +2167,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.presenter.precipitation.draw(
+                         draw.frame, projection, world_rect, hud, terrain,
+                     )?;
++                    draw.presenter.world_border.draw(world_rect, &projection.clip)?;
+                     let _span = Span::new([Stage::FirstPersonTv, Stage::FirstPersonDrc][index]);
+                     draw.presenter
+                         .models
+diff --git a/wiiu/loading_host/world_border.c b/wiiu/loading_host/world_border.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1f4d67e404b16c77a0d3dca22f91e3fc420dd18
+--- /dev/null
++++ b/wiiu/loading_host/world_border.c
+@@ -0,0 +1,162 @@
++#include "world_border.h"
++
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <gx2/draw.h>
++#include <gx2/event.h>
++#include <gx2/registers.h>
++#include <gx2/sampler.h>
++#include <gx2/shaders.h>
++#include <gx2/texture.h>
++#include <gx2/utils.h>
++#include <gx2r/buffer.h>
++#include <gx2r/draw.h>
++#include <gx2r/surface.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_world_border_gsh_start[];
++/* Shared linear RGBA upload path used by the existing HUD textures. */
++int horizon_hud_texture_create(GX2Texture *texture, uint32_t width, uint32_t height,
++                               const uint8_t *rgba);
++
++enum { MAX_VERTICES = 24, MAX_TEXTURE_SIDE = 512 };
++_Static_assert(sizeof(HorizonGx2WorldBorderVertex) == 20, "border vertex ABI changed");
++_Static_assert(offsetof(HorizonGx2WorldBorderVertex, uv) == 12, "border UV offset changed");
++
++struct HorizonGx2WorldBorder {
++   WHBGfxShaderGroup shader;
++   GX2RBuffer vertices;
++   GX2Texture texture;
++   GX2Sampler sampler;
++   uint32_t vertex_uniforms[5];
++   uint32_t tint_offset;
++   uint32_t texture_slot;
++   uint32_t count;
++};
++
++static bool float4_uniform(const GX2UniformVar *var)
++{
++   return var && var->type == GX2_SHADER_VAR_TYPE_FLOAT4 && var->count == 1 && var->block < 0;
++}
++
++int horizon_gx2_world_border_create(HorizonGx2WorldBorder **out)
++{
++   if (!out) return -1;
++   *out = NULL;
++   HorizonGx2WorldBorder *border = calloc(1, sizeof(*border));
++   if (!border) return -2;
++   WHBGfxShaderGroup *shader = &border->shader;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_world_border_gsh_start)) {
++      free(border);
++      return -3;
++   }
++   const GX2VertexShader *vs = shader->vertexShader;
++   const GX2PixelShader *ps = shader->pixelShader;
++   if (!vs || !ps || vs->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       ps->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto invalid_shader;
++   const char *names[] = {"uClipX", "uClipY", "uClipZ", "uClipW", "uOffset"};
++   for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
++      const GX2UniformVar *var = GX2GetVertexUniformVar(vs, names[i]);
++      if (!float4_uniform(var)) goto invalid_shader;
++      border->vertex_uniforms[i] = var->offset;
++   }
++   const GX2UniformVar *tint = GX2GetPixelUniformVar(ps, "uColor");
++   const GX2SamplerVar *texture = ps->samplerVars;
++   if (!float4_uniform(tint) || ps->samplerVarCount != 1 || !texture || !texture->name ||
++       strcmp(texture->name, "uForcefield") || texture->type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D)
++      goto invalid_shader;
++   border->tint_offset = tint->offset;
++   border->texture_slot = texture->location;
++   if (!WHBGfxInitShaderAttribute(shader, "aPosition", 0,
++         offsetof(HorizonGx2WorldBorderVertex, position), GX2_ATTRIB_FORMAT_FLOAT_32_32_32) ||
++       !WHBGfxInitShaderAttribute(shader, "aUv", 0,
++         offsetof(HorizonGx2WorldBorderVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++       !WHBGfxInitFetchShader(shader)) goto invalid_shader;
++
++   GX2InitSampler(&border->sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_POINT);
++   GX2InitSamplerXYFilter(&border->sampler, GX2_TEX_XY_FILTER_MODE_POINT,
++                        GX2_TEX_XY_FILTER_MODE_LINEAR, GX2_TEX_ANISO_RATIO_NONE);
++   border->vertices.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++      GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++   border->vertices.elemSize = sizeof(HorizonGx2WorldBorderVertex);
++   border->vertices.elemCount = MAX_VERTICES;
++   if (!GX2RCreateBuffer(&border->vertices)) goto invalid_shader;
++   *out = border;
++   return 0;
++
++invalid_shader:
++   WHBGfxFreeShaderGroup(shader);
++   free(border);
++   return -3;
++}
++
++void horizon_gx2_world_border_destroy(HorizonGx2WorldBorder *border)
++{
++   if (!border) return;
++   GX2DrawDone();
++   if (border->texture.surface.image) GX2RDestroySurfaceEx(&border->texture.surface, 0);
++   GX2RDestroyBufferEx(&border->vertices, 0);
++   WHBGfxFreeShaderGroup(&border->shader);
++   free(border);
++}
++
++int horizon_gx2_world_border_texture(HorizonGx2WorldBorder *border, const uint8_t *rgba, uint32_t side)
++{
++   if (!border || !rgba || !side || side > MAX_TEXTURE_SIDE || (side & (side - 1))) return -1;
++   GX2Texture replacement = {0};
++   if (!horizon_hud_texture_create(&replacement, side, side, rgba)) return -2;
++   /* The preceding WHB frame retired before new resources are prepared. */
++   if (border->texture.surface.image) GX2RDestroySurfaceEx(&border->texture.surface, 0);
++   border->texture = replacement;
++   return 0;
++}
++
++int horizon_gx2_world_border_upload(HorizonGx2WorldBorder *border,
++                                   const HorizonGx2WorldBorderVertex *vertices, uint32_t count)
++{
++   if (!border || !vertices || !count || count > MAX_VERTICES || count % 6) return -1;
++   border->count = 0;
++   void *mapped = GX2RLockBufferEx(&border->vertices, 0);
++   if (!mapped) return -2;
++   memcpy(mapped, vertices, count * sizeof(*vertices));
++   GX2RUnlockBufferEx(&border->vertices, 0);
++   border->count = count;
++   return 0;
++}
++
++int horizon_gx2_world_border_draw(HorizonGx2WorldBorder *border, const uint32_t rect[4],
++                                 const float clip_rows[4][4], const float offset[4], const float tint[4])
++{
++   if (!border || !border->texture.surface.image || !border->count || !rect || !rect[2] ||
++       !rect[3] || !clip_rows || !offset || !tint) return -1;
++   const WHBGfxShaderGroup *shader = &border->shader;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   for (unsigned row = 0; row < 4; ++row)
++      GX2SetVertexUniformReg(border->vertex_uniforms[row], 4, clip_rows[row]);
++   GX2SetVertexUniformReg(border->vertex_uniforms[4], 4, offset);
++   GX2SetPixelUniformReg(border->tint_offset, 4, tint);
++   GX2SetPixelTexture(&border->texture, border->texture_slot);
++   GX2SetPixelSampler(&border->sampler, border->texture_slot);
++   GX2RSetAttributeBuffer(&border->vertices, 0, sizeof(HorizonGx2WorldBorderVertex), 0);
++
++   GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
++   /* Bias the forward-depth Cafe surface toward the viewer. */
++   GX2SetPolygonOffset(-3.0f, -3.0f, -3.0f, -3.0f, 0.0f);
++   GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, FALSE, FALSE, GX2_POLYGON_MODE_TRIANGLE,
++                        GX2_POLYGON_MODE_TRIANGLE, TRUE, TRUE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
++   GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE,
++                      GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
++   GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, border->count, 0, 1);
++   return 0;
++}
+diff --git a/wiiu/loading_host/world_border.frag b/wiiu/loading_host/world_border.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..07c8f3710ec1961efc62f78b05f4b07f1386af83
+--- /dev/null
++++ b/wiiu/loading_host/world_border.frag
+@@ -0,0 +1,11 @@
++#version 330
++uniform sampler2D uForcefield;
++uniform vec4 uColor;
++in vec2 vUv;
++out vec4 oColor;
++
++void main() {
++    vec4 sampled = texture(uForcefield, vUv);
++    if (sampled.a == 0.0) discard;
++    oColor = sampled * uColor;
++}
+diff --git a/wiiu/loading_host/world_border.h b/wiiu/loading_host/world_border.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..293ae7cc42a199317d07891e23acf9f106195c07
+--- /dev/null
++++ b/wiiu/loading_host/world_border.h
+@@ -0,0 +1,17 @@
++#pragma once
++
++#include <stdint.h>
++
++typedef struct HorizonGx2WorldBorder HorizonGx2WorldBorder;
++typedef struct {
++   float position[3];
++   float uv[2];
++} HorizonGx2WorldBorderVertex;
++
++int horizon_gx2_world_border_create(HorizonGx2WorldBorder **out);
++void horizon_gx2_world_border_destroy(HorizonGx2WorldBorder *border);
++int horizon_gx2_world_border_texture(HorizonGx2WorldBorder *border, const uint8_t *rgba, uint32_t side);
++int horizon_gx2_world_border_upload(HorizonGx2WorldBorder *border,
++                                   const HorizonGx2WorldBorderVertex *vertices, uint32_t count);
++int horizon_gx2_world_border_draw(HorizonGx2WorldBorder *border, const uint32_t rect[4],
++                                 const float clip_rows[4][4], const float offset[4], const float tint[4]);
+diff --git a/wiiu/loading_host/world_border.rs b/wiiu/loading_host/world_border.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d453d2ec3789976be1a5a0f9bc79b6261bfff02b
+--- /dev/null
++++ b/wiiu/loading_host/world_border.rs
+@@ -0,0 +1,161 @@
++//! Stock camera-relative wall, status tint and scrolling UVs from the shared renderer.
++use horizon_client::{border_render::BorderVertex, gfx::BorderDraw};
++use horizon_wiiu_gx2_terrain::TerrainClipRows;
++use std::{ffi::c_void, ptr::NonNull, sync::Arc};
++
++const TRIANGLES: [usize; 6] = [0, 1, 2, 0, 2, 3];
++const MAX_VERTICES: usize = 24;
++const MAX_TEXTURE_SIDE: u32 = 512;
++type Forcefield = Arc<(u32, u32, Vec<u8>)>;
++
++unsafe extern "C" {
++    fn horizon_gx2_world_border_create(out: *mut *mut c_void) -> i32;
++    fn horizon_gx2_world_border_destroy(border: *mut c_void);
++    fn horizon_gx2_world_border_texture(border: *mut c_void, rgba: *const u8, side: u32) -> i32;
++    fn horizon_gx2_world_border_upload(
++        border: *mut c_void,
++        vertices: *const BorderVertex,
++        count: u32,
++    ) -> i32;
++    fn horizon_gx2_world_border_draw(
++        border: *mut c_void,
++        rect: *const u32,
++        clip_rows: *const f32,
++        offset: *const f32,
++        tint: *const f32,
++    ) -> i32;
++}
++
++#[derive(PartialEq)]
++struct Walls {
++    vertices: [BorderVertex; MAX_VERTICES],
++    count: usize,
++}
++
++impl Walls {
++    fn ordered(vertices: &[BorderVertex; 16], sides: &[usize]) -> Option<Self> {
++        let count = sides.len().checked_mul(TRIANGLES.len())?;
++        let mut walls = Self {
++            vertices: [[0.0; 5]; MAX_VERTICES],
++            count,
++        };
++        for (&side, triangles) in sides.iter().zip(
++            walls
++                .vertices
++                .get_mut(..count)?
++                .chunks_exact_mut(TRIANGLES.len()),
++        ) {
++            let first = side.checked_mul(4)?;
++            let wall = vertices.get(first..first.checked_add(4)?)?;
++            for (vertex, index) in triangles.iter_mut().zip(TRIANGLES) {
++                *vertex = wall[index];
++            }
++        }
++        Some(walls)
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct WorldBorder {
++    native: Option<NonNull<c_void>>,
++    texture: Option<Forcefield>,
++    walls: Option<Walls>,
++    transforms: Option<([f32; 4], [f32; 4])>,
++}
++
++impl WorldBorder {
++    /// True denotes a requested border that could not be prepared.
++    pub(crate) fn prepare(&mut self, draw: Option<&BorderDraw>) -> bool {
++        self.transforms = None;
++        let Some(draw) = draw.filter(|draw| !draw.sides.is_empty()) else {
++            return false;
++        };
++        let Some(walls) = Walls::ordered(&draw.vertices, &draw.sides) else {
++            return true;
++        };
++        let (width, height, pixels) = &*draw.forcefield;
++        if width != height
++            || !width.is_power_of_two()
++            || *width > MAX_TEXTURE_SIDE
++            || pixels.len() != (*width * *height * 4) as usize
++        {
++            return true;
++        }
++        let native = match self.native {
++            Some(native) => native,
++            None => {
++                let mut pointer = std::ptr::null_mut();
++                if unsafe { horizon_gx2_world_border_create(&mut pointer) } != 0 {
++                    return true;
++                }
++                let Some(native) = NonNull::new(pointer) else {
++                    return true;
++                };
++                self.native = Some(native);
++                native
++            }
++        };
++        if !self
++            .texture
++            .as_ref()
++            .is_some_and(|texture| Arc::ptr_eq(texture, &draw.forcefield))
++        {
++            if unsafe { horizon_gx2_world_border_texture(native.as_ptr(), pixels.as_ptr(), *width) }
++                != 0
++            {
++                return true;
++            }
++            self.texture = Some(Arc::clone(&draw.forcefield));
++        }
++        if self.walls.as_ref() != Some(&walls) {
++            self.walls = None;
++            if unsafe {
++                horizon_gx2_world_border_upload(
++                    native.as_ptr(),
++                    walls.vertices.as_ptr(),
++                    walls.count as u32,
++                )
++            } != 0
++            {
++                return true;
++            }
++            self.walls = Some(walls);
++        }
++        let [x, y, z] = draw.transforms.model_offset;
++        self.transforms = Some((
++            [x, y, z, draw.transforms.texture_offset],
++            draw.transforms.color,
++        ));
++        false
++    }
++
++    pub(crate) fn draw(
++        &self,
++        rect: [u32; 4],
++        projection: &TerrainClipRows,
++    ) -> Result<(), &'static str> {
++        if let Some((native, (offset, tint))) = self.native.zip(self.transforms) {
++            if unsafe {
++                horizon_gx2_world_border_draw(
++                    native.as_ptr(),
++                    rect.as_ptr(),
++                    projection.rows.as_ptr().cast(),
++                    offset.as_ptr(),
++                    tint.as_ptr(),
++                )
++            } != 0
++            {
++                return Err("GX2 world border draw failed");
++            }
++        }
++        Ok(())
++    }
++}
++
++impl Drop for WorldBorder {
++    fn drop(&mut self) {
++        if let Some(native) = self.native.take() {
++            unsafe { horizon_gx2_world_border_destroy(native.as_ptr()) };
++        }
++    }
++}
+diff --git a/wiiu/loading_host/world_border.vert b/wiiu/loading_host/world_border.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2157b252c7461f0ce5a4c3e4fd63cbd61a603fd
+--- /dev/null
++++ b/wiiu/loading_host/world_border.vert
+@@ -0,0 +1,16 @@
++#version 330
++layout(location = 0) in vec3 aPosition;
++layout(location = 1) in vec2 aUv;
++uniform vec4 uClipX;
++uniform vec4 uClipY;
++uniform vec4 uClipZ;
++uniform vec4 uClipW;
++uniform vec4 uOffset;
++out vec2 vUv;
++
++void main() {
++    vec4 pos = vec4(aPosition + uOffset.xyz, 1.0);
++    gl_Position = vec4(dot(uClipX, pos), dot(uClipY, pos),
++                       dot(uClipZ, pos), dot(uClipW, pos));
++    vUv = aUv + vec2(uOffset.w);
++}
