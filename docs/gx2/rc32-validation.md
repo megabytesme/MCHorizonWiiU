@@ -20,11 +20,12 @@ is `6e6f2ac0d8f954b55f31fc39f4eea87c528045f22dc45b847211380b5a0151ae`.
 | Estimated Aroma code-heap headroom | 12,885,888 bytes |
 | Prepared resources | Minecraft 26.3, schema 7, HZDATA version 2 |
 
-The first build used an isolated output directory
-`/var/tmp/mchorizon-rc31-milestone.U4QdI9Mv/rc32-a` and cached compiler
-dependencies from the frozen RC 31 baseline. Native imports,
-relocations, package hashes and code-heap sizing passed the builder
-verification. The inputs and full receipts are retained privately.
+Two fixed-path builds used separate output directories, `rc32-a` and
+`rc32-b` under `/var/tmp/mchorizon-rc31-milestone.U4QdI9Mv`. Each started
+with cached compiler dependencies from the frozen RC 31 baseline and
+rebuilt the hosted package in its own target directory. They produced
+identical RPX and WUHB bytes. Native imports, relocations, package
+hashes and code-heap sizing passed builder verification for both. The inputs and full receipts are retained privately.
 The forced-interpreter Cemu fixture's prepared archive passed preflight
 for the default instance, with the same normalized 23,148-entry payload
 as the physical qualification archive.
@@ -42,3 +43,28 @@ describe the workload and keep hardware timing separate from host tests.
 The [console queue](benchmarks.md#rc-32-and-rc-33-console-qualification)
 covers matched Full Performance, stationary and original Village runs,
 both displays, the wider render-distance fixture and lifecycle checks.
+
+
+## Saved-world replay
+
+The exact RPX passed two saved-world sessions in one NSS-patched Cemu
+process in forced interpreter mode. Both displays showed textured
+terrain, the HUD and the first-person arm. The first session reported
+effective 75% with TV 1440×809 and GamePad 641×360 world targets.
+Scripted movement persisted through Save & Quit and the second session
+preserved the saved position exactly. Both sessions delivered nonzero
+AX audio samples, completed the save barrier and restored Night.
+
+| Interpreter observation | First entry | Same-process reopen |
+| --- | ---: | ---: |
+| Game world-ready marker, ms | 810,302 | 854,122 |
+| First serial sample with terrain on both outputs, ms | 842,646 | 883,893 |
+| Sprite cache hits / misses | 0 / 28,641 | 28,639 / 2 |
+| Rust requested high-water, bytes | 323,109,446 | 372,553,655 |
+| Rust live requested after teardown, bytes | 44,300,741 | 44,317,259 |
+| GX2 bulk free after save, bytes | 234,880,920 | 234,880,920 |
+| GX2 largest aligned block after save, bytes | 234,880,896 | 234,880,896 |
+
+The replay was still streaming at first visible terrain. These
+durations include concurrent host build activity. The separately
+archived physical RC 29 cases supply the loading and gameplay baselines.
