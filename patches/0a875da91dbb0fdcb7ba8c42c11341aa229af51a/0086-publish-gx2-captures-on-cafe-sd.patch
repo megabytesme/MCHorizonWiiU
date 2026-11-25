@@ -1,0 +1,115 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 4b49d0e9df4..e6d4c0557bc 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,13 +1,17 @@
+ #include "gx2_profile.h"
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
++#include <coreinit/filesystem_fsa.h>
+ #include <coreinit/time.h>
+ #include <gx2/event.h>
++#include <errno.h>
+ #include <stdatomic.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+ #define CAPACITY 4096
+ #define STAGES 19
+@@ -28,7 +32,8 @@ enum {
+    FLIP_INTERVAL_TICKS,
+    TV_WIDTH = 10,
+ };
+-#define ROOT "/vol/external01/wiiu/apps/HorizonWiiU/"
++#define PROFILE_VOLUME "/vol/external01"
++#define ROOT PROFILE_VOLUME "/wiiu/apps/HorizonWiiU/"
+ #define CAPTURE ROOT "gx2-profile.hzp"
+ 
+ // WUT exports these Cafe APIs without prototypes. The aligned 64-bit
+@@ -375,6 +380,60 @@ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes)
+    return (uint32_t)(dst - (uint8_t *)out);
+ }
+ 
++static bool flush_capture_volume(void)
++{
++   const FSAClientHandle client = FSAAddClient(NULL);
++   if (client < 0) {
++      OSReport("Horizon GX2 capture volume client failed: status=%d\n", client);
++      return false;
++   }
++   const int flushed = FSAFlushVolume(client, PROFILE_VOLUME);
++   const int closed = FSADelClient(client);
++   if (flushed || closed) {
++      OSReport("Horizon GX2 capture volume flush failed: status=%d close=%d\n", flushed, closed);
++      return false;
++   }
++   return true;
++}
++
++static bool publish_capture(const char *path, const char *temporary)
++{
++   struct stat info;
++   bool live = stat(path, &info) == 0;
++   if (!live && errno != ENOENT) {
++      OSReport("Horizon GX2 capture target stat failed: errno=%d path=%s\n", errno, path);
++      return false;
++   }
++   if (live && !S_ISREG(info.st_mode)) {
++      OSReport("Horizon GX2 capture target is not a file: path=%s\n", path);
++      return false;
++   }
++   char previous[sizeof(ROOT) + 48];
++   const int length = snprintf(previous, sizeof(previous), "%s.previous", path);
++   if (length < 0 || (size_t)length >= sizeof(previous)) return false;
++
++   // Cafe rename requires a vacant destination. Keep the previous complete
++   // capture until the new capture is durable, including across a failed move.
++   if (live) {
++      if ((unlink(previous) != 0 && errno != ENOENT) || rename(path, previous) != 0) {
++         OSReport("Horizon GX2 capture backup failed: errno=%d path=%s\n", errno, path);
++         return false;
++      }
++      if (!flush_capture_volume()) {
++         if (rename(previous, path) != 0)
++            OSReport("Horizon GX2 capture restore failed: errno=%d path=%s\n", errno, previous);
++         return false;
++      }
++   }
++   if (rename(temporary, path) != 0) {
++      OSReport("Horizon GX2 capture publish failed: errno=%d path=%s\n", errno, path);
++      if (live && rename(previous, path) != 0)
++         OSReport("Horizon GX2 capture restore failed: errno=%d path=%s\n", errno, previous);
++      return false;
++   }
++   return flush_capture_volume();
++}
++
+ static void flush_to(const char *path, const char *temporary)
+ {
+    if (!atomic_load_explicit(&enabled, memory_order_acquire) || !total) return;
+@@ -384,17 +443,18 @@ static void flush_to(const char *path, const char *temporary)
+    const uint32_t tail = info.count < CAPACITY - first ? info.count : CAPACITY - first;
+    FILE *file = fopen(temporary, "wb");
+    if (!file) {
+-      OSReport("Horizon GX2 capture open failed\n");
++      OSReport("Horizon GX2 capture open failed: errno=%d path=%s\n", errno, temporary);
+       return;
+    }
+    const bool written = fwrite(&info, sizeof(info), 1, file) == 1 &&
+       fwrite(&ring[first], sizeof(ProfileFrame), tail, file) == tail &&
+       fwrite(ring, sizeof(ProfileFrame), info.count - tail, file) == info.count - tail;
+    const bool closed = fclose(file) == 0;
+-   if (!written || !closed || rename(temporary, path) != 0) {
+-      OSReport("Horizon GX2 capture write failed\n");
++   if (!written || !closed) {
++      OSReport("Horizon GX2 capture stage write failed: errno=%d path=%s\n", errno, temporary);
+       return;
+    }
++   if (!flush_capture_volume() || !publish_capture(path, temporary)) return;
+    OSReport("Horizon GX2 capture complete: frames=%u total=%u path=%s\n", info.count, total, path);
+ }
+ 

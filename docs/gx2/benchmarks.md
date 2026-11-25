@@ -144,6 +144,14 @@ after teardown and before Night can overwrite that gameplay in the ring.
 The unchanged final capture still describes the newest rows at application
 close. Collect the session checkpoint before subsequent test sessions.
 
+On the physical RC 29 card, both early profile writes left complete HZP3
+files under their temporary names when the final names already existed.
+The Cafe recorder in the follow-up source publishes into a vacant name
+and retains one complete prior capture at the same path plus `.previous`.
+If the console stops during publication and the final name is absent,
+the decoder can open that recovery file directly. Forced-interpreter Cemu
+verified first publication and byte-for-byte preservation on replacement.
+
 ```powershell
 python tools/gx2_profile.py $capture --start 5 --end 25 --csv $samples > $summary
 ```
