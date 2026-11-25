@@ -93,9 +93,10 @@ intervals and at least 80% eligible wall duration. It reports the paired
 coverage and samples native memory around the timed interval.
 
 Host tests cover transient fallback, display resizing, missing metadata
-and insufficient coverage. Automatic resolution remains inactive. Hosted
-and physical validation of the new scenario is pending. Village keeps its
-original route and acceptance rules.
+and insufficient coverage. The packaged RC 30 displayed the diagnostic
+on the last page of Night's benchmark menu and accepted its selection in
+Cemu. The timed run and physical checks are pending. Automatic resolution
+remains inactive. Village keeps its original route and acceptance rules.
 
 ## Capture format and interpretation
 

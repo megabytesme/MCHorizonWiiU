@@ -439,3 +439,29 @@ the measured contiguous allocation baseline. The exact RPX reached Night's
 Profiles screen on both outputs in forced-interpreter Cemu. RC 27 remained
 a local package. Physical acceptance covered RC 26 and the standalone GX2
 probes. The newer RC 28 assembly passed the Cafe cross-check.
+
+## RC 30 development package
+
+The isolated hosted build from port commit
+`eea50179d61275817aa7d6e4cfa0449b1b8f1782` assembled engine tree
+`8c36e97126357f3aa74b86d7fc780180392746f2` with Cafe Toolchain 1.1.0 and
+builder `0.7.0-rc.5`. It contains the End flash, frame-associated GX2 timing
+observations and the stationary render diagnostic. The recipe SHA-256 is
+`91246fc2ad5d26d01c9cad5d0dcbdabc53d2e02a8e6278e9f2cfb909734a565f`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| RPX | `ad10323d5dfa8ebbc5448746e8fb6bd5ac1a03834db576e622a7033bbcee765f` |
+| WUHB | `e15c83fc88f7a7d227033727230f342a50c04cef561544f7a0d3ff62acfa3c5d` |
+
+The package verifier passed. The WUHB holds the 37,524,358-byte RPX at
+byte 512. The Aroma estimate leaves 12,907,968 bytes of code-heap
+headroom. The exact RPX booted into Night on both Cemu displays and
+accepted selection of the stationary diagnostic. Its full name crossed
+the TV side panel on the launch screen. The follow-up Night layout fits
+the label to the available space. A native Cemu fixture verified the
+fitted TV label and an identical GamePad image.
+
+The timed run and physical acceptance are pending. The
+[RC 29 queue](rc29-validation.md) uses the independently reproduced
+package for console qualification.
