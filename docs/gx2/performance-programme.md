@@ -533,3 +533,39 @@ median window, hysteresis and cooldown. Benchmarks continue to use fixed
 settings. The trial passed the Cafe cross-check and host policy tests for
 raising, lowering and holding scale. Hardware still needs to qualify the
 signal and transitions before automatic scaling can become a normal mode.
+
+The RC 32 trial subtracts the explicitly accounted wait time from the whole
+game step before comparing the remaining wall time with the 30 or 60 Hz
+budget. This includes native command submission and any unmeasured inline
+waits. For eligible samples, the controller receives the sum of the two
+output callback spans. It checks that the full bracket fits inside the
+game step and omits the time between callbacks from the controller input.
+Both callback spans can still include starvation. Host checks cover the
+budget distinction at both targets, long inter-output gaps, invalid
+endpoints and mismatched scale. The stock RC 29 camera remains above the
+CPU guard at both targets. Hardware qualification remains open.
+
+## RC 32 integration
+
+Terrain animation blends the original texels before nearest-neighbor
+expansion and copies each expanded row into its repeated atlas rows.
+The host callback fixture compared complete padded atlas bytes and dirty
+rectangles for stepped and interpolated animations, reloads and unchanged
+ticks. Across two x86-64 runs of the 54-clip stock-shape fixture, mean
+time per update fell from 3.099 to 0.993 ms and from 1.745 to 0.276 ms.
+The measurement excludes native cache writeback and GX2 upload time.
+Cafe Toolchain 1.1.0 compiled the focused kernel to big-endian PowerPC.
+
+The same executable also offers a shared HUD upload trial. Marker
+`4h` enables it and marker `4` uses the established direct path.
+The trial prepares the atlas patches and vertex backing once per paired
+frame, outside both output callbacks. The existing WHB finish supplies
+the retirement boundary. The isolated Cemu test exposed stale GamePad
+pixels on the second frame. The direct path remains the default while
+the repeated-frame comparison is open.
+
+The loading path enumerates the individual Polytone directories in
+each resource namespace. This avoids recursively walking unrelated
+assets during pack and HUD preparation. Pack-assembly child timings
+support a matched comparison against the correctly bound RC 29 archive.
+Physical duration changes remain unmeasured.

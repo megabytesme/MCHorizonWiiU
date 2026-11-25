@@ -1,0 +1,597 @@
+diff --git a/wiiu/gx2_hud/diagnostic/main.c b/wiiu/gx2_hud/diagnostic/main.c
+index 2e5812fd52cb2c9ec7aa8656570df5b96f8e9b1d..a78157296c75db9338388efb0aa096658b2fa134 100644
+--- a/wiiu/gx2_hud/diagnostic/main.c
++++ b/wiiu/gx2_hud/diagnostic/main.c
+@@ -259,28 +259,41 @@ int main(void)
+       GX2Surface *targets[] = {&WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetDRCColourBuffer()->surface};
+       char output_reports[2][160];
+       verified = 1;
+-      WHBGfxBeginRender();
+-      for (uint32_t output = 0; output < 2; ++output) {
+-         if (output == 0) WHBGfxBeginRenderTV();
+-         else WHBGfxBeginRenderDRC();
+-         WHBGfxClearColor(0.2f, 0.2f, 0.2f, 0.25f);
+-         GX2Surface *target = targets[output];
+-         result = horizon_gx2_hud_draw_to_output(hud, &frame, 0, 0, target->width, target->height, output);
+-         char *output_report = output_reports[output];
+-         if (result == HORIZON_HUD_OK) {
+-            verified &= readback(target, output_report, sizeof(output_reports[output]));
+-         } else {
+-            snprintf(output_report, sizeof(output_reports[output]), "presenter draw failed=%d", result);
++      for (uint32_t shared = 0; shared < 2; ++shared) {
++         result = shared ? horizon_gx2_hud_upload_after_wait(hud, &frame) : HORIZON_HUD_OK;
++         if (result != HORIZON_HUD_OK) {
++            status("shared upload failed");
+             verified = 0;
++            break;
+          }
+-         if (output == 0) WHBGfxFinishRenderTV();
+-         else WHBGfxFinishRenderDRC();
++         WHBGfxBeginRender();
++         for (uint32_t output = 0; output < 2; ++output) {
++            if (output == 0) WHBGfxBeginRenderTV();
++            else WHBGfxBeginRenderDRC();
++            WHBGfxClearColor(0.2f, 0.2f, 0.2f, 0.25f);
++            GX2Surface *target = targets[output];
++            if (shared)
++               result = horizon_gx2_hud_draw_uploaded_to_output(hud, &frame, 0, 0,
++                                                                 target->width, target->height, output);
++            else
++               result = horizon_gx2_hud_draw_to_output(hud, &frame, 0, 0, target->width, target->height, output);
++            char *output_report = output_reports[output];
++            if (result == HORIZON_HUD_OK) {
++               verified &= readback(target, output_report, sizeof(output_reports[output]));
++            } else {
++               snprintf(output_report, sizeof(output_reports[output]), "presenter draw failed=%d", result);
++               verified = 0;
++            }
++            if (output == 0) WHBGfxFinishRenderTV();
++            else WHBGfxFinishRenderDRC();
++         }
++         WHBGfxFinishRender();
++         char report[384];
++         snprintf(report, sizeof(report), "readback=%s mode=%s TV=[%s] DRC=[%s]",
++                  verified ? "pass" : "mismatch", shared ? "shared" : "direct",
++                  output_reports[0], output_reports[1]);
++         status(report);
+       }
+-      WHBGfxFinishRender();
+-      char report[384];
+-      snprintf(report, sizeof(report), "readback=%s TV=[%s] DRC=[%s]",
+-               verified ? "pass" : "mismatch", output_reports[0], output_reports[1]);
+-      status(report);
+       /* Leave the fixture visible for photos even if hardware readback fails. */
+       const OSTime deadline = OSGetTime() + OSSecondsToTicks(15);
+       while (OSGetTime() < deadline && WHBProcIsRunning())
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index c3a7e1f06ca8cc6969d11635ce78b0798c2cdccc..a4dda904e58e6a3f840633b5d68523abb67187bd 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -375,15 +375,11 @@ HorizonHudResult horizon_gx2_hud_apply_patches_after_wait(HorizonGx2Hud *hud,
+    return apply_patches(hud, frame);
+ }
+ 
+-static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+-                                uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+-                                const HudOutput *output)
++static HorizonHudResult validate_frame(HorizonGx2Hud *hud, const HorizonHudFrame *f)
+ {
+-   if (!hud || !f) return HORIZON_HUD_INVALID;
++   if (!hud) return HORIZON_HUD_INVALID;
+    HorizonHudResult validation = horizon_hud_validate(f, hud->width, hud->height, hud->capacity);
+    if (validation != HORIZON_HUD_OK) return validation;
+-   validation = validate_target_viewport(f, x, y, width, height);
+-   if (validation != HORIZON_HUD_OK) return validation;
+    for (uint32_t i = 0; i < f->run_count; ++i) {
+       const HorizonHudRun *run = &f->runs[i];
+       const uint32_t blend = run->blend;
+@@ -396,20 +392,50 @@ static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+          validation = horizon_hud_cit_validate(hud->cit, f, &f->runs[i]);
+          if (validation != HORIZON_HUD_OK) return validation;
+       }
+-      if (blend == HORIZON_HUD_DEPTH &&
+-          (!output || !output->context || !output->color || !output->color->surface.image ||
+-           !output->depth || !output->depth->surface.image))
+-         return HORIZON_HUD_UNSUPPORTED;
+    }
+-   /* The previous frame may still read these resources. */
+-   GX2DrawDone();
+-   validation = apply_patches(hud, f);
+-   if (validation != HORIZON_HUD_OK) return validation;
+-   if (!f->vertex_count) return HORIZON_HUD_OK;
++   return HORIZON_HUD_OK;
++}
++
++static int supports_depth(const HudOutput *output)
++{
++   return output && output->context && output->color && output->color->surface.image &&
++      output->depth && output->depth->surface.image;
++}
++
++static HorizonHudResult validate_draw_target(const HorizonHudFrame *f,
++                                              uint32_t x, uint32_t y,
++                                              uint32_t width, uint32_t height,
++                                              const HudOutput *output)
++{
++   HorizonHudResult result = validate_target_viewport(f, x, y, width, height);
++   if (result != HORIZON_HUD_OK || supports_depth(output)) return result;
++   for (uint32_t i = 0; i < f->run_count; ++i)
++      if (f->runs[i].blend == HORIZON_HUD_DEPTH) return HORIZON_HUD_UNSUPPORTED;
++   return HORIZON_HUD_OK;
++}
++
++static HorizonHudResult upload_frame(HorizonGx2Hud *hud, const HorizonHudFrame *f)
++{
++   HorizonHudResult result = apply_patches(hud, f);
++   if (result != HORIZON_HUD_OK || !f->vertex_count) return result;
+    HorizonHudGpuVertex *out = GX2RLockBufferEx(&hud->buffer, 0);
+    if (!out) return HORIZON_HUD_ALLOCATION_FAILED;
+    horizon_hud_encode_vertices(f, out);
+    GX2RUnlockBufferEx(&hud->buffer, 0);
++   return HORIZON_HUD_OK;
++}
++
++HorizonHudResult horizon_gx2_hud_upload_after_wait(HorizonGx2Hud *hud, const HorizonHudFrame *f)
++{
++   HorizonHudResult result = validate_frame(hud, f);
++   return result == HORIZON_HUD_OK ? upload_frame(hud, f) : result;
++}
++
++static HorizonHudResult draw_uploaded(HorizonGx2Hud *hud, const HorizonHudFrame *f,
++                                      uint32_t x, uint32_t y, uint32_t width, uint32_t height,
++                                      const HudOutput *output)
++{
++   if (!f->vertex_count) return HORIZON_HUD_OK;
+    set_hud_state(hud, x, y, width, height);
+    int depth_active = 0;
+    for (uint32_t i = 0; i < f->run_count; ++i) {
+@@ -478,6 +504,36 @@ static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+    return HORIZON_HUD_OK;
+ }
+ 
++static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
++                                uint32_t x, uint32_t y, uint32_t width, uint32_t height,
++                                const HudOutput *output)
++{
++   HorizonHudResult result = validate_frame(hud, f);
++   if (result != HORIZON_HUD_OK) return result;
++   result = validate_draw_target(f, x, y, width, height, output);
++   if (result != HORIZON_HUD_OK) return result;
++   GX2DrawDone();
++   result = upload_frame(hud, f);
++   return result == HORIZON_HUD_OK ? draw_uploaded(hud, f, x, y, width, height, output) : result;
++}
++
++static HudOutput hud_output(uint32_t output)
++{
++   return output == 0
++      ? (HudOutput){WHBGfxGetTVContextState(), WHBGfxGetTVColourBuffer(), WHBGfxGetTVDepthBuffer()}
++      : (HudOutput){WHBGfxGetDRCContextState(), WHBGfxGetDRCColourBuffer(), WHBGfxGetDRCDepthBuffer()};
++}
++
++HorizonHudResult horizon_gx2_hud_draw_uploaded_to_output(HorizonGx2Hud *hud, const HorizonHudFrame *f,
++                                                         uint32_t x, uint32_t y,
++                                                         uint32_t width, uint32_t height, uint32_t output)
++{
++   if (!hud || output > 1) return HORIZON_HUD_INVALID;
++   const HudOutput target = hud_output(output);
++   HorizonHudResult result = validate_draw_target(f, x, y, width, height, &target);
++   return result == HORIZON_HUD_OK ? draw_uploaded(hud, f, x, y, width, height, &target) : result;
++}
++
+ HorizonHudResult horizon_gx2_hud_draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+                                          uint32_t x, uint32_t y,
+                                          uint32_t width, uint32_t height)
+@@ -491,9 +547,7 @@ HorizonHudResult horizon_gx2_hud_draw_to_output(HorizonGx2Hud *hud, const Horizo
+                                                 uint32_t output)
+ {
+    if (output > 1) return HORIZON_HUD_INVALID;
+-   const HudOutput target = output == 0
+-      ? (HudOutput){WHBGfxGetTVContextState(), WHBGfxGetTVColourBuffer(), WHBGfxGetTVDepthBuffer()}
+-      : (HudOutput){WHBGfxGetDRCContextState(), WHBGfxGetDRCColourBuffer(), WHBGfxGetDRCDepthBuffer()};
++   const HudOutput target = hud_output(output);
+    return draw_to(hud, f, x, y, width, height, &target);
+ }
+ 
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index db06e7179d7124f3f2ef847312e12f03d68fa779..a063ae0a32b9dabb51dd6772ff4111ba544f86ce 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -93,6 +93,15 @@ HorizonHudResult horizon_gx2_hud_draw_to_output(HorizonGx2Hud *hud, const Horizo
+                                                 uint32_t x, uint32_t y,
+                                                 uint32_t width, uint32_t height,
+                                                 uint32_t output);
++/* Upload before issuing world commands. The caller must have retired previous
++ * sampling of the HUD atlas and vertex buffer. Both outputs may then use the
++ * same uploaded batch without a wait or resource write. */
++HorizonHudResult horizon_gx2_hud_upload_after_wait(HorizonGx2Hud *hud, const HorizonHudFrame *frame);
++/* Same vertex, run and layout data as the last successful upload. Patch
++ * descriptors are no longer needed. The supplied WHB output must be bound. */
++HorizonHudResult horizon_gx2_hud_draw_uploaded_to_output(HorizonGx2Hud *hud, const HorizonHudFrame *frame,
++                                                         uint32_t x, uint32_t y,
++                                                         uint32_t width, uint32_t height, uint32_t output);
+ /* Borrow the atlas for synchronous GX2 world draws on the render thread. */
+ const void *horizon_gx2_hud_atlas(const HorizonGx2Hud *hud);
+ /* The caller has completed previous sampling. A patch-only frame has no draw runs. */
+diff --git a/wiiu/loading_host/crumbling.rs b/wiiu/loading_host/crumbling.rs
+index a81bdc0049e643fa54449b5ecbb2977304cde72e..298af80e29b69a5ba95bbee15437fa3797e72ca1 100644
+--- a/wiiu/loading_host/crumbling.rs
++++ b/wiiu/loading_host/crumbling.rs
+@@ -101,8 +101,8 @@ impl Crumbling {
+         false
+     }
+ 
+-    /// Stage both phases in one upload for each output. Called after the
+-    /// existing pre-terrain completion wait for this output.
++    /// Stage both phases in the buffer for this output. WHB retired that
++    /// buffer when both outputs finished the preceding frame.
+     pub(crate) fn upload(&mut self, target: u32) -> Result<(), &'static str> {
+         if self.is_empty() {
+             return Ok(());
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index e6d4c0557bc3334a100078581e9b904d8863931a..cdcff1e660d98d5ef19596976ca63f3d12105492 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -75,7 +75,7 @@ static uint32_t total;
+ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+-static bool legacy_terrain_uniforms;
++static bool legacy_terrain_uniforms, shared_hud_upload;
+ static struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+@@ -100,7 +100,9 @@ void horizon_gx2_profile_init(void)
+    legacy_terrain_bindings = mode == '2';
+    legacy_terrain_attributes = mode == '3';
+    gpu_cycle_probe = mode == '4';
+-   legacy_terrain_uniforms = mode == '5' || (mode == '4' && fgetc(marker) == '5');
++   const int variant = gpu_cycle_probe ? fgetc(marker) : EOF;
++   legacy_terrain_uniforms = mode == '5' || variant == '5';
++   shared_hud_upload = variant == 'h';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -108,6 +110,7 @@ void horizon_gx2_profile_init(void)
+    if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
+    if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
++   OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -130,6 +133,11 @@ bool horizon_gx2_profile_legacy_terrain_uniforms(void)
+    return legacy_terrain_uniforms;
+ }
+ 
++bool horizon_gx2_profile_shared_hud_upload(void)
++{
++   return shared_hud_upload;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 8e1b0cbe8503db0bf31eb3372a93a073956df7e7..87260e0ef36564ef5c5153b947bddadc763534cf 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -39,6 +39,7 @@ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
+ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
++bool horizon_gx2_profile_shared_hud_upload(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 8d179f81675c3cfb6baf60b6739d20fb16984c9d..f78c0c49c0c3d2647b5cabaaf5414305d8362a78 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -39,7 +39,7 @@ use horizon_wiiu_gx2_terrain::{
+ };
+ use horizon_wiiu_platform::hud::{
+     CitSlot,
+-    horizon::{AtlasUpdates, HorizonPresenter},
++    horizon::{AtlasUpdates, HorizonPresenter, UploadedBatch},
+ };
+ use std::{
+     collections::{HashMap, HashSet},
+@@ -225,6 +225,7 @@ extern "C" {
+     fn horizon_gx2_profile_legacy_terrain_attributes() -> bool;
+     fn horizon_gx2_terrain_set_legacy_uniforms(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_uniforms() -> bool;
++    fn horizon_gx2_profile_shared_hud_upload() -> bool;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+     fn horizon_gx2_terrain_section_create(
+@@ -1905,6 +1906,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             clear: [f32; 4],
+             result: Result<(), &'static str>,
+             profile: Gx2ProfileDelta,
++            uploaded_hud: Option<UploadedBatch<'frame>>,
+             atlas_patches_prepared: bool,
+         }
+         unsafe extern "C" fn draw_target(
+@@ -1921,9 +1923,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let index = target as usize;
+             let rect = draw.targets[index];
+             let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-            if !draw.frame.title && draw.presenter.terrain.is_some() {
+-                // Wait once before drawing all retained section buffers;
+-                // projection uniforms change per draw, geometry buffers do not.
++            if draw.uploaded_hud.is_none() && !draw.frame.title && draw.presenter.terrain.is_some() {
++                // The comparison path retains the original per-output waits.
+                 let wait_start = Instant::now();
+                 {
+                     let _wait = Span::new(Stage::TerrainWait);
+@@ -1978,7 +1979,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 .as_ref()
+                 .map(|terrain| terrain.native)
+             {
+-                if index == 0
++                if draw.uploaded_hud.is_none()
++                    && index == 0
+                     && !draw.presenter.models.is_empty()
+                     && !draw.frame.hud.patches.is_empty()
+                 {
+@@ -2196,17 +2198,21 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let hud_result = {
+                 let _hud_span = Span::new([Stage::HudSubmitTv, Stage::HudSubmitDrc][index]);
+                 unsafe {
+-                    hud.draw_batch_to(
+-                        draw.frame.hud,
+-                        draw.presenter.layout,
+-                        rect,
+-                        target,
+-                        draw.frame.ticks,
+-                        AtlasUpdates {
+-                            animated: true,
+-                            frame_patches_prepared: draw.atlas_patches_prepared,
+-                        },
+-                    )
++                    if let Some(uploaded) = &draw.uploaded_hud {
++                        hud.draw_uploaded_batch_to(uploaded, rect, target)
++                    } else {
++                        hud.draw_batch_to(
++                            draw.frame.hud,
++                            draw.presenter.layout,
++                            rect,
++                            target,
++                            draw.frame.ticks,
++                            AtlasUpdates {
++                                animated: true,
++                                frame_patches_prepared: draw.atlas_patches_prepared,
++                            },
++                        )
++                    }
+                 }
+             };
+             if let Err(error) = hud_result {
+@@ -2314,6 +2320,20 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let ([r, g, b, _], _) = horizon_client::gfx::fog_uniform(frame);
+             [r, g, b, 1.0]
+         };
++        let present_start = Instant::now();
++        let uploaded_hud = if !unsafe { horizon_gx2_profile_shared_hud_upload() } {
++            None
++        } else {
++            // The preceding WHB finish retired both outputs. No world draw
++            // from this frame has used the shared atlas or HUD buffer yet.
++            self.finish_retired_after_wait();
++            let hud = self.hud.as_mut().ok_or("GX2 HUD presenter is not prepared")?;
++            let _upload = Span::new(Stage::TextureUpload);
++            Some(
++                unsafe { hud.upload_batch_after_wait(frame.hud, self.layout, frame.ticks) }
++                    .map_err(hud_error_message)?,
++            )
++        };
+         let terrain_min_y = self.terrain_min_y;
+         let mut draw = Draw {
+             presenter: self,
+@@ -2323,9 +2343,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             clear,
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
++            uploaded_hud,
+             atlas_patches_prepared: false,
+         };
+-        let present_start = Instant::now();
+         let host = unsafe {
+             horizon_loading_host_present_with_clear(
+                 draw_target,
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 95a2e030f04348299f9f6f5a7a58fc2aabdc72d7..ae720b6f28e16786fb7768cc2db9cc802232231d 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -264,8 +264,9 @@ impl TranslucentTerrain {
+                     .sort
+                     .update(projection.camera, world_origin, &mut self.sorter)
+             {
+-                // The existing terrain wait retired earlier consumers. The
+-                // other display uses the same order and does not remap it.
++                // The previous WHB frame retired earlier consumers. A section
++                // drawn by both outputs sorts once for their common camera.
++                // A section first visible on this output has no earlier reader.
+                 let status = unsafe {
+                     horizon_gx2_terrain_section_update_indices(
+                         section.buffer.native.as_ptr(),
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index 99344d0fe0a34b2a542aea4a94453878ab5a3ea6..92ee34d23bb9a43f6ee34945cb94f8bd655b2206 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -261,6 +261,18 @@ mod cafe {
+             height: u32,
+             output: u32,
+         ) -> i32;
++        #[cfg(feature = "horizon-hud")]
++        fn horizon_gx2_hud_upload_after_wait(hud: *mut c_void, frame: *const RawFrame) -> i32;
++        #[cfg(feature = "horizon-hud")]
++        fn horizon_gx2_hud_draw_uploaded_to_output(
++            hud: *mut c_void,
++            frame: *const RawFrame,
++            x: u32,
++            y: u32,
++            width: u32,
++            height: u32,
++            output: u32,
++        ) -> i32;
+         fn horizon_gx2_hud_destroy(hud: *mut c_void);
+         #[cfg(feature = "horizon-hud")]
+         fn horizon_gx2_hud_atlas(hud: *const c_void) -> *const c_void;
+@@ -505,6 +517,35 @@ mod cafe {
+             ))
+         }
+ 
++        #[cfg(feature = "horizon-hud")]
++        pub(super) unsafe fn upload_after_wait(
++            &mut self,
++            frame: &Frame<'_>,
++            extra: &[Patch],
++        ) -> Result<Vec<RawRun>, Error> {
++            let prepared = Prepared::with_extra_patches(frame, extra)?;
++            result(horizon_gx2_hud_upload_after_wait(self.hud.as_ptr(), &prepared.raw()))?;
++            Ok(prepared.runs)
++        }
++
++        #[cfg(feature = "horizon-hud")]
++        pub(super) unsafe fn draw_uploaded_to_output(
++            &self,
++            frame: &RawFrame,
++            target: [u32; 4],
++            output: u32,
++        ) -> Result<(), Error> {
++            result(horizon_gx2_hud_draw_uploaded_to_output(
++                self.hud.as_ptr(),
++                frame,
++                target[0],
++                target[1],
++                target[2],
++                target[3],
++                output,
++            ))
++        }
++
+         #[cfg(feature = "horizon-hud")]
+         pub(super) unsafe fn draw_with_patches(
+             &mut self,
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index fbdaa090f329ac6c68327114f236562a8586a15e..8f9c57e5ba34c8ac0347c16a9bcc079320e117f5 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -180,6 +180,14 @@ pub struct AtlasUpdates {
+     pub frame_patches_prepared: bool,
+ }
+ 
++/// A batch already uploaded into the presenter's GPU buffer for both outputs.
++#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
++pub struct UploadedBatch<'a> {
++    batch: &'a HudBatch,
++    runs: Vec<super::RawRun>,
++    viewport: [u32; 2],
++}
++
+ /// A GX2 presenter initialized from one specific Horizon atlas revision.
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ pub struct HorizonPresenter<'shader> {
+@@ -319,6 +327,75 @@ impl<'shader> HorizonPresenter<'shader> {
+         tick: u64,
+         atlas_updates: AtlasUpdates,
+     ) -> Result<(), Error> {
++        self.with_batch(
++            batch,
++            layout_viewport,
++            tick,
++            atlas_updates,
++            |presenter, frame, extra| unsafe {
++                presenter.draw_with_patches_to_output(frame, extra, target, output)
++            },
++        )
++    }
++
++    /// Upload a frame before either output draws. Both outputs borrow the same
++    /// encoded geometry and use the published atlas updates.
++    ///
++    /// # Safety
++    /// The render thread must have retired all previous uses of these resources.
++    pub unsafe fn upload_batch_after_wait<'a>(
++        &mut self,
++        batch: &'a HudBatch,
++        viewport: [u32; 2],
++        tick: u64,
++    ) -> Result<UploadedBatch<'a>, Error> {
++        let runs = self.with_batch(
++            batch,
++            viewport,
++            tick,
++            AtlasUpdates {
++                animated: true,
++                frame_patches_prepared: false,
++            },
++            |presenter, frame, extra| unsafe { presenter.upload_after_wait(frame, extra) },
++        )?;
++        Ok(UploadedBatch { batch, runs, viewport })
++    }
++
++    /// Draw a shared upload into the active output.
++    ///
++    /// # Safety
++    /// This presenter must still hold the supplied batch's upload. The active
++    /// GX2 output must match the target and all its world passes must be done.
++    pub unsafe fn draw_uploaded_batch_to(
++        &self,
++        upload: &UploadedBatch<'_>,
++        target: [u32; 4],
++        output: u32,
++    ) -> Result<(), Error> {
++        let frame = super::RawFrame {
++            vertices: upload.batch.vertices.as_ptr(),
++            vertex_count: upload.batch.vertices.len() as u32,
++            runs: upload.runs.as_ptr(),
++            run_count: upload.runs.len() as u32,
++            patches: std::ptr::null(),
++            patch_count: 0,
++            viewport_width: upload.viewport[0],
++            viewport_height: upload.viewport[1],
++            scale: upload.batch.scale,
++            pack_text_shader: 0,
++        };
++        unsafe { self.presenter.draw_uploaded_to_output(&frame, target, output) }
++    }
++
++    fn with_batch<T>(
++        &mut self,
++        batch: &HudBatch,
++        layout_viewport: [u32; 2],
++        tick: u64,
++        atlas_updates: AtlasUpdates,
++        submit: impl FnOnce(&mut super::Presenter<'shader>, &Frame<'_>, &[super::Patch]) -> Result<T, Error>,
++    ) -> Result<T, Error> {
+         let frame = BatchFrame {
+             batch,
+             runs: gx2_runs(batch),
+@@ -359,21 +436,12 @@ impl<'shader> HorizonPresenter<'shader> {
+             frame.patches = &[];
+         }
+         if let Some(update) = update {
+-            unsafe {
+-                self.presenter.draw_with_patches_to_output(
+-                    &frame,
+-                    update.patches(),
+-                    target,
+-                    output,
+-                )?;
+-            }
++            let result = submit(&mut self.presenter, &frame, update.patches())?;
+             update.commit();
++            Ok(result)
+         } else {
+-            unsafe {
+-                self.presenter.draw_to_output(&frame, target, output)?;
+-            }
++            submit(&mut self.presenter, &frame, &[])
+         }
+-        Ok(())
+     }
+ 
+     unsafe fn draw_inner(

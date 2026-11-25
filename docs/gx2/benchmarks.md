@@ -86,11 +86,15 @@ up for five seconds and measures a fixed view for 30 seconds.
 
 The default fixed resolution is 100%. For a controlled 75% or 50% test,
 write the integer to `horizon-benchmark-stationary-scale.txt` in Night's
-owned `.benchmark-run` directory and use the experimental world-scaling
-marker. The diagnostic requires matching requested and effective scale,
-stable world and display sizes and surface memory, at least ten eligible
-intervals and at least 80% eligible wall duration. It reports the paired
-coverage and samples native memory around the timed interval.
+owned `.benchmark-run` directory. Fixed resolution is part of the normal
+Cafe path from RC 31. The diagnostic requires matching requested and
+effective scale, stable world and display sizes and surface memory,
+at least ten eligible intervals and at least 80% eligible wall duration.
+It samples native memory around the timed interval. RC 32 also checks
+the submitted camera position, yaw and pitch every eligible frame and
+records the actual camera and per-output section counts at the interval
+boundaries in the report. The alternate terrain and HUD submission
+markers leave the fixed camera and stock distances intact.
 
 Host tests cover transient fallback, display resizing, missing metadata
 and insufficient coverage. The packaged RC 30 displayed the diagnostic

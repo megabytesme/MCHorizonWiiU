@@ -1,0 +1,234 @@
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index 9e060ac0327063990cd4dab1398e8a61553bc226..d47b5c859b09c7abecb584044365540201747500 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -377,6 +377,28 @@ pub struct CafeFlightCoverage {
+     longest_ineligible_run: u64,
+     stationary_targets: Option<CafeStationaryTargets>,
+     stationary_target_mismatches: u64,
++    stationary_view: Option<CafeStationaryView>,
++    stationary_view_mismatches: u64,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct CafeStationaryView {
++    pub position: [f64; 3],
++    pub yaw: f32,
++    pub pitch: f32,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl CafeStationaryView {
++    fn matches(self, other: Self) -> bool {
++        self.position
++            .into_iter()
++            .zip(other.position)
++            .all(|(a, b)| (a - b).abs() < 0.001)
++            && (self.yaw - other.yaw).abs() < 0.001
++            && (self.pitch - other.pitch).abs() < 0.001
++    }
+ }
+ 
+ #[cfg(any(target_os = "cafe", test))]
+@@ -430,17 +452,25 @@ impl CafeFlightCoverage {
+         gameplay_terrain: bool,
+         scale: u32,
+         targets: Option<CafeStationaryTargets>,
++        view: Option<CafeStationaryView>,
+     ) -> Option<Duration> {
+-        let eligible = paired
+-            && gameplay_terrain
+-            && targets.is_some_and(|targets| {
+-                targets.matches_scale(scale)
+-                    && *self.stationary_targets.get_or_insert(targets) == targets
+-            });
+-        if paired && gameplay_terrain && !eligible {
+-            self.stationary_target_mismatches += 1;
++        if !paired || !gameplay_terrain {
++            return self.observe_frame(start, paired, gameplay_terrain, false);
+         }
+-        self.observe_frame(start, paired, gameplay_terrain, eligible)
++        let stable_targets = targets.is_some_and(|targets| {
++            targets.matches_scale(scale)
++                && *self.stationary_targets.get_or_insert(targets) == targets
++        });
++        let stable_view =
++            view.is_some_and(|view| view.matches(*self.stationary_view.get_or_insert(view)));
++        self.stationary_target_mismatches += u64::from(!stable_targets);
++        self.stationary_view_mismatches += u64::from(!stable_view);
++        self.observe_frame(
++            start,
++            paired,
++            gameplay_terrain,
++            stable_targets && stable_view,
++        )
+     }
+ 
+     fn observe_frame(
+@@ -483,6 +513,17 @@ impl CafeFlightCoverage {
+         if let Some(targets) = self.stationary_targets {
+             reply["cafe_stationary_targets"] = targets.json();
+         }
++        if let Some(view) = self.stationary_view {
++            reply["cafe_stationary_view"] = serde_json::json!({
++                "position": view.position,
++                "yaw": view.yaw,
++                "pitch": view.pitch,
++            });
++        }
++        if self.stationary_view_mismatches > 0 {
++            reply["cafe_flight_coverage"]["stationary_view_mismatches"] =
++                self.stationary_view_mismatches.into();
++        }
+         if self.stationary_target_mismatches > 0 {
+             reply["cafe_flight_coverage"]["stationary_target_mismatches"] =
+                 self.stationary_target_mismatches.into();
+@@ -1152,12 +1193,42 @@ fn stationary(
+         report,
+     )?;
+     verify_stationary_coverage(&flight, targets)?;
++    let camera = &flight["cafe_stationary_view"];
++    let eye = &camera["position"];
++    let angle = |key| camera[key].as_f64().filter(|value| value.is_finite());
++    let Some((actual_yaw, actual_pitch)) = angle("yaw").zip(angle("pitch")) else {
++        return Err("the stationary measurement lacks camera orientation".into());
++    };
++    if !near(view)(eye)
++        || (actual_yaw - yaw(view, view)).abs() > 0.001
++        || (actual_pitch - pitch).abs() > 0.001
++    {
++        return Err("the stationary measurement did not hold its requested camera".into());
++    }
++    for (axis, index) in [("x", 0), ("y", 1), ("z", 2)] {
++        let coordinate = eye[index]
++            .as_f64()
++            .ok_or("missing stationary camera coordinate")?;
++        report.metric(&format!("cafe.stationary.camera.{axis}"), &[coordinate]);
++    }
++    report.metric("cafe.stationary.camera.yaw", &[actual_yaw]);
++    report.metric("cafe.stationary.camera.pitch", &[actual_pitch]);
+     #[cfg(target_os = "cafe")]
+     horizon_client_platform::cafe_memory::report("benchmark.stationary.after");
+     let after = control.call("status")?;
+     if stationary_targets(&after)? != targets {
+         return Err("the stationary diagnostic changed scale or target dimensions".into());
+     }
++    for (output, index) in [("tv", 0), ("gamepad", 1)] {
++        for (boundary, status) in [("before", &before), ("after", &after)] {
++            if let Some(sections) = status["renderer"]["terrain_sections"][index].as_f64() {
++                report.metric(
++                    &format!("cafe.stationary.{output}_sections_{boundary}"),
++                    &[sections],
++                );
++            }
++        }
++    }
+     // Retain the amount of streaming work observed during the fixed view.
+     // Reports with that work present need separate interpretation.
+     for key in ["generated_chunks", "meshed_sections"] {
+@@ -1233,6 +1304,9 @@ fn verify_stationary_coverage(
+             "the stationary measurement changed or lost target metadata ({mismatches} mismatched submissions)"
+         ));
+     }
++    if coverage["stationary_view_mismatches"].as_u64().unwrap_or(0) != 0 {
++        return Err("the stationary measurement changed or lost its camera".into());
++    }
+     let elapsed = coverage["elapsed_ms"].as_f64().unwrap_or(0.0);
+     let eligible = coverage["eligible_interval_ms"].as_f64().unwrap_or(0.0);
+     let intervals = coverage["eligible_intervals"].as_u64().unwrap_or(0);
+@@ -1749,6 +1823,11 @@ mod tests {
+         display_resize.displays[0][0] = 1280;
+         let mut world_resize = baseline;
+         world_resize.resolution.dimensions[1][0] = 640;
++        let view = CafeStationaryView {
++            position: [-960.0, 126.62, 80.0],
++            yaw: 0.0,
++            pitch: 35.0,
++        };
+ 
+         let start = Instant::now();
+         let mut coverage = CafeFlightCoverage::default();
+@@ -1773,12 +1852,28 @@ mod tests {
+         {
+             let now = start + Duration::from_millis(i as u64 * 20);
+             assert_eq!(
+-                coverage.observe_stationary(now, paired, true, 75, targets),
++                coverage.observe_stationary(now, paired, true, 75, targets, Some(view)),
+                 expected.map(Duration::from_millis)
+             );
+         }
++        let moved = CafeStationaryView { yaw: 1.0, ..view };
++        assert_eq!(
++            coverage.observe_stationary(
++                start + Duration::from_secs(1),
++                true,
++                true,
++                75,
++                Some(baseline),
++                Some(moved)
++            ),
++            None,
++        );
+         let mut reply = serde_json::json!({});
+         coverage.append_to_reply(&mut reply, Duration::from_secs(30));
++        assert_eq!(
++            reply["cafe_flight_coverage"]["stationary_view_mismatches"],
++            1
++        );
+         assert_eq!(reply["cafe_flight_coverage"]["eligible_intervals"], 4);
+         assert_eq!(reply["cafe_flight_coverage"]["eligible_interval_ms"], 80.0);
+         assert_eq!(
+@@ -1871,6 +1966,7 @@ mod tests {
+                             "frame_ms": vec![200.0; 126],
+                             "cpu_ms": vec![98.0; 126],
+                             "cafe_stationary_targets": targets.json(),
++                            "cafe_stationary_view": {"position": [-960.0, 126.62, 80.0], "yaw": 0.0, "pitch": 35.0},
+                             "cafe_flight_coverage": {
+                                 "host_frames": 127, "paired_frames": 127, "terrain_paired_frames": 127,
+                                 "eligible_intervals": 126,
+@@ -1909,6 +2005,8 @@ mod tests {
+         assert_eq!(report.frames[0].frames, 126);
+         assert_eq!(report.frames[0].gpu_p50_ms, None);
+         assert_eq!(report.metrics["cafe.stationary.fixed_scale"].mean, 75.0);
++        assert_eq!(report.metrics["cafe.stationary.camera.x"].mean, -960.0);
++        assert_eq!(report.metrics["cafe.stationary.camera.pitch"].mean, 35.0);
+         assert_eq!(report.metrics["cafe.stationary.meshed_sections"].mean, 1.0);
+         assert_eq!(
+             report.metrics["cafe.cafe-stationary.eligible_intervals"].mean,
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index aa7696398506884b31c041235331b90b31229241..7d5b6eed23909b6f4dbd4ad6a932ad531ea2ceb7 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -919,7 +919,9 @@ impl CafeGameSession<'_> {
+                 state.omitted_pass_mask |= work.omitted_pass_mask;
+                 state.partial_frames += u64::from(work.omitted_pass_mask != 0);
+             }
+-            use horizon_client::benchmark::{CAFE_STATIONARY_SCENARIO, CafeStationaryTargets};
++            use horizon_client::benchmark::{
++                CAFE_STATIONARY_SCENARIO, CafeStationaryTargets, CafeStationaryView,
++            };
+             let interval =
+                 if self.game.options.benchmark.as_deref() == Some(CAFE_STATIONARY_SCENARIO) {
+                     let targets = work
+@@ -934,12 +936,19 @@ impl CafeGameSession<'_> {
+                         gameplay_terrain,
+                         self.game.settings.horizon.resolution_scale,
+                         targets,
++                        work.terrain_camera.map(|position| CafeStationaryView {
++                            position,
++                            yaw: self.game.yaw,
++                            pitch: self.game.pitch,
++                        }),
+                     )
+                 } else {
+                     state.coverage.observe(start, paired, gameplay_terrain)
+                 };
+             if let Some(interval) = interval {
+-                self.game.frame_stats.record(interval.as_secs_f32() * 1000.0);
++                self.game
++                    .frame_stats
++                    .record(interval.as_secs_f32() * 1000.0);
+                 self.game.frame_stats.record_cpu(
+                     end.duration_since(start)
+                         .saturating_sub(work.gpu_wait)

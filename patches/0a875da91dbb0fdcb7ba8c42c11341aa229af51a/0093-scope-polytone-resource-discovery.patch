@@ -1,0 +1,202 @@
+diff --git a/crates/horizon-client-render/src/environment.rs b/crates/horizon-client-render/src/environment.rs
+index 094b8b4413e6df6e351d0191ea19e058b6499155..3b89383b915654b64c02ac84137ff1b6da567c3d 100644
+--- a/crates/horizon-client-render/src/environment.rs
++++ b/crates/horizon-client-render/src/environment.rs
+@@ -517,31 +517,41 @@ pub(crate) fn polytone_colormap_modifiers(
+     pack_root: &ResourceSource,
+ ) -> Vec<(bool, horizon_polytone::Targets, String)> {
+     let mut out = Vec::new();
+-    for relative in pack_root.list("assets/") {
+-        for (kind, fluid) in [("block_modifiers", false), ("fluid_modifiers", true)] {
+-            if !relative.ends_with(".json") || !relative.contains(&format!("/polytone/{kind}/")) {
+-                continue;
+-            }
+-            let Some(json) = pack_root
+-                .read(&relative)
+-                .ok()
+-                .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).ok())
+-            else {
+-                continue;
+-            };
+-            let Some(id) = json.get("colormap").and_then(Json::as_str) else {
+-                continue;
+-            };
+-            let id = if id.contains(':') {
+-                id.to_owned()
+-            } else {
+-                format!("minecraft:{id}")
+-            };
+-            let implicit = horizon_polytone::implicit_id(&relative, kind);
+-            match horizon_polytone::Targets::parse(json.get("targets"), implicit.as_deref()) {
+-                Ok(targets) => out.push((fluid, targets, id)),
+-                Err(e) => log::warn!("{relative}: {e}"),
+-            }
++    for relative in pack_root.list_under(
++        "assets",
++        &["polytone/block_modifiers", "polytone/fluid_modifiers"],
++    ) {
++        if !relative.ends_with(".json") {
++            continue;
++        }
++        let Some((_, kind_and_path)) = relative["assets/".len()..].split_once("/polytone/") else {
++            continue;
++        };
++        let fluid = kind_and_path.starts_with("fluid_modifiers/");
++        let kind = if fluid {
++            "fluid_modifiers"
++        } else {
++            "block_modifiers"
++        };
++        let Some(json) = pack_root
++            .read(&relative)
++            .ok()
++            .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).ok())
++        else {
++            continue;
++        };
++        let Some(id) = json.get("colormap").and_then(Json::as_str) else {
++            continue;
++        };
++        let id = if id.contains(':') {
++            id.to_owned()
++        } else {
++            format!("minecraft:{id}")
++        };
++        let implicit = horizon_polytone::implicit_id(&relative, kind);
++        match horizon_polytone::Targets::parse(json.get("targets"), implicit.as_deref()) {
++            Ok(targets) => out.push((fluid, targets, id)),
++            Err(e) => log::warn!("{relative}: {e}"),
+         }
+     }
+     out
+diff --git a/crates/horizon-client-render/src/hud/sprite_modifiers.rs b/crates/horizon-client-render/src/hud/sprite_modifiers.rs
+index 0d4fefbbc2717f68ca2fafcc9491692b192383a9..6c13a339ccbfdec3103e47d47837d08c71669950 100644
+--- a/crates/horizon-client-render/src/hud/sprite_modifiers.rs
++++ b/crates/horizon-client-render/src/hud/sprite_modifiers.rs
+@@ -52,11 +52,7 @@ impl SpriteModifiers {
+     /// for each sprite, the last file that targets it.
+     pub fn read<'a>(root: &ResourceSource, keys: impl Iterator<Item = &'a String>) -> Self {
+         let mut modifiers = Vec::new();
+-        for path in root
+-            .list("assets/")
+-            .into_iter()
+-            .filter(|path| path.split_once("/polytone/overlay_modifiers/").is_some())
+-        {
++        for path in root.list_under("assets", &["polytone/overlay_modifiers"]) {
+             let parsed = root
+                 .read(&path)
+                 .map_err(|e| e.to_string())
+diff --git a/crates/horizon-client-render/src/packs.rs b/crates/horizon-client-render/src/packs.rs
+index 334b9bbbd1979e27726879994bf3efeb5d3b01dc..68f24f942f645ba5d6f69d6231ac52e18c0dcc1f 100644
+--- a/crates/horizon-client-render/src/packs.rs
++++ b/crates/horizon-client-render/src/packs.rs
+@@ -527,7 +527,7 @@ pub fn polytone_configs(source: &Source) -> horizon_polytone::pack::Configs {
+     let Ok(source) = source.open() else {
+         return configs;
+     };
+-    for name in source.list("assets/") {
++    for name in source.list_under("assets", &["polytone/config_entries"]) {
+         if let Some(id) = id_of(&name)
+             && let Ok(bytes) = source.read(&name)
+             && let Ok(json) = serde_json::from_slice(&bytes)
+diff --git a/crates/horizon-client-render/src/polytone_post.rs b/crates/horizon-client-render/src/polytone_post.rs
+index 7655822fab7ede2cc2969e45d51ec4e8dace8c0c..c5c8bb0d03ec02f4a002499b60128b270b2c6d56 100644
+--- a/crates/horizon-client-render/src/polytone_post.rs
++++ b/crates/horizon-client-render/src/polytone_post.rs
+@@ -70,7 +70,8 @@ fn files(
+     kind: &str,
+ ) -> Vec<(String, Json)> {
+     let mut out = Vec::new();
+-    for relative in root.list("assets/") {
++    let folder = format!("polytone/{kind}");
++    for relative in root.list_under("assets", &[&folder]) {
+         let Some(id) = horizon_polytone::implicit_id(&relative, kind) else {
+             continue;
+         };
+diff --git a/crates/horizon-client/src/game/runtime/resource_tables.rs b/crates/horizon-client/src/game/runtime/resource_tables.rs
+index 4b01672942b47f8b901d7c92799818072f94a671..14f85a5c554c4d663ea6481fd0d75765ab96cd0e 100644
+--- a/crates/horizon-client/src/game/runtime/resource_tables.rs
++++ b/crates/horizon-client/src/game/runtime/resource_tables.rs
+@@ -277,22 +277,31 @@ impl PackResources {
+         biomes: Arc<Biomes>,
+         light: Arc<LightTables>,
+     ) -> Self {
++        use startup::time;
+         // These pack-local resources do not depend on one another. Decode the
+         // images and language map together so a custom-sky pack cannot put all
+         // of the pack assembly on the critical path behind its own files.
+         let (names, clouds, forcefield, custom_sky, environments, polytone_particles) =
+             std::thread::scope(|scope| {
+-                let names = named_scope(scope, "pack.names", || Names::load(root.source()));
+-                let clouds = named_scope(scope, "pack.clouds", || load_clouds(root.source()));
+-                let forcefield =
+-                    named_scope(scope, "pack.forcefield", || load_forcefield(root.source()));
++                let names = named_scope(scope, "pack.names", || {
++                    time("pack.names", || Names::load(root.source()))
++                });
++                let clouds = named_scope(scope, "pack.clouds", || {
++                    time("pack.clouds", || load_clouds(root.source()))
++                });
++                let forcefield = named_scope(scope, "pack.forcefield", || {
++                    time("pack.forcefield", || load_forcefield(root.source()))
++                });
+                 let custom_sky = named_scope(scope, "pack.custom_sky", || {
+-                    horizon_client::custom_sky::load(root.source())
++                    time("pack.custom_sky", || {
++                        horizon_client::custom_sky::load(root.source())
++                    })
++                });
++                let environments = named_scope(scope, "pack.environments", || {
++                    time("pack.environments", || pack_environments(root))
+                 });
+-                let environments =
+-                    named_scope(scope, "pack.environments", || pack_environments(root));
+                 let particles = named_scope(scope, "pack.particles", || {
+-                    pack_particles(root, assets.registry)
++                    time("pack.particles", || pack_particles(root, assets.registry))
+                 });
+                 (
+                     names.join().unwrap(),
+@@ -303,13 +312,15 @@ impl PackResources {
+                     particles.join().unwrap(),
+                 )
+             });
+-        let polytone_post = horizon_client::polytone_post::PolytonePost::read(
+-            root.source(),
+-            horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Opened(
+-                root.source().clone(),
+-            )),
+-        )
+-        .map(Arc::new);
++        let polytone_post = time("pack.polytone_post", || {
++            horizon_client::polytone_post::PolytonePost::read(
++                root.source(),
++                horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Opened(
++                    root.source().clone(),
++                )),
++            )
++            .map(Arc::new)
++        });
+         Self {
+             layer_names: Arc::new(horizon_client::block_sprites::texture_names(
+                 &render.sprite_layers,
+@@ -323,7 +334,9 @@ impl PackResources {
+                 hidden_states: Arc::from([]),
+                 part_tables: Default::default(),
+             }),
+-            block_registries: native_block_states::block_registries(assets.registry),
++            block_registries: time("pack.block_registries", || {
++                native_block_states::block_registries(assets.registry)
++            }),
+             assets,
+             render,
+             item_renderer: Arc::new(item_renderer),
+@@ -338,7 +351,7 @@ impl PackResources {
+             environments,
+             polytone_particles,
+             polytone_post,
+-            polytone_colors: Arc::new(read_colors(root)),
++            polytone_colors: Arc::new(time("pack.colors", || read_colors(root))),
+         }
+     }
+ }

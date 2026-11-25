@@ -1,0 +1,112 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 569445e0c87cd102ef3c3c9c8f2dab9f4e1d6a85..aa7696398506884b31c041235331b90b31229241 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -874,10 +874,10 @@ impl CafeGameSession<'_> {
+         let end = Instant::now();
+         if self.game.cafe_drs_trial_active() {
+             let graphics = &self.game.settings.horizon;
+-            let frame_ms = end.duration_since(start).as_secs_f32() * 1000.0;
+-            let cpu_floor = idle + artwork + redraw.saturating_sub(work.submission);
++            let frame = end.duration_since(start);
++            let frame_ms = frame.as_secs_f32() * 1000.0;
+             let pipeline_ms = (phase == performance::Phase::Gameplay)
+-                .then(|| work.drs_pipeline_ms(frame_ms, cpu_floor, graphics.target_fps))
++                .then(|| work.drs_pipeline_ms(frame, graphics.target_fps))
+                 .flatten();
+             if let Some(pipeline_ms) = pipeline_ms {
+                 if let Some(scale) = self.game.dynamic_resolution.observe(
+@@ -892,6 +892,8 @@ impl CafeGameSession<'_> {
+             } else {
+                 self.game.dynamic_resolution.discard_measurements();
+             }
++        } else {
++            self.game.dynamic_resolution.reset();
+         }
+         #[cfg(target_os = "cafe")]
+         if self.benchmark.is_some() {
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index 5590eeb69b3b876f54570418d411535db5d876e5..db824b8870eff46c9a9f3de8d45b265f1d999b1e 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -88,12 +88,13 @@ pub struct CafeFrameWork {
+ }
+ 
+ impl CafeFrameWork {
+-    /// The paired bracket can include pipeline idle time. Only the opt-in trial
+-    /// uses it, and CPU work outside native submission must fit in the budget.
++    /// Use the sum of the output callback spans for the opt-in trial. The gap
++    /// between callbacks can contain CPU submission or a GPU drain. A callback
++    /// span can also contain starvation, so require headroom after subtracting
++    /// only the explicitly timed waits from the game step.
+     pub(super) fn drs_pipeline_ms(
+         &self,
+-        frame_ms: f32,
+-        cpu_floor: Duration,
++        frame: Duration,
+         target_fps: u32,
+     ) -> Option<f32> {
+         let sample = self.gpu_sample?;
+@@ -111,12 +112,16 @@ impl CafeFrameWork {
+             || tv_bottom > pad_top
+             || pad_top >= pad_bottom
+             || pad_bottom == u64::MAX
+-            || cpu_floor.as_secs_f32() * 1000.0 >= target_ms
++            || self.gpu_wait > self.submission
++            || self.submission > frame
++            || (frame - self.gpu_wait).as_secs_f32() * 1000.0 >= target_ms
+         {
+             return None;
+         }
+-        let pipeline_ms = (pad_bottom - tv_top) as f32 * 1000.0 / GX2_GPU_HZ as f32;
+-        (pipeline_ms <= frame_ms).then_some(pipeline_ms)
++        let ticks_to_ms = 1000.0 / GX2_GPU_HZ as f32;
++        let bracket_ms = (pad_bottom - tv_top) as f32 * ticks_to_ms;
++        let output_ms = ((tv_bottom - tv_top) + (pad_bottom - pad_top)) as f32 * ticks_to_ms;
++        (bracket_ms <= frame.as_secs_f32() * 1000.0).then_some(output_ms)
+     }
+ }
+ 
+@@ -514,6 +519,8 @@ mod tests {
+         let mut frame = CafeFrameWork {
+             presented: [true; 2],
+             terrain_sections: [20, 21],
++            submission: ms(12),
++            gpu_wait: ms(8),
+             world_resolution: Some(WorldResolution {
+                 requested_scale: 75,
+                 effective_scale: 75,
+@@ -529,18 +536,27 @@ mod tests {
+             }),
+             ..Default::default()
+         };
+-        assert_eq!(frame.drs_pipeline_ms(15.0, ms(4), 60), Some(10.0));
+-        assert_eq!(frame.drs_pipeline_ms(9.0, ms(4), 60), None);
+-        assert_eq!(frame.drs_pipeline_ms(25.0, ms(17), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), Some(9.0));
++        assert_eq!(frame.drs_pipeline_ms(ms(25), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(25), 30), Some(9.0));
++        frame.submission = ms(14);
++        frame.gpu_wait = ms(1);
++        assert_eq!(frame.drs_pipeline_ms(ms(18), 60), None);
++
++        frame.gpu_sample.as_mut().unwrap().endpoints[1] = [459_000, 567_000];
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
++        frame.gpu_wait = ms(8);
++        assert_eq!(frame.drs_pipeline_ms(ms(22), 60), Some(9.0));
++        frame.gpu_sample.as_mut().unwrap().endpoints[1] = [189_000, 297_000];
+ 
+         frame.world_resolution.as_mut().unwrap().effective_scale = 100;
+-        assert_eq!(frame.drs_pipeline_ms(15.0, ms(4), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
+         frame.world_resolution.as_mut().unwrap().effective_scale = 75;
+         frame.gpu_sample.as_mut().unwrap().endpoints[1][0] = 150_000;
+-        assert_eq!(frame.drs_pipeline_ms(15.0, ms(4), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
+         frame.gpu_sample.as_mut().unwrap().endpoints[1][0] = 189_000;
+         frame.terrain_sections[1] = 0;
+-        assert_eq!(frame.drs_pipeline_ms(15.0, ms(4), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
+     }
+ 
+     #[test]
