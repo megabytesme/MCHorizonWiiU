@@ -11,7 +11,9 @@ from gx2_profile import uwp_serial_lines
 
 
 GUEST_LINE = re.compile(r"^(\d+);(\d+);(\d+);(\d+): (.*)")
-CAFE_WINDOW = re.compile(r"Horizon Cafe (cadence|pacing|streaming|wall game|wall render|world): t_ms=(\d+) (.*)")
+CAFE_WINDOW = re.compile(
+    r"Horizon Cafe (cadence|pacing|streaming|CPU per frame|wall game|wall render|world): t_ms=(\d+) (.*)"
+)
 FIELD = re.compile(r"(\w+)=(\S+)")
 STAGE_NAME = re.compile(r"[a-z][a-z0-9_.]*")
 DIMENSIONS = re.compile(r"\d+x\d+")
@@ -187,7 +189,7 @@ def matched_windows(windows, first, last, phase="gameplay"):
     for key in ("tv_sections", "gamepad_sections"):
         sections = [window["streaming"][key] for window in selected]
         section_ranges[key] = [min(sections), max(sections)]
-    return {
+    result = {
         "phase": phase, "window_count": len(selected), "first_window_end_ms": first, "last_window_end_ms": last,
         "duration_ms": round(duration, 3), "paired_submissions": pairs, "partial_submissions": partial,
         "complete_submissions": pairs - partial, "paired_per_second": round(pairs * 1000 / duration, 3),
@@ -202,6 +204,13 @@ def matched_windows(windows, first, last, phase="gameplay"):
         "integrated_server_tps": round(sum(ticks) * 1000 / duration, 3) if None not in ticks else None,
         "resolution_and_coverage": world,
     }
+    hud_waits = [window.get("CPU per frame", {}).get("hud_wait_ms") for window in selected]
+    built_frames = [window["cadence"].get("built", 0) for window in selected]
+    if None not in hud_waits and all(built_frames):
+        result["direct_hud_wait_ms_per_built_frame"] = round(
+            sum(wait * frames for wait, frames in zip(hud_waits, built_frames)) / sum(built_frames), 3,
+        )
+    return result
 
 
 def main():

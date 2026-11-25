@@ -13,7 +13,7 @@ def window(guest_ms, end_ms, span_ms, loops, paired, artwork_ms, scale=75, phase
     return [
         guest(guest_ms, f"Horizon Cafe {kind}: t_ms={end_ms} {values}")
         for kind, values in (
-            ("cadence", f"phase={phase} span_ms={span_ms} loops={loops} paired={paired} partial=1"),
+            ("cadence", f"phase={phase} span_ms={span_ms} loops={loops} built={paired} paired={paired} partial=1"),
             ("pacing", "samples=9 median_ms=108 p95_ms=120 p99_ms=122 max_ms=130"),
             ("streaming", "ticks=Some(40) meshed=3 uploaded=2 upload_bytes=100 tv_sections=93 gamepad_sections=91"),
             ("wall game", f"game_ms=103 idle_ms=1 artwork_ms={artwork_ms} other_ms=1 invalid_steps=0"),
@@ -70,6 +70,11 @@ class CafePhysicalReportTests(unittest.TestCase):
         self.assertEqual(result['wall_ms_per_iteration']['artwork_ms'], 24)
         self.assertNotIn('guest_elapsed_ms', result['wall_ms_per_iteration'])
         self.assertEqual(result['median_of_window_pacing_ms']['p95_ms'], 120)
+        self.assertNotIn('direct_hud_wait_ms_per_built_frame', result)
+        lines += [guest(13000, 'Horizon Cafe CPU per frame: t_ms=4000 hud_wait_ms=40'),
+                  guest(15200, 'Horizon Cafe CPU per frame: t_ms=6200 hud_wait_ms=30')]
+        measured_leaf = report.matched_windows(report.read_session(lines)['cafe_windows'], 4000, 6200)
+        self.assertEqual(measured_leaf['direct_hud_wait_ms_per_built_frame'], 33.214)
 
     def test_refuses_cross_session_and_unmatched_windows(self):
         with self.assertRaisesRegex(ValueError, 'one hosted entry'):
