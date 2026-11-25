@@ -79,6 +79,24 @@ class BenchmarkReportTests(unittest.TestCase):
                     audit.summarize(report)["coverage"]["meets_stationary_coverage"], expected,
                 )
 
+    def test_stationary_camera_and_section_counts(self):
+        report = benchmark("cafe-stationary", elapsed_ms=30_000, eligible_interval_ms=25_000)
+        self.assertNotIn("camera", audit.summarize(report))
+        camera = {"x": -960.0, "y": 126.62, "z": 80.0, "yaw": 0.0, "pitch": 35.0}
+        metrics = report["metrics"]
+        metrics.update({f"cafe.stationary.camera.{key}": metric(value)
+                        for key, value in camera.items()})
+        sections = {"tv_before": 562, "tv_after": 564, "gamepad_before": 560, "gamepad_after": 563}
+        for name, value in sections.items():
+            output, boundary = name.split("_")
+            metrics[f"cafe.stationary.{output}_sections_{boundary}"] = metric(value)
+        result = audit.summarize(report)
+        self.assertEqual(result["camera"], camera)
+        self.assertEqual(result["terrain_sections"], sections)
+        del metrics["cafe.stationary.camera.yaw"]
+        with self.assertRaisesRegex(ValueError, "incomplete stationary camera"):
+            audit.summarize(report)
+
     def test_contradictory_frame_counts_are_rejected(self):
         report = benchmark(eligible_intervals=78)
         with self.assertRaisesRegex(ValueError, "inconsistent"):

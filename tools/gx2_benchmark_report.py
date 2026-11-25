@@ -37,20 +37,22 @@ TARGETS = (
 )
 
 
-def number(value):
-    if type(value) in (int, float) and 0 <= value <= float_info.max:
+def number(value, *, signed=False):
+    minimum = -float_info.max if signed else 0
+    if type(value) in (int, float) and minimum <= value <= float_info.max:
         return value
-    raise ValueError("expected a finite nonnegative number")
+    expected = "a finite number" if signed else "a finite nonnegative number"
+    raise ValueError(f"expected {expected}")
 
 
-def metric(metrics, key):
+def metric(metrics, key, *, signed=False):
     if key not in metrics:
         return None
     summary = metrics[key]
     if not isinstance(summary, dict) or summary.get("n") != 1:
         raise ValueError(f"{key} needs one recorded value")
     try:
-        return number(summary.get("mean"))
+        return number(summary.get("mean"), signed=signed)
     except ValueError as error:
         raise ValueError(f"invalid metric {key}") from error
 
@@ -113,7 +115,7 @@ def summarize(report):
             and coverage["eligible_wall_fraction"] >= 0.8
             and coverage["elapsed_ms"] >= duration * 1000
         )
-    return {
+    result = {
         "scenario": scenario,
         "phase": phase,
         "requested_duration_s": duration,
@@ -126,6 +128,23 @@ def summarize(report):
             ) if frame.get(key) is not None
         },
     }
+    if scenario == "cafe-stationary":
+        camera = {
+            key: metric(metrics, f"cafe.stationary.camera.{key}", signed=True)
+            for key in ("x", "y", "z", "yaw", "pitch")
+        }
+        if any(value is not None for value in camera.values()):
+            if any(value is None for value in camera.values()):
+                raise ValueError("incomplete stationary camera evidence")
+            result["camera"] = camera
+        sections = {
+            f"{output}_{boundary}": metric(metrics, f"cafe.stationary.{output}_sections_{boundary}")
+            for output in ("tv", "gamepad")
+            for boundary in ("before", "after")
+        }
+        if any(value is not None for value in sections.values()):
+            result["terrain_sections"] = sections
+    return result
 
 
 def main():
