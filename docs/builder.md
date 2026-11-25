@@ -143,8 +143,22 @@ python3 tools/rebind_cafe_prepared_archive.py "$prepared_copy" \
   --output "$scratch/horizon-data.bin"
 ```
 
-Place the resulting archive alongside the matching manifest in the isolated
-resource copy. The command verifies the embedded manifest and preserves
-the payload bytes. Its default guest path is the standard Horizon Wii U
-installation. For an isolated instance with a different path, pass
-`--guest-root` with the full CafeOS resource directory.
+The command's default guest path is the standard Horizon Wii U installation.
+For a qualification instance, pass its full CafeOS resource directory as
+`--guest-root` when rebinding and checking the archive.
+
+```sh
+python3 tools/rebind_cafe_prepared_archive.py "$prepared_copy" \
+  --output "$scratch/horizon-data.bin" --guest-root "$qualification_guest_root"
+python3 tools/rebind_cafe_prepared_archive.py "$prepared_copy" \
+  --check --archive "$scratch/horizon-data.bin" --guest-root "$qualification_guest_root" \
+  --payload-from "$prepared_copy/horizon-data.bin"
+```
+
+The preflight checks the exact guest root, embedded manifest, selected hosted
+recipe pins, archive index and payload identity. Save its JSON output with the
+qualification receipt. Place the verified archive alongside the matching
+manifest. Before safely ejecting the SD card, point the check at the installed
+resource directory and pass `--sha256` with the receipt's `archive_sha256` to
+confirm the transferred bytes. Use `--recipe` when packaging from a different
+hosted source recipe. A failed check invalidates a prepared-resource benchmark.
