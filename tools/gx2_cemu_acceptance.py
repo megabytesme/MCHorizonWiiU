@@ -26,7 +26,8 @@ GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
 DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
 HEALTH_TAG = b"\x05\x00\x06Health"
 GROUND_TAG = b"\x01\x00\x08OnGround"
-MENU_PHASE = r'"phase":"menu"|Horizon Cafe cadence: .*\bphase=menu\b'
+CAFE_MENU_PHASE = r'Horizon Cafe cadence: .*\bphase=menu\b'
+MENU_PHASE = r'"phase":"menu"|' + CAFE_MENU_PHASE
 GAMEPLAY_PHASE = r'"phase":"gameplay"|Horizon Cafe cadence: .*\bphase=gameplay\b'
 
 
@@ -215,6 +216,22 @@ def respawn_fixture(lab, start, hold):
     return True
 
 
+def tap_save(lab, x, y, hold, offset, deadline):
+    lab.send("tap", x=x, y=y, hold=hold)
+    try:
+        lab.wait(r"Horizon Cafe touch: dispatch complete kind=release\b|hosted save barrier",
+                 min(12, deadline - time.monotonic()), offset)
+    except TimeoutError:
+        # The interpreter can miss a touch immediately after a capture. Retry
+        # once if the paused game is still submitting frames after that touch.
+        try:
+            lab.wait(CAFE_MENU_PHASE, min(5, deadline - time.monotonic()), lab.mark())
+        except TimeoutError:
+            return
+        lab.record("save-touch-retry")
+        lab.send("tap", x=x, y=y, hold=min(hold, 3))
+
+
 def exercise(args):
     if not 1 <= args.sessions <= 5:
         raise ValueError("choose one to five same-process sessions")
@@ -304,7 +321,7 @@ def exercise(args):
             lab.show(f"session-{index}-pause")
             save = lab.mark()
             deadline = time.monotonic() + args.save_timeout
-            lab.send("tap", x=args.save_at[0], y=args.save_at[1], hold=game_hold)
+            tap_save(lab, *args.save_at, game_hold, save, deadline)
             for marker in (r"hosted save barrier completed", r"hosted game and loading workers released",
                            r"frame.home.play"):
                 lab.wait(marker, deadline - time.monotonic(), save)
