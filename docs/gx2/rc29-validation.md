@@ -101,6 +101,30 @@ The diagnostic deliberately insets its pattern from the display edges.
 These dimensions apply to the test pattern. Hosted gameplay records its
 own world-target sizes.
 
+### Physical Display Lists
+
+The Wii U retired all 96 samples across six passes, with 64 draws and
+384 indices per output in every sample. The standalone app returned to
+the Wii U Menu. The TV still and GamePad photo show the expected
+eight-by-eight grid with alternating tile widths. The GamePad reverses the
+red and blue rows and moves the green tile from top left to bottom right.
+The photos document the pattern on both outputs. Serial covers all passes.
+
+| Submission | Output | Median command construction (µs) | Median flush (µs) | Median retirement wait (µs) | Median total (µs) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Direct | TV | 19.85 | 3.12 | 607.82 | 630.92 |
+| Section lists | TV | 12.91 | 3.15 | 607.83 | 624.16 |
+| Frame list | TV | 0.13 | 3.16 | 607.64 | 610.88 |
+| Direct | GamePad | 18.34 | 3.17 | 138.07 | 159.62 |
+| Section lists | GamePad | 11.41 | 3.31 | 138.16 | 152.86 |
+| Frame list | GamePad | 0.14 | 3.18 | 138.18 | 141.64 |
+
+The probe used 66,048 bytes of reserved command-list memory. Frame lists
+nearly eliminated CPU command construction for this fixed grid. Flush and
+retirement waits stayed close across all three methods on each display.
+The CPU retirement wait includes synchronization. Gameplay throughput
+requires a separate measurement with terrain and changing state.
+
 ## Console procedure
 
 Perform this queue with the owner present. Stage the approved hosted package
