@@ -523,13 +523,14 @@ pub fn paint(canvas: &mut Canvas<'_>, view: View, display: Display, frame: u32) 
         {
             button(canvas, rect, row, focused);
             if row.action == Action::Play || row.action == Action::SaveAndQuit {
-                Font::Mono.draw(
-                    canvas,
-                    [rect.x + rect.w + 22.0, rect.y + 46.0],
-                    23.0,
-                    SOFT,
-                    row.detail,
-                );
+                let x = rect.x + rect.w + 22.0;
+                let right = if view.page == Page::Home && layout.display == Display::Tv {
+                    layout.home_rows().x - 20.0
+                } else {
+                    layout.right
+                };
+                let size = ((right - x) / Font::Mono.advance(row.detail, 1.0).max(1.0)).min(23.0);
+                Font::Mono.draw(canvas, [x, rect.y + 46.0], size, SOFT, row.detail);
             }
         } else {
             list_row(canvas, rect, row, focused);
