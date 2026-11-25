@@ -142,6 +142,12 @@ workload. Keep captures from consecutive game sessions separate when the
 sequence resets. A correlation labels the measured pipeline span as
 unqualified for automatic resolution.
 
+The [hosted RC 29 validation](rc29-validation.md) saved an HZP3 capture
+with both displays rendering at 75% in forced-interpreter Cemu. Its 17
+retained playing presentations all reported the scaled world dimensions
+and were marked partial. The serial log reported an invalid GPU cycle
+pair, and the capture produced zero valid GPU timing matches.
+
 - The `HZP1` header is seven big-endian u32 values. It contains magic,
   version 1, clock rate, row size, capacity, retained count and total frame
   count. Complete rows follow in oldest-to-newest sequence order.

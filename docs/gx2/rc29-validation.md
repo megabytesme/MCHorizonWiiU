@@ -11,10 +11,21 @@ Normal launches use 100% world resolution pending hosted physical qualification.
 
 ## Hosted package
 
-Build A passed from frozen port commit `c231d779772efe095bb2ef1d96663a2ccc9163de`.
-It uses client `0.8.0-rc.29`, patch `0.5.0-rc.29` and builder
+Two isolated builds from frozen port commit
+`c231d779772efe095bb2ef1d96663a2ccc9163de` produced byte-identical RPX
+and WUHB files. The first compilation completed, but the builder withheld
+its receipt when the port checkout advanced. Build A reran from the frozen
+commit using its existing objects. Build B compiled from an empty build
+directory with a separate Cargo target directory. Both used the same
+isolated build mount and passed `verify-output`.
+
+The package uses client `0.8.0-rc.29`, patch `0.5.0-rc.29` and builder
 `0.7.0-rc.5`. The exact recipe SHA-256 is
 `7e684176da0f3a9dfb7caeef51fee8d1c676eee78633e6ff98ffd6fcde0c95ff`.
+Both receipts record build ID
+`bcc218c88984a73d26cbc989ef4b605361ee51c18b9167c0a5f8bb83e5c31aa4`
+and toolchain lock SHA-256
+`72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221`.
 
 | Package | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -29,8 +40,23 @@ The first Cemu world run requested 75% and used the normal 100% fallback.
 Both paused displays showed terrain, the HUD and the Game Menu. Native
 AX reported its first nonzero PCM. The harness ended before Save & Quit
 because it expected the previous pause log format. It now recognizes the
-native cadence marker. The second independent build and the experimental
-75% lifecycle run are in progress.
+native cadence marker.
+
+The experimental run used the same RPX and the Full Performance fixture
+with render distance 6 and simulation distance 5. Cemu recorded requested
+and effective 75%, a TV world buffer of 1440×809, a GamePad world buffer
+of 641×360, and 11,378,688 bytes in scaled surfaces. Gameplay and pause
+stills showed terrain, the held hand and the native HUD on both displays.
+AX delivered nonzero PCM. Profiling mode `4` reported an invalid GPU cycle
+pair in Cemu. Console timing and the default 100% fallback decision still
+depend on the physical checks below.
+
+The first experimental save returned to Night and recorded the change in
+player position from the emulated GamePad. Both sound decoders joined and
+the AX callback consumed nonzero PCM. GX2 bulk memory recovered to
+234,880,920 free bytes, with a largest free block of 234,880,896 bytes.
+The saved HZP3 capture decoded with 4,096 retained records and zero valid
+GX2 timing matches. Same-process reload checks follow the first save.
 
 ## Standalone diagnostics
 
