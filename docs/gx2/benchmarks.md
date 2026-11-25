@@ -316,11 +316,15 @@ comparison. Record the package, archive, graphics and fixture digests
 with the serial boundary. The [preflight procedure](../builder.md#prepare-a-copied-archive-for-an-isolated-game-path)
 covers the archive and its deployment copy.
 
-1. Select the test instance in Night. With profile mode `4`, collect
-   application start, Night readiness, Play, hosted entry, first
-   terrain, first accepted input and settled terrain. Open the same
-   saved world again in the same process after a durable Save & Quit.
-   Record both display outcomes, startup child spans and memory.
+1. Start the test instance with an empty instance-local sprite cache and
+   the verified archive. With profile mode `4`, collect application start,
+   Night readiness, Play, hosted entry, first terrain, first accepted
+   input and settled terrain. Open the same saved world again in the same
+   process after a durable Save & Quit. After leaving the application,
+   repeat entry in a new process with the resulting cache intact. Record
+   both display outcomes, startup child spans, sprite-cache hits and
+   misses, and memory for all three cases. Record the OS and SD cache
+   conditions alongside the first launch.
 2. Measure Full Performance at 75% on the fixed camera. Repeat at
    100% and 50% with the same position, yaw, pitch, options and
    effective output sizes verified in the report or authenticated

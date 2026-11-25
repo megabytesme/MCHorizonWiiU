@@ -145,8 +145,10 @@ vacant rename destination. The cache's overwrite procedure could silently
 discard the new file and keep serving the stale cache on later starts.
 The new procedure stages the bytes, moves the old cache aside and
 restores it if the final rename fails. The host test covers replacement
-and rollback. Confirm a positive cache hit count and unchanged atlas
-content during the next forced-interpreter or physical reopen.
+and rollback. In the exact RC 33 interpreter replay the writer replaced
+a deliberately stale fingerprint. The same-process reopen had 28,639
+hits and two misses. Both sessions showed textured terrain and the HUD
+on TV and GamePad. [RC 33 replay](rc33-validation.md#saved-world-replay)
 
 Archive-backed loot cache lookups use the open archive's weak allocation
 identity for the folders the archive serves. The corrected archive
@@ -159,3 +161,16 @@ Generator-data construction still occupied 41.75–61.27 s in the baseline.
 Measure how much remains on the critical path when faster pack preparation
 exposes more of the preload. The user-visible goal is to reduce both the
 first-frame wait and the later settling period.
+
+## RC 32 and RC 33 interpreter observations
+
+The [loading scorecard](loading-scorecard.json) retains the two exact
+packages, the common prepared archive and each stage. The existing-world
+network recipe span was 160.82 s on first entry and 198.27 s on reopen in
+RC 32. In RC 33 it was 21.93 s and 25.20 s. The new catalog and acceptance
+spans account for most of those RC 33 intervals. Server adoption waited
+less than 0.1 ms in all four cases, so the isolated recipe span does not
+predict the change in time to gameplay. The first RC 32 world started
+with no sprite cache. RC 33 started with a valid file with a stale
+fingerprint. Host build and emulator activity varied across the cases.
+The correctly bound RC 29 capture remains the physical baseline.

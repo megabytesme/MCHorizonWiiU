@@ -25,6 +25,14 @@ specific cases below. Hosted scene and physical acceptance remain separate.
 | World border | RC 31 uses the shared ordered wall quads, camera-relative transforms, scrolling forcefield texture and stock status tint. One lazy native object shares at most 24 vertices across the two display projections. | CafeGLSL, PowerPC and isolated TV/DRC pixel checks passed for blend, depth, alpha discard, repeat, tint and projection. The single-object fixture passed consecutive frames. Hosted and physical border scenes and forcefield mip levels remain open. |
 | Remaining stock stages | Native mipmaps, cached and specialized block-entity passes, clouds, additive particle materials, special overlays and stock world post-processing still need coverage. | See the detailed rows below for upstream inputs and acceptance scenes. HDR10, arbitrary shader packs, frame generation and desktop compute techniques are outside the stock target. |
 
+The frozen RC 33 presenter still reports partial submissions when active
+frame inputs include clouds, static block entities or skinned geometry,
+camera screen effects, additive or see-through geometry, shadow-only
+geometry, or stock post effects and menu blur. The shared world border
+submission has a separate failure flag for missing geometry or texture.
+These flags and the displayed scene both matter when qualifying older
+and newer candidates against the same camera.
+
 The checkpoint and historical matrices below describe their named earlier
 builds. Their missing outline, crumbling, hand and translucent terrain rows
 remain useful as references for those builds.

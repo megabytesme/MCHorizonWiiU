@@ -578,6 +578,9 @@ Physical duration changes remain unmeasured.
 
 ## RC 33 follow-up
 
+The [RC 33 candidate record](rc33-validation.md) ties the package and
+its qualification results to the frozen source and engine tree.
+
 The direct HUD path reports the leaf `GX2DrawDone` as an explicit
 GPU wait. HZP3 keeps its layout and the complete per-output HUD wall
 span. The aggregate line also reports `hud_wait_ms`. Use the full

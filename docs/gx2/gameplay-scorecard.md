@@ -14,7 +14,7 @@ simulation distances of 6/5. The 50% reopen and legacy-uniform series were
 separate camera windows. Game-step values are weighted by the iteration
 count. Pacing in this table gives the median of the short-window statistics,
 plus the maximum observed gap. All recorded submissions were partial with
-omission mask `0x8000`.
+the post-effects omission mask `0x8000`.
 
 | Physical measurement | 75% Full Performance | 100% fixed | 50% reopen | 50% legacy uniforms |
 | --- | ---: | ---: | ---: | ---: |

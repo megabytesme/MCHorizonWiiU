@@ -407,6 +407,91 @@
           }
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.33",
+      "source_commit": "cdfae3d8c0562234b76f23899dbcdbdab5e2f697",
+      "engine_tree": "b5bb7217763685f06e95847a06d90d774bcb8968",
+      "toolchain": "1.1.0",
+      "rpx_sha256": "a3e5da6f21422b5af69de5410628688be4dd09747efdb2eff4301d5dcfeb515f",
+      "environment": "NSS-patched Cemu, forced interpreter. Concurrent native build and separate launcher test.",
+      "archive_sha256": "8b26733d3b75d099ea412679034e4659524b400c9f0cc29e29d002a845c0e866",
+      "prepared_schema": 7,
+      "same_process": true,
+      "effective_scale_percent": 75,
+      "sprite_cache_replacement_verified": true,
+      "cases": [
+        {
+          "id": "existing_world_stale_sprite_cache",
+          "stages_ms": {
+            "ui.atlas": 61871.32,
+            "ui.load": 61887.294,
+            "core.sprite_cache_fingerprint": 4507.321,
+            "core.sprite_cache_open": 5322.17,
+            "core.block_facts": 131893.777,
+            "core": 197883.53,
+            "pack.mesh_tables": 17033.884,
+            "pack.assemble": 11197.84,
+            "handoff.game_cpu": 22204.902,
+            "handoff.renderer_textures": 30259.207,
+            "sync.recipe_catalog": 16128.137,
+            "sync.recipe_acceptance": 2259.491,
+            "sync.network_recipes": 21927.14,
+            "world.preload": 413700.15,
+            "server.open_world": 36503.739,
+            "server.sync_adopt": 0.057
+          },
+          "sprite_cache": {
+            "hits": 0,
+            "misses": 28641,
+            "entries": 1311
+          },
+          "first_positive_terrain_serial_ms": 795297,
+          "gameplay_ready_ms": 766189,
+          "after_save": {
+            "rust_live": 44315231,
+            "rust_peak": 327921500,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          }
+        },
+        {
+          "id": "existing_world_warm_reopen",
+          "stages_ms": {
+            "ui.atlas": 57147.714,
+            "ui.load": 57154.865,
+            "core.sprite_cache_fingerprint": 0.011,
+            "core.sprite_cache_open": 1377.412,
+            "core.block_facts": 125376.135,
+            "core": 183628.646,
+            "pack.mesh_tables": 19238.606,
+            "pack.assemble": 2288.265,
+            "handoff.game_cpu": 25331.717,
+            "handoff.renderer_textures": 34958.708,
+            "sync.recipe_catalog": 17147.13,
+            "sync.recipe_acceptance": 3195.828,
+            "sync.network_recipes": 25203.313,
+            "world.preload": 401268.937,
+            "server.open_world": 37849.071,
+            "server.sync_adopt": 0.059
+          },
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311
+          },
+          "first_positive_terrain_serial_ms": 766320,
+          "gameplay_ready_ms": 738113,
+          "after_save": {
+            "rust_live": 44449816,
+            "rust_peak": 372797579,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          }
+        }
+      ]
     }
   ],
   "host_microbenchmarks": [
