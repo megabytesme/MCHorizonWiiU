@@ -1,0 +1,28 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 43f111996ca8a194e03dd6e4a06210a4660a02ba..fc8a456ffc81b6940cbf97eee8b984d48cff3083 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -384,15 +384,21 @@ static void report_animation_window(uint64_t now)
+    sum->stores += animation_sample.stores;
+    const uint64_t elapsed = now - animation_window.begin;
+    if (elapsed < (uint64_t)OSMillisecondsToTicks(2000)) return;
+-   OSReport("Horizon GX2 terrain animation: first_seq=%u last_seq=%u wall_ticks=%llu hz=%u "
++   // Use libc to format the 64-bit counters before passing text to OSReport.
++   char line[256];
++   snprintf(line, sizeof(line),
++            "Horizon GX2 terrain animation: first_seq=%u last_seq=%u wall_ticks=%llu hz=%u "
+             "pairs=%u updates=%u cells=%u bytes=%u store_calls=%u\n",
+             animation_window.first, current.sequence, (unsigned long long)elapsed,
+             OSTimerClockSpeed, animation_window.pairs, animation_window.updates,
+             sum->cells, sum->bytes, sum->stores);
+-   OSReport("Horizon GX2 terrain animation spans: last_seq=%u fill_ticks=%llu "
++   OSReport("%s", line);
++   snprintf(line, sizeof(line),
++            "Horizon GX2 terrain animation spans: last_seq=%u fill_ticks=%llu "
+             "writeback_ticks=%llu invalidate_ticks=%llu\n", current.sequence,
+             (unsigned long long)sum->phases[0], (unsigned long long)sum->phases[1],
+             (unsigned long long)sum->phases[2]);
++   OSReport("%s", line);
+    memset(&animation_window, 0, sizeof(animation_window));
+    // The serial write happened after the captured loop. Leave its delay out
+    // of the next start-to-start and flip intervals as with file checkpoints.

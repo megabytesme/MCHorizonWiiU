@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "b70497fe3ac3a7321ab89cdc5bab056c7d62b1d9",
+  "output_tree": "ce22c0c33105cb90e2e70b233c051f0d433fa921",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -680,6 +680,12 @@
       "sha256": "aea9e63eaac9950392fdee0420d5093ce9ffc6b88fc21e779b21de9a9666765c",
       "input_tree": "b2305ce97e369c1b2ce06928e527e61dfa834eba",
       "output_tree": "b70497fe3ac3a7321ab89cdc5bab056c7d62b1d9"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0112-report-terrain-animation-format.patch",
+      "sha256": "493ddcda7980f5b6ad4b5435f2fbe4a6679492eeb6c0688e52a406f903ec69b6",
+      "input_tree": "b70497fe3ac3a7321ab89cdc5bab056c7d62b1d9",
+      "output_tree": "ce22c0c33105cb90e2e70b233c051f0d433fa921"
     }
   ],
   "candidate": {
