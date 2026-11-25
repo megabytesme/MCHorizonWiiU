@@ -1,5 +1,8 @@
 # Wii U renderer performance programme
 
+The [gameplay scorecard](gameplay-scorecard.md) records the aligned RC 29
+physical frame budgets, per-output timings and the display-list comparison.
+
 The [RC 26 physical record](physical-rc26.md) covers the verified console
 boot, live MCP, the visible 100% baseline, save recovery and the scaled
 world, readback and Menu handoff failures.
