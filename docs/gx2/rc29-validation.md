@@ -81,6 +81,26 @@ RPX passed ten Cemu checks. Only the readback-free WUHB is in the hardware
 queue. The [display-list probe](../../wiiu/diagnostics/gx2-display-lists/README.md)
 retired all 96 timed samples and passed 1,536 color checks in Cemu.
 
+### Physical Scale Check
+
+The verified readback-free WUHB completed all five trials on Wii U. The
+allocation-budget check passed. Every HDMI still matched the red top,
+blue bottom, black margin and small green HUD bar. The owner observed the
+same pattern on the GamePad throughout. Serial recorded the final draw,
+the Wii U Menu launch and the ProcUI exit event.
+
+| Trial | Scale | TV pattern | GamePad pattern | Extra surface bytes |
+| --- | ---: | --- | --- | ---: |
+| 1 | 100% | 1898×1054 | 832×454 | 0 |
+| 2 | 75% | 1424×791 | 624×341 | 11,018,240 |
+| 3 | 50% | 949×527 | 416×227 | 4,853,760 |
+| 4 | 95% | 1803×1001 | 790×431 | 17,473,536 |
+| 5 | 75% | 1424×791 | 624×341 | 11,018,240 |
+
+The diagnostic deliberately insets its pattern from the display edges.
+These dimensions apply to the test pattern. Hosted gameplay records its
+own world-target sizes.
+
 ## Console procedure
 
 Perform this queue with the owner present. Stage the approved hosted package
