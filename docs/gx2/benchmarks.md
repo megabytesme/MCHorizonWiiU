@@ -305,3 +305,51 @@ Use distance 12, the same saved position and heading, and the same CPU mode
 and Cemu binary for rate comparisons. Record the mode and package hash
 alongside each window. Preserve the HZP data for flip and terrain wait
 breakdowns and run a separate physical verification for Wii U timing.
+
+## RC 32 and RC 33 console qualification
+
+Use the next verified package, a single disposable SD and the existing
+qualification instance. Check the package receipt and prepared archive
+against the actual guest resource root before staging. Use the same
+prepared manifest, resource packs and `Reopen Fixture` snapshot in each
+comparison. Record the package, archive, graphics and fixture digests
+with the serial boundary. The [preflight procedure](../builder.md#prepare-a-copied-archive-for-an-isolated-game-path)
+covers the archive and its deployment copy.
+
+1. Select the test instance in Night. With profile mode `4`, collect
+   application start, Night readiness, Play, hosted entry, first
+   terrain, first accepted input and settled terrain. Open the same
+   saved world again in the same process after a durable Save & Quit.
+   Record both display outcomes, startup child spans and memory.
+2. Measure Full Performance at 75% on the fixed camera. Repeat at
+   100% and 50% with the same position, yaw, pitch, options and
+   effective output sizes verified in the report or authenticated
+   state. Capture comparable warm windows. Pair raw HZP3 and serial
+   records from each distinct session. Record geometry alongside
+   cadence and CPU/GPU spans.
+3. Alternate profile modes `4` and `4h` on the same build for the
+   direct and shared HUD comparison. Include an inventory or held
+   item scene for atlas consumers, and inspect both output stills
+   between timed windows. On RC 33, use the explicit leaf HUD wait
+   and paired interval together. Run the existing terrain binding,
+   reduced-attribute and batched-uniform diagnostics separately
+   with matching geometry.
+4. Run the original Village benchmark with baseline mesh admission.
+   On RC 33, repeat with `gx2-streaming-focus.enable` on the test
+   installation. Compare terrain coverage along the original route,
+   total upload work, geometry, and memory. Collect fixed-camera
+   stationary reports separately.
+5. Enable `gx2-drs-experimental.enable` with mode `4` for the
+   automatic resolution trial. Exercise 30 and 60 FPS on the same
+   graphics settings, including scale changes only when input
+   telemetry supports a verdict. If the stock scene holds its scale
+   because of CPU wall time, keep that result and use a separate
+   native resolution-sensitive workload for transition checks.
+6. Exercise distance 12 independently. Verify save, reopening, heap
+   recovery, Close Horizon and the Wii U Menu handoff. Export HZP3,
+   the reports and fresh serial segments before restoring the test
+   profile marker. Capture projector stills and GamePad observations.
+
+Preserve account and pairing data. Keep the accepted previous package
+available off-card. The qualification uses the existing serial monitor,
+authenticated HTTPS and still-image capture.
