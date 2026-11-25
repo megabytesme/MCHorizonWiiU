@@ -51,12 +51,22 @@ AX delivered nonzero PCM. Profiling mode `4` reported an invalid GPU cycle
 pair in Cemu. Console timing and the default 100% fallback decision still
 depend on the physical checks below.
 
-The first experimental save returned to Night and recorded the change in
-player position from the emulated GamePad. Both sound decoders joined and
-the AX callback consumed nonzero PCM. GX2 bulk memory recovered to
-234,880,920 free bytes, with a largest free block of 234,880,896 bytes.
-The saved HZP3 capture decoded with 4,096 retained records and zero valid
-GX2 timing matches. Same-process reload checks follow the first save.
+Three experimental rounds completed in one Cemu process. All three used
+effective 75%, saved and returned to Night. The first save recorded GamePad
+movement. Both reopens preserved the exact saved position. During round two
+the first emulated save touch was missed. A second touch while the game was
+still paused completed the save. The harness now has a bounded retry for
+that case.
+
+Both sound decoders joined and the AX callback consumed nonzero PCM in each
+round. After every save, the GX2 bulk heap recovered to 234,880,920 free
+bytes with a largest free block of 234,880,896 bytes. Post-drop Rust live
+bytes were 44,424,467, 44,714,536 and 44,674,609. All three session HZP3
+captures decoded. The first retained 4,096 records with zero valid GPU
+timing matches. Close Horizon released the launcher view, GX2 and ProcUI,
+persisted the final profile and returned through `coreinit.exit(0)`. The
+Cemu raw RPX launcher used its placeholder title exit path. Aroma Menu
+handoff and relaunch remain console checks.
 
 ## Standalone diagnostics
 
