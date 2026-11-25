@@ -1,0 +1,53 @@
+diff --git a/crates/horizon-client-render/src/graphics.rs b/crates/horizon-client-render/src/graphics.rs
+index da8b7bc164d07dec865918ac7a4332182f6764dd..7fb0aec84ffdee1b9f15c26182ae7aa0177a3f1f 100644
+--- a/crates/horizon-client-render/src/graphics.rs
++++ b/crates/horizon-client-render/src/graphics.rs
+@@ -8,6 +8,15 @@ pub const FILE: &str = "horizon-graphics.txt";
+ /// Cafe's saved world scale ranges up to its direct-rendering resolution.
+ pub const RESOLUTION_SCALE_MAX: u32 = if cfg!(target_os = "cafe") { 100 } else { 200 };
+ 
++/// Effective world rendering dimensions on a dual-display backend, in TV and GamePad order.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct WorldResolution {
++    pub requested_scale: u32,
++    pub effective_scale: u32,
++    pub dimensions: [[u32; 2]; 2],
++    pub surface_bytes: u32,
++}
++
+ /// The Wii U experiment uses the hosted profiling mode that records GPU endpoints.
+ #[cfg(target_os = "cafe")]
+ pub fn cafe_dynamic_resolution_trial() -> bool {
+diff --git a/crates/horizon-client-render/src/presentation.rs b/crates/horizon-client-render/src/presentation.rs
+index 147c64283b03ab7107331667c10e7406b2be0fcd..cf3ddc40cb550f0d58114ba5e40e8cf105a7cd69 100644
+--- a/crates/horizon-client-render/src/presentation.rs
++++ b/crates/horizon-client-render/src/presentation.rs
+@@ -15,14 +15,7 @@ use crate::{
+     sprites::SpriteAnimation,
+ };
+ 
+-/// Effective world rendering dimensions on a dual-display backend, in TV and GamePad order.
+-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub struct WorldResolution {
+-    pub requested_scale: u32,
+-    pub effective_scale: u32,
+-    pub dimensions: [[u32; 2]; 2],
+-    pub surface_bytes: u32,
+-}
++pub use crate::graphics::WorldResolution;
+ 
+ /// Surface operations used by Horizon's frame loop, independent of the GPU API.
+ pub trait PresentationBackend {
+diff --git a/crates/horizon-client/src/benchmark.rs b/crates/horizon-client/src/benchmark.rs
+index d47b5c859b09c7abecb584044365540201747500..613bbc41f99e2c4efb3b33dd2e13808a7fe8ba3f 100644
+--- a/crates/horizon-client/src/benchmark.rs
++++ b/crates/horizon-client/src/benchmark.rs
+@@ -17,7 +17,7 @@ use serde_json::Value;
+ 
+ use crate::control::Request;
+ #[cfg(any(target_os = "cafe", test))]
+-use crate::presentation::WorldResolution;
++use crate::graphics::WorldResolution;
+ 
+ pub const SEED: i64 = 1234;
+ /// The world the benchmark creates under `saves/`, replaced on every run.

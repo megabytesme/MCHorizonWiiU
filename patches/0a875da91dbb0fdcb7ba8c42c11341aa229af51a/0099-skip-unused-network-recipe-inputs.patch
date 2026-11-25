@@ -1,0 +1,249 @@
+diff --git a/crates/horizon-client/src/lan/recipes.rs b/crates/horizon-client/src/lan/recipes.rs
+index 48b6ed36feb74ea8c9b81e8b8da9bbe991394415..57dfe4bd660413891aa75cfea7192302ca768ea4 100644
+--- a/crates/horizon-client/src/lan/recipes.rs
++++ b/crates/horizon-client/src/lan/recipes.rs
+@@ -60,6 +60,18 @@ fn registration_order<V>(all: &BTreeMap<String, V>) -> Vec<&V> {
+     ordered.into_iter().map(|(_, v)| v).collect()
+ }
+ 
++/// The resolved input may hold a block-tag ingredient in any nested shape.
++/// Search the values rather than a serialized spelling or a list of slots so
++/// that custom displays and future nested ingredient forms remain covered.
++fn uses_block_tag_ingredient(value: &Value) -> bool {
++    match value {
++        Value::String(name) => name == "neoforge:block_tag",
++        Value::Array(entries) => entries.iter().any(uses_block_tag_ingredient),
++        Value::Object(components) => components.values().any(uses_block_tag_ingredient),
++        _ => false,
++    }
++}
++
+ /// The network copy of the already-resolved load cohort. Only recipes accepted
+ /// by the canonical loader participate in display numbering, keeping client
+ /// display ids aligned with the server's recipe index. Accepted ingredients
+@@ -73,11 +85,22 @@ pub(super) fn network_recipes(
+ ) -> crate::Result<(BTreeMap<String, Box<str>>, HashMap<String, i32>)> {
+     // The resolved copy: the load's `ingredient` answers are in place, and
+     // none of them leaves it (`forget_answers` below).
+-    let items = horizon_client::items::Items::catalog_with_damage_registry(
+-        resources, overlay, defaults, damage,
+-    )?;
+-    let accepted =
+-        horizon_client::crafting::Recipes::from_resolved(resources, &items, overlay, sources)?;
++    let needs_block_items = sources
++        .recipes
++        .iter()
++        .any(|recipe| uses_block_tag_ingredient(&recipe.resolved));
++    let items = crate::spans::startup::time("sync.recipe_catalog", || {
++        horizon_client::items::Items::recipe_catalog(
++            resources,
++            overlay,
++            defaults,
++            damage,
++            needs_block_items,
++        )
++    })?;
++    let accepted = crate::spans::startup::time("sync.recipe_acceptance", || {
++        horizon_client::crafting::Recipes::from_resolved(resources, &items, overlay, sources)
++    })?;
+     let accepted: std::collections::HashSet<&str> = accepted
+         .by_type
+         .values()
+@@ -602,6 +625,74 @@ mod content_tests {
+         );
+     }
+ 
++    #[test]
++    fn stock_recipes_skip_block_facts_and_nested_block_tags_keep_item_aliases() {
++        use horizon_world::{item_defaults, loot::PackOverlay};
++        use std::fs;
++
++        let root = std::env::temp_dir().join(format!(
++            "horizon-recipe-catalog-block-tags-{}",
++            std::process::id()
++        ));
++        let tags = root.join("data/minecraft/tags/block");
++        fs::create_dir_all(&tags).unwrap();
++        fs::write(
++            root.join("items.json"),
++            r#"{"minecraft:oak_sign":{},"minecraft:stick":{}}"#,
++        )
++        .unwrap();
++        fs::write(
++            tags.join("signs.json"),
++            r#"{"values":["minecraft:oak_wall_sign"]}"#,
++        )
++        .unwrap();
++        fs::write(
++            root.join("facts.json"),
++            r#"{"defaults":{"minecraft:oak_wall_sign":0}}"#,
++        )
++        .unwrap();
++        let gameplay = root.join("gameplay-facts.json");
++        fs::write(&gameplay, b"not JSON").unwrap();
++        let defaults = item_defaults::read(&root).unwrap();
++        let run = |ingredient| {
++            let sources = ResolvedSources::resolve(
++                vec![(
++                    "example".into(),
++                    json!({
++                        "type": "minecraft:crafting_shapeless",
++                        "ingredients": [ingredient],
++                        "result": {"id": "minecraft:stick"}
++                    }),
++                )],
++                &load(EngineDataLoadOrigin::ServerDataLoad),
++            )
++            .unwrap();
++            network_recipes(
++                &root,
++                &PackOverlay::NONE,
++                &defaults,
++                &sources,
++                Default::default(),
++            )
++        };
++        let (stock, _) = run(json!("minecraft:oak_sign")).unwrap();
++        let stock: Value = serde_json::from_str(&stock["minecraft:example"]).unwrap();
++        assert_eq!(stock["ingredients"], json!(["minecraft:oak_sign"]));
++
++        let block_tag = json!({
++            "type": "neoforge:compound",
++            "children": [
++                {"neoforge:ingredient_type": "neoforge:block_tag", "tag": "minecraft:signs"}
++            ]
++        });
++        assert!(run(block_tag.clone()).is_err());
++        fs::write(&gameplay, r#"{"states":[{"item":"minecraft:oak_sign"}]}"#).unwrap();
++        let (nested, _) = run(block_tag).unwrap();
++        let nested: Value = serde_json::from_str(&nested["minecraft:example"]).unwrap();
++        assert_eq!(nested["ingredients"], json!([["minecraft:oak_sign"]]));
++        fs::remove_dir_all(root).unwrap();
++    }
++
+     struct AspectListener(std::sync::Arc<std::sync::Mutex<Vec<(DataLoadOrigin, String)>>>);
+     #[mod_api::__subscriptions]
+     impl mod_api::Hooks for AspectListener {
+diff --git a/crates/horizon-items/src/items.rs b/crates/horizon-items/src/items.rs
+index 921f6137accd5c6d3f1f9c9bcc013744a2044f28..c09545fc8953c46ee731da2ea0e4a011c02de034 100644
+--- a/crates/horizon-items/src/items.rs
++++ b/crates/horizon-items/src/items.rs
+@@ -840,7 +840,7 @@ impl Items {
+                 block_for_item.entry(item).or_insert(state);
+             }
+         }
+-        let mut items = Self::load_with(root, &block_for_item, overlay, defaults)?;
++        let mut items = Self::load_with(root, &block_for_item, overlay, defaults, true)?;
+         items.block_items = Arc::new(
+             facts
+                 .states
+@@ -872,7 +872,7 @@ impl Items {
+     /// Every item's defaults, tags and block-to-item identities, without
+     /// placement state ids (for headless tools that never place blocks).
+     pub fn catalog(root: &Path, overlay: &PackOverlay, defaults: &ItemDefaults) -> Result<Self> {
+-        let mut items = Self::load_with(root, &HashMap::new(), overlay, defaults)?;
++        let mut items = Self::load_with(root, &HashMap::new(), overlay, defaults, true)?;
+         items.block_items = Arc::new(ingredient_defaults::block_items(root)?);
+         ingredient_defaults::load_component_damage_registry(root, overlay, &mut items)?;
+         Ok(items)
+@@ -885,18 +885,40 @@ impl Items {
+         defaults: &ItemDefaults,
+         damage: horizon_client_core::registries::RegistryIds,
+     ) -> Result<Self> {
+-        let mut items = Self::load_with(root, &HashMap::new(), overlay, defaults)?;
++        let mut items = Self::load_with(root, &HashMap::new(), overlay, defaults, true)?;
+         items.block_items = Arc::new(ingredient_defaults::block_items(root)?);
+-        Arc::make_mut(&mut items.component_registry)
++        items.set_component_damage_ids(damage);
++        Ok(items)
++    }
++    /// The item data a synchronized recipe can inspect. World loot and
++    /// playback tables are owned by the game's full item catalog.
++    pub fn recipe_catalog(
++        root: &Path,
++        overlay: &PackOverlay,
++        defaults: &ItemDefaults,
++        damage: horizon_client_core::registries::RegistryIds,
++        needs_block_items: bool,
++    ) -> Result<Self> {
++        let mut items = Self::load_with(root, &HashMap::new(), overlay, defaults, false)?;
++        if needs_block_items {
++            items.block_items = Arc::new(ingredient_defaults::block_items(root)?);
++        }
++        items.set_component_damage_ids(damage);
++        Ok(items)
++    }
++
++    fn set_component_damage_ids(&mut self, damage: horizon_client_core::registries::RegistryIds) {
++        Arc::make_mut(&mut self.component_registry)
+             .by_registry
+             .insert("minecraft:damage_type".into(), damage);
+-        Ok(items)
+     }
++
+     fn load_with(
+         root: &Path,
+         block_for_item: &HashMap<&str, BlockStateId>,
+         overlay: &PackOverlay,
+         defaults: &ItemDefaults,
++        world_tables: bool,
+     ) -> Result<Self> {
+         let entity_tags = load_tags(root, "entity_type", overlay)?;
+         let by_item = |name: &str| -> Result<HashMap<String, String>> {
+@@ -1128,12 +1150,28 @@ impl Items {
+         // gameplay/chicken_lay, shearing/sheep/red...), of every namespace
+         // (content mods' tables, docs/modpacks.md), with the packs' over the
+         // game's own: one map with the loot data of the same root and packs.
+-        let loot = horizon_world::loot::shared_tables(root, overlay)?;
+-        let predicates = horizon_world::loot::load_predicates(root, overlay)?;
++        let (loot, predicates, songs, instruments) = if world_tables {
++            (
++                horizon_world::loot::shared_tables(root, overlay)?,
++                Arc::new(horizon_world::loot::load_predicates(root, overlay)?),
++                load_songs(root, overlay),
++                load_instruments(root, overlay),
++            )
++        } else {
++            Default::default()
++        };
+         let registry_order = registry_order(root, &order);
+         let enchantments = Arc::new(crate::enchant::Enchantments::load_with(
+             root, overlay, defaults,
+         )?);
++        let block_tag_order = load_tag_lists(root, "block", overlay)?;
++        let item_tag_order = load_tag_lists(root, "item", overlay)?;
++        let fluid_tag_order = load_tag_lists(root, "fluid", overlay)?;
++        let tag_sets = |tags: &HashMap<String, Vec<String>>| {
++            tags.iter()
++                .map(|(key, list)| (key.clone(), list.iter().cloned().collect()))
++                .collect()
++        };
+         Ok(Self {
+             items,
+             block_items: Default::default(),
+@@ -1146,16 +1184,16 @@ impl Items {
+             mob_visibility,
+             order,
+             registry_order,
+-            block_tags: load_tags(root, "block", overlay)?,
+-            item_tags: load_tags(root, "item", overlay)?,
+-            fluid_tags: load_tags(root, "fluid", overlay)?,
+-            item_tag_order: load_tag_lists(root, "item", overlay)?,
+-            block_tag_order: load_tag_lists(root, "block", overlay)?,
+-            fluid_tag_order: load_tag_lists(root, "fluid", overlay)?,
++            block_tags: tag_sets(&block_tag_order),
++            item_tags: tag_sets(&item_tag_order),
++            fluid_tags: tag_sets(&fluid_tag_order),
++            item_tag_order,
++            block_tag_order,
++            fluid_tag_order,
+             loot,
+-            predicates: Arc::new(predicates),
+-            songs: load_songs(root, overlay),
+-            instruments: load_instruments(root, overlay),
++            predicates,
++            songs,
++            instruments,
+             enchantments,
+         })
+     }

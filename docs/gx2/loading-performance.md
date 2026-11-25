@@ -58,9 +58,13 @@ The first corrected launch used the same RC 29 package and saved-world
 fixture as the delayed attempt. The switch from a default-root archive to
 the qualification-root archive corrected deployment. UI decode fell from
 769.0 s to 5.42 s as described in [RC 29 validation](rc29-validation.md).
-Use the corrected measurements when evaluating changes. Cold process
-startup, Night readiness, original PC preparation time and warm process
-restart were not separately timed.
+Use the corrected measurements when evaluating changes. The first Night
+Play frame arrived 8.282 s after the boot loader announced the candidate
+through serial. This is a serial-arrival estimate for that part of
+application startup. On the guest clock, the first loading frame returned
+by Night preceded hosted entry by 138 ms. The capture has no timestamps for
+the launch request or the Play input. Original PC preparation and a warm
+process restart remain untimed.
 
 The process Rust high-water marks at close were 373,359,924 bytes after
 the first existing-world run and 390,845,575 bytes after Village and the
@@ -115,11 +119,38 @@ prepared I/O counters at stage boundaries, first accepted input, and the
 terrain coverage curve until it reaches a sustained plateau. Keep Village
 as a separate workload.
 
-The remaining prominent candidates are the 41.75–61.27 s generator-data
-construction, the 29.29–32.27 s network recipe phase and the 23 s resource
-tail. Network recipe preparation builds a new item catalog with loot,
-predicate and playback tables and separately streams the full gameplay
-facts to obtain block-to-item defaults. The phase needs child timings so
-an implementation can target the expensive parts. Worldgen preload must
-be measured with this material intact, since speeding up pack assembly
-may expose its overlap.
+## World-entry and warm-cache follow-ups
+
+The 29.29–32.27 s network recipe stage previously built a full item
+catalog, including loot, predicates and audio playback tables. It also
+streamed 65,850,010 bytes of facts and registry JSON to produce 1,286
+block-to-item aliases. The stock preparation's 2,042 recipes use no
+NeoForge block-tag ingredient. The network path now loads the item data
+it needs and reads the alias inputs when a resolved recipe includes a
+block-tag ingredient. Both the ordered tag lists and membership sets use
+the same resolved tags. The recipe duration trace now has separate
+catalog and acceptance measurements. The old alias projection alone
+took a median of 238.563 ms across eleven warm x86-64 release runs.
+
+The corrected RC 29 run read an existing sprite cache even though the SD
+staging source contained none. The incorrect-root attempt had run
+before it. Loose-source and prepared-archive fingerprints have separate
+domains, and the archive repair changed only the archive. Cafe requires a
+vacant rename destination. The cache's overwrite procedure could silently
+discard the new file and keep serving the stale cache on later starts.
+The new procedure stages the bytes, moves the old cache aside and
+restores it if the final rename fails. The host test covers replacement
+and rollback. Confirm a positive cache hit count and unchanged atlas
+content during the next forced-interpreter or physical reopen.
+
+Archive-backed loot cache lookups use the open archive's weak allocation
+identity for the folders the archive serves. The corrected archive
+contains 1,452 loot table paths. Their shadowed loose files no longer
+require recursive metadata retrieval on each item/loot lookup. Loose
+namespace changes and pack overlays still invalidate the loaded result.
+The host tests cover archive shadowing and loose namespace invalidation.
+
+Generator-data construction still occupied 41.75–61.27 s in the baseline.
+Measure how much remains on the critical path when faster pack preparation
+exposes more of the preload. The user-visible goal is to reduce both the
+first-frame wait and the later settling period.

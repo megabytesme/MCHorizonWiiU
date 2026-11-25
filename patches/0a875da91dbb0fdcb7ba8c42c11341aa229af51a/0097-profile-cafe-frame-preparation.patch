@@ -1,0 +1,39 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index dbe588494d77b30306d86795d65b714e2a32a0a0..e1c1ce347c71739343763d7e67d8dd868ea8be06 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -8577,10 +8577,14 @@ impl Game<'_> {
+         let _projection_frame = (!title).then(|| self.activate_projection_frame());
+         pr.lap("pr_projection");
+         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+-        let mut hud = horizon_client::spans::time("hud", || self.hud(size));
+-        self.flush_ime(&mut hud);
+-        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
+-        self.resolve_inline_profiles(&hud.inline_profiles);
++        let mut hud = {
++            horizon_client_platform::cafe_span!(Hud);
++            let mut hud = horizon_client::spans::time("hud", || self.hud(size));
++            self.flush_ime(&mut hud);
++            self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
++            self.resolve_inline_profiles(&hud.inline_profiles);
++            hud
++        };
+         pr.lap("pr_hud");
+         self.locator_camera =
+             (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
+@@ -8658,6 +8662,7 @@ impl Game<'_> {
+         if !title {
+             let (built, static_sections, visible_static_sections, static_stats) =
+                 spans::time("entity_geometry", || {
++                    horizon_client_platform::cafe_span!(Entities);
+                     self.entity_geometry(
+                         camera,
+                         alpha,
+@@ -8771,6 +8776,7 @@ impl Game<'_> {
+         // boundary, not while constructing Frame after geometry has been extracted.
+         let fog = self.frame_fog(camera, &sky, biome, water_fog);
+         if !title {
++            horizon_client_platform::cafe_span!(Particles);
+             self.client_particle_geometry(camera, alpha, fov_degrees, &mut entities);
+         }
+         let mut world_geometry = self.world_geometry.take().expect("view storage");

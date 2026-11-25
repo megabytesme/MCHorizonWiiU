@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "797245f20d2745dc4291c2b21b06010c2e557db0",
+  "output_tree": "b5bb7217763685f06e95847a06d90d774bcb8968",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -572,12 +572,60 @@
       "sha256": "3955c050761874e31d8f7da9d3097cbb15b03e452546cd6e7e00511c5b1cf7a2",
       "input_tree": "9ebded3639cede0fdd1024778dc2df434cfce2bb",
       "output_tree": "797245f20d2745dc4291c2b21b06010c2e557db0"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0094-run-hud-comparisons-in-fresh-sessions.patch",
+      "sha256": "cc25c93166856616422e3f743197029dffe2c53fd33cf3dac0a141d75e15932a",
+      "input_tree": "797245f20d2745dc4291c2b21b06010c2e557db0",
+      "output_tree": "4b791167cc3df93e123708fab30a385c29a35676"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0095-count-the-gx2-hud-fence-as-wait.patch",
+      "sha256": "67e53ca6270e6a65718de6cb85ac39325462a7982a8575069e0c5953df984e09",
+      "input_tree": "4b791167cc3df93e123708fab30a385c29a35676",
+      "output_tree": "5625a63e0bfa699b9712c999197588e330e6c33d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0096-trial-cafe-terrain-mesh-height-focus.patch",
+      "sha256": "05c60af4c362a594a419d154311abdb9b104975dd8e96c1d80e223c3c6558657",
+      "input_tree": "5625a63e0bfa699b9712c999197588e330e6c33d",
+      "output_tree": "4f384ba4c5c916b60e224daf0c6169691236c04d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0097-profile-cafe-frame-preparation.patch",
+      "sha256": "b2d7c57944fad9765477584dccb3892e114d3057c50f3e777679514f2e818323",
+      "input_tree": "4f384ba4c5c916b60e224daf0c6169691236c04d",
+      "output_tree": "0a0ccbe541edaa03912f9afbff5f5a6b920caf64"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0098-share-world-resolution-with-host-tests.patch",
+      "sha256": "5db8c3d67a797a4b97e5d6746fb79c8f471d1adb35d6b46c55128e5775fa6709",
+      "input_tree": "0a0ccbe541edaa03912f9afbff5f5a6b920caf64",
+      "output_tree": "55ddabf368c18178a5759c84927eb7c4583964e4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0099-skip-unused-network-recipe-inputs.patch",
+      "sha256": "3acc9963852a48be6a109a55ff818e694bdf2cf9a64fb439625b9640726a12cd",
+      "input_tree": "55ddabf368c18178a5759c84927eb7c4583964e4",
+      "output_tree": "62b435b5c3c7a22b4356724f1641c924d9320b06"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0100-replace-cafe-sprite-cache.patch",
+      "sha256": "ad278734015257acefb1ccf7841e94f56ffd7089ac66f42133f916a42cff6543",
+      "input_tree": "62b435b5c3c7a22b4356724f1641c924d9320b06",
+      "output_tree": "7fa9a86d8609abe01b93cbae73e9d6b77b8b7988"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0101-reuse-archived-loot-identity.patch",
+      "sha256": "86aa3fd5712291d03dfdc9e472815612a5aedc650d4d0bc363dbedd4027fa6e0",
+      "input_tree": "7fa9a86d8609abe01b93cbae73e9d6b77b8b7988",
+      "output_tree": "b5bb7217763685f06e95847a06d90d774bcb8968"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.32",
-    "patch": "0.5.0-rc.32"
+    "client": "0.8.0-rc.33",
+    "patch": "0.5.0-rc.33"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

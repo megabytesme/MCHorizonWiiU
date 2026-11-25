@@ -17,8 +17,8 @@
     "observed_on": "2026-11-25",
     "clock_notes": "Guest serial elapsed times start at hosted entry. The named startup spans are wall time and can overlap. Prepared I/O counts are cumulative in the process. The original Game frame is unrelated to terrain coverage and, for Village, precedes selection and world open.",
     "untimed": [
-      "application_launch_to_night_ready",
-      "night_selection_to_hosted_entry",
+      "application_launch_request_to_loader_notice",
+      "night_play_input_to_loading_frame",
       "pc_resource_preparation",
       "warm_process_restart",
       "first_accepted_input",
@@ -322,7 +322,11 @@
           "gx2_bulk_largest_bytes": 234880896
         }
       }
-    ]
+    ],
+    "first_application_markers": {
+      "loader_notice_to_night_play_frame_serial_arrival_ms": 8282.327,
+      "night_loading_frame_to_hosted_entry_guest_ms": 138
+    }
   },
   "candidate_measurements": [],
   "host_microbenchmarks": [
@@ -337,6 +341,18 @@
       "scoped_median_ms": 0.171,
       "broad_p95_ms": 359.085,
       "scoped_p95_ms": 0.204
+    },
+    {
+      "id": "stock_recipe_block_alias_projection",
+      "execution": "Ben-Desktop, WSL x86-64, release reader harness",
+      "workload": "Original typed streaming block-to-item projection from the private Horizon 26.3 facts",
+      "iterations": 11,
+      "input_bytes": 65850010,
+      "projected_rows": 1286,
+      "median_ms": 238.563,
+      "max_ms": 299.857,
+      "stock_recipe_files": 2042,
+      "stock_files_using_block_tag_ingredients": 0
     }
   ]
 }

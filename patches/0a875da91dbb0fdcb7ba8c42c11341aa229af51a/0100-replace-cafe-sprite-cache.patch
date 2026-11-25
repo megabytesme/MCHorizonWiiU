@@ -1,0 +1,93 @@
+diff --git a/crates/horizon-client-render/src/sprite_cache.rs b/crates/horizon-client-render/src/sprite_cache.rs
+index cb2aacafb028b662f651d7dd11193816c0f88695..6005bb31d9270ee8945963d4f3825df29d42c651 100644
+--- a/crates/horizon-client-render/src/sprite_cache.rs
++++ b/crates/horizon-client-render/src/sprite_cache.rs
+@@ -111,14 +111,61 @@ impl SpriteCache {
+         let temporary = self
+             .path
+             .with_extension(format!("{}.tmp", horizon_core::process_id()));
+-        if fs::write(&temporary, serialize(self.fingerprint, &self.entries)).is_ok()
+-            && fs::rename(&temporary, &self.path).is_err()
+-        {
++        let result =
++            fs::write(&temporary, serialize(self.fingerprint, &self.entries)).and_then(|()| {
++                #[cfg(target_os = "cafe")]
++                return publish_cafe_cache(&temporary, &self.path);
++                #[cfg(not(target_os = "cafe"))]
++                fs::rename(&temporary, &self.path)
++            });
++        if let Err(error) = result {
++            #[cfg(target_os = "cafe")]
++            log::warn!("Horizon sprite cache: publication failed: {error}");
++            #[cfg(not(target_os = "cafe"))]
++            let _ = error;
+             let _ = fs::remove_file(&temporary);
+         }
+     }
+ }
+ 
++/// Cafe rename requires a vacant target. Keep the previous complete cache
++/// until the staged replacement reaches the live name.
++#[cfg(any(target_os = "cafe", test))]
++fn publish_cafe_cache(temporary: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
++    use std::io::{Error, ErrorKind};
++
++    let backup = path.with_extension("cache.previous");
++    let backed_up = match fs::symlink_metadata(path) {
++        Ok(info) if info.is_file() => {
++            match fs::remove_file(&backup) {
++                Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
++                _ => {}
++            }
++            fs::rename(path, &backup)?;
++            true
++        }
++        Err(error) if error.kind() == ErrorKind::NotFound => false,
++        Err(error) => return Err(error),
++        Ok(_) => {
++            return Err(Error::new(
++                ErrorKind::InvalidInput,
++                "cache target is not a file",
++            ));
++        }
++    };
++    if let Err(error) = fs::rename(temporary, path) {
++        if backed_up && let Err(restore_error) = fs::rename(&backup, path) {
++            log::warn!(
++                "Horizon sprite cache: previous copy remains at {}: {restore_error}",
++                backup.display()
++            );
++        }
++        return Err(error);
++    }
++    let _ = fs::remove_file(backup);
++    Ok(())
++}
++
+ fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
+     let mut out = Vec::new();
+     out.extend_from_slice(MAGIC);
+@@ -280,6 +327,23 @@ mod tests {
+         fs::create_dir_all(dir.join("assets/minecraft/textures/block")).unwrap();
+         dir
+     }
++    #[test]
++    fn cafe_cache_publication_replaces_stale_bytes_and_rolls_back_a_failed_move() {
++        let dir = scratch("publication");
++        let live = dir.join(FILE);
++        let staged = live.with_extension("tmp");
++        fs::write(&live, b"old cache").unwrap();
++        fs::write(&staged, b"new cache").unwrap();
++        publish_cafe_cache(&staged, &live).unwrap();
++        assert_eq!(fs::read(&live).unwrap(), b"new cache");
++        assert!(!live.with_extension("cache.previous").exists());
++
++        assert!(publish_cafe_cache(&staged, &live).is_err());
++        assert_eq!(fs::read(&live).unwrap(), b"new cache");
++        assert!(!live.with_extension("cache.previous").exists());
++        fs::remove_dir_all(dir).unwrap();
++    }
++
+     #[test]
+     fn round_trips() {
+         let mut entries = HashMap::new();

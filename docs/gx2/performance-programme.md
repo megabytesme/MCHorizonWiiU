@@ -572,3 +572,31 @@ each resource namespace. This avoids recursively walking unrelated
 assets during pack and HUD preparation. Pack-assembly child timings
 support a matched comparison against the correctly bound RC 29 archive.
 Physical duration changes remain unmeasured.
+
+## RC 33 follow-up
+
+The direct HUD path reports the leaf `GX2DrawDone` as an explicit
+GPU wait. HZP3 keeps its layout and the complete per-output HUD wall
+span. The aggregate line also reports `hud_wait_ms`. Use the full
+end-to-end interval when comparing direct mode with `4h`, because the
+shared path moves retirement to the frame boundary. HZP3 also records
+HUD, entity and particle construction before native submission.
+Later native conversion and the remaining frame builders still sit in
+the redraw residual.
+
+The opt-in `gx2-streaming-focus.enable` trial gives at most half of each
+existing mesh-admission slice to nearby ready sections within two
+section levels of the camera. The remaining room follows ordinary
+admission, and the existing worker ordering, section limits, render
+distance and simulation distance continue to apply. The original
+Village route and eligibility stay in place. The eight host policy
+tests and the hosted Cafe check passed. Actual route coverage is a
+matched console measurement.
+
+The loading follow-up skips the 65.85 MB block-item projection in
+stock network recipe assembly, reuses resolved tag data, repairs
+warm sprite cache publication, and skips loose metadata for loot
+directories already served by the archive. Host tests cover the
+network output for stock and nested modded recipes, archive and loose
+reload behavior, and cache rollback. The changes keep the prepared
+resource schema and release pins. [Loading record](loading-performance.md)

@@ -1,0 +1,180 @@
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index a4dda904e58e6a3f840633b5d68523abb67187bd..644c4de5ca90948b14fd05cee502852e55c99975 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -5,6 +5,7 @@
+ #include <string.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
++#include <coreinit/time.h>
+ #include <gx2/clear.h>
+ #include <gx2/context.h>
+ #include <gx2/draw.h>
+@@ -66,6 +67,7 @@ struct HorizonGx2Hud {
+    float portal[3][4];
+    int portal_ready;
+    int shader_loaded;
++   uint64_t last_draw_wait_ns;
+ };
+ 
+ static const GX2RResourceFlags texture_flags = GX2R_RESOURCE_BIND_TEXTURE |
+@@ -504,15 +506,23 @@ static HorizonHudResult draw_uploaded(HorizonGx2Hud *hud, const HorizonHudFrame
+    return HORIZON_HUD_OK;
+ }
+ 
++uint64_t horizon_gx2_hud_last_draw_wait_ns(const HorizonGx2Hud *hud)
++{
++   return hud ? hud->last_draw_wait_ns : 0;
++}
++
+ static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+                                 uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                 const HudOutput *output)
+ {
++   if (hud) hud->last_draw_wait_ns = 0;
+    HorizonHudResult result = validate_frame(hud, f);
+    if (result != HORIZON_HUD_OK) return result;
+    result = validate_draw_target(f, x, y, width, height, output);
+    if (result != HORIZON_HUD_OK) return result;
++   const OSTime wait_start = OSGetTime();
+    GX2DrawDone();
++   hud->last_draw_wait_ns = OSTicksToNanoseconds(OSGetTime() - wait_start);
+    result = upload_frame(hud, f);
+    return result == HORIZON_HUD_OK ? draw_uploaded(hud, f, x, y, width, height, output) : result;
+ }
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index a063ae0a32b9dabb51dd6772ff4111ba544f86ce..9b3a4baf3c4fd78617677f4facebd40248e906ba 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -77,6 +77,8 @@ void horizon_gx2_hud_set_end_portal(HorizonGx2Hud *hud, const float sprites[2][4
+ HorizonHudResult horizon_gx2_hud_set_cit_glints(HorizonGx2Hud *hud, uint32_t width, uint32_t height,
+                                                 const uint8_t *pixels, size_t length,
+                                                 const struct HorizonHudCitSlot *slots, uint32_t count);
++/* Length of the GPU drain inside the last direct draw. */
++uint64_t horizon_gx2_hud_last_draw_wait_ns(const HorizonGx2Hud *hud);
+ /* Draw into the caller's active GX2 color target; this changes GX2 render state. */
+ HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame *frame);
+ /* Draw the source-layout frame into a target viewport rectangle. The source
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index f78c0c49c0c3d2647b5cabaaf5414305d8362a78..b38f75ccdf77a58199cb6b91ad0a983f681003a8 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -73,6 +73,7 @@ struct Gx2ProfileDelta {
+     section_draws: u32,
+     vertex_draws: u32,
+     terrain_wait_ns: u64,
++    hud_wait_ns: u64,
+     projection_ns: u64,
+     buffer_update_ns: u64,
+     draw_submit_ns: u64,
+@@ -102,6 +103,7 @@ impl Gx2ProfileWindow {
+             .delta
+             .terrain_wait_ns
+             .saturating_add(delta.terrain_wait_ns);
++        self.delta.hud_wait_ns = self.delta.hud_wait_ns.saturating_add(delta.hud_wait_ns);
+         self.delta.projection_ns = self.delta.projection_ns.saturating_add(delta.projection_ns);
+         self.delta.buffer_update_ns = self
+             .delta
+@@ -130,7 +132,7 @@ impl Gx2ProfileWindow {
+         let ms = |ns: u64| (ns / 1_000_000).min(u64::from(u32::MAX)) as u32;
+         unsafe {
+             OSReport(
+-                "Horizon GX2 profile: window_ms=%u present_calls=%u tv_ok_callbacks=%u tv_ok_ms=%u drc_ok_callbacks=%u drc_ok_ms=%u section_draws=%u vertex_draws=%u wait_ms=%u project_ms=%u update_ms=%u submit_ms=%u hud_create_ms=%u hud_draw_ms=%u successful_target_ms=%u present_call_ms=%u\n\0"
++                "Horizon GX2 profile: window_ms=%u present_calls=%u tv_ok_callbacks=%u tv_ok_ms=%u drc_ok_callbacks=%u drc_ok_ms=%u section_draws=%u vertex_draws=%u wait_ms=%u project_ms=%u update_ms=%u submit_ms=%u hud_create_ms=%u hud_draw_ms=%u successful_target_ms=%u present_call_ms=%u hud_wait_ms=%u\n\0"
+                     .as_ptr().cast(),
+                 elapsed.as_millis().min(u128::from(u32::MAX)) as u32,
+                 self.present_calls,
+@@ -148,6 +150,7 @@ impl Gx2ProfileWindow {
+                 ms(d.hud_draw_ns),
+                 ms(d.target_ns[0].saturating_add(d.target_ns[1])),
+                 ms(self.present_ns),
++                ms(d.hud_wait_ns),
+             );
+         }
+         self.start = Some(now);
+@@ -2248,6 +2251,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 draw.result = Err(hud_error_message(error));
+                 return -1;
+             }
++            if draw.uploaded_hud.is_none() {
++                draw.profile.hud_wait_ns = draw
++                    .profile
++                    .hud_wait_ns
++                    .saturating_add(hud.last_draw_wait_ns());
++            }
+             if let Some(start) = hud_start {
+                 draw.profile.hud_draw_ns =
+                     draw.profile.hud_draw_ns.saturating_add(elapsed_ns(start));
+@@ -2366,6 +2375,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.frame_work.gpu_wait = Duration::from_nanos(
+             profile
+                 .terrain_wait_ns
++                .saturating_add(profile.hud_wait_ns)
+                 .saturating_add(unsafe { horizon_loading_host_last_wait_ns() }),
+         );
+         if GX2_PROFILE_ENABLED {
+@@ -2420,6 +2430,7 @@ mod gx2_profile_tests {
+                 section_draws: 2,
+                 vertex_draws: 72,
+                 terrain_wait_ns: 3,
++                hud_wait_ns: 13,
+                 projection_ns: 4,
+                 buffer_update_ns: 5,
+                 draw_submit_ns: 6,
+@@ -2435,6 +2446,7 @@ mod gx2_profile_tests {
+                 section_draws: 1,
+                 vertex_draws: 36,
+                 terrain_wait_ns: 8,
++                hud_wait_ns: 14,
+                 projection_ns: 9,
+                 buffer_update_ns: 10,
+                 draw_submit_ns: 11,
+@@ -2450,6 +2462,7 @@ mod gx2_profile_tests {
+         assert_eq!(window.delta.section_draws, 3);
+         assert_eq!(window.delta.vertex_draws, 108);
+         assert_eq!(window.delta.terrain_wait_ns, 11);
++        assert_eq!(window.delta.hud_wait_ns, 27);
+         assert_eq!(window.delta.projection_ns, 13);
+         assert_eq!(window.delta.buffer_update_ns, 15);
+         assert_eq!(window.delta.draw_submit_ns, 17);
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index 92ee34d23bb9a43f6ee34945cb94f8bd655b2206..d506f4db5f06319d96f0af33f070034891771345 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -273,6 +273,8 @@ mod cafe {
+             height: u32,
+             output: u32,
+         ) -> i32;
++        #[cfg(feature = "horizon-hud")]
++        fn horizon_gx2_hud_last_draw_wait_ns(hud: *const c_void) -> u64;
+         fn horizon_gx2_hud_destroy(hud: *mut c_void);
+         #[cfg(feature = "horizon-hud")]
+         fn horizon_gx2_hud_atlas(hud: *const c_void) -> *const c_void;
+@@ -323,6 +325,11 @@ mod cafe {
+     }
+ 
+     impl<'shader> Presenter<'shader> {
++        #[cfg(feature = "horizon-hud")]
++        pub(super) fn last_draw_wait_ns(&self) -> u64 {
++            unsafe { horizon_gx2_hud_last_draw_wait_ns(self.hud.as_ptr()) }
++        }
++
+         #[cfg(feature = "horizon-hud")]
+         pub(super) fn native_atlas(&self) -> *const c_void {
+             unsafe { horizon_gx2_hud_atlas(self.hud.as_ptr()) }
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index 8f9c57e5ba34c8ac0347c16a9bcc079320e117f5..ad9c8aec021c093abaebae5417bdd11900ae082a 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -200,6 +200,11 @@ pub struct HorizonPresenter<'shader> {
+ 
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ impl<'shader> HorizonPresenter<'shader> {
++    /// Time spent waiting for GX2 in the last direct draw.
++    pub fn last_draw_wait_ns(&self) -> u64 {
++        self.presenter.last_draw_wait_ns()
++    }
++
+     /// Borrow the resident GX2 atlas for a synchronous render-thread draw.
+     /// The texture pointer is owned by this presenter and may not be retained.
+     pub fn with_native_atlas<T>(&self, draw: impl FnOnce(*const std::ffi::c_void) -> T) -> T {

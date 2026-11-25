@@ -1,0 +1,95 @@
+diff --git a/wiiu/gx2_hud/diagnostic/main.c b/wiiu/gx2_hud/diagnostic/main.c
+index a78157296c75db9338388efb0aa096658b2fa134..fe1d35db6e05984f576bfb50e40b083eefeea41b 100644
+--- a/wiiu/gx2_hud/diagnostic/main.c
++++ b/wiiu/gx2_hud/diagnostic/main.c
+@@ -36,6 +36,18 @@ static void status(const char *message)
+    }
+ }
+ 
++static int shared_upload_requested(void)
++{
++   if (!sFileReady) return 0;
++   char path[256];
++   snprintf(path, sizeof(path), "%s/wiiu/apps/HorizonWiiUHudDiag/shared-hud.enable", WHBGetSdCardMountPath());
++   FSFileHandle file;
++   if (FSOpenFile(&sClient, &sCmd, path, "r", &file, FS_ERROR_FLAG_NONE) != FS_STATUS_OK)
++      return 0;
++   FSCloseFile(&sClient, &sCmd, file, FS_ERROR_FLAG_NONE);
++   return 1;
++}
++
+ static void quad(HorizonHudVertex *v, float x0, float y0, float x1, float y1,
+                  float u, float depth, uint32_t color)
+ {
+@@ -258,42 +270,38 @@ int main(void)
+    if (WHBProcIsRunning()) {
+       GX2Surface *targets[] = {&WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetDRCColourBuffer()->surface};
+       char output_reports[2][160];
+-      verified = 1;
+-      for (uint32_t shared = 0; shared < 2; ++shared) {
+-         result = shared ? horizon_gx2_hud_upload_after_wait(hud, &frame) : HORIZON_HUD_OK;
+-         if (result != HORIZON_HUD_OK) {
+-            status("shared upload failed");
++      const int shared = shared_upload_requested();
++      result = shared ? horizon_gx2_hud_upload_after_wait(hud, &frame) : HORIZON_HUD_OK;
++      verified = result == HORIZON_HUD_OK;
++      if (!verified) status("shared upload failed");
++      const HorizonHudResult upload_status = result;
++      WHBGfxBeginRender();
++      for (uint32_t output = 0; output < 2; ++output) {
++         if (output == 0) WHBGfxBeginRenderTV();
++         else WHBGfxBeginRenderDRC();
++         WHBGfxClearColor(0.2f, 0.2f, 0.2f, 0.25f);
++         GX2Surface *target = targets[output];
++         if (shared && upload_status == HORIZON_HUD_OK)
++            result = horizon_gx2_hud_draw_uploaded_to_output(hud, &frame, 0, 0,
++                                                            target->width, target->height, output);
++         else if (!shared)
++            result = horizon_gx2_hud_draw_to_output(hud, &frame, 0, 0, target->width, target->height, output);
++         char *output_report = output_reports[output];
++         if (result == HORIZON_HUD_OK) {
++            verified &= readback(target, output_report, sizeof(output_reports[output]));
++         } else {
++            snprintf(output_report, sizeof(output_reports[output]), "presenter draw failed=%d", result);
+             verified = 0;
+-            break;
+          }
+-         WHBGfxBeginRender();
+-         for (uint32_t output = 0; output < 2; ++output) {
+-            if (output == 0) WHBGfxBeginRenderTV();
+-            else WHBGfxBeginRenderDRC();
+-            WHBGfxClearColor(0.2f, 0.2f, 0.2f, 0.25f);
+-            GX2Surface *target = targets[output];
+-            if (shared)
+-               result = horizon_gx2_hud_draw_uploaded_to_output(hud, &frame, 0, 0,
+-                                                                 target->width, target->height, output);
+-            else
+-               result = horizon_gx2_hud_draw_to_output(hud, &frame, 0, 0, target->width, target->height, output);
+-            char *output_report = output_reports[output];
+-            if (result == HORIZON_HUD_OK) {
+-               verified &= readback(target, output_report, sizeof(output_reports[output]));
+-            } else {
+-               snprintf(output_report, sizeof(output_reports[output]), "presenter draw failed=%d", result);
+-               verified = 0;
+-            }
+-            if (output == 0) WHBGfxFinishRenderTV();
+-            else WHBGfxFinishRenderDRC();
+-         }
+-         WHBGfxFinishRender();
+-         char report[384];
+-         snprintf(report, sizeof(report), "readback=%s mode=%s TV=[%s] DRC=[%s]",
+-                  verified ? "pass" : "mismatch", shared ? "shared" : "direct",
+-                  output_reports[0], output_reports[1]);
+-         status(report);
++         if (output == 0) WHBGfxFinishRenderTV();
++         else WHBGfxFinishRenderDRC();
+       }
++      WHBGfxFinishRender();
++      char report[384];
++      snprintf(report, sizeof(report), "readback=%s TV=[%s] DRC=[%s] mode=%s",
++               verified ? "pass" : "mismatch", output_reports[0], output_reports[1],
++               shared ? "shared" : "direct");
++      status(report);
+       /* Leave the fixture visible for photos even if hardware readback fails. */
+       const OSTime deadline = OSGetTime() + OSSecondsToTicks(15);
+       while (OSGetTime() < deadline && WHBProcIsRunning())

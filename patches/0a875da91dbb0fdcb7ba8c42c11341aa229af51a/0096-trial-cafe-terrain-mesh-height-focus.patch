@@ -1,0 +1,297 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 42037108c79085c33fa6865848b2ec11ed684d42..da9d8c8a4da877f0689f9a2ed0cf0b333eba5830 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -602,7 +602,7 @@ pub struct Streaming {
+     /// the view is moving or many columns are dirty.
+     light_scratch: Vec<(i64, i32, i32)>,
+     gone_scratch: Vec<(i32, i32)>,
+-    mesh_candidates_scratch: Vec<(i64, i32, i32, SectionMask)>,
++    mesh_candidates_scratch: Vec<bounded::MeshCandidate>,
+     mesh_columns_scratch: Vec<((i32, i32), SectionMask)>,
+     sequence: u64,
+     pub center: (i32, i32),
+@@ -621,6 +621,9 @@ pub struct Streaming {
+     /// Finished meshes the renderer has not taken yet (the game's pending
+     /// uploads): they count against the meshing room as the jobs do.
+     pub upload_backlog: usize,
++    /// Opt-in section height for the bounded Cafe meshing trial.
++    #[cfg(target_os = "cafe")]
++    pub mesh_focus_section: Option<i32>,
+     /// Dimension flags: sky light, Nether face shading.
+     pub sky_light: bool,
+     pub nether_shading: bool,
+@@ -1164,7 +1167,7 @@ mod forced_ring;
+ mod mesh_job;
+ mod relight_now;
+ mod viewed_meshing;
+-use bounded::{mesh_batch, nearest_first};
++use bounded::{nearest_first, submit_mesh_batches};
+ use dynamic_emission::light_region_ready;
+ use forced_cover::ForcedCover;
+ use mesh_job::{Faces, mesh_section};
+@@ -1260,6 +1263,8 @@ impl Streaming {
+             mod_tickets: ModTickets::default(),
+             paused: false,
+             upload_backlog: 0,
++            #[cfg(target_os = "cafe")]
++            mesh_focus_section: None,
+             sky_light: true,
+             nether_shading: false,
+             shader_pack_lighting: false,
+@@ -2336,28 +2341,29 @@ impl Streaming {
+         // Meshes waiting for upload count too: when uploads fall behind (a
+         // low frame rate at a wide distance), meshing on held gigabytes of
+         // them until the system swapped.
+-        let mut room = (self.workers * 32)
++        let room = (self.workers * 32)
+             .saturating_sub(self.meshing.len() + self.upload_backlog + uploads.len());
+         #[cfg(target_os = "cafe")]
+-        if self.shared.upload_budget.used() >= cafe_upload_budget::LIMIT {
+-            room = 0;
+-        }
+-        nearest_first(&mut candidates, room);
+-        for (_, x, z, sections) in candidates.drain(..) {
+-            if room == 0 {
+-                break;
+-            }
++        let room = if self.shared.upload_budget.used() >= cafe_upload_budget::LIMIT {
++            0
++        } else {
++            room
++        };
++        #[cfg(target_os = "cafe")]
++        let focus = self.mesh_focus_section;
++        #[cfg(not(target_os = "cafe"))]
++        let focus = None;
++        submit_mesh_batches(&mut candidates, room, focus, |x, z, selected| {
+             let Some(region) = Self::region(world, x, z) else {
+-                continue;
++                return false;
+             };
+-            // Candidates are columns, but the limit is in section jobs.
+-            // Leave the unsubmitted part dirty for the next update.
+-            let (sections, deferred) = mesh_batch(sections, &mut room);
+-            world.dirty_sections.take_column(x, z);
++            // This column can appear in both passes; keep every dirty section
++            // that has not been submitted yet.
++            let deferred = world.dirty_sections.take_column(x, z) & !selected;
+             if !deferred.is_empty() {
+                 world.dirty_sections.insert_column_mask((x, z), deferred);
+             }
+-            for sy in sections.iter().map(|sy| sy as i32) {
++            for sy in selected.iter().map(|sy| sy as i32) {
+                 let first = self.meshed.insert((x, z));
+                 self.sequence += 1;
+                 self.meshing.insert((x, sy, z), self.sequence);
+@@ -2374,7 +2380,8 @@ impl Streaming {
+                     ),
+                 );
+             }
+-        }
++            true
++        });
+         self.cover_current = false;
+         self.light_scratch = light;
+         self.gone_scratch = gone;
+diff --git a/crates/horizon-client-render/src/streaming/bounded.rs b/crates/horizon-client-render/src/streaming/bounded.rs
+index b6d4649244a57de80cd667997530bd4630ad14b2..399d69bf6a6d9ab2faffd6b81820ee4f930ef6d3 100644
+--- a/crates/horizon-client-render/src/streaming/bounded.rs
++++ b/crates/horizon-client-render/src/streaming/bounded.rs
+@@ -34,6 +34,51 @@ pub(super) fn mesh_batch(sections: SectionMask, room: &mut usize) -> (SectionMas
+     (sections & !deferred, deferred)
+ }
+ 
++/// A ready column and its still-unsubmitted sections, ordered by horizontal distance.
++pub(super) type MeshCandidate = (i64, i32, i32, SectionMask);
++
++/// On Cafe, use at most half the existing queue room for sections around the
++/// player's height. The rest uses the usual order, including when the band is
++/// all air or all its jobs have run. Missing regions leave their slots free.
++pub(super) fn submit_mesh_batches(
++    candidates: &mut Vec<MeshCandidate>,
++    mut room: usize,
++    focus_section: Option<i32>,
++    mut submit: impl FnMut(i32, i32, SectionMask) -> bool,
++) {
++    nearest_first(candidates, room);
++    if let Some(y) = focus_section.filter(|_| room >= 2) {
++        let start = y.saturating_sub(2).max(0) as usize;
++        let end = y.saturating_add(3).max(0) as usize;
++        let band = SectionMask::below(end).from(start);
++        let focused_room = room / 2;
++        let remaining = submit_mesh_pass(candidates, focused_room, band, &mut submit);
++        room -= focused_room - remaining;
++    }
++    submit_mesh_pass(candidates, room, SectionMask::ALL, &mut submit);
++    candidates.clear();
++}
++
++fn submit_mesh_pass(
++    candidates: &mut [MeshCandidate],
++    mut room: usize,
++    allowed: SectionMask,
++    mut submit: impl FnMut(i32, i32, SectionMask) -> bool,
++) -> usize {
++    for (_, x, z, sections) in candidates {
++        if room == 0 {
++            break;
++        }
++        let mut remaining = room;
++        let (selected, _) = mesh_batch(*sections & allowed, &mut remaining);
++        if !selected.is_empty() && submit(*x, *z, selected) {
++            *sections = *sections & !selected;
++            room = remaining;
++        }
++    }
++    room
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -75,6 +120,79 @@ mod tests {
+         assert_eq!(mesh_batch(candidates[0].1, &mut 2), (deferred, SectionMask::EMPTY));
+     }
+ 
++    #[test]
++    fn focus_admits_height_band_without_using_background_room() {
++        let columns = || {
++            vec![
++                (1, 0, 0, SectionMask::below(16)),
++                (2, 1, 1, SectionMask::below(16)),
++            ]
++        };
++        let selected = |focus| {
++            let mut selected = Vec::new();
++            submit_mesh_batches(&mut columns(), 12, focus, |x, z, sections| {
++                selected.extend(sections.iter().map(|section| (x, section, z)));
++                true
++            });
++            selected
++        };
++        assert_eq!(
++            selected(None),
++            (0..12).map(|y| (0, y, 0)).collect::<Vec<_>>()
++        );
++        let focused = selected(Some(8));
++        assert_eq!(
++            &focused[..6],
++            &[
++                (0, 6, 0),
++                (0, 7, 0),
++                (0, 8, 0),
++                (0, 9, 0),
++                (0, 10, 0),
++                (1, 6, 1)
++            ]
++        );
++        assert_eq!(
++            &focused[6..],
++            &[
++                (0, 0, 0),
++                (0, 1, 0),
++                (0, 2, 0),
++                (0, 3, 0),
++                (0, 4, 0),
++                (0, 5, 0)
++            ]
++        );
++        assert_eq!(selected(Some(i32::MIN)), selected(None));
++        assert_eq!(selected(Some(i32::MAX)), selected(None));
++    }
++
++    #[test]
++    fn unready_focus_jobs_leave_room_and_later_batches_cover_every_section() {
++        let all: SectionMask = [0, 2, 62, 63, 64, 70, 193, 254, 255].into_iter().collect();
++        let mut waiting = all;
++        let mut submitted = SectionMask::EMPTY;
++        for focus in [63, 255, 0, 64] {
++            let mut cols = vec![(1, 0, 0, all), (2, 1, 1, waiting)];
++            let limit = 3;
++            let expected = waiting.len().min(limit);
++            let mut used = 0;
++            submit_mesh_batches(&mut cols, limit, Some(focus), |x, _, jobs| {
++                if x == 0 {
++                    return false; // Region was not available at dequeue.
++                }
++                assert!((submitted & jobs).is_empty());
++                waiting = waiting & !jobs;
++                submitted = submitted | jobs;
++                used += jobs.len();
++                true
++            });
++            assert_eq!(used, expected);
++        }
++        assert_eq!(submitted, all);
++        assert!(waiting.is_empty());
++    }
++
+     /// The light and mesh stages submit bounded work, the nearest first:
+     /// what exceeds the room stays dirty, to be chosen again — from the
+     /// current centre — as capacity frees. Submitted whole, the queue once
+diff --git a/crates/horizon-client/src/game/world/world_update.rs b/crates/horizon-client/src/game/world/world_update.rs
+index be803d768d31e1fc1ba01689c62fdd9c5917753e..93c342270059d5a300f2c914b88f8664a17c34f3 100644
+--- a/crates/horizon-client/src/game/world/world_update.rs
++++ b/crates/horizon-client/src/game/world/world_update.rs
+@@ -3,6 +3,21 @@
+ //! and block entities saved out first); and far terrain (`prepare_lod`, `clear_lod`).
+ use super::*;
+ 
++#[cfg(target_os = "cafe")]
++fn cafe_mesh_focus_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        let marker = std::path::Path::new(
++            "/vol/external01/wiiu/apps/HorizonWiiU/gx2-streaming-focus.enable",
++        );
++        let enabled = marker.is_file();
++        if enabled {
++            log::info!("Horizon Cafe camera-height meshing trial active");
++        }
++        enabled
++    })
++}
++
+ impl Game<'_> {
+     pub(super) fn clear_lod(&mut self) {
+         // The samplers waiting on the server stop first: dropping the far
+@@ -219,19 +234,26 @@ impl Game<'_> {
+             .extra
+             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
+         #[cfg(target_os = "cafe")]
+-        if let Some(backend) = cafe.as_deref_mut() {
+-            let centre = self.streaming.center;
+-            let bottom = f64::from(self.world.bottom_y());
+-            let y = self
+-                .player
+-                .as_ref()
+-                .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
+-            let world = &mut self.world;
+-            backend.prepare_section_uploads((centre.0, y, centre.1), &mut |key| {
+-                if world.chunks.contains_key(&(key.0, key.2)) {
+-                    world.dirty_sections.insert(key);
++        {
++            self.streaming.mesh_focus_section = None;
++            if let Some(backend) = cafe.as_deref_mut() {
++                let centre = self.streaming.center;
++                let bottom = f64::from(self.world.bottom_y());
++                let player_height = self
++                    .player
++                    .as_ref()
++                    .map(|p| ((p.position.y - bottom) / 16.0).floor() as i32);
++                let y = player_height.unwrap_or(4);
++                if cafe_mesh_focus_enabled() {
++                    self.streaming.mesh_focus_section = player_height;
+                 }
+-            });
++                let world = &mut self.world;
++                backend.prepare_section_uploads((centre.0, y, centre.1), &mut |key| {
++                    if world.chunks.contains_key(&(key.0, key.2)) {
++                        world.dirty_sections.insert(key);
++                    }
++                });
++            }
+         }
+         self.streaming.upload_backlog = self.pending_uploads.len();
+         let plan = horizon_client::spans::time("streaming_plan", || {

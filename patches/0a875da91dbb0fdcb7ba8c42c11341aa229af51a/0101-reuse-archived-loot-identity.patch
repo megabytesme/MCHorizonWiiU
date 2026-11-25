@@ -1,0 +1,156 @@
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index 3f538149df72969d47d07fddfb8f5702692ef4bc..a87611f25108849efbc03a6d96d6335ff6bb2a19 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -355,17 +355,26 @@ impl PreparedFiles {
+         if !holds_folder(dir) {
+             return None;
+         }
++        let names: Vec<&str> = self.folder_entries(dir).collect();
++        (!names.is_empty()).then_some(names)
++    }
++
++    /// Whether a folder is served by this archive's entries.
++    pub fn contains_folder(&self, dir: &str) -> bool {
++        holds_folder(dir) && self.folder_entries(dir).next().is_some()
++    }
++
++    fn folder_entries<'a>(&'a self, dir: &str) -> impl Iterator<Item = &'a str> + use<'a> {
+         let prefix = format!("{dir}/");
+         let start = self
+             .entries
+             .partition_point(|e| self.name(e) < prefix.as_str());
+-        let names: Vec<&str> = self.entries[start..]
++        self.entries[start..]
+             .iter()
+             .map(|e| self.name(e))
+-            .take_while(|n| n.starts_with(&prefix))
+-            .collect();
+-        (!names.is_empty()).then_some(names)
++            .take_while(move |n| n.starts_with(&prefix))
+     }
++
+     fn open(root: &Path) -> io::Result<Option<Self>> {
+         let path = root.join(FILE_NAME);
+         // A mirror's link to another root's file.
+diff --git a/crates/horizon-world/src/loot.rs b/crates/horizon-world/src/loot.rs
+index 3f9e814ca78493f5234b511a5d3eabb718588266..ee9d94e67a11d62fcaf3642e3e4179f268fcf70a 100644
+--- a/crates/horizon-world/src/loot.rs
++++ b/crates/horizon-world/src/loot.rs
+@@ -743,37 +743,61 @@ impl std::ops::Index<&str> for LootTables {
+ /// The loot tables of every namespace in `root`'s `data/`, with `overlay`'s
+ /// over them. Shared while one is alive: `Items` and [`LootData`] of the
+ /// same root and packs hold one map, not a copy each (7 MB). The key holds
+-/// the packs' bytes and each root file's size and modification time, so a
+-/// table changed on disk is read again rather than taken from a held map.
++/// the packs' bytes, the open archive's identity and the size and
++/// modification time of loot files read from loose directories.
+ pub fn shared_tables(root: &Path, overlay: &PackOverlay) -> io::Result<Arc<LootTables>> {
+-    static LOADED: Mutex<Vec<(u64, Weak<LootTables>)>> = Mutex::new(Vec::new());
+-    let key = {
++    use horizon_core::prepared_files::{self, PreparedFiles};
++    struct CachedTables {
++        fingerprint: u64,
++        archive: Option<Weak<PreparedFiles>>,
++        value: Weak<LootTables>,
++    }
++    static LOADED: Mutex<Vec<CachedTables>> = Mutex::new(Vec::new());
++    let prepared = prepared_files::open(root);
++    let fingerprint = {
+         use std::hash::{DefaultHasher, Hash, Hasher};
+         let mut hasher = DefaultHasher::new();
+         root.hash(&mut hasher);
+         overlay.conditions.hash(&mut hasher);
++        // An open archive remains immutable for these readers. Directories
++        // absent from its index can still load loose tables, so stamp those.
+         let data = root.join("data");
+         let mut namespaces: Vec<_> = fs::read_dir(&data)
+             .into_iter()
+             .flatten()
+             .flatten()
+-            .map(|e| e.path())
++            .map(|e| e.file_name())
+             .collect();
+         namespaces.sort();
+         for namespace in namespaces {
+-            hash_files(&namespace.join("loot_table"), &mut hasher);
++            let archived = prepared.as_ref().is_some_and(|archive| {
++                namespace.to_str().is_some_and(|namespace| {
++                    archive.contains_folder(&format!("data/{namespace}/loot_table"))
++                })
++            });
++            if !archived {
++                hash_files(&data.join(namespace).join("loot_table"), &mut hasher);
++            }
+         }
+         overlay
+             .kind("loot_table")
+             .for_each(|file| file.hash(&mut hasher));
+         hasher.finish()
+     };
+-    let held = |loaded: &mut Vec<(u64, Weak<LootTables>)>| {
+-        loaded.retain(|(_, tables)| tables.strong_count() > 0);
++    // A weak archive reference pins its allocation identity without holding
++    // the file open. The key cannot alias after an old archive is closed.
++    let archive = prepared.as_ref().map(Arc::downgrade);
++    let held = |loaded: &mut Vec<CachedTables>| {
++        loaded.retain(|cached| cached.value.strong_count() > 0);
+         loaded
+             .iter()
+-            .find(|(k, _)| *k == key)
+-            .and_then(|(_, tables)| tables.upgrade())
++            .filter(|cached| cached.fingerprint == fingerprint)
++            .find(|cached| match (&archive, &cached.archive) {
++                (Some(want), Some(have)) => Weak::ptr_eq(want, have),
++                (None, None) => true,
++                _ => false,
++            })
++            .and_then(|cached| cached.value.upgrade())
+     };
+     if let Some(tables) = held(&mut LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
+         return Ok(tables);
+@@ -788,7 +812,11 @@ pub fn shared_tables(root: &Path, overlay: &PackOverlay) -> io::Result<Arc<LootT
+         return Ok(tables);
+     }
+     let tables = Arc::new(tables);
+-    loaded.push((key, Arc::downgrade(&tables)));
++    loaded.push(CachedTables {
++        fingerprint,
++        archive,
++        value: Arc::downgrade(&tables),
++    });
+     Ok(tables)
+ }
+ 
+@@ -2392,6 +2420,31 @@ mod namespace_tests {
+         let _ = fs::remove_dir_all(&root);
+     }
+ 
++    #[test]
++    fn archived_loot_ignores_shadowed_edits_and_refreshes_loose_namespaces() {
++        let root =
++            std::env::temp_dir().join(format!("horizon-loot-archive-{}", std::process::id()));
++        let _ = fs::remove_dir_all(&root);
++        let vanilla = root.join("data/minecraft/loot_table/a.json");
++        fs::create_dir_all(vanilla.parent().unwrap()).unwrap();
++        fs::write(root.join("horizon-resources.json"), b"{}").unwrap();
++        fs::write(&vanilla, r#"{"pools":[]}"#).unwrap();
++        horizon_core::prepared_files::write(&root).unwrap();
++        let first = shared_tables(&root, &PackOverlay::NONE).unwrap();
++
++        fs::write(&vanilla, b"invalid shadowed loose file").unwrap();
++        let second = shared_tables(&root, &PackOverlay::NONE).unwrap();
++        assert!(Arc::ptr_eq(&first, &second));
++        let loose = root.join("data/fixture/loot_table/b.json");
++        fs::create_dir_all(loose.parent().unwrap()).unwrap();
++        fs::write(&loose, r#"{"pools":[]}"#).unwrap();
++        let third = shared_tables(&root, &PackOverlay::NONE).unwrap();
++        assert!(!Arc::ptr_eq(&second, &third));
++        assert!(third.contains_key("fixture:b"));
++        assert_eq!(third["minecraft:a"]["pools"], serde_json::json!([]));
++        let _ = fs::remove_dir_all(&root);
++    }
++
+     /// A table kept as its text reads back as the file's JSON (floats, big
+     /// integers, nesting, key order); a file that is not JSON still fails
+     /// the load.
