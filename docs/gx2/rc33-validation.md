@@ -86,4 +86,26 @@ The reopened world used that same cache.
 The replay was still streaming at first visible terrain. The initial
 cache conditions differed from RC 32, and host load varied across the
 two runs. The timings support inspection of individual loading stages.
-Physical end-to-end timings and settled terrain remain open. [Loading scorecard](loading-scorecard.json)
+[Loading scorecard](loading-scorecard.json)
+
+## Physical direct-mode qualification
+
+Aroma loaded the verified WUHB from the qualification SD with the
+existing Minecraft 26.3 preparation and its RC29-Qualification path.
+Profile marker `4` selected the direct HUD. Production fixed scaling
+worked at 100%, 75% and 50% without the former fixed-resolution trial
+marker. The loader-to-Night serial-arrival interval was 8.084 s.
+The existing CA authenticated the HTTPS service, and the owner approved
+the qualification client on the GamePad before it selected the disposable
+world and started the two measured sessions.
+
+The first session reached the gameplay frame in 140.550 s and the
+same-process reopen took 144.354 s. The reopen preserved the position,
+yaw and pitch and reused 28,639 sprite-cache entries with two misses.
+Both saves recovered 234,880,920 bytes of GX2 bulk memory with a
+234,880,896-byte largest aligned block. Save & Quit returned to Night,
+then Close Horizon returned to the Wii U Menu. The FAT32 card held two
+distinct, readable HZP3 session snapshots, with the first retained as
+`.previous` after the second publication. TV screen-pixel stills
+confirmed textured gameplay and the direct inventory.
+[Physical loading timings](loading-performance.md) · [Matched resolution sweep](gameplay-scorecard.md)
