@@ -2,6 +2,8 @@
 
 The [gameplay scorecard](gameplay-scorecard.md) records the aligned RC 29
 physical frame budgets, per-output timings and the display-list comparison.
+The [loading performance record](loading-performance.md) tracks the separate
+startup, world entry and same-process reopening baselines.
 
 The [RC 26 physical record](physical-rc26.md) covers the verified console
 boot, live MCP, the visible 100% baseline, save recovery and the scaled
@@ -561,8 +563,9 @@ The same executable also offers a shared HUD upload trial. Marker
 The trial prepares the atlas patches and vertex backing once per paired
 frame, outside both output callbacks. The existing WHB finish supplies
 the retirement boundary. The isolated Cemu test exposed stale GamePad
-pixels on the second frame. The direct path remains the default while
-the repeated-frame comparison is open.
+pixels on the second frame. Both paths passed 60 pixel checks in separate fresh Cemu launches. A repeated
+direct control reproduced the same stale GamePad pixels. The shared path
+remains opt-in for a matched console comparison.
 
 The loading path enumerates the individual Polytone directories in
 each resource namespace. This avoids recursively walking unrelated
