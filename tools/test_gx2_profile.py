@@ -153,9 +153,11 @@ class ProfileTests(unittest.TestCase):
         self.assertAlmostEqual(tv_and_pad["endpoint_overlap_ms"], 1.0)
         self.assertAlmostEqual(tv_and_pad["tv_span_ms"], 4.0)
         self.assertAlmostEqual(tv_and_pad["gamepad_span_ms"], 3.0)
+        self.assertAlmostEqual(tv_and_pad["paired_bracket_ms"], 6.0)
         self.assertEqual(sequential["endpoint_order"], "tv_then_gamepad")
         self.assertAlmostEqual(sequential["endpoint_gap_ms"], 1.0)
         self.assertEqual(result["by_effective_scale"]["50"]["tv_span_ms"]["median"], 1.0)
+        self.assertEqual(result["by_effective_scale"]["50"]["paired_bracket_ms"]["median"], 3.0)
 
     def test_gpu_serial_join_refuses_conflicting_sequences_and_deduplicates_copies(self):
         frames = gpu_capture()
@@ -203,6 +205,14 @@ class ProfileTests(unittest.TestCase):
             list(profile.plain_serial_lines([uwp_event(1)]))
         lines = ["[11:22:33.456] [OSConsole] Horizon GX2 capture enabled\n", '{"phase":"menu"}\n']
         self.assertEqual(list(profile.plain_serial_lines(lines)), lines)
+
+    def test_bounded_serial_reader_ignores_an_event_still_being_written_after_the_bound(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "serial-00000001.jsonl"
+            path.write_text(uwp_event(7, b"complete line\n") + '{"seq":8,', encoding="utf-8")
+            self.assertEqual(list(profile.uwp_serial_lines(path, 7, 7)), ["complete line"])
+            with self.assertRaisesRegex(ValueError, "invalid UWP serial event"):
+                list(profile.uwp_serial_lines(path, 7, 8))
 
     def test_rejects_a_truncated_capture_or_inconsistent_sequence(self):
         with self.assertRaisesRegex(ValueError, "length"):

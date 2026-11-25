@@ -233,6 +233,8 @@ def _uwp_rx_chunks(path, last):
                     previous = sequence
                     if event["kind"] == "rx":
                         yield sequence, base64.b64decode(event["bytes"], validate=True)
+                    if sequence == last:
+                        return
                 except (ValueError, KeyError, TypeError) as error:
                     raise ValueError(f"invalid UWP serial event in {segment.name}:{number}: {error}") from error
 
@@ -356,13 +358,15 @@ def correlate_gpu_spans(frames, serial_lines, start, end):
             "tv_span_ms": tv_ticks * tick_ms, "gamepad_span_ms": gamepad_ticks * tick_ms,
             "endpoint_order": order, "endpoint_overlap_ms": max(0, -gap) * tick_ms,
             "endpoint_gap_ms": max(0, gap) * tick_ms,
+            "paired_bracket_ms": (max(tv_bottom, pad_bottom) - min(tv_top, pad_top)) * tick_ms,
         })
     groups = {}
     for scale in sorted({row["scale"] for row in rows}):
         matching = [row for row in rows if row["scale"] == scale]
         groups[str(scale)] = {
             key: stats(row[key] for row in matching)
-            for key in ("tv_span_ms", "gamepad_span_ms", "endpoint_overlap_ms", "endpoint_gap_ms")
+            for key in ("tv_span_ms", "gamepad_span_ms", "endpoint_overlap_ms", "endpoint_gap_ms",
+                        "paired_bracket_ms")
         }
     return {
         "source": "gx2-top-bottom", "qualified_for_drs": False,

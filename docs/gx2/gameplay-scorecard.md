@@ -13,14 +13,16 @@ The four columns use 15 contiguous live windows per configuration. The
 simulation distances of 6/5. The 50% reopen and legacy-uniform series were
 separate camera windows. Game-step values are weighted by the iteration
 count. Pacing in this table gives the median of the short-window statistics,
-plus the maximum observed gap. All recorded submissions were partial with
-the post-effects omission mask `0x8000`.
+plus the maximum observed gap. All recorded submissions were partial.
+The 75% and 100% windows omitted post effects. Both 50% series also omitted
+camera screen effects.
 
 | Physical measurement | 75% Full Performance | 100% fixed | 50% reopen | 50% legacy uniforms |
 | --- | ---: | ---: | ---: | ---: |
 | Serial window end timestamps, UTC | 13:45:11–13:45:40 | 13:47:06–13:47:35 | 15:11:30–15:11:59 | 16:27:18–16:27:47 |
 | Total sampled window, s | 30.604 | 30.974 | 30.687 | 30.929 |
 | Paired submissions, partial / complete | 244 / 0 | 238 / 0 | 300 / 0 | 308 / 0 |
+| Omission mask | `0x8000` | `0x8000` | `0x8200` | `0x8200` |
 | Paired submissions/s | 7.97 | 7.68 | 9.78 | 9.96 |
 | Window elapsed per paired submission, ms | 125.425 | 130.142 | 102.291 | 100.420 |
 | Timed game step, ms | 125.048 | 129.763 | 101.923 | 100.049 |
