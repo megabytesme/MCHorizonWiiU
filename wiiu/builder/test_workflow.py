@@ -15,7 +15,7 @@ import workflow
 
 class ReleaseSelectionTests(unittest.TestCase):
     def setUp(self):
-        self.catalog, self.payload = releases.read_catalog()
+        self.catalog, _ = releases.read_catalog()
         self.args = {"builder": "0.6.0", "client": "0.7.0", "patch": "0.4.0",
                      "toolchain": "1.0.0", "channel": "development"}
 
@@ -35,13 +35,18 @@ class ReleaseSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             state = Path(scratch) / "trust.json"
             now = datetime(2026, 11, 21, tzinfo=timezone.utc)
-            newer = dict(self.catalog, sequence=self.catalog["sequence"] + 1)
+            older = {
+                "sequence": 5,
+                "published": "2026-11-20T00:00:00Z",
+                "expires": "2027-05-20T00:00:00Z",
+            }
+            newer = dict(older, sequence=6)
             releases.check_sequence(newer, b"new catalog", state, now)
             releases.check_sequence(newer, b"new catalog", state, now)
             with self.assertRaisesRegex(ValueError, "sequence reuse"):
                 releases.check_sequence(newer, b"different", state, now)
             with self.assertRaisesRegex(ValueError, "rollback"):
-                releases.check_sequence(self.catalog, self.payload, state, now)
+                releases.check_sequence(older, b"old catalog", state, now)
             with self.assertRaisesRegex(ValueError, "validity interval"):
                 releases.check_sequence(newer, b"new catalog", state, datetime(2100, 1, 1, tzinfo=timezone.utc))
 
