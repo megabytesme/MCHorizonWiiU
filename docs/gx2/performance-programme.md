@@ -496,6 +496,10 @@ and the native C, C++ and CafeGLSL build passed for the loading host.
 The two new patches add the world border and remove same-size animation
 scratch copies. The world-border single-object fixture passed 20 RGBA
 checks through two consecutive frames on each display. A separate
-three-object fixture retained stale pixels on its second GamePad frame
-unless it read back the clear before drawing. The hosted border scene
-and physical performance of both changes remain open.
+three-object fixture retained stale pixels on its second GamePad frame.
+Follow-up Cemu controls reproduced the same four mismatched samples with
+a flush, a full GPU wait, deferred readbacks, and color, depth or texture
+invalidation. A GPU copy of the cleared target before drawing passed all
+20 checks without a CPU read of the copy. This isolates the difference to
+the copy path in this fixture. The cause, hosted border scene, and physical
+performance of both changes remain open. Production adds no copy or wait.
