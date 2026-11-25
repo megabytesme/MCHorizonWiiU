@@ -125,6 +125,81 @@ retirement waits stayed close across all three methods on each display.
 The CPU retirement wait includes synchronization. Gameplay throughput
 requires a separate measurement with terrain and changing state.
 
+### Hosted preparation and fixed-scale measurements
+
+The first physical launch reached the game handoff after 67 minutes. The
+test instance had received an archive bound to the default install path.
+The block-model and sprite loader made 20,583 loose-file accesses without
+opening the archive. For the retry, the archive was rebound to the test
+instance. Its manifest and payload bytes matched the original. The same
+candidate then opened the archive and recorded one loose-file access by
+the end of that stage. The measured UI atlas decode fell from 769.0 to
+5.4 seconds. The verified executable and disposable save stayed in place.
+
+| Setting | Requested and effective scale | TV world target | GamePad world target | Additional surfaces |
+| --- | ---: | ---: | ---: | ---: |
+| Direct | 100% | 1920×1079 | 854×480 | 0 bytes |
+| Scaled | 75% | 1440×809 | 641×360 | 11,378,688 bytes |
+| Scaled | 50% | 960×540 | 427×240 | 5,038,080 bytes |
+| Return to direct | 100% | 1920×1079 | 854×480 | 0 bytes |
+
+The 100% TV still shows terrain and HUD. The owner observed gameplay on
+the GamePad at 75% and 50%. Window captures of the Blackmagic projector
+produced black stills during the sweep and again after the return to
+100%. Capturing the visible projector during stock Village and the
+same-process fixture reopen confirmed textured terrain and a native HUD on
+TV at 75% and 50%, respectively. Authenticated state confirmed the 50%
+world dimensions on the reopen.
+
+The owner explicitly applied Full Performance. At its stock 75% scale,
+244 pairs were submitted in 30.60 seconds (7.97/s). After changing only
+the scale to 100%, 238 pairs were submitted in 30.97 seconds (7.69/s).
+Both windows drew 294 terrain sections per output and carried the
+`0x8000` post-effects omission. Separate 50% windows reached about 9.7
+pairs/s with different terrain coverage. These numbers measure paired
+submission cadence.
+
+Serial reported positive TV and GamePad GPU intervals during hosted
+gameplay. In 878 complete serial reports across the sweep, the logged
+differences matched their endpoints and the GamePad start followed the
+TV end. Across sixteen reports in each matched sample, the median span
+from TV start through GamePad end fell from 68.06 ms at 100% to 62.44 ms
+at 75%. The bracket can include pipeline idle periods. Endpoint capture
+and ordering passed. A qualifying GPU load signal for DRS remains open.
+
+For the measured steady windows at 75% and 100%, the exclusive CPU wall
+buckets accounted for the loop budget to within 0.03 ms per iteration
+at serial precision and reported zero invalid nesting steps. Native
+submission outside measured waits was about 60 and 66 ms per iteration,
+respectively. Artwork preparation was about 39 ms at both settings.
+
+Both Save & Quit paths passed the durable barrier and returned to Night.
+The GX2 bulk heap recovered to 234,880,920 free bytes with a largest
+aligned block of 234,880,896 bytes after each session. The authenticated
+launcher reopened the selected fixture in the same process and exposed
+its saved 100% scale. The first gameplay checkpoint and the complete
+temporary checkpoint from the reopen each decoded as 4,096 HZP3 records.
+The second file occupied the temporary name because RC 29's rename could
+not overwrite the existing checkpoint. Close Horizon wrote its final
+capture and ProcUI returned to the Wii U Menu.
+
+### Stock Village
+
+The standard Village run used Full Performance at 75% and the stock
+readiness gates. Spawn and the Village scene became ready after 170.0
+and 175.0 seconds, respectively. Village had 213 resident columns,
+zero pending chunks and 562 submitted terrain sections on each output
+at readiness. A projector still during the run confirmed visible TV
+terrain and HUD.
+
+The 12-second route presented 58 pairs over 12.146 seconds. Thirty of
+those pairs contained terrain. The 29 eligible adjacent intervals covered
+6.834 seconds, or 56.3% of the measured wall time. Night returned and
+opened the written report. The report recovered from the SD confirmed
+the GX2 backend, stock seed `1234`, distances 6/5, both world target sizes,
+and eligible frame-time p50 of 236.0 ms and p95 of 347.5 ms. The measured
+terrain gaps limit comparisons against runs with steadier coverage.
+
 ## Console procedure
 
 Perform this queue with the owner present. Stage the approved hosted package
