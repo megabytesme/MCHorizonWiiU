@@ -154,3 +154,108 @@ The original route travels 192 blocks in 12 seconds at render distance 6.
 The trace points to the view outrunning resident terrain. The contribution of server generation, mesh completion, upload admission
 and culling of the remaining sections remains unresolved. A matched replay needs
 route-position and stage queue evidence before changing streaming policy.
+
+## RC 33 physical direct HUD and fixed scale
+
+The exact RC 33 candidate used profile mode `4`, fixed scale, and the
+Reopen Fixture with render distance 6 and simulation distance 5. The
+saved preset label was `custom` after the earlier scale adjustment.
+The deployed graphics options matched the archived Full Performance
+options at 75%. The authenticated state reported clear weather and
+identical position, yaw and pitch at each scale checkpoint. The
+stock 75% sample and the subsequent scale sweep each draw 224 sections
+per output. RC 29's reported 75% view drew 294 sections. The cross-release
+cadence and artwork values describe those two observed workloads. The
+RC 33 scale sweep held the view throughout, including the return to 75%.
+Its four windows have the same post-effects and camera screen-effects
+omission mask. The first stock window omitted only post effects.
+
+Each column includes 15 contiguous live windows. Game-step values use
+the iteration-weighted mean. Pacing percentiles below are medians of
+short-window percentiles. The two display spans, gap and bracket come
+from 15 complete 27 MHz endpoint pairs per column, joined by exact HZP3
+frame sequence. The endpoints bound wall time in the GPU pipeline,
+including any idle periods within the span.
+
+| Physical measurement | Stock 75% | Sweep 75% | Sweep 100% | Sweep 50% | Repeat 75% |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Session-relative Cafe window ends, ms | 127640–156005 | 158054–186381 | 214350–243023 | 302634–330999 | 361613–390193 |
+| Sampled elapsed, s | 30.386 | 30.377 | 30.725 | 30.416 | 30.607 |
+| Paired submissions, partial / complete | 408 / 0 | 417 / 0 | 404 / 0 | 544 / 0 | 433 / 0 |
+| Omission mask | `0x8000` | `0x8200` | `0x8200` | `0x8200` | `0x8200` |
+| Paired submissions/s | 13.427 | 13.728 | 13.149 | 17.885 | 14.147 |
+| Elapsed per paired submission, ms | 74.476 | 72.845 | 76.052 | 55.912 | 70.685 |
+| Timed game step, ms | 74.142 | 72.532 | 75.712 | 55.656 | 70.389 |
+| Idle handler wall time, ms | 0.111 | 0.109 | 0.113 | 0.096 | 0.097 |
+| Artwork preparation, ms | 7.727 | 7.299 | 7.445 | 6.700 | 7.000 |
+| Redraw outside native submission, ms | 18.184 | 17.544 | 17.840 | 16.195 | 16.976 |
+| Native submission outside measured waits, ms | 6.269 | 5.929 | 5.864 | 5.823 | 5.785 |
+| Measured GX2 waits, including direct HUD fence, ms | 41.844 | 41.642 | 44.445 | 26.833 | 40.522 |
+| Total native submission including measured waits, ms | 48.113 | 47.571 | 50.309 | 32.656 | 46.307 |
+| Other game-step work, ms | 0.010 | 0.013 | 0.011 | 0.010 | 0.011 |
+| Outside timed game step, ms | 0.333 | 0.313 | 0.340 | 0.257 | 0.297 |
+| Median short-window p50 / p95 / p99, ms | 72.75 / 79.83 / 83.81 | 71.94 / 76.23 / 82.28 | 75.13 / 80.21 / 87.02 | 55.32 / 58.95 / 65.80 | 69.93 / 73.59 / 75.73 |
+| Largest gap, ms | 116.10 | 101.21 | 97.20 | 85.07 | 101.90 |
+| Server ticks/s | 20.009 | 19.983 | 19.984 | 20.022 | 19.996 |
+| Terrain sections per output at window boundaries | 224 | 224 | 224 | 224 | 224 |
+| Meshed / uploaded sections | 7 / 7 | 6 / 6 | 6 / 6 | 2 / 2 | 2 / 2 |
+| Terrain upload bytes | 722,752 | 1,171,840 | 824,704 | 163,392 | 307,456 |
+| TV world dimensions | 1440×809 | 1440×809 | 1920×1079 | 960×540 | 1440×809 |
+| GamePad world dimensions | 641×360 | 641×360 | 854×480 | 427×240 | 641×360 |
+| Median TV / GamePad GPU span, ms | 31.726 / 13.507 | 31.322 / 13.443 | 32.791 / 14.693 | 20.107 / 9.943 | 30.425 / 13.112 |
+| Median inter-output GPU gap, ms | 1.281 | 1.317 | 1.259 | 1.312 | 1.286 |
+| Median TV start to GamePad finish, ms | 46.472 | 46.016 | 48.684 | 31.222 | 44.957 |
+| Matched GPU endpoint sequence range | 9821–10201 | 10229–10619 | 10935–11312 | 12074–12582 | 13047–13451 |
+
+From fixed 100% to 50%, the frame interval shortened by 20.140 ms
+(26.5%) and the median GPU bracket shortened by 17.462 ms (35.9%).
+At repeated 75% the interval varied by 2.160 ms. The largest remaining
+measured wall-time bucket is native submission including waits. The
+live waits include the direct HUD fence. The RC 33 build's separate
+five-second leaf-fence log is compiled out, so the live wait number
+cannot isolate the leaf. Across releases, the sum of measured waits
+and native submission is 63.901 ms at RC 29's 75% view and 48.113 ms
+at RC 33's 75% view with the geometry described above. Artwork fell from
+38.760 to 7.727 ms in those separate views.
+
+### Retained HZP3 stages
+
+The phase-6 checkpoint supplied the earlier windows. The prior session
+file on the FAT32 card supplied the later 50% and repeat-75% windows.
+Each HZP3 frame count agrees with serial. Timing and workload values
+below are medians except where the row states another statistic.
+
+| Physical HZP3 measurement | Stock 75% | Sweep 75% | Sweep 100% | Sweep 50% | Repeat 75% |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Paired frame sequence | 9821–10228 | 10229–10645 | 10935–11338 | 12073–12616 | 13046–13478 |
+| Pooled p50 / p95 / p99 interval, ms | 72.812 / 83.783 / 104.329 | 72.004 / 78.442 / 86.006 | 75.255 / 81.027 / 88.492 | 55.501 / 59.597 / 67.102 | 70.120 / 74.050 / 83.217 |
+| Artwork / nested texture stage, ms | 7.586 / 7.538 | 7.361 / 7.313 | 7.508 / 7.437 | 6.846 / 6.799 | 7.110 / 7.051 |
+| HUD / entity / particle frame construction, ms | 0.633 / 0.309 / 0.004 | 0.634 / 0.299 / 0.004 | 0.626 / 0.306 / 0.004 | 0.595 / 0.297 / 0.004 | 0.590 / 0.291 / 0.004 |
+| Whole callback submit TV / GamePad, ms | 32.390 / 14.976 | 32.144 / 14.934 | 33.439 / 16.422 | 20.824 / 11.484 | 31.277 / 14.664 |
+| Nested HUD submit TV / GamePad, ms | 28.581 / 11.129 | 28.394 / 11.106 | 29.721 / 12.609 | 17.118 / 7.730 | 27.611 / 10.921 |
+| Solid terrain TV / GamePad, ms | 1.623 / 1.378 | 1.626 / 1.149 | 1.539 / 1.140 | 1.608 / 1.190 | 1.611 / 1.108 |
+| Translucent terrain TV / GamePad, ms | 0.763 / 0.676 | 0.760 / 0.675 | 0.764 / 0.673 | 0.754 / 0.668 | 0.756 / 0.667 |
+| Explicit terrain wait / WHB finish, ms | 2.649 / 0.318 | 2.648 / 0.319 | 2.670 / 0.322 | 2.630 / 0.315 | 2.630 / 0.313 |
+| Mean all measured non-HUD waits, ms | 3.015 | 3.005 | 3.029 | 2.970 | 2.963 |
+| Estimated mean direct HUD fence, ms | 38.829 | 38.637 | 41.416 | 23.863 | 37.559 |
+| Section draws / indices across both displays | 650 / 1,406,340 | 650 / 1,406,364 | 650 / 1,406,364 | 650 / 1,406,364 | 650 / 1,406,364 |
+| Rust live requested bytes | 338,600,102 | 334,494,670 | 337,674,211 | 333,359,152 | 333,792,285 |
+
+The fence estimate subtracts the HZP3 mean of WHB begin/finish and
+terrain wait from the same-cohort serial mean for all measured GX2
+waits. The wrapper timers differ slightly. The stock redraw total was
+18.184 ms. Mean HUD, entity and particle construction accounted for
+1.066 ms, leaving 17.118 ms in currently broader redraw work.
+The widest native spans coincide with the HUD calls and their drains.
+The intervals include previously queued GPU work and cannot determine
+how much time moving the fence could save.
+
+In a separate verified Inventory interval after reopening, direct mode
+presented 371 pairs in 30.486 s at 75%, or 12.169 pairs/s. The mean
+total native submit was 53.823 ms including 46.911 ms of measured waits.
+Both outputs reported 228 sections and omission mask `0x8200`.
+Authenticated observations recorded a 2.53-block horizontal position
+change in this Survival session. The sampled health and camera angles
+were unchanged.
+The Inventory view supplies a direct-mode observation with different
+geometry and movement evidence from the fixed-scale camera.

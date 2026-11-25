@@ -9,11 +9,11 @@ def guest(ms, message):
     return f"00;{minutes:02};{seconds:02};{milliseconds:03}: {message}"
 
 
-def window(guest_ms, end_ms, span_ms, loops, paired, artwork_ms, scale=75):
+def window(guest_ms, end_ms, span_ms, loops, paired, artwork_ms, scale=75, phase="gameplay"):
     return [
         guest(guest_ms, f"Horizon Cafe {kind}: t_ms={end_ms} {values}")
         for kind, values in (
-            ("cadence", f"phase=gameplay span_ms={span_ms} loops={loops} paired={paired} partial=1"),
+            ("cadence", f"phase={phase} span_ms={span_ms} loops={loops} paired={paired} partial=1"),
             ("pacing", "samples=9 median_ms=108 p95_ms=120 p99_ms=122 max_ms=130"),
             ("streaming", "ticks=Some(40) meshed=3 uploaded=2 upload_bytes=100 tv_sections=93 gamepad_sections=91"),
             ("wall game", f"game_ms=103 idle_ms=1 artwork_ms={artwork_ms} other_ms=1 invalid_steps=0"),
@@ -81,6 +81,11 @@ class CafePhysicalReportTests(unittest.TestCase):
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 report.matched_windows(report.read_session(base + incompatible)['cafe_windows'], 4000, 6200)
+        menu = [guest(9250, report.ENTRY), *window(13000, 4000, 2000, 10, 10, 42, phase='menu')]
+        windows = report.read_session(menu)['cafe_windows']
+        with self.assertRaisesRegex(ValueError, 'phase gameplay'):
+            report.matched_windows(windows, 4000, 4000)
+        self.assertEqual(report.matched_windows(windows, 4000, 4000, phase='menu')['paired_per_second'], 5.0)
 
 
 if __name__ == '__main__':

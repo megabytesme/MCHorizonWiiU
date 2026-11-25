@@ -149,15 +149,15 @@ def read_session(lines):
     }
 
 
-def matched_windows(windows, first, last):
+def matched_windows(windows, first, last, phase="gameplay"):
     """Summarize explicit stationary windows and refuse mixed scales or interrupted windows."""
     selected = [window for window in windows if first <= window["session_ms"] <= last]
     required = ("cadence", "pacing", "streaming", "wall game", "wall render", "world")
     if not selected or (selected[0]["session_ms"], selected[-1]["session_ms"]) != (first, last):
         raise ValueError("both selected Cafe window endpoints must be present")
-    if any(not all(key in window for key in required) or window["cadence"]["phase"] != "gameplay"
+    if any(not all(key in window for key in required) or window["cadence"]["phase"] != phase
            for window in selected):
-        raise ValueError("selected windows must have all gameplay telemetry")
+        raise ValueError(f"selected windows must have all telemetry for phase {phase}")
     identity_keys = ("requested", "effective", "tv", "gamepad", "surface_bytes", "omitted_passes")
     world = {key: selected[0]["world"][key] for key in identity_keys}
     for window in selected:
@@ -168,7 +168,7 @@ def matched_windows(windows, first, last):
     for before, after in zip(selected, selected[1:]):
         gap = after["session_ms"] - before["session_ms"] - after["cadence"]["span_ms"]
         if abs(gap) > 2:
-            raise ValueError("selected gameplay windows are not contiguous")
+            raise ValueError("selected Cafe windows are not contiguous")
 
     duration = sum(window["cadence"]["span_ms"] for window in selected)
     pairs = sum(window["cadence"]["paired"] for window in selected)
@@ -188,7 +188,7 @@ def matched_windows(windows, first, last):
         sections = [window["streaming"][key] for window in selected]
         section_ranges[key] = [min(sections), max(sections)]
     return {
-        "window_count": len(selected), "first_window_end_ms": first, "last_window_end_ms": last,
+        "phase": phase, "window_count": len(selected), "first_window_end_ms": first, "last_window_end_ms": last,
         "duration_ms": round(duration, 3), "paired_submissions": pairs, "partial_submissions": partial,
         "complete_submissions": pairs - partial, "paired_per_second": round(pairs * 1000 / duration, 3),
         "elapsed_per_pair_ms": round(duration / pairs, 3),
@@ -209,8 +209,11 @@ def main():
     parser.add_argument("capture", type=Path, help="archived UWP segment or capture directory")
     parser.add_argument("--serial-first-seq", type=int, required=True)
     parser.add_argument("--serial-last-seq", type=int, required=True)
-    parser.add_argument("--gameplay-window", type=int, nargs=2, metavar=("FIRST_MS", "LAST_MS"),
-                        help="select stationary Cafe window ends by session-relative t_ms")
+    window = parser.add_mutually_exclusive_group()
+    window.add_argument("--gameplay-window", type=int, nargs=2, metavar=("FIRST_MS", "LAST_MS"),
+                        help="select stationary gameplay window ends by session-relative t_ms")
+    window.add_argument("--menu-window", type=int, nargs=2, metavar=("FIRST_MS", "LAST_MS"),
+                        help="select verified stationary menu window ends by session-relative t_ms")
     args = parser.parse_args()
     if not 1 <= args.serial_first_seq <= args.serial_last_seq:
         parser.error("serial sequence bounds must be positive and increasing")
@@ -219,6 +222,8 @@ def main():
         report["serial_event_bounds"] = [args.serial_first_seq, args.serial_last_seq]
         if args.gameplay_window is not None:
             report["matched_gameplay"] = matched_windows(report["cafe_windows"], *args.gameplay_window)
+        elif args.menu_window is not None:
+            report["matched_menu"] = matched_windows(report["cafe_windows"], *args.menu_window, phase="menu")
     except (OSError, ValueError, KeyError) as error:
         parser.exit(1, f"{parser.prog}: {error}\n")
     print(json.dumps(report, indent=2))

@@ -174,3 +174,96 @@ predict the change in time to gameplay. The first RC 32 world started
 with no sprite cache. RC 33 started with a valid file with a stale
 fingerprint. Host build and emulator activity varied across the cases.
 The correctly bound RC 29 capture remains the physical baseline.
+
+## RC 33 physical first entry
+
+The console used the exact RC 33 WUHB and the same qualification archive
+and Reopen Fixture as the corrected RC 29 capture. The first launch
+preserved the existing on-card sprite cache. Code reported zero hits and
+28,641 misses on entry, then marked the cache dirty. The first original
+Game frame returned at 140.550 s and both displays first reported terrain
+at 150.967 s. The first serial sample with at least 75 sections on each
+display arrived at 192.509 s. The initial rendering scales were effective
+100% on RC 29 and 75% on RC 33.
+
+| First-entry stage or milestone | RC 29 | RC 33 | Time saved | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Loader notice to Night, serial arrival | 8.282 s | 8.084 s | 0.198 s | −2.4% |
+| UI bundle | 36.959 s | 21.326 s | 15.633 s | −42.3% |
+| UI atlas decode | 5.421 s | 4.982 s | 0.439 s | −8.1% |
+| Core resources | 30.374 s | 30.388 s | −0.014 s | +0.05% |
+| Block facts | 10.440 s | 10.422 s | 0.018 s | −0.2% |
+| Block models and sprites | 21.705 s | 21.709 s | −0.004 s | +0.02% |
+| Sprite-cache fingerprint | 4.692 s | 4.626 s | 0.066 s | −1.4% |
+| Sprite-cache open | 5.013 s | 4.945 s | 0.068 s | −1.4% |
+| Pack assembly | 67.169 s | 1.372 s | 65.797 s | −98.0% |
+| Mesh tables | 24.696 s | 0.915 s | 23.781 s | −96.3% |
+| Parallel world preload | 70.941 s | 59.934 s | 11.007 s | −15.5% |
+| Remaining resource preparation | 23.399 s | 44.106 s | −20.707 s | +88.5% |
+| Network recipe preparation | 29.610 s | 3.193 s | 26.417 s | −89.2% |
+| Server adoption wait | 8,149.007 ms | 0.037 ms | 8,148.970 ms | −99.9995% |
+| Server world open | 9.846 s | 6.986 s | 2.860 s | −29.0% |
+| Hosted entry to Game handoff | 179.813 s | 76.873 s | 102.940 s | −57.2% |
+| Hosted entry to first returned Game frame | 235.459 s | 140.550 s | 94.909 s | −40.3% |
+| Hosted entry to first paired sampled terrain | 243.903 s | 150.967 s | 92.936 s | −38.1% |
+| Hosted entry to first 75-section sample per display | 313.325 s | 192.509 s | 120.816 s | −38.6% |
+
+RC 33 finished recipe preparation before the server needed the result.
+Its 44.106 s remaining-resource span, including 40.189 s of mob loading,
+ran entirely during world preload. RC 29 recorded no overlap between
+those spans. The longer remaining-resource duration alone cannot
+distinguish more work from contention. World preload ended at trace time
+127.811 s, followed by the 6.986 s world-open span beginning at 132.030 s.
+
+At the UI checkpoint the archive had opened once, serving 8,401 requests
+through 2,504 reads with zero loose fallbacks. Through block models and
+sprites, it had served 21,237 requests through 3,281 reads with one loose
+fallback. The settled camera first reported 224 sections per display at
+220.944 s and held that count throughout the following stationary windows.
+The first sampled hosted menu after an input was 293.602 s from entry.
+That input was deliberately delayed for the stationary captures. The
+earliest time the game could accept input was untimed.
+
+After the first durable save barrier, Night returned in 8.341 s on the
+guest clock. The GX2 bulk heap recovered 234,880,920 bytes free and a
+234,880,896-byte largest block. Process Rust requested memory after
+teardown was 51,332,387 bytes, with a 362,905,975-byte high-water mark.
+
+### Same-process reopen
+
+The second RC 33 launch used the just-saved fixture and an effective 75%
+scale. The RC 29 reopen used 50%. RC 33 reported 28,639 sprite-cache hits,
+two misses and `dirty=false` after reading the cache written on the first
+launch. This confirms cache replacement and warm reuse on the test SD.
+Archive opens remained at one across the two RC 33 starts. The cumulative
+loose fallbacks were 129 at the reopen UI checkpoint and 130 at block
+models and sprites. Between those checkpoints the archive served 5,985
+requests through 542 reads with one more loose fallback.
+
+| Same-process reopen stage or milestone | RC 29 | RC 33 | Time saved | Change |
+| --- | ---: | ---: | ---: | ---: |
+| UI bundle | 41.331 s | 27.951 s | 13.380 s | −32.4% |
+| UI atlas decode | 9.044 s | 11.083 s | −2.039 s | +22.5% |
+| Core resources | 28.551 s | 28.995 s | −0.444 s | +1.6% |
+| Block facts | 11.556 s | 13.707 s | −2.151 s | +18.6% |
+| Block models and sprites | 21.400 s | 21.700 s | −0.300 s | +1.4% |
+| Sprite-cache fingerprint | 0.010 ms | 0.010 ms | 0.000 ms | 0.0% |
+| Sprite-cache open | 589.230 ms | 611.729 ms | −22.499 ms | +3.8% |
+| Pack assembly | 55.462 s | 0.656 s | 54.807 s | −98.8% |
+| Mesh tables | 25.692 s | 0.915 s | 24.777 s | −96.4% |
+| Parallel world preload | 50.794 s | 60.639 s | −9.846 s | +19.4% |
+| Remaining resource preparation | 22.869 s | 27.677 s | −4.809 s | +21.0% |
+| Network recipe preparation | 29.294 s | 4.863 s | 24.431 s | −83.4% |
+| Server adoption wait | 8,319.278 ms | 0.043 ms | 8,319.235 ms | −99.9995% |
+| Server world open | 10.046 s | 9.083 s | 0.963 s | −9.6% |
+| Hosted entry to Game handoff | 171.285 s | 80.720 s | 90.565 s | −52.9% |
+| Hosted entry to first returned Game frame | 227.314 s | 144.354 s | 82.960 s | −36.5% |
+| Hosted entry to first paired sampled terrain | 235.504 s | 153.694 s | 81.810 s | −34.7% |
+| Hosted entry to first 75-section sample per display | 266.768 s | 193.025 s | 73.743 s | −27.6% |
+
+Both reopen outputs reached 228 sections at 231.776 s. The second durable
+save barrier preceded Night by 34.150 s. Teardown again recovered all
+234,880,920 GX2 bulk-heap bytes with a 234,880,896-byte largest block.
+Process Rust requested memory was 51,290,256 bytes after teardown, with a
+387,286,187-byte high-water mark. The second session published a new
+HZP3 file and the previous one remained readable at its recovery path.

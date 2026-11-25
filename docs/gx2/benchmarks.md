@@ -184,6 +184,24 @@ reassembles their byte chunks before matching the HZP3 frame sequence.
 python tools/gx2_profile.py $capture --gpu-serial-capture $serialDirectory --serial-first-seq $first --serial-last-seq $last
 ```
 
+For loading and game-step accounting, decode one hosted entry from the
+archived UWP events. The guest clock starts at the hosted entry, while
+startup spans keep the process trace clock. Prepared I/O counters are
+cumulative over the process. The serial terrain checkpoints describe
+sampled geometry and should be kept with separate input observations.
+
+```powershell
+python tools/gx2_physical_report.py $serialDirectory --serial-first-seq $first --serial-last-seq $last > $sessionSummary
+```
+
+Select settled window-end `t_ms` values from `cafe_windows`. Add
+`--gameplay-window $firstMs $lastMs` for a view or
+`--menu-window $firstMs $lastMs` for a verified Inventory interval. The
+decoder checks phase, continuity, paired terrain, effective dimensions
+and coverage flags. Use authenticated camera and scene observations with
+the HZP3 geometry before treating the windows as a matched comparison.
+Use exact compatible HZP3 frames for pooled pacing percentiles.
+
 The [hosted RC 29 validation](rc29-validation.md) saved an HZP3 capture
 with both displays rendering at 75% in forced-interpreter Cemu. Its 17
 retained playing presentations all reported the scaled world dimensions
@@ -334,8 +352,12 @@ covers the archive and its deployment copy.
 3. Alternate profile modes `4` and `4h` on the same build for the
    direct and shared HUD comparison. Include an inventory or held
    item scene for atlas consumers, and inspect both output stills
-   between timed windows. On RC 33, use the explicit leaf HUD wait
-   and paired interval together. Run the existing terrain binding,
+   between timed windows. Compare the paired interval with the full
+   native submit and aggregate wait. RC 33 includes the direct HUD
+   fence in the aggregate. Direct leaf logging requires the separate
+   build-time `HORIZON_WIIU_PROFILE_GX2=1` option. On the stock package,
+   exact HZP3 cohorts can bound an estimate by subtracting the WHB and
+   terrain waits from the serial aggregate. Run the existing terrain binding,
    reduced-attribute and batched-uniform diagnostics separately
    with matching geometry.
 4. Run the original Village benchmark with baseline mesh admission.

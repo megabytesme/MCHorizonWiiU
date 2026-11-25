@@ -76,7 +76,8 @@
           "sync.recipe_folder": 148.608,
           "server.game_new": 15234.429,
           "server.open_world": 9846.067,
-          "sync.network_recipes": 29610.226
+          "sync.network_recipes": 29610.226,
+          "server.sync_adopt": 8149.007
         },
         "original_game_cycle_elapsed_ms": 235090,
         "generator_data_construction_ms": 61267.833,
@@ -173,7 +174,8 @@
           "sync.recipe_folder": 391.096,
           "server.game_new": 21298.335,
           "sync.network_recipes": 32272.242,
-          "server.open_world": 10398.669
+          "server.open_world": 10398.669,
+          "server.sync_adopt": 0.032
         },
         "original_game_cycle_elapsed_ms": 188335,
         "generator_data_construction_ms": 47880.814,
@@ -273,6 +275,7 @@
           "sync.recipe_folder": 216.917,
           "server.game_new": 15185.522,
           "server.open_world": 10046.209,
+          "server.sync_adopt": 8319.278,
           "sync.network_recipes": 29294.278
         },
         "original_game_cycle_elapsed_ms": 227081,
@@ -328,6 +331,392 @@
       "night_loading_frame_to_hosted_entry_guest_ms": 138
     }
   },
+  "physical_measurements": [
+    {
+      "version": "0.8.0-rc.33",
+      "source_commit": "cdfae3d8c0562234b76f23899dbcdbdab5e2f697",
+      "engine_tree": "b5bb7217763685f06e95847a06d90d774bcb8968",
+      "toolchain": "1.1.0",
+      "candidate_wuhb_sha256": "59386ba05e78bede32f1b12621f1e6dc34fba7377704d4fd90af5f333c4a7153",
+      "minecraft": "26.3",
+      "prepared_schema": 7,
+      "archive_version": 2,
+      "archive_entries": 23148,
+      "manifest_sha256": "635320e23eae6285e515b22a9d426be4d7a0a47f39a71da5a516967cace6c95d",
+      "archive_sha256": "ed03f05069fe4702c748b24cbe4fc8d91ed9cd62328d9cdf52243889ed44801a",
+      "archive_content_sha256": "48f175d7d0a613267191f8c7f478fabf7859daefe5b7cff95c4e79844afeaca8",
+      "profile_mode": "4",
+      "observed_on": "2026-11-25",
+      "clock_notes": "Guest elapsed time starts at hosted entry. Trace spans can overlap and keep their process trace origin. Application milestones use UWP serial arrival. Prepared I/O counts are cumulative in the process. Terrain thresholds measure sampled geometry.",
+      "loader_to_Night_serial_arrival_ms": 8084.257,
+      "cases": [
+        {
+          "id": "existing_world_initial_preserved_cache",
+          "workload": "Existing Reopen Fixture at first hosted launch after Night process startup",
+          "effective_scale_percent": 75,
+          "sprite_cache_file_present_before_entry": true,
+          "serial_event_bounds": [
+            1,
+            483
+          ],
+          "guest_milestone_ms": {
+            "loading first draw returned": 1597,
+            "Cafe Game handoff begin": 76873,
+            "original Game initialized; pending entry starts": 117371,
+            "first original Game frame returned": 140550,
+            "Game world-entry pending state cleared": 140550,
+            "hosted save barrier completed": 521724,
+            "hosted game and loading workers released": 522469,
+            "Night returned": 530065,
+            "Night loading frame": -102,
+            "first paired nonzero sampled terrain": 150967,
+            "first sampled 75 sections per display": 192509,
+            "first 224-section sample per display": 220944,
+            "first sampled hosted menu": 293602
+          },
+          "startup_durations_ms": {
+            "mods.overlay": 13559.052,
+            "mods.content_root": 14461.647,
+            "ui.panorama": 2329.92,
+            "ui.atlas_discovery": 9555.851,
+            "ui.atlas_decode": 4981.978,
+            "ui.atlas_assemble": 6588.175,
+            "ui.atlas_font": 107.168,
+            "ui.atlas": 21298.592,
+            "ui.load": 21326.159,
+            "core.entity_models": 759.783,
+            "core.assets": 5187.455,
+            "core.models_parse": 6508.442,
+            "core.biomes": 1447.401,
+            "core.collision": 2432.03,
+            "core.environment": 3326.683,
+            "core.visibility": 3705.011,
+            "core.sprite_cache_fingerprint": 4626.347,
+            "core.sprite_cache_read": 276.089,
+            "core.sprite_cache_parse": 17.938,
+            "core.sprite_cache_open": 4945.197,
+            "core.initial_sprites": 56.113,
+            "core.block_facts": 10422.056,
+            "core.bake_states": 4683.649,
+            "core.bake_standalone": 0.012,
+            "core.models_bake": 6014.022,
+            "core.item_library": 45.012,
+            "core.light": 2478.847,
+            "core.motion": 2668.444,
+            "core.fusion": 4841.877,
+            "core.sprite_cache_save": 353.411,
+            "core.sprite_atlas_finish": 611.553,
+            "core.block_models_sprites": 21709.148,
+            "core.item_defaults": 177.228,
+            "core.item_models": 1568.622,
+            "core": 30388.1,
+            "pack.mesh_tables": 915.146,
+            "pack.forcefield": 16.419,
+            "pack.custom_sky": 21.771,
+            "pack.environments": 124.568,
+            "pack.clouds": 181.541,
+            "pack.particles": 252.324,
+            "pack.names": 340.812,
+            "pack.polytone_post": 79.438,
+            "pack.block_registries": 824.988,
+            "pack.colors": 101.694,
+            "pack.assemble": 1371.764,
+            "rest.transformers_models": 558.481,
+            "handoff.renderer_textures": 1454.719,
+            "rest.providers": 2386.838,
+            "rest.ambient": 2530.914,
+            "rest.music": 3724.236,
+            "handoff.game_cpu": 4158.648,
+            "rest.block_entity_render": 4197.559,
+            "rest.animate_fog": 4499.994,
+            "rest.end_environment": 4951.196,
+            "rest.nether_environment": 5055.762,
+            "rest.items": 9313.333,
+            "rest.recipe_sources": 218.95,
+            "rest.recipes": 322.447,
+            "rest.stations": 3357.188,
+            "rest.mobs": 40188.754,
+            "rest.behaviours": 44092.279,
+            "rest": 44105.543,
+            "sync.recipe_folder": 557.173,
+            "sync.registries": 1467.525,
+            "sync.tags": 1728.646,
+            "sync.commands": 99.855,
+            "sync.recipe_catalog": 2194.593,
+            "sync.recipe_acceptance": 371.305,
+            "sync.network_recipes": 3193.186,
+            "sync.advancements": 1269.788,
+            "sync.update_recipes": 164.266,
+            "world.preload": 59933.879,
+            "world.make_streaming": 2126.551,
+            "world.prepare": 10735.618,
+            "server.game_new": 14512.011,
+            "server.wait_rest": 0.003,
+            "server.open_world": 6985.869,
+            "server.sync_adopt": 0.037,
+            "server.start_mods": 7.261,
+            "server.lan_host": 278.684,
+            "server.prepare_levels": 0.055,
+            "server.settle_spawn": 221.191
+          },
+          "trace_intervals_ms": {
+            "rest.mobs": [
+              72679.583,
+              112868.337
+            ],
+            "rest": [
+              72666.603,
+              116772.146
+            ],
+            "sync.network_recipes": [
+              122375.116,
+              125568.302
+            ],
+            "world.preload": [
+              67877.263,
+              127811.142
+            ],
+            "server.open_world": [
+              132030.437,
+              139016.306
+            ],
+            "server.sync_adopt": [
+              139016.426,
+              139016.463
+            ]
+          },
+          "original_game_cycle_elapsed_ms": 139039,
+          "generator_data_construction_ms": 56065.609,
+          "first_sampled_terrain_sections": [
+            3,
+            3
+          ],
+          "read_totals": {
+            "ui_atlas": {
+              "archive_opens": 1,
+              "disk_fallbacks": 0,
+              "entry_hits": 8408,
+              "entry_misses": 3722,
+              "reads": 2504,
+              "small_reads": 2131,
+              "read_bytes": 17604687,
+              "read_requests": 8401,
+              "request_bytes": 8692478,
+              "read_ahead_hits": 5897,
+              "seeks": 2504
+            },
+            "block_models_sprites": {
+              "archive_opens": 1,
+              "disk_fallbacks": 1,
+              "entry_hits": 15798,
+              "entry_misses": 6207,
+              "reads": 3281,
+              "small_reads": 2274,
+              "read_bytes": 31192364,
+              "read_requests": 21237,
+              "request_bytes": 19295695,
+              "read_ahead_hits": 17956,
+              "seeks": 3281
+            }
+          },
+          "sprite_cache": {
+            "hits": 0,
+            "misses": 28641,
+            "entries": 1311,
+            "dirty": true
+          },
+          "memory_after_game_drop": {
+            "rust_live_bytes": 51332387,
+            "rust_peak_bytes": 362905975,
+            "gx2_bulk_free_bytes": 234880920,
+            "gx2_bulk_largest_bytes": 234880896
+          }
+        },
+        {
+          "id": "existing_world_warm_reopen",
+          "workload": "Same-process reopen of Reopen Fixture after first durable save",
+          "effective_scale_percent": 75,
+          "sprite_cache_file_present_before_entry": true,
+          "serial_event_bounds": [
+            484,
+            782
+          ],
+          "guest_milestone_ms": {
+            "loading first draw returned": 359,
+            "Cafe Game handoff begin": 80720,
+            "original Game initialized; pending entry starts": 105729,
+            "first original Game frame returned": 144354,
+            "Game world-entry pending state cleared": 144354,
+            "hosted save barrier completed": 351119,
+            "hosted game and loading workers released": 354560,
+            "Night returned": 385269,
+            "Night loading frame": -114,
+            "first paired nonzero sampled terrain": 153694,
+            "first sampled 75 sections per display": 193025,
+            "first 228-section sample per display": 231776
+          },
+          "startup_durations_ms": {
+            "mods.overlay": 13470.843,
+            "mods.content_root": 15378.816,
+            "ui.panorama": 2082.194,
+            "ui.atlas_discovery": 9641.055,
+            "ui.atlas_decode": 11082.981,
+            "ui.atlas_assemble": 6972.074,
+            "ui.atlas_font": 126.924,
+            "ui.atlas": 27923.522,
+            "ui.load": 27951.039,
+            "core.entity_models": 824.831,
+            "core.assets": 3035.151,
+            "core.models_parse": 4951.649,
+            "core.sprite_cache_fingerprint": 0.01,
+            "core.sprite_cache_read": 545.393,
+            "core.sprite_cache_parse": 50.79,
+            "core.sprite_cache_open": 611.729,
+            "core.initial_sprites": 0.453,
+            "core.connected_texture_rules": 200.689,
+            "core.biomes": 2018.935,
+            "core.environment": 2677.112,
+            "core.collision": 2893.844,
+            "core.visibility": 4459.957,
+            "core.bake_states": 6896.473,
+            "core.bake_standalone": 0.01,
+            "core.models_bake": 9535.906,
+            "core.item_library": 33.909,
+            "core.block_facts": 13707.21,
+            "core.fusion": 5872.416,
+            "core.light": 2732.28,
+            "core.motion": 2914.34,
+            "core.sprite_cache_save": 0.124,
+            "core.sprite_atlas_finish": 618.251,
+            "core.block_models_sprites": 21699.586,
+            "core.item_defaults": 181.272,
+            "core.item_models": 1699.855,
+            "core": 28995.079,
+            "pack.mesh_tables": 915.129,
+            "pack.forcefield": 10.674,
+            "pack.custom_sky": 28.705,
+            "pack.environments": 159.52,
+            "pack.clouds": 240.993,
+            "pack.names": 353.835,
+            "pack.particles": 428.998,
+            "pack.polytone_post": 110.444,
+            "pack.block_registries": 0.002,
+            "pack.colors": 95.616,
+            "pack.assemble": 655.735,
+            "rest.providers": 330.233,
+            "rest.transformers_models": 486.493,
+            "handoff.renderer_textures": 1811.954,
+            "rest.ambient": 3325.055,
+            "handoff.game_cpu": 3944.943,
+            "rest.music": 3943.236,
+            "rest.block_entity_render": 4268.448,
+            "rest.animate_fog": 4810.175,
+            "rest.nether_environment": 5075.892,
+            "rest.end_environment": 5282.2,
+            "rest.items": 9460.528,
+            "rest.behaviours": 9549.499,
+            "rest.recipe_sources": 224.813,
+            "rest.recipes": 342.83,
+            "rest.stations": 2731.802,
+            "rest.mobs": 27656.0,
+            "rest": 27677.392,
+            "sync.recipe_folder": 1558.793,
+            "sync.registries": 1807.944,
+            "sync.tags": 2113.258,
+            "sync.commands": 107.216,
+            "sync.recipe_catalog": 2894.475,
+            "sync.recipe_acceptance": 648.81,
+            "sync.network_recipes": 4863.024,
+            "sync.advancements": 1063.757,
+            "sync.update_recipes": 161.188,
+            "server.game_new": 15345.764,
+            "world.preload": 60639.15,
+            "world.make_streaming": 26545.98,
+            "world.prepare": 27880.123,
+            "server.wait_rest": 0.005,
+            "server.open_world": 9082.906,
+            "server.sync_adopt": 0.043,
+            "server.start_mods": 7.104,
+            "server.lan_host": 279.228,
+            "server.prepare_levels": 0.056,
+            "server.settle_spawn": 199.555
+          },
+          "trace_intervals_ms": {
+            "rest.mobs": [
+              626170.365,
+              653826.365
+            ],
+            "rest": [
+              626149.68,
+              653827.072
+            ],
+            "sync.network_recipes": [
+              661938.222,
+              666801.246
+            ],
+            "world.preload": [
+              622208.813,
+              682847.963
+            ],
+            "server.open_world": [
+              683175.117,
+              692258.023
+            ],
+            "server.sync_adopt": [
+              692258.129,
+              692258.172
+            ]
+          },
+          "original_game_cycle_elapsed_ms": 144118,
+          "generator_data_construction_ms": 55932.586,
+          "first_sampled_terrain_sections": [
+            3,
+            3
+          ],
+          "read_totals": {
+            "ui_atlas": {
+              "archive_opens": 1,
+              "disk_fallbacks": 129,
+              "entry_hits": 30676,
+              "entry_misses": 10017,
+              "reads": 9982,
+              "small_reads": 7356,
+              "read_bytes": 83045686,
+              "read_requests": 57705,
+              "request_bytes": 44692179,
+              "read_ahead_hits": 47723,
+              "seeks": 9982
+            },
+            "block_models_sprites": {
+              "archive_opens": 1,
+              "disk_fallbacks": 130,
+              "entry_hits": 36650,
+              "entry_misses": 11296,
+              "reads": 10524,
+              "small_reads": 7502,
+              "read_bytes": 89030429,
+              "read_requests": 63690,
+              "request_bytes": 48570472,
+              "read_ahead_hits": 53166,
+              "seeks": 10524
+            }
+          },
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311,
+            "dirty": false
+          },
+          "memory_after_game_drop": {
+            "rust_live_bytes": 51290256,
+            "rust_peak_bytes": 387286187,
+            "gx2_bulk_free_bytes": 234880920,
+            "gx2_bulk_largest_bytes": 234880896
+          }
+        }
+      ]
+    }
+  ],
   "candidate_measurements": [
     {
       "version": "0.8.0-rc.32",
