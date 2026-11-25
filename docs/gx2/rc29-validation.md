@@ -89,14 +89,28 @@ receipts. Keep the existing normal installation and saves on the owner's
 regular SD. Use projector stills, GamePad observation and the existing serial
 monitor for evidence.
 
+The test SD was staged with all three WUHB hashes checked and safely
+ejected. The `RC29-Qualification` instance has its own prepared resources,
+graphics settings and `Reopen Fixture` save. It starts at fixed 100% with
+render distance 6 and simulation distance 5. Its experimental scaling marker
+enables the fixed-scale sweep and profile mode `4` records GPU endpoints.
+The previous RC 26 executable and its profile captures were backed up
+off-card. The scale diagnostic is the first console launch.
+
 1. Launch GX2 Scale Check. For each serial trial record TV and GamePad
    orientation, margins, the small native green HUD bar and upscaling.
    Confirm the second 75% trial and return to the Wii U Menu.
-2. Launch the hosted candidate and confirm its version in Night. Verify a
-   disposable world at direct 100%, both screens, audio, controller input,
-   touch, Save & Quit and exact saved-position recovery. Record resource
-   retirement and do a same-process reopen.
-3. After the standalone inspection passes, use
+2. Launch GX2 Display Lists. Verify the tile pattern on both outputs,
+   collect all 96 timing samples with retirement, and confirm the Wii U
+   Menu handoff. Compare command construction, flush and retirement for
+   equivalent workloads.
+3. Launch the hosted candidate and confirm its version in Night. Select
+   `RC29-Qualification` under **Version & resources → Installed resources**,
+   then select `Reopen Fixture` under **Worlds & servers → Local worlds**.
+   Verify direct 100%, both screens, audio, controller input, touch, Save &
+   Quit and exact saved-position recovery. Record resource retirement and
+   do a same-process reopen.
+4. After the standalone inspection passes, use
    `gx2-world-scale-experimental.enable` for the controlled hosted sweep.
    Hold render distance 6, simulation distance 5 and every other setting
    fixed. Confirm 100%, 75%, 50% and a return to 100% in one session,
@@ -104,7 +118,7 @@ monitor for evidence.
    Record requested and effective scale and actual dimensions from the
    authenticated graphics endpoint. Record visible terrain and native HUD in
    the stills for each setting.
-4. With stable terrain, repeat the single-setting sweep on the warmed fixed
+5. With stable terrain, repeat the single-setting sweep on the warmed fixed
    camera, then measure rotation, traversal, and denser scenes. Use profiling
    marker `4` for endpoints. Preserve each HZP3 gameplay checkpoint with the
    serial log from the same run. Report paired submission cadence, terrain
@@ -112,11 +126,10 @@ monitor for evidence.
    [correlation command](benchmarks.md#capture-format-and-interpretation)
    to compare endpoint order and overlap before interpreting the per-output
    GPU spans. Run each existing same-binary terrain comparison separately.
-5. Run the original Village scenario with its stock gates and verify the
+6. Run the original Village scenario with its stock gates and verify the
    saved report after return to Night. Verify the distance-12 lifecycle
    separately. Confirm profile persistence, Close Horizon, the Wii U Menu
-   handoff and relaunch. If the session allows, run the standalone display
-   list comparison and verify the per-arm output and retirement markers.
+   handoff and relaunch.
 
 Automatic resolution stays gated until both hosted fixed scaling and
 scale-sensitive gameplay GPU timing pass on the console. The RC 26 direct

@@ -67,6 +67,14 @@ covering 29.097 s after the final move. The last terrain count in each
 window was 422 sections on each output. The native surface size came from
 the live world dimensions, while the HDMI still established visible output.
 
+For a matched replay, use the Peaceful Overworld `RC18 Save Fixture`,
+position `[-20.5, 68, 93.5]`, yaw and pitch zero, and the Performance
+preset at 8 render distance, 6 simulation distance and fixed 100%. The
+14 reference serial windows span guest timestamps 1,513,944 through
+1,540,991 ms and carry the `0x8000` post-effects omission. The later
+movement and save fall outside this window. RC 29's `Reopen Fixture`
+provides a separate stock Full Performance reference.
+
 | Candidate | Preset | World targets | Host and output cadence | Integrated server | CPU wall time per frame |
 | --- | --- | --- | --- | --- | --- |
 | RC 26, RPX `7ad154a1…` | Performance, fixed 100%, DRS off | TV 1920×1079, GamePad 854×480, 0 additional bytes | 179 host iterations, built frames, submissions per output, paired submissions and combined flips. 6.152/s for each. All paired frames were partial. | 582 ticks, 20.00/s | Median of window averages 25.02 ms redraw outside native submission, 59.93 ms native submission outside measured waits, 3.30 ms measured waits. |
