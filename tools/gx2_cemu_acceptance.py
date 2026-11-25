@@ -298,7 +298,7 @@ def exercise(args):
             lab.phase = f"session-{index}-save"
             pause = lab.mark()
             lab.send("key", key=80, hold=game_hold)
-            lab.wait(r'"phase":"menu"', 25, pause)
+            lab.wait(r'"phase":"menu"|Horizon Cafe cadence: .*\bphase=menu\b', 25, pause)
             lab.show(f"session-{index}-pause")
             save = lab.mark()
             deadline = time.monotonic() + args.save_timeout

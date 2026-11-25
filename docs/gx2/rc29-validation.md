@@ -23,8 +23,14 @@ It uses client `0.8.0-rc.29`, patch `0.5.0-rc.29` and builder
 
 The WUHB contains the exact RPX at byte 512. The Aroma loader estimate
 leaves 12,926,720 bytes of contiguous code-heap headroom. The package
-booted to Night on both displays in the forced interpreter. The second
-independent build and hosted lifecycle run are in progress.
+booted to Night on both displays in the forced interpreter.
+
+The first Cemu world run requested 75% and used the normal 100% fallback.
+Both paused displays showed terrain, the HUD and the Game Menu. Native
+AX reported its first nonzero PCM. The harness ended before Save & Quit
+because it expected the previous pause log format. It now recognizes the
+native cadence marker. The second independent build and the experimental
+75% lifecycle run are in progress.
 
 ## Standalone diagnostics
 
