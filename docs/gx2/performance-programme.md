@@ -503,3 +503,30 @@ invalidation. A GPU copy of the cleared target before drawing passed all
 20 checks without a CPU read of the copy. This isolates the difference to
 the copy path in this fixture. The cause, hosted border scene, and physical
 performance of both changes remain open. Production adds no copy or wait.
+
+## Follow-up to RC 29 hardware qualification
+
+Fixed resolution is now available through normal settings in the follow-up
+source. The presenter keeps the direct path at 100% and falls back to that
+path if it cannot allocate a scaled pair. The RC 29 test SD keeps its
+original executable and marker-based behavior. [Physical qualification](rc29-validation.md)
+
+The recovered 50% gameplay checkpoint correlated 191 retained rows with
+paired GPU endpoints. Median artwork preparation was 39.98 ms in that
+capture, and its nested texture-upload stage was 39.93 ms. Median TV
+submission was 27.78 ms and GamePad submission 15.00 ms. Native texture
+updates and submission are therefore separate targets for the next
+performance experiments. This capture predates the RC 31 animation-copy
+change.
+
+The opt-in dynamic resolution trial uses `gx2-drs-experimental.enable`
+with profiling mode `4` or `45` on a disposable test SD. Its normal
+graphics toggle and target FPS control become available in that process.
+It uses freshly retired, ordered endpoints from paired submissions with
+nonzero terrain and matching requested and effective scale. A CPU floor at or above the
+target budget stops a verdict. Menus, loading and invalid samples discard
+the current measurement window. The existing scale policy supplies the
+median window, hysteresis and cooldown. Benchmarks continue to use fixed
+settings. The trial passed the Cafe cross-check and host policy tests for
+raising, lowering and holding scale. Hardware still needs to qualify the
+signal and transitions before automatic scaling can become a normal mode.
