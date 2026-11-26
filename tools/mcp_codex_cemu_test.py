@@ -236,6 +236,7 @@ def play_and_save(invoke, window, client_name, index, evidence):
           + (" An isolated saved world had a live player." if saved else " The test used the native title."),
           flush=True)
 
+    capture_problem = None
     if evidence:
         # Leave time for terrain streaming before capturing both displays.
         # A live player can appear while the first visible sections are queued.
@@ -244,22 +245,29 @@ def play_and_save(invoke, window, client_name, index, evidence):
         previous = set(shots.glob("*.png"))
         press(window, 123)
         deadline = time.monotonic() + 20
+        require_dual = os.environ.get("MCHORIZON_CEMU_REQUIRE_DUAL_CAPTURE") == "1"
         while time.monotonic() < deadline:
             captures = sorted(set(shots.glob("*.png")) - previous)
+            outputs = {}
             try:
-                complete = len(captures) == 2 and all(
-                    p.read_bytes().endswith(b"IEND\xaeB\x60\x82") for p in captures
-                )
+                if len(captures) == 2:
+                    for path in captures:
+                        display = "gamepad" if path.stem.endswith("_GamePad") else "tv"
+                        outputs[display] = path.read_bytes()
             except OSError:
-                complete = False
-            if complete:
-                for capture in captures:
-                    display = "gamepad" if capture.stem.endswith("_GamePad") else "tv"
-                    shutil.copyfile(capture, evidence / f"session-{index}-{display}.png")
+                outputs.clear()
+            if len(outputs) == 2 and all(data.endswith(b"IEND\xaeB\x60\x82") for data in outputs.values()):
+                if require_dual and outputs["tv"] == outputs["gamepad"]:
+                    capture_problem = "Cemu returned identical captures for both displays"
+                for display, data in outputs.items():
+                    (evidence / f"session-{index}-{display}.png").write_bytes(data)
                 break
             time.sleep(0.5)
         else:
-            print(f"Cemu did not record both display screenshots for session {index}.", flush=True)
+            message = f"Cemu did not record both display screenshots for session {index}."
+            if require_dual:
+                capture_problem = message
+            print(message, flush=True)
 
     if os.environ.get("MCHORIZON_CEMU_REQUIRE_CAFE_PERFORMANCE") == "1":
         game = wait_for_cafe_performance(invoke)
@@ -301,6 +309,8 @@ def play_and_save(invoke, window, client_name, index, evidence):
         with (evidence / f"session-{index}-mcp.json").open("x", encoding="utf-8") as output:
             json.dump(receipt, output, indent=2)
             output.write("\n")
+    if capture_problem:
+        raise RuntimeError(capture_problem)
 
 
 if __name__ == "__main__":
