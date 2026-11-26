@@ -1,42 +1,40 @@
 # Cafe renderer parity
 
-The entries below track the hosted Nightly source recipe. The last
-physical checkpoint is RC 35. RC 36 adds experimental submission and
-clear changes. RC 37 adds stock entity damage overlays.
-See the current coverage record for fixture and hosted
-evidence for each pass. [Hosted coverage](../docs/gx2/coverage.md) ·
-[RC 35 validation](../docs/gx2/rc35-validation.md)
+Phase 1A cross-check against `e1e2a43c2b` and the Phase 1B working tree.
+The numbers match the Antigravity matrix. Source paths here describe the
+current implementation. The [checkpoint](RENDERER_CHECKPOINT.md) records
+builds, visual evidence and hardware follow-up.
 
 | # | Pass | Current Cafe behavior and remaining parity work |
 |---|---|---|
 | 1 | Title and loading panorama | `gx2_panorama` draws the cube with per-output projection. Prior live title evidence is recorded in [loading_app](loading_app/README.md). |
 | 2 | Clear color and sky gate | Cafe uses the desktop title, End and fog color selection in `gfx::Frame`. The host tests cover the gates and live Cemu shows the Overworld fog clear on both outputs. End and underwater visual checks remain open. |
-| 3 | Sky disc and sunrise fan | The native sky disc and sunrise fan precede terrain. Day, dawn and fog have dual-output fixture coverage. |
-| 4 | Void dark disc | The shared lower dark disc draws after the celestial passes. Check its terrain transition live on hardware. |
-| 5 | End sky box | The native End cube repeats the stock texture and applies its additive tint. Both outputs passed the isolated cube and flash test. |
-| 6 | Sun, moon and End flash | The shared sun and moon sprites and End flash use the native celestial atlas and additive path. Live phase and weather coverage is open. |
-| 7 | Stars | Both outputs draw a shared immutable stock star mesh with separate sky projection. The Cemu fixture covered its blend and lower-disc occlusion. |
-| 8 | Lightmap and modifiers | Terrain and ordinary models use the stock terrain lightmap. Dynamic, colored and emissive lighting remain partial. |
+| 3 | Sky disc and sunrise fan | The clear color is the only sky background in a world. Port the disc shader and reuse the sunrise mesh. |
+| 4 | Void dark disc | The native presenter has no pass for `frame.dark_disc`. |
+| 5 | End sky box | The native presenter has no End sky draw. The desktop helper generates its geometry. |
+| 6 | Sun, moon and End flash | The presenter reports celestial geometry as skipped. |
+| 7 | Stars | The presenter reports stars as skipped. |
+| 8 | Lightmap and modifiers | `gx2_terrain/terrain.frag` multiplies atlas and vertex color. The 16×16 lightmap and its gameplay modifiers are missing. |
 | 9 | Distance, environment and underwater fog | GX2 solid and cutout terrain uses the shared fog color and ranges, vertex distances and fragment blend. Pixel checks and live Overworld captures passed on both Cemu outputs. Hardware, live underwater fog and fog on the remaining world passes still need checks. |
-| 10 | Terrain textures, UVs and mipmaps | The padded native atlas decodes repeated sprite UVs with the 28-byte terrain vertex. Native terrain mipmaps remain open. |
-| 11 | Animated terrain sprites | Stock animated terrain updates resident sprite cells in place. Pack modes that need budgeted updates keep the existing scheduler. |
-| 12 | Solid and cutout terrain | Native indexed section meshes draw solid and cutout faces with per-output visibility and shared projected section data. |
-| 13 | Translucent terrain | The native translucent pass sorts camera-sector indices, tests depth and blends tint and atlas alpha. Live overlapping surfaces need coverage. |
-| 14 | Block-entity extraction and static cache | Retained section metadata supplies bounded ordinary block-entity extraction. Desktop static caches and specialized passes remain partial. |
-| 15 | Block entities, mobs, players, items and opaque particles | Shared ordinary entity and item quads use the GX2 atlas and lightmap. Hurt, TNT and creeper overlays passed the separate dual-output fixture. Skinned geometry and specialized materials remain partial. |
+| 10 | Terrain textures, UVs and mipmaps | `TerrainAtlas` packs padded 2D cells, clamps UVs and maps across `sprite_size - 1`. The original tiled UV and mip rules are missing. |
+| 11 | Animated terrain sprites | Animation updates in the current host are for HUD sprites. Terrain textures stay static. |
+| 12 | Solid and cutout terrain | The live path uploads section geometry and draws solid and cutout faces. It still expands vertices and submits sections without the desktop visibility and lighting passes. |
+| 13 | Translucent terrain | The presenter records omitted translucent section geometry. Per-view sorting and blending are missing. |
+| 14 | Block-entity extraction and static cache | `Game::entity_geometry` still obtains visible block-entity locations and revisions under the desktop renderer branch. Cafe needs a source for those inputs. |
+| 15 | Block entities, mobs, players, items and opaque particles | The native presenter reports entity passes as skipped. |
 | 16 | Entity blob shadows | Entity shadow geometry has no GX2 pass. |
 | 17 | Boat water mask | The depth-only entity mask has no GX2 pass. |
-| 18 | Breaking overlays | Solid and translucent cracks use separate multiply passes with shared sprite stage and UV data. The isolated dual-output fixture passed stage, wrap, alpha and blend checks. |
+| 18 | Breaking overlays | Neither the pre- nor post-translucent crumbling slice is submitted. |
 | 19 | Energy swirls | The entity energy-swirl slice is omitted. |
-| 20 | Lightning and additive entity effects | Seeded lightning geometry uses the native additive, depth-tested path. General additive entity effects remain partial. |
-| 21 | World text and see-through names | World text and see-through nameplates still need native coverage. |
-| 22 | Translucent items and particles | Classic translucent particles draw in shared order with a bounded native atlas batch. Specialized translucent items and particle materials remain partial. |
+| 20 | Lightning and additive entity effects | The presenter reports lightning and additive geometry as skipped. |
+| 21 | World text and see-through names | World text shares the omitted entity path. |
+| 22 | Translucent items and particles | The native presenter skips translucent entity geometry. |
 | 23 | Clouds | The presenter reports clouds as skipped. |
-| 24 | Rain and snow | Rain and snow draw after translucent terrain using stock atlas and lightmap inputs. Live weather and hardware coverage remain open. |
-| 25 | World border | Shared wall geometry, scrolling UVs and status tint use a native pass. Isolated readbacks covered depth and blend. |
-| 26 | Block-selection outline | The native outline draws shared camera-relative edges with the stock contrast ordering. Isolated readbacks covered depth and contrast. |
+| 24 | Rain and snow | The presenter reports weather as skipped. |
+| 25 | World border | The presenter reports the border as skipped. |
+| 26 | Block-selection outline | The presenter reports the outline as skipped. |
 | 27 | Debug lines, world primitives and 3D crosshair | The presenter reports the debug and primitive passes as skipped. |
-| 28 | First-person hand and held items | The native first-person pass uses shared arm and item quads, hand projection and its own depth reset. Glint and specialized items remain partial. |
+| 28 | First-person hand and held items | The presenter reports the hand pass as skipped. |
 | 29 | Glowing outlines | The native presenter has no silhouette or compositing pass. |
 | 30 | Camera overlays and menu blur | The presenter reports screen and post effects as skipped. The credits vignette in row 31 belongs to the HUD. |
 | 31 | HUD and menus | The Cemu stand-alone fixture verifies alpha, invert, additive, scissored depth, vignette, vanilla item foil, End Portal and CIT glint on both outputs. Live Cemu captures show the title, Survival player preview, enchanted hotbar and moving poem background. Physical A/B photos confirm the depth-clear state restoration in the fixture. The physical inventory screen and a live CIT resource-pack reload need separate checks. |
@@ -46,7 +44,7 @@ The host draws TV and GamePad separately and calculates a projection using each
 output's dimensions. Both still use the submitted Horizon frame's camera pose.
 Geometry and texture resources are shared across draws.
 
-Profile modes test alternate HUD atlas writeback, shared model uploads,
-scaled-output clear omission and early TV submission. Use separate
-dual-output comparisons at matched settings before changing defaults.
-[Hardware qualification queue](../docs/gx2/post-rc35-queue.md)
+The existing packed-vertex and HUD dirty-range experiments are outside the
+production path. The terrain UV clamping and section traversal are observable
+in source. The audit's exact foliage-difference attribution remains a
+hypothesis until an isolated comparison ties the differences to those causes.

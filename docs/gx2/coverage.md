@@ -6,6 +6,7 @@ The [performance programme](performance-programme.md) records the exact
 RC 21 baseline and current validation. These changes are part of the hosted
 patch recipe. Host conversion tests and isolated Cemu fixtures cover the
 specific cases below. Hosted scene and physical acceptance remain separate.
+[Current 32-pass renderer matrix](renderer-parity.md)
 
 | Stage | Current Cafe implementation | Evidence and open checks |
 | --- | --- | --- |
