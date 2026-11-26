@@ -1,0 +1,535 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 18382e1..17babbb 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -76,6 +76,26 @@ add_custom_command(
+    DEPENDS "${HAND_SHADER}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++# Compile the stock model shader without extra varyings or material branches.
++# Only world batches with active overlays use the second shader.
++set(MODEL_OVERLAY_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/model_overlay_gfd.o")
++foreach(stage vert frag)
++   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "hand.${stage}")
++   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/hand.${stage}" model_overlay_source)
++   string(REPLACE "#version 330\n" "#version 330\n#define HORIZON_MODEL_OVERLAYS 1\n"
++      model_overlay_source "${model_overlay_source}")
++   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/model_overlay.${stage}" CONTENT "${model_overlay_source}")
++endforeach()
++add_custom_command(
++   OUTPUT "${MODEL_OVERLAY_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs model_overlay.vert -ps model_overlay.frag -o model_overlay.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common model_overlay.gsh model_overlay_gfd.o
++   DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/model_overlay.vert" "${CMAKE_CURRENT_BINARY_DIR}/model_overlay.frag"
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
++set_source_files_properties("${MODEL_OVERLAY_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++
+ set_source_files_properties("${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+@@ -181,7 +201,7 @@ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+    stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c world_border.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}"
+-   "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}"
++   "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}" "${MODEL_OVERLAY_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+    "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+diff --git a/wiiu/loading_host/hand.c b/wiiu/loading_host/hand.c
+index 234e860..211fa93 100644
+--- a/wiiu/loading_host/hand.c
++++ b/wiiu/loading_host/hand.c
+@@ -17,6 +17,7 @@
+ #include <whb/gfx.h>
+ 
+ extern const uint8_t _binary_hand_gsh_start[];
++extern const uint8_t _binary_model_overlay_gsh_start[];
+ 
+ typedef struct HandVertex {
+    float position_light[4], uv[2];
+@@ -34,23 +35,29 @@ enum {
+    HAND_MAX_VERTICES = 4096 * 6,
+    WORLD_MAX_VERTICES = 8192 * 4,
+    PARTICLE_MAX_VERTICES = 2048 * 4,
++   WORLD_PASS = 0,
+    HAND_PASS = 1,
+    PARTICLE_PASS = 2,
+    PASS_COUNT = PARTICLE_PASS + 1,
+    BUFFER_COUNT = 2 * PASS_COUNT,
+ };
+ 
++typedef struct ModelShader {
++   WHBGfxShaderGroup group;
++   uint32_t vertex_uniforms[5];
++   uint32_t pixel_uniforms[2];
++   uint32_t hurt_uniform;
++   uint32_t lightmap_slot, atlas_slot;
++} ModelShader;
++
+ typedef struct HorizonGx2Hand {
+-   WHBGfxShaderGroup shader;
++   ModelShader base, overlays;
+    /* Each pass retains its backing until WHB retires both outputs. */
+    GX2RBuffer vertices[BUFFER_COUNT];
+    bool share_uploads;
+    const HandVertex *shared_sources[PASS_COUNT];
+    uint32_t shared_counts[PASS_COUNT];
+    GX2Sampler sampler;
+-   uint32_t vertex_uniforms[5];
+-   uint32_t pixel_uniforms[2];
+-   uint32_t lightmap_slot, atlas_slot;
+ } HorizonGx2Hand;
+ 
+ static bool uniform_offset(const GX2UniformVar *var, uint32_t *offset)
+@@ -73,17 +80,11 @@ static bool sampler_slot(const GX2SamplerVar *vars, unsigned count, const char *
+    return false;
+ }
+ 
+-int horizon_gx2_hand_create(HorizonGx2Hand **out)
++static bool prepare_shader(ModelShader *model, bool overlays)
+ {
+-   if (!out) return -1;
+-   *out = NULL;
+-   HorizonGx2Hand *hand = calloc(1, sizeof(*hand));
+-   if (!hand) return -2;
+-   WHBGfxShaderGroup *shader = &hand->shader;
+-   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_hand_gsh_start)) {
+-      free(hand);
+-      return -3;
+-   }
++   WHBGfxShaderGroup *shader = &model->group;
++   const uint8_t *binary = overlays ? _binary_model_overlay_gsh_start : _binary_hand_gsh_start;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, binary)) return false;
+    GX2VertexShader *vs = shader->vertexShader;
+    GX2PixelShader *ps = shader->pixelShader;
+    if (!vs || !ps || vs->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
+@@ -91,26 +92,41 @@ int horizon_gx2_hand_create(HorizonGx2Hand **out)
+    const char *vertex_names[] = {"uClipX", "uClipY", "uClipZ", "uClipW", "uOptions"};
+    const char *pixel_names[] = {"uFogColor", "uFogRanges"};
+    for (unsigned i = 0; i < 5; ++i)
+-      if (!uniform_offset(GX2GetVertexUniformVar(vs, vertex_names[i]), &hand->vertex_uniforms[i]))
++      if (!uniform_offset(GX2GetVertexUniformVar(vs, vertex_names[i]), &model->vertex_uniforms[i]))
+          goto fail;
+    for (unsigned i = 0; i < 2; ++i)
+-      if (!uniform_offset(GX2GetPixelUniformVar(ps, pixel_names[i]), &hand->pixel_uniforms[i]))
++      if (!uniform_offset(GX2GetPixelUniformVar(ps, pixel_names[i]), &model->pixel_uniforms[i]))
+          goto fail;
+-   if (!sampler_slot(vs->samplerVars, vs->samplerVarCount, "uLightmap", &hand->lightmap_slot) ||
+-       !sampler_slot(ps->samplerVars, ps->samplerVarCount, "uAtlas", &hand->atlas_slot) ||
++   if (overlays && !uniform_offset(GX2GetPixelUniformVar(ps, "uHurtOverlay"), &model->hurt_uniform))
++      goto fail;
++   if (!sampler_slot(vs->samplerVars, vs->samplerVarCount, "uLightmap", &model->lightmap_slot) ||
++       !sampler_slot(ps->samplerVars, ps->samplerVarCount, "uAtlas", &model->atlas_slot) ||
+        !WHBGfxInitShaderAttribute(shader, "aPositionLight", 0, offsetof(HandVertex, position_light), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
+        !WHBGfxInitShaderAttribute(shader, "aUv", 0, offsetof(HandVertex, uv), GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
+        !WHBGfxInitShaderAttribute(shader, "aColor", 0, offsetof(HandVertex, color), GX2_ATTRIB_FORMAT_UNORM_8_8_8_8) ||
+        !WHBGfxInitShaderAttribute(shader, "aNormal", 0, offsetof(HandVertex, normal), GX2_ATTRIB_FORMAT_SNORM_8_8_8_8) ||
+        !WHBGfxInitFetchShader(shader)) goto fail;
+-   GX2InitSampler(&hand->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
+-   *out = hand;
+-   return 0;
++   return true;
+ 
+ fail:
+    WHBGfxFreeShaderGroup(shader);
+-   free(hand);
+-   return -3;
++   memset(model, 0, sizeof(*model));
++   return false;
++}
++
++int horizon_gx2_hand_create(HorizonGx2Hand **out)
++{
++   if (!out) return -1;
++   *out = NULL;
++   HorizonGx2Hand *hand = calloc(1, sizeof(*hand));
++   if (!hand) return -2;
++   if (!prepare_shader(&hand->base, false)) {
++      free(hand);
++      return -3;
++   }
++   GX2InitSampler(&hand->sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++   *out = hand;
++   return 0;
+ }
+ 
+ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+@@ -121,7 +137,8 @@ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+       GX2RBuffer *buffer = &hand->vertices[i];
+       if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
+    }
+-   WHBGfxFreeShaderGroup(&hand->shader);
++   if (hand->overlays.group.vertexShader) WHBGfxFreeShaderGroup(&hand->overlays.group);
++   WHBGfxFreeShaderGroup(&hand->base.group);
+    free(hand);
+ }
+ 
+@@ -183,11 +200,11 @@ static int prepare_vertices(HorizonGx2Hand *hand, uint32_t target, uint32_t pass
+    return 0;
+ }
+ 
+-int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+-                             const GX2Texture *atlas, HorizonGx2Terrain *terrain,
+-                             const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+-                             const float fog_color[4], const float fog_ranges[4], uint32_t nether,
+-                             uint32_t pass)
++static int draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                       const GX2Texture *atlas, HorizonGx2Terrain *terrain,
++                       const HandVertex *vertices, uint32_t count, const float clip_rows[16],
++                       const float fog_color[4], const float fog_ranges[4], uint32_t nether,
++                       uint32_t pass, const float *hurt_overlay)
+ {
+    const uint32_t first_person = pass == HAND_PASS;
+    const uint32_t limit = first_person ? HAND_MAX_VERTICES :
+@@ -201,7 +218,12 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+    const int result = prepare_vertices(hand, target, pass, vertices, count, first, limit, &buffer);
+    if (result) return result;
+ 
+-   WHBGfxShaderGroup *shader = &hand->shader;
++   ModelShader *model = &hand->base;
++   if (hurt_overlay) {
++      model = &hand->overlays;
++      if (!model->group.vertexShader && !prepare_shader(model, true)) return -3;
++   }
++   WHBGfxShaderGroup *shader = &model->group;
+    GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
+    GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
+    GX2SetShaderMode(shader->vertexShader->mode);
+@@ -209,12 +231,13 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+    GX2SetVertexShader(shader->vertexShader);
+    GX2SetPixelShader(shader->pixelShader);
+    for (unsigned row = 0; row < 4; ++row)
+-      GX2SetVertexUniformReg(hand->vertex_uniforms[row], 4, clip_rows + 4 * row);
+-   GX2SetPixelUniformReg(hand->pixel_uniforms[0], 4, fog_color);
+-   GX2SetPixelUniformReg(hand->pixel_uniforms[1], 4, fog_ranges);
+-   horizon_gx2_terrain_bind_lightmap(terrain, hand->lightmap_slot);
+-   GX2SetPixelTexture(atlas, hand->atlas_slot);
+-   GX2SetPixelSampler(&hand->sampler, hand->atlas_slot);
++      GX2SetVertexUniformReg(model->vertex_uniforms[row], 4, clip_rows + 4 * row);
++   GX2SetPixelUniformReg(model->pixel_uniforms[0], 4, fog_color);
++   GX2SetPixelUniformReg(model->pixel_uniforms[1], 4, fog_ranges);
++   if (hurt_overlay) GX2SetPixelUniformReg(model->hurt_uniform, 4, hurt_overlay);
++   horizon_gx2_terrain_bind_lightmap(terrain, model->lightmap_slot);
++   GX2SetPixelTexture(atlas, model->atlas_slot);
++   GX2SetPixelSampler(&hand->sampler, model->atlas_slot);
+    GX2RSetAttributeBuffer(buffer, 0, sizeof(HandVertex), 0);
+    if (first_person) {
+       GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+@@ -232,7 +255,7 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+    if (first_person) {
+       /* Clear the bound world depth without changing attachments or colour. */
+       options[1] = 1.0f;
+-      GX2SetVertexUniformReg(hand->vertex_uniforms[4], 4, options);
++      GX2SetVertexUniformReg(model->vertex_uniforms[4], 4, options);
+       GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS);
+       GX2SetTargetChannelMasks((GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                                (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+@@ -240,7 +263,7 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+       GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, first, 0, 1);
+       options[1] = 0.0f;
+    }
+-   GX2SetVertexUniformReg(hand->vertex_uniforms[4], 4, options);
++   GX2SetVertexUniformReg(model->vertex_uniforms[4], 4, options);
+    GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
+                             (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+@@ -255,6 +278,27 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+    return 0;
+ }
+ 
++int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                             const GX2Texture *atlas, HorizonGx2Terrain *terrain,
++                             const HandVertex *vertices, uint32_t count, const float clip_rows[16],
++                             const float fog_color[4], const float fog_ranges[4], uint32_t nether,
++                             uint32_t pass)
++{
++   return draw_models(hand, target, rect, atlas, terrain, vertices, count,
++                      clip_rows, fog_color, fog_ranges, nether, pass, NULL);
++}
++
++int horizon_gx2_draw_models_overlay(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                                     const GX2Texture *atlas, HorizonGx2Terrain *terrain,
++                                     const HandVertex *vertices, uint32_t count, const float clip_rows[16],
++                                     const float fog_color[4], const float fog_ranges[4], uint32_t nether,
++                                     const float hurt_overlay[4])
++{
++   if (!hurt_overlay) return -1;
++   return draw_models(hand, target, rect, atlas, terrain, vertices, count,
++                      clip_rows, fog_color, fog_ranges, nether, WORLD_PASS, hurt_overlay);
++}
++
+ int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+                           const GX2Texture *atlas, HorizonGx2Terrain *terrain,
+                           const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+diff --git a/wiiu/loading_host/hand.frag b/wiiu/loading_host/hand.frag
+index 70be886..9de8eb6 100644
+--- a/wiiu/loading_host/hand.frag
++++ b/wiiu/loading_host/hand.frag
+@@ -5,7 +5,14 @@ uniform vec4 uFogRanges;
+ in vec2 vUv;
+ in vec4 vColor;
+ in vec2 vFogDistance;
++#ifdef HORIZON_MODEL_OVERLAYS
++in vec4 vLight;
++in float vMaterial;
++in vec3 vShade;
++uniform vec4 uHurtOverlay;
++#else
+ in vec4 vShade;
++#endif
+ out vec4 fragColor;
+ 
+ float linearFog(float distance, float start, float end) {
+@@ -15,13 +22,24 @@ float linearFog(float distance, float start, float end) {
+ }
+ 
+ void main() {
++#ifndef HORIZON_MODEL_OVERLAYS
+     if (vShade.w > 0.5) {
+         fragColor = vec4(0.0);
+         return;
+     }
++#endif
+     vec4 color = texture(uAtlas, vUv) * vColor;
+     if (color.a < 0.1 || (vShade.z > 0.5 && !gl_FrontFacing)) discard;
+     color.rgb *= gl_FrontFacing ? vShade.x : vShade.y;
++#ifdef HORIZON_MODEL_OVERLAYS
++    if (vMaterial > 0.5) {
++        // Match entity.fsh: cardinals, overlay mix, lightmap, then fog.
++        float key = vMaterial;
++        vec4 overlay = key > 254.5 ? uHurtOverlay : vec4(1.0, 1.0, 1.0, key / 255.0);
++        color.rgb = mix(overlay.rgb, color.rgb, overlay.a);
++        color *= vLight;
++    }
++#endif
+     float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
+                     linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
+     fragColor = vec4(mix(color.rgb, uFogColor.rgb, fog * uFogColor.a), color.a);
+diff --git a/wiiu/loading_host/hand.rs b/wiiu/loading_host/hand.rs
+index 85f67a6..5aadb51 100644
+--- a/wiiu/loading_host/hand.rs
++++ b/wiiu/loading_host/hand.rs
+@@ -7,6 +7,7 @@ use horizon_client::{
+         TRANSLUCENT_PARTICLE_OVERLAY, fog_uniform,
+     },
+     mesher::Vertex as SharedVertex,
++    overlay,
+ };
+ use horizon_wiiu_gx2_terrain::{TerrainClipRows, terrain_view_rows};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+@@ -45,6 +46,17 @@ impl From<SharedVertex> for Vertex {
+     }
+ }
+ 
++/// The low word keeps the lightmap coordinates. The exact high byte is
++/// zero for the original shader, 255 for the hurt texel, or a white-row alpha.
++fn overlay_byte(layer: u32) -> u8 {
++    match layer {
++        1 | 8 => 255,
++        5 => overlay::white_alpha(15),
++        17..=31 => overlay::white_alpha(layer - overlay::WHITE),
++        _ => 0,
++    }
++}
++
+ unsafe extern "C" {
+     fn horizon_gx2_hand_create(out: *mut *mut c_void) -> i32;
+     fn horizon_gx2_hand_destroy(hand: *mut c_void);
+@@ -63,6 +75,20 @@ unsafe extern "C" {
+         nether_lighting: u32,
+         pass: u32,
+     ) -> i32;
++    fn horizon_gx2_draw_models_overlay(
++        hand: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        atlas: *const c_void,
++        terrain: *const c_void,
++        vertices: *const Vertex,
++        vertex_count: u32,
++        clip_rows: *const f32,
++        fog_color: *const f32,
++        fog_ranges: *const f32,
++        nether_lighting: u32,
++        hurt_overlay: *const f32,
++    ) -> i32;
+ }
+ 
+ #[repr(u32)]
+@@ -85,6 +111,7 @@ pub(crate) struct Models {
+     share_uploads: bool,
+     hand: Vec<Vertex>,
+     world: Vec<Vertex>,
++    world_overlays: bool,
+     particles: Vec<Vertex>,
+ }
+ 
+@@ -135,6 +162,7 @@ impl Models {
+ 
+     fn prepare_world_geometry(&mut self, entities: &[SharedVertex], glint_alpha: f32) -> Coverage {
+         self.world.clear();
++        self.world_overlays = false;
+         self.particles.clear();
+         let mut coverage = Coverage {
+             world_partial: !entities.len().is_multiple_of(4),
+@@ -153,11 +181,10 @@ impl Models {
+                 }
+                 continue;
+             }
+-            coverage.world_partial |= match layer & 0xffff {
+-                0 => layer & OIT_ENTITY != 0,
+-                7 => glint_alpha > 0.0,
+-                // Hurt, white and enchanted hurt overlays use the base atlas.
+-                1 | 5 | 8 | 16..=31 => true,
++            let material = layer & 0xffff;
++            coverage.world_partial |= match material {
++                0 | 1 | 5 | 16..=31 => layer & OIT_ENTITY != 0,
++                7 | 8 => glint_alpha > 0.0 || layer & OIT_ENTITY != 0,
+                 _ => {
+                     coverage.world_partial = true;
+                     continue;
+@@ -167,7 +194,15 @@ impl Models {
+                 coverage.world_partial = true;
+                 continue;
+             }
+-            self.world.extend(quad.map(Vertex::from));
++            let packed_overlay = (u32::from(overlay_byte(material)) << 16) as f32;
++            let mut vertices = quad.map(Vertex::from);
++            if packed_overlay != 0.0 {
++                self.world_overlays = true;
++                for vertex in &mut vertices {
++                    vertex.position_light[3] += packed_overlay;
++                }
++            }
++            self.world.extend(vertices);
+         }
+         coverage
+     }
+@@ -289,6 +324,31 @@ impl Models {
+         };
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+         let result = hud.with_native_atlas(|atlas| {
++            if matches!(pass, DrawPass::World) && self.world_overlays {
++                let packed = frame.pvp.hurt_texel;
++                let hurt = if packed == 0 {
++                    overlay::HURT_TEXEL
++                } else {
++                    packed.to_le_bytes()
++                };
++                let hurt = hurt.map(|channel| f32::from(channel) / 255.0);
++                return unsafe {
++                    horizon_gx2_draw_models_overlay(
++                        native.as_ptr(),
++                        target,
++                        rect.as_ptr(),
++                        atlas,
++                        terrain.as_ptr(),
++                        vertices.as_ptr(),
++                        vertices.len() as u32,
++                        projection.rows.as_ptr().cast(),
++                        fog_color.as_ptr(),
++                        fog_ranges.as_ptr(),
++                        u32::from(frame.nether_lighting),
++                        hurt.as_ptr(),
++                    )
++                };
++            }
+             // Either upload path keeps the backing until both outputs retire.
+             // Only the first-person invocation resets the active depth.
+             unsafe {
+@@ -340,6 +400,37 @@ mod tests {
+         }; 4]
+     }
+ 
++    #[test]
++    fn world_overlay_keys_preserve_light_and_report_missing_glint() {
++        let geometry = [
++            quad(0, 0.0),
++            quad(1, 1.0),
++            quad(5, 2.0),
++            quad(23, 3.0),
++            quad(8, 4.0),
++        ]
++        .concat();
++        let mut models = Models::default();
++        let report = models.prepare_world_geometry(&geometry, 0.0);
++        assert!(!report.world_partial && !report.particles_partial);
++        assert!(models.world_overlays);
++        let encoded: Vec<_> = models
++            .world
++            .as_chunks::<4>()
++            .0
++            .iter()
++            .map(|quad| quad[0].position_light[3] as u32)
++            .collect();
++        assert_eq!(encoded, [0xfff0, 0xfffff0, 0x3ffff0, 0xa5fff0, 0xfffff0]);
++        assert!(models.prepare_world_geometry(&geometry, 1.0).world_partial);
++        assert!(
++            !models
++                .prepare_world_geometry(&quad(0, 0.0), 0.0)
++                .world_partial
++        );
++        assert!(!models.world_overlays);
++    }
++
+     #[test]
+     fn separates_the_stock_particle_layer_without_reordering() {
+         let geometry = [
+diff --git a/wiiu/loading_host/hand.vert b/wiiu/loading_host/hand.vert
+index 1b3d40d..ed4b5c5 100644
+--- a/wiiu/loading_host/hand.vert
++++ b/wiiu/loading_host/hand.vert
+@@ -12,15 +12,24 @@ uniform sampler2D uLightmap;
+ out vec2 vUv;
+ out vec4 vColor;
+ out vec2 vFogDistance;
++#ifdef HORIZON_MODEL_OVERLAYS
++out vec4 vLight;
++out float vMaterial;
++out vec3 vShade;
++#else
+ out vec4 vShade;
++#endif
+ 
+ float shade(vec3 normal, vec3 l0, vec3 l1) {
+     return min(1.0, (max(0.0, dot(l0, normal)) + max(0.0, dot(l1, normal))) * 0.6 + 0.4);
+ }
+ 
+ void main() {
+-    vShade = vec4(1.0, 1.0, 0.0, uOptions.y);
+     vec3 position = aPositionLight.xyz;
++#ifdef HORIZON_MODEL_OVERLAYS
++    vShade = vec3(1.0, 1.0, 0.0);
++#else
++    vShade = vec4(1.0, 1.0, 0.0, uOptions.y);
+     if (uOptions.y > 0.5) {
+         gl_Position = vec4(position, 1.0);
+         vUv = vec2(0.0);
+@@ -28,13 +37,24 @@ void main() {
+         vFogDistance = vec2(0.0);
+         return;
+     }
++#endif
+     vec4 pos = vec4(position, 1.0);
+     gl_Position = vec4(dot(uClipX, pos), dot(uClipY, pos),
+                        dot(uClipZ, pos), dot(uClipW, pos));
+     float packedLight = aPositionLight.w;
++#ifdef HORIZON_MODEL_OVERLAYS
++    float overlay = floor(packedLight / 65536.0);
++    packedLight -= overlay * 65536.0;
++    vMaterial = overlay;
++#endif
+     vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
+     vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
++#ifdef HORIZON_MODEL_OVERLAYS
++    vLight = textureLod(uLightmap, lightUv, 0.0);
++    vColor = overlay > 0.0 ? aColor : aColor * vLight;
++#else
+     vColor = aColor * textureLod(uLightmap, lightUv, 0.0);
++#endif
+     vUv = aUv;
+     vFogDistance = vec2(length(position), max(length(position.xz), abs(position.y)));
+ 
