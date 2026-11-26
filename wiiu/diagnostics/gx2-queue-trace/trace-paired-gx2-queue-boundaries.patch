@@ -1,0 +1,234 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 43c6d763af93bbf67794dda35ec046a021855210..38ed38a3b9decaa467ecd6556781b45ee35c5310 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -229,3 +229,8 @@ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+ target_link_libraries(horizon_wiiu_loading_host
+    PUBLIC horizon_gx2_hud horizon_gx2_panorama horizon_gx2_terrain
+    PRIVATE wut m)
++
++option(HORIZON_GX2_QUEUE_TRACE "Record bounded queue-owner snapshots for a profiling lab" OFF)
++if (HORIZON_GX2_QUEUE_TRACE)
++   target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_QUEUE_TRACE=1)
++endif()
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index da0e57c9d9894babaaaf90e6ce449dd7bc6ea8bd..79042e352d9fd509096204b811ee3d41dce332ff 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -102,6 +102,23 @@ typedef struct {
+    bool known;
+ } ProfileOutput;
+ 
++#ifdef HORIZON_GX2_QUEUE_TRACE
++enum { QUEUE_ROWS = 32, QUEUE_STRIDE = 64 };
++typedef struct {
++   OSTime cpu_begin, cpu_end, submitted, retired, last_flip, last_vsync;
++   uint32_t swaps, flips;
++} QueuePoint;
++
++typedef struct {
++   uint32_t sequence;
++   bool deferred;
++   QueuePoint points[GX2_QUEUE_POINTS];
++} QueueRow;
++
++// Pending data only lives across the foreground present call.
++static QueueRow pending_queue_row;
++#endif
++
+ typedef struct {
+    uint64_t epoch, previous;
+    uint32_t total, previous_phase, phase_frames[8], session_presents;
+@@ -109,6 +126,10 @@ typedef struct {
+    ProfileOutput previous_output;
+    OSTime gpu_report_at;
+    HorizonGx2GpuSample gpu_sample;
++#ifdef HORIZON_GX2_QUEUE_TRACE
++   QueueRow queue[QUEUE_ROWS];
++   uint32_t queue_rows;
++#endif
+    ProfileFrame ring[CAPACITY];
+ } ProfileHistory;
+ 
+@@ -356,6 +377,58 @@ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence)
+    return true;
+ }
+ 
++#ifdef HORIZON_GX2_QUEUE_TRACE
++bool horizon_gx2_profile_queue_begin(bool deferred)
++{
++   uint32_t sequence;
++   if (!horizon_gx2_profile_playing_sequence(&sequence) || sequence % QUEUE_STRIDE)
++      return false;
++   pending_queue_row.sequence = sequence;
++   pending_queue_row.deferred = deferred;
++   return true;
++}
++
++void horizon_gx2_profile_queue_point(HorizonGx2QueuePoint point)
++{
++   QueuePoint *sample = &pending_queue_row.points[point];
++   sample->cpu_begin = OSGetSystemTime();
++   sample->submitted = GX2GetLastSubmittedTimeStamp();
++   sample->retired = GX2GetRetiredTimeStamp();
++   GX2GetSwapStatus(&sample->swaps, &sample->flips, &sample->last_flip, &sample->last_vsync);
++   sample->cpu_end = OSGetSystemTime();
++}
++
++void horizon_gx2_profile_queue_finish(uint32_t outputs)
++{
++   if (outputs != 3 || current.stages[SCREENSHOT_STAGE]) return;
++   history->queue[history->queue_rows++ % QUEUE_ROWS] = pending_queue_row;
++}
++
++static void flush_queue_trace(void)
++{
++   static const char *const labels[] = {
++      "entry", "wait_begin", "wait_end", "tv_rendered", "tv_copy",
++      "drc_rendered", "pair_queued", "pair_finished"
++   };
++   _Static_assert(sizeof(labels) / sizeof(labels[0]) == GX2_QUEUE_POINTS, "queue point labels");
++   const uint32_t used = history->queue_rows;
++   const uint32_t first = used > QUEUE_ROWS ? used - QUEUE_ROWS : 0;
++   for (uint32_t index = first; index < used; ++index) {
++      const QueueRow *row = &history->queue[index % QUEUE_ROWS];
++      for (unsigned i = 0; i < GX2_QUEUE_POINTS; ++i) {
++         const QueuePoint *p = &row->points[i];
++         OSReport("Horizon GX2 queue point seq=%u deferred=%u point=%s cpu_begin=%lld cpu_end=%lld "
++                  "submitted=%lld retired=%lld swaps=%u flips=%u last_flip=%lld last_vsync=%lld\n",
++                  row->sequence, (unsigned)row->deferred, labels[i],
++                  (long long)p->cpu_begin, (long long)p->cpu_end, (long long)p->submitted,
++                  (long long)p->retired, p->swaps, p->flips,
++                  (long long)p->last_flip, (long long)p->last_vsync);
++      }
++   }
++   history->queue_rows = 0;
++}
++#endif
++
+ void horizon_gx2_profile_phase(uint32_t phase)
+ {
+    if (recording) current.phase = phase;
+@@ -649,6 +722,9 @@ void horizon_gx2_profile_checkpoint_session(void)
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
++#ifdef HORIZON_GX2_QUEUE_TRACE
++   flush_queue_trace();
++#endif
+    history->previous_phase = 0;
+    history->previous_output.phase = 0;
+ }
+@@ -656,6 +732,9 @@ void horizon_gx2_profile_checkpoint_session(void)
+ void horizon_gx2_profile_flush(void)
+ {
+    flush_to(CAPTURE, CAPTURE ".tmp");
++#ifdef HORIZON_GX2_QUEUE_TRACE
++   flush_queue_trace();
++#endif
+ }
+ 
+ /* The hosted foreground owns history. Worker activities touch only the atomic
+@@ -690,6 +769,9 @@ bool horizon_gx2_profile_end_trial(const char *path)
+       if (length >= 0 && (size_t)length < sizeof(temporary) &&
+           stat(path, &existing) != 0 && errno == ENOENT) {
+          saved = flush_to(path, temporary);
++#ifdef HORIZON_GX2_QUEUE_TRACE
++         if (saved) flush_queue_trace();
++#endif
+       }
+    }
+    for (uint32_t i = 0; i < WORKERS; ++i)
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 76f57367b2f2215d11102e79a5c758666232cc27..2db6dade9bac714182076ff3f0dbace0a4c4b91c 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -72,3 +72,15 @@ void horizon_gx2_profile_finish(void);
+ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes);
+ void horizon_gx2_profile_checkpoint_session(void);
+ void horizon_gx2_profile_flush(void);
++
++#ifdef HORIZON_GX2_QUEUE_TRACE
++typedef enum {
++   GX2_QUEUE_ENTRY, GX2_QUEUE_WAIT_BEGIN, GX2_QUEUE_WAIT_END,
++   GX2_QUEUE_TV_RENDERED, GX2_QUEUE_TV_COPY, GX2_QUEUE_DRC_RENDERED,
++   GX2_QUEUE_PAIR_QUEUED, GX2_QUEUE_PAIR_FINISHED, GX2_QUEUE_POINTS
++} HorizonGx2QueuePoint;
++
++bool horizon_gx2_profile_queue_begin(bool deferred);
++void horizon_gx2_profile_queue_point(HorizonGx2QueuePoint point);
++void horizon_gx2_profile_queue_finish(uint32_t outputs);
++#endif
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 2ec6ffb56c0dc419309db0c91b91594c11f2f13e..db9d66434d792ede8990edd68f7260d5cb00a037 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -185,7 +185,20 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+    const bool omit_tv = may_omit_clear && output_is_overwritten(opaque_viewports, dimensions);
+    const bool omit_drc = may_omit_clear && output_is_overwritten(opaque_viewports + 4, dimensions + 2);
+    int result = 0;
++#ifdef HORIZON_GX2_QUEUE_TRACE
++   const bool queue_trace = horizon_gx2_profile_queue_begin(defer_flip) && !horizon_swkbd_is_open();
++#define QUEUE_POINT(point) do { if (queue_trace) horizon_gx2_profile_queue_point(point); } while (0)
++   QUEUE_POINT(GX2_QUEUE_ENTRY);
++   OSTime flip_wait = 0;
++   if (!defer_flip) {
++      QUEUE_POINT(GX2_QUEUE_WAIT_BEGIN);
++      flip_wait = wait_for_previous_flip();
++      QUEUE_POINT(GX2_QUEUE_WAIT_END);
++   }
++#else
++#define QUEUE_POINT(point) ((void)0)
+    OSTime flip_wait = defer_flip ? 0 : wait_for_previous_flip();
++#endif
+    const bool gpu_sample = horizon_gx2_profile_gpu_begin();
+ 
+    uint64_t stamp = horizon_gx2_profile_stamp();
+@@ -203,18 +216,22 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+       last_outputs |= 1u;
+    }
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(0, true);
++   QUEUE_POINT(GX2_QUEUE_TV_RENDERED);
+    if (defer_flip) {
+       // WHB's color/depth render targets are separate from the scan buffers.
+       // The previous frame retired before this callback, so draw into its
+       // render target while the preceding scan flip is still pending. Wait
+       // before the first command that can write the next scan buffer.
+       horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
++      QUEUE_POINT(GX2_QUEUE_WAIT_BEGIN);
+       flip_wait = wait_for_previous_flip();
++      QUEUE_POINT(GX2_QUEUE_WAIT_END);
+    }
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stage_stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, defer_flip ? stage_stamp : stamp);
++   QUEUE_POINT(GX2_QUEUE_TV_COPY);
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
+@@ -230,17 +247,24 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+       last_outputs |= 2u;
+    }
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(1, true);
++   QUEUE_POINT(GX2_QUEUE_DRC_RENDERED);
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderDRC();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stage_stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
++   QUEUE_POINT(GX2_QUEUE_PAIR_QUEUED);
+    stamp = horizon_gx2_profile_stamp();
+ 
+    const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   QUEUE_POINT(GX2_QUEUE_PAIR_FINISHED);
++#ifdef HORIZON_GX2_QUEUE_TRACE
++   if (queue_trace) horizon_gx2_profile_queue_finish(last_outputs);
++#endif
++#undef QUEUE_POINT
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
+    static bool reported_deferred_flip;
