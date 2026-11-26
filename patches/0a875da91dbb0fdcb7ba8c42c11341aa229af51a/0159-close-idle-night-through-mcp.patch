@@ -1,0 +1,184 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index e936f075f7f378b058bd60d100790a797ed7abdf..57e4ddbffa4fa82abaa8b0014d3d39b0ab1eb936 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -28,6 +28,11 @@ const RESOURCES: i32 = 2;
+ const FAILED: i32 = 3;
+ const OS_SAVE_FAILED: i32 = 4;
+ 
++// Optional command and reply bit shared with pregame/src/cafe.rs. The
++// fixed LocalMenu layout and the frozen host's existing modes stay intact.
++const POLL_AGENT_QUIT: u8 = 15;
++const AGENT_QUIT_REQUESTED: u8 = 8;
++
+ struct NativeFiles;
+ 
+ impl night_menu::GameFiles for NativeFiles {
+@@ -130,6 +135,14 @@ pub unsafe extern "C" fn horizon_night_local(
+         mcp::horizon_night_mcp_shutdown();
+         return;
+     }
++    if command == POLL_AGENT_QUIT {
++        let mut reply = local_wire::LocalMenu::default();
++        if mcp::take_close() {
++            reply.mode = AGENT_QUIT_REQUESTED;
++        }
++        unsafe { output.write(reply) };
++        return;
++    }
+     let agent_menu = command == local_wire::OPEN_AGENT || mcp::menu_open();
+     let profile_changed = command == local_wire::TICK && !agent_menu && mcp::poll_profile();
+     let mut service = local_service().lock().unwrap_or_else(|e| e.into_inner());
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 6aa611e7dcd4c208daff2ec0e3894e24d54a2350..4662f7452d7de813f8c2bbc4d4054d0e0056a9da 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -87,6 +87,8 @@ struct PendingProfile {
+ }
+ 
+ static PROFILE: Mutex<Option<PendingProfile>> = Mutex::new(None);
++static CLOSE: Mutex<Option<PendingClose>> = Mutex::new(None);
++const CLOSE_TOOL: &str = "wiiu_close_to_menu";
+ const PROFILE_UNAVAILABLE: &str = "Profile selection expired or Night left the home page.";
+ 
+ impl PendingProfile {
+@@ -174,6 +176,64 @@ fn select_profile(principal: &Principal, args: &Value, disconnected: &dyn Fn() -
+     text_result(PROFILE_UNAVAILABLE, true)
+ }
+ 
++struct PendingClose {
++    principal: Principal,
++    deadline: Instant,
++}
++
++impl PendingClose {
++    fn active(&self) -> bool {
++        HOME.load(Ordering::Acquire)
++            && launcher_allowed()
++            && Instant::now() < self.deadline
++            && self.principal.scopes.contains(Scopes::LAUNCHER_MANAGE)
++            && self.principal.is_active()
++    }
++}
++
++fn queue_close(principal: &Principal, args: &Value, disconnected: &dyn Fn() -> bool) -> Value {
++    if !args.as_object().is_some_and(|args| args.is_empty()) {
++        return text_result("This tool does not take arguments.", true);
++    }
++    let request = PendingClose {
++        principal: principal.clone(),
++        deadline: Instant::now() + Duration::from_secs(3),
++    };
++    if !request.active() {
++        return text_result("Return to idle Night with Agent Control enabled.", true);
++    }
++    let mut close = CLOSE.lock().unwrap();
++    let launch = LAUNCH.lock().unwrap();
++    let profile = PROFILE.lock().unwrap();
++    if launch.is_some() || profile.is_some() || close.as_ref().is_some_and(PendingClose::active) {
++        return text_result("Wait for Night to finish the pending action.", true);
++    }
++    let service = local_service().lock().unwrap();
++    if disconnected() || !request.active() || !service.can_agent_close() {
++        return text_result("Return to idle Night before closing Horizon.", true);
++    }
++    *close = Some(request);
++    text_result("Night close requested.", false)
++}
++
++pub(super) fn take_close() -> bool {
++    let mut close = CLOSE.lock().unwrap();
++    let Some(request) = close.take() else {
++        return false;
++    };
++    let launch = LAUNCH.lock().unwrap();
++    let profile = PROFILE.lock().unwrap();
++    if launch.is_some() || profile.is_some() {
++        return false;
++    }
++    let service = local_service().lock().unwrap();
++    if !request.active() || !service.can_agent_close() {
++        return false;
++    }
++    HOME.store(false, Ordering::Release);
++    true
++}
++
+ fn benchmark_state() -> Value {
+     let state = BENCHMARK.lock().unwrap();
+     json!({"scenario": state.scenario, "instance": state.instance,
+@@ -327,6 +387,7 @@ fn load_policy(policy: Policy) {
+         session().withdraw();
+         discard_launch();
+         discard_profile();
++        CLOSE.lock().unwrap().take();
+     }
+ }
+ 
+@@ -364,6 +425,7 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+     if changed {
+         discard_launch();
+         discard_profile();
++        CLOSE.lock().unwrap().take();
+     }
+     false
+ }
+@@ -373,6 +435,7 @@ pub extern "C" fn horizon_night_mcp_shutdown() {
+     HOME.store(false, Ordering::Release);
+     discard_launch();
+     discard_profile();
++    CLOSE.lock().unwrap().take();
+     session().withdraw();
+     if let Some(mut menu) = menu().lock().ok() {
+         menu.shutdown();
+@@ -504,7 +567,12 @@ const READ: &[&str] = &[
+     "wiiu_benchmark_report",
+     "wiiu_benchmark_status",
+ ];
+-const MANAGE: &[&str] = &["instance_select", "multiplayer_add", "wiiu_profile_select"];
++const MANAGE: &[&str] = &[
++    "instance_select",
++    "multiplayer_add",
++    "wiiu_profile_select",
++    CLOSE_TOOL,
++];
+ const GAMEPAD_SCREENSHOT: &str = "game_screenshot_gamepad";
+ // The stock build recipe does not enable this scratch Cemu configuration.
+ // Physical GamePad readback needs qualification before advertising it.
+@@ -587,6 +655,11 @@ fn catalog() -> &'static [Value] {
+                         "required": ["address"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": CLOSE_TOOL,
++                    "description": "Close idle Night using its normal Close Horizon action and return to the Wii U Menu. Request it from the Home page after gameplay and launcher work finish.",
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
+                 json!({
+                     "name": "wiiu_loading_status",
+                     "description": "Read the current remote Night game startup or its last result. Use your launch ID from play or wiiu_multiplayer_join.",
+@@ -721,6 +794,9 @@ impl Backend for NightTools {
+                 "AI features are off: turn off No AI in the launcher's settings",
+             ));
+         }
++        if name == CLOSE_TOOL {
++            return Ok(queue_close(principal, args, disconnected));
++        }
+         if matches!(name, "wiiu_loading_status" | "wiiu_loading_cancel") {
+             return Ok(startup_tool(principal, name, args));
+         }
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index bdd4abe8080194df521588baaccaf72173312f49..1e4ae688fea407237eb5b44d5333b1e73bd52255 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -789,6 +789,10 @@ impl<G: GameFiles> LocalService<G> {
+         self.online.shutdown();
+     }
+ 
++    pub(super) fn can_agent_close(&self) -> bool {
++        matches!(self.page, Page::Home) && !self.online.agent_profile_refreshing()
++    }
++
+     fn select_offline_profile(&mut self, index: usize) -> Result<(), &'static str> {
+         let prior_online = self.online.selected();
+         self.online.offline().map_err(night_online::error_label)?;

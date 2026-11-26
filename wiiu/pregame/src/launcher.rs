@@ -496,6 +496,18 @@ impl<'a, F: SessionFactory> Launcher<'a, F> {
         }
     }
 
+    /// Poll a remote close request only when the normal Home action can run.
+    pub fn poll_agent_quit(&mut self, take_request: impl FnOnce() -> bool) {
+        if self.foreground
+            && self.view.page == Page::Home
+            && self.pending.is_none()
+            && self.session.is_none()
+            && take_request()
+        {
+            self.dispatch(Action::Quit);
+        }
+    }
+
     pub fn take_local_intent(&mut self) -> Option<(u8, u8)> {
         self.local_intent.take()
     }

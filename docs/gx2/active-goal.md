@@ -85,9 +85,17 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   drops queued mesh snapshots once a newer revision supersedes them on
   Cafe. The deterministic host fixture reduced stale work from 157 jobs
   to zero and kept the final revisions identical. The pinned source
-  assembly and native package verification passed. The original Village
-  route still needs a physical comparison.
-  [RC 44 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc44-qualification/docs/gx2/rc44-qualification.md)
+  assembly and native package verification passed. The exact Cemu
+  package reused the prior grant, cancelled an ordinary launch and two
+  consecutive scoped benchmark runs, preserved all 26 ordinary save
+  files, and closed Night through MCP. Full timed report publication
+  and the original Village route still need qualification.
+  [RC 44 qualification](rc44-qualification.md)
+- RC 45 extends the stock audit to 62 tools, including bookmark changes
+  and isolated owner test worlds. The candidate adds the opt-in `4v`
+  solid draw plan and `4j` guarded shared HUD submission. The pinned
+  native build is underway.
+  [RC 45 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc45-qualification/docs/gx2/rc45-qualification.md)
 
 ## Physical queue
 

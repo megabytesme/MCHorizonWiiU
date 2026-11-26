@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "e05bfda937b14a024f2ee3b34ffec95496a04c99",
+  "output_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -950,12 +950,42 @@
       "sha256": "746fb35b6dc999c5a8a8af79c955e7cf3d67536962c5310e7bdffa07f4f49099",
       "input_tree": "d377ac3bbf63753e023fda7c30bcdd632d456d41",
       "output_tree": "e05bfda937b14a024f2ee3b34ffec95496a04c99"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0157-cancel-ordinary-remote-night-startup.patch",
+      "sha256": "9e457be94ed5f3cbac2283f9a41cb7d2848d2b9f83c81651ac418bd8b90c9f5a",
+      "input_tree": "e05bfda937b14a024f2ee3b34ffec95496a04c99",
+      "output_tree": "e63cda1bd51fc6cec1277536ba31b8ebf7a95697"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0158-remove-superseded-queued-cafe-meshes.patch",
+      "sha256": "0e8fd25ad7a49bb8cb0c0cb8fea2933433ea5b8f30105ed96d8d3af18ff79fc8",
+      "input_tree": "e63cda1bd51fc6cec1277536ba31b8ebf7a95697",
+      "output_tree": "4f968078fe05d8805642f2a1464aaa14607e5620"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0159-close-idle-night-through-mcp.patch",
+      "sha256": "6e403d8cde23b9900445552e4892cea58a54ab3f232bb2d9f37cfea6c871d294",
+      "input_tree": "4f968078fe05d8805642f2a1464aaa14607e5620",
+      "output_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0160-return-remote-benchmarks-to-night-home.patch",
+      "sha256": "3b57bb1d1c860c7424486c3281392440f31520b2f20c036cd6a452c0e8167769",
+      "input_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
+      "output_tree": "f992e986276f7a2a5ea2306ee650d4c0d60c18c8"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0161-select-one-run-gx2-benchmark-profile.patch",
+      "sha256": "3502a300699d99523b64038a90eb148321c07d8f97d96a5695dd9612d7e1d464",
+      "input_tree": "f992e986276f7a2a5ea2306ee650d4c0d60c18c8",
+      "output_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.43",
-    "patch": "0.5.0-rc.43"
+    "client": "0.8.0-rc.44",
+    "patch": "0.5.0-rc.44"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

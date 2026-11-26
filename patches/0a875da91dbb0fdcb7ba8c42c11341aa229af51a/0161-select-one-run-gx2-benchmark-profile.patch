@@ -1,0 +1,890 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 62afe0cccaaa24b1c2c1598aeebe20f0d706c2b9..2ea0a5e8c57efd7265971a92b4e79dde284493f5 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -6,6 +6,8 @@ use super::{CafeLoadingStatus, CafeRunOutcome, Gx2LoadingPresenter, LoadingHost,
+ 
+ unsafe extern "C" {
+     fn horizon_gx2_profile_checkpoint_session();
++    fn horizon_gx2_profile_begin_trial(mode: u32) -> bool;
++    fn horizon_gx2_profile_end_trial(path: *const std::ffi::c_char) -> bool;
+ }
+ 
+ #[path = "night_mcp.rs"]
+@@ -203,7 +205,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     }
+     let benchmarking = launch.benchmark.is_some();
+     if let Some(run) = &launch.benchmark {
+-        mcp::benchmark_loading(run.scenario, &run.instance);
++        mcp::benchmark_loading(run.scenario, &run.instance, run.profile);
+     }
+     let _registration = (!benchmarking).then(mcp::prepare_game);
+     if std::env::set_current_dir(&launch.game).is_err() {
+@@ -211,7 +213,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+             startup.finish(false);
+         }
+         if benchmarking {
+-            mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
++            mcp::benchmark_finished(BenchmarkOutcome::Failed, None, None);
+         }
+         return RESOURCES;
+     }
+@@ -219,7 +221,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+     let result = run(launch, startup.clone());
+     if benchmarking && result != RETURNED {
+-        mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
++        mcp::benchmark_finished(BenchmarkOutcome::Failed, None, None);
+     }
+     mcp::withdraw();
+     if let Err(error) = std::env::set_current_dir(CAFE_APP_ROOT) {
+@@ -235,7 +237,49 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     result
+ }
+ 
++// This guard must outlive the job owners, hosted game and GX2 presenter.
++struct BenchmarkCapture {
++    profile: night_menu::BenchmarkProfile,
++    active: bool,
++}
++
++impl BenchmarkCapture {
++    fn begin(profile: night_menu::BenchmarkProfile) -> Option<Self> {
++        unsafe { horizon_gx2_profile_begin_trial(profile as u32) }.then(|| Self {
++            profile,
++            active: true,
++        })
++    }
++
++    fn publish(mut self, reports: &Path, report: &str) -> Option<String> {
++        let stem = Path::new(report).file_stem()?.to_str()?;
++        let id = format!("{stem}-{}.hzp", self.profile.label());
++        let path = reports.join(&id);
++        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
++        self.active = false;
++        unsafe { horizon_gx2_profile_end_trial(path.as_ptr()) }.then_some(id)
++    }
++}
++
++impl Drop for BenchmarkCapture {
++    fn drop(&mut self) {
++        if self.active {
++            unsafe { horizon_gx2_profile_end_trial(std::ptr::null()) };
++        }
++    }
++}
++
+ fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
++    let mut capture = match launch.benchmark.as_ref().and_then(|bench| bench.profile) {
++        Some(profile) => match BenchmarkCapture::begin(profile) {
++            Some(capture) => Some(capture),
++            None => {
++                log::error!("Cafe benchmark capture could not start");
++                return FAILED;
++            }
++        },
++        None => None,
++    };
+     let mut presenter = match unsafe { Gx2LoadingPresenter::new_embedded(16_384) } {
+         Ok(presenter) => presenter,
+         Err(error) => {
+@@ -310,11 +354,21 @@ fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
+                 report = path.file_name().and_then(|name| name.to_str());
+             }
+         }
++        let report = report.map(str::to_owned);
++        drop(host);
++        drop(presenter);
++        let profile_capture = capture
++            .take()
++            .and_then(|capture| capture.publish(&benchmark.reports, report.as_deref()?));
++        if benchmark.profile.is_some() && report.is_some() && profile_capture.is_none() {
++            log::error!("Cafe benchmark report was saved without its GX2 capture");
++            outcome = BenchmarkOutcome::Failed;
++        }
+         local_service()
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+-            .benchmark_finished(&benchmark, outcome, report);
+-        mcp::benchmark_finished(outcome, report);
++            .benchmark_finished(&benchmark, outcome, report.as_deref());
++        mcp::benchmark_finished(outcome, report.as_deref(), profile_capture.as_deref());
+         return RETURNED;
+     }
+     if host.hosted_saved {
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index a10363755cf9d7398d67a8d0ddc16661852cb3ba..f1def1ea7653bf1dbb4a8f330ccde1d702e106cb 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -2,7 +2,7 @@
+ use super::{
+     local_service, local_wire as wire,
+     night_menu::{
+-        BenchmarkOutcome, BenchmarkRequest, BookmarkRequest, Launch, ProfileSelection,
++        BenchmarkOutcome, BenchmarkProfile, BenchmarkRequest, BookmarkRequest, Launch, ProfileSelection,
+         BENCHMARK_SCENES,
+     },
+     CAFE_APP_ROOT,
+@@ -64,6 +64,8 @@ struct Benchmark {
+     instance: Option<String>,
+     phase: &'static str,
+     report: Option<String>,
++    profile: Option<BenchmarkProfile>,
++    capture: Option<String>,
+     cancel: Option<Principal>,
+ }
+ 
+@@ -74,6 +76,8 @@ static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
+     instance: None,
+     phase: "idle",
+     report: None,
++    profile: None,
++    capture: None,
+     cancel: None,
+ });
+ static BENCHMARK_CANCEL: AtomicBool = AtomicBool::new(false);
+@@ -238,6 +242,7 @@ fn benchmark_state() -> Value {
+     let state = BENCHMARK.lock().unwrap();
+     json!({"scenario": state.scenario, "instance": state.instance,
+         "phase": state.phase, "report_id": state.report,
++        "profile": state.profile.map(BenchmarkProfile::label), "capture_id": state.capture,
+         "cancel_requested": state.cancel.is_some(),
+         "night_home_ready": HOME.load(Ordering::Acquire)})
+ }
+@@ -247,20 +252,29 @@ fn benchmark_queued(request: &BenchmarkRequest) {
+     state.scenario = Some(request.scenario);
+     state.instance = Some(request.instance.clone());
+     state.phase = "queued";
++    state.profile = request.profile;
++    state.capture = None;
+     state.report = None;
+     state.cancel = None;
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+ 
+-pub(super) fn benchmark_loading(scenario: &'static str, instance: &str) {
++pub(super) fn benchmark_loading(
++    scenario: &'static str,
++    instance: &str,
++    profile: Option<BenchmarkProfile>,
++) {
+     let mut state = BENCHMARK.lock().unwrap();
+     if state.phase != "loading"
+         || state.scenario != Some(scenario)
+         || state.instance.as_deref() != Some(instance)
++        || state.profile != profile
+     {
+         state.scenario = Some(scenario);
+         state.instance = Some(instance.to_owned());
+         state.phase = "loading";
++        state.profile = profile;
++        state.capture = None;
+         state.report = None;
+         state.cancel = None;
+         BENCHMARK_CANCEL.store(false, Ordering::Release);
+@@ -281,7 +295,11 @@ pub(crate) fn benchmark_closing() {
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+ 
+-pub(super) fn benchmark_finished(outcome: BenchmarkOutcome, report: Option<&str>) {
++pub(super) fn benchmark_finished(
++    outcome: BenchmarkOutcome,
++    report: Option<&str>,
++    capture: Option<&str>,
++) {
+     let mut state = BENCHMARK.lock().unwrap();
+     state.phase = match outcome {
+         BenchmarkOutcome::Completed => "completed",
+@@ -289,6 +307,7 @@ pub(super) fn benchmark_finished(outcome: BenchmarkOutcome, report: Option<&str>
+         BenchmarkOutcome::Failed => "failed",
+     };
+     state.report = report.map(str::to_owned);
++    state.capture = capture.map(str::to_owned);
+     state.cancel = None;
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+@@ -304,7 +323,7 @@ fn cancel_benchmark(principal: &Principal) -> bool {
+             if !request.dispatched {
+                 pending.take();
+             }
+-            benchmark_finished(BenchmarkOutcome::Cancelled, None);
++            benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+             return true;
+         }
+     }
+@@ -332,7 +351,7 @@ fn discard_launch() {
+     let mut launch = LAUNCH.lock().unwrap();
+     if let Some(request) = launch.as_mut() {
+         if matches!(&request.args, LaunchArgs::Benchmark(_)) {
+-            benchmark_finished(BenchmarkOutcome::Cancelled, None);
++            benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+         }
+         if request.dispatched {
+             // Preserve the cancelled handoff so it cannot become normal Play.
+@@ -455,25 +474,25 @@ pub(super) fn take_launch() -> Result<Option<RemoteLaunch>, LaunchError> {
+         LaunchArgs::Benchmark(benchmark) => {
+             if !request.dispatched {
+                 // A local Play handoff won the race before MCP dispatched one.
+-                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+                 return Ok(None);
+             }
+             if !allowed {
+-                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+                 return Err(LaunchError::Cancelled);
+             }
+-            benchmark_loading(benchmark.scenario, &benchmark.instance);
++            benchmark_loading(benchmark.scenario, &benchmark.instance, benchmark.profile);
+             drop(pending);
+             let mut service = local_service().lock().unwrap();
+             if !launch_authorized(&request.principal) {
+                 drop(service);
+-                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+                 return Err(LaunchError::Cancelled);
+             }
+             let launch = service.launch_requested_benchmark(benchmark);
+             drop(service);
+             if launch.is_err() {
+-                benchmark_finished(BenchmarkOutcome::Failed, None);
++                benchmark_finished(BenchmarkOutcome::Failed, None, None);
+             }
+             launch
+                 .map(|launch| {
+@@ -700,13 +719,17 @@ fn catalog() -> &'static [Value] {
+                     "name": "wiiu_benchmark_start",
+                     "description": "Run a stock Wii U benchmark in the selected installation's isolated benchmark workspace. Starts from the Night home page.",
+                     "inputSchema": {
+-                        "type": "object", "properties": {"scenario": {"type": "string", "enum": BENCHMARK_SCENES.map(|(name, _)| name)}},
++                        "type": "object", "properties": {
++                            "scenario": {"type": "string", "enum": BENCHMARK_SCENES.map(|(name, _)| name)},
++                            "profile": {"type": "string", "enum": BenchmarkProfile::LABELS,
++                                "description": "Optional one-run GX2 capture mode. 4 uses the cycle probe, 4q adds early TV submission, and 4r adds solid terrain back-face culling and axis-facing ranges."},
++                        },
+                         "required": ["scenario"], "additionalProperties": false,
+                     },
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_status",
+-                    "description": "Read the Wii U benchmark lifecycle phase, installation ID, and published report ID. Wait for night_home_ready before starting another run.",
++                    "description": "Read the Wii U benchmark lifecycle phase, installation ID, published report ID and selected profile capture ID. Wait for night_home_ready before starting another run.",
+                     "annotations": {"readOnlyHint": true},
+                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                 }),
+@@ -870,16 +893,14 @@ impl Backend for NightTools {
+                 };
+                 service.bookmark_request(address).map(LaunchArgs::Bookmark)
+             } else if name == "wiiu_benchmark_start" {
+-                let scenario = args
+-                    .as_object()
+-                    .filter(|args| args.len() == 1)
+-                    .and_then(|args| args.get("scenario"))
+-                    .and_then(Value::as_str);
+-                let Some(scenario) = scenario else {
+-                    return Ok(text_result("A Wii U benchmark scenario is required.", true));
++                let Some((scenario, profile)) = benchmark_arguments(args) else {
++                    return Ok(text_result(
++                        "Choose a Wii U benchmark scenario and, optionally, profile 4, 4q or 4r.",
++                        true,
++                    ));
+                 };
+                 service
+-                    .benchmark_request(scenario)
++                    .benchmark_request(scenario, profile)
+                     .map(LaunchArgs::Benchmark)
+             } else {
+                 service
+@@ -958,6 +979,17 @@ fn startup_tool(principal: &Principal, name: &str, args: &Value) -> Value {
+     text_result(&startup.status().to_string(), false)
+ }
+ 
++fn benchmark_arguments(args: &Value) -> Option<(&str, Option<BenchmarkProfile>)> {
++    let args = args.as_object()?;
++    let scenario = args.get("scenario")?.as_str()?;
++    let profile = match args.len() {
++        1 => None,
++        2 => Some(BenchmarkProfile::parse(args.get("profile")?.as_str()?)?),
++        _ => return None,
++    };
++    Some((scenario, profile))
++}
++
+ const LAUNCH_SCOPES: Scopes = Scopes::LAUNCHER_MANAGE.union(Scopes::GAME_CONTROL);
+ 
+ fn launch_authorized(principal: &Principal) -> bool {
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 4af2464be5c057de8a6e62670d5a2f0cece04623..0b793f2a018c5a4134b3969b4f2afaa0c5d1d046 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -42,16 +42,43 @@ enum BenchmarkOrigin {
+     AgentControl,
+ }
+ 
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++#[repr(u32)]
++pub(super) enum BenchmarkProfile {
++    Cycles,
++    EarlyTv,
++    AxisRanges,
++}
++
++impl BenchmarkProfile {
++    pub(super) const LABELS: [&'static str; 3] = ["4", "4q", "4r"];
++
++    pub(super) fn parse(value: &str) -> Option<Self> {
++        match value {
++            "4" => Some(Self::Cycles),
++            "4q" => Some(Self::EarlyTv),
++            "4r" => Some(Self::AxisRanges),
++            _ => None,
++        }
++    }
++
++    pub(super) fn label(self) -> &'static str {
++        Self::LABELS[self as usize]
++    }
++}
++
+ pub struct BenchmarkLaunch {
+     pub scenario: &'static str,
+     pub instance: String,
+     pub reports: PathBuf,
+     origin: BenchmarkOrigin,
++    pub(super) profile: Option<BenchmarkProfile>,
+ }
+ 
+ pub(super) struct BenchmarkRequest {
+     pub(super) scenario: &'static str,
+     pub(super) instance: String,
++    pub(super) profile: Option<BenchmarkProfile>,
+ }
+ 
+ pub(super) struct BookmarkRequest {
+@@ -415,7 +442,7 @@ impl<G: GameFiles> LocalService<G> {
+             return Err(2);
+         }
+         if let Some(scene) = self.benchmark.take() {
+-            return self.launch_benchmark(BENCHMARK_SCENES[scene].0, BenchmarkOrigin::Local);
++            return self.launch_benchmark(BENCHMARK_SCENES[scene].0, BenchmarkOrigin::Local, None);
+         }
+         self.launch_game()
+     }
+@@ -423,6 +450,7 @@ impl<G: GameFiles> LocalService<G> {
+     pub(super) fn benchmark_request(
+         &self,
+         scenario: &str,
++        profile: Option<BenchmarkProfile>,
+     ) -> Result<BenchmarkRequest, &'static str> {
+         let scenario = BENCHMARK_SCENES
+             .iter()
+@@ -441,6 +469,7 @@ impl<G: GameFiles> LocalService<G> {
+         Ok(BenchmarkRequest {
+             scenario,
+             instance: self.preferences.instance.clone(),
++            profile,
+         })
+     }
+ 
+@@ -451,8 +480,13 @@ impl<G: GameFiles> LocalService<G> {
+         if request.instance != self.preferences.instance {
+             return Err(5);
+         }
+-        self.benchmark_request(request.scenario).map_err(|_| 5_u8)?;
+-        let launch = self.launch_benchmark(request.scenario, BenchmarkOrigin::AgentControl)?;
++        self.benchmark_request(request.scenario, request.profile)
++            .map_err(|_| 5_u8)?;
++        let launch = self.launch_benchmark(
++            request.scenario,
++            BenchmarkOrigin::AgentControl,
++            request.profile,
++        )?;
+         self.benchmark = None;
+         Ok(launch)
+     }
+@@ -461,6 +495,7 @@ impl<G: GameFiles> LocalService<G> {
+         &self,
+         scenario: &'static str,
+         origin: BenchmarkOrigin,
++        profile: Option<BenchmarkProfile>,
+     ) -> Result<Launch, u8> {
+         let game = self.game_dir(&self.preferences.instance);
+         let scratch = game.join(".benchmark-run");
+@@ -490,6 +525,7 @@ impl<G: GameFiles> LocalService<G> {
+                 instance: self.preferences.instance.clone(),
+                 reports: game.join("benchmarks"),
+                 origin,
++                profile,
+             }),
+         })
+     }
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index da2c196aa569c6367398e4f770682b93d299bbc0..da0e57c9d9894babaaaf90e6ce449dd7bc6ea8bd 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -2,6 +2,7 @@
+ #include "../gx2_hud/hud.h"
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
++#include <coreinit/filesystem.h>
+ #include <coreinit/filesystem_fsa.h>
+ #include <coreinit/time.h>
+ #include <gx2/event.h>
+@@ -10,6 +11,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+@@ -51,9 +53,8 @@ typedef struct {
+ _Static_assert(sizeof(GpuCycleSlot) == 64, "isolate GPU sample cache lines");
+ 
+ static GpuCycleSlot gpu_slots[2][2];
+-static bool gpu_cycle_probe;
+-static OSTime gpu_before, gpu_report_at;
+-static HorizonGx2GpuSample gpu_sample;
++static bool gpu_cycle_probe, gpu_cycle_rejected;
++static OSTime gpu_before;
+ 
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+@@ -73,10 +74,10 @@ typedef struct {
+ 
+ static _Atomic bool enabled;
+ static _Atomic uint32_t workers[WORKERS][2];
+-static ProfileFrame ring[CAPACITY], current;
+-static uint32_t total;
+-static uint64_t epoch, started, previous;
+-static uint32_t previous_phase;
++static ProfileFrame current;
++static uint64_t started;
++static bool marker_enabled;
++static int marker_mode = EOF, marker_variant = EOF;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads;
+@@ -95,13 +96,25 @@ static struct {
+    uint32_t first, pairs, updates;
+    TerrainAnimationSample sum;
+ } animation_window;
+-static struct {
++typedef struct {
+    OSTime flip_time;
+    uint32_t swaps, flips, phase, sequence, mask;
+    bool known;
+-} previous_output;
+-static uint32_t phase_frames[8];
+-static void flush_to(const char *path, const char *temporary);
++} ProfileOutput;
++
++typedef struct {
++   uint64_t epoch, previous;
++   uint32_t total, previous_phase, phase_frames[8], session_presents;
++   uint32_t worker_base[WORKERS][2];
++   ProfileOutput previous_output;
++   OSTime gpu_report_at;
++   HorizonGx2GpuSample gpu_sample;
++   ProfileFrame ring[CAPACITY];
++} ProfileHistory;
++
++static ProfileHistory process_history;
++static ProfileHistory *history = &process_history;
++static bool flush_to(const char *path, const char *temporary);
+ 
+ static uint32_t ticks(uint64_t begin, uint64_t end)
+ {
+@@ -109,17 +122,12 @@ static uint32_t ticks(uint64_t begin, uint64_t end)
+    return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+ }
+ 
+-void horizon_gx2_profile_init(void)
++static void select_mode(int mode, int variant)
+ {
+-   FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
+-   if (!marker) return;
+-   // A leading '1' opts into the old Poll delay for matched capture runs.
+-   const int mode = fgetc(marker);
+    legacy_pacing = mode == '1';
+    legacy_terrain_bindings = mode == '2';
+    legacy_terrain_attributes = mode == '3';
+-   gpu_cycle_probe = mode == '4';
+-   const int variant = gpu_cycle_probe ? fgetc(marker) : EOF;
++   gpu_cycle_probe = mode == '4' && !gpu_cycle_rejected;
+    legacy_terrain_uniforms = mode == '5' || variant == '5';
+    shared_hud_upload = variant == 'h';
+    shared_model_uploads = variant == 'm';
+@@ -132,8 +140,18 @@ void horizon_gx2_profile_init(void)
+    solid_axis_ranges = variant == 'r';
+    opaque_terrain_shader = variant == 'o';
+    solid_back_culling = variant == 'b' || solid_axis_ranges;
++}
++
++void horizon_gx2_profile_init(void)
++{
++   FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
++   if (!marker) return;
++   marker_mode = fgetc(marker);
++   marker_variant = marker_mode == '4' ? fgetc(marker) : EOF;
+    fclose(marker);
+-   epoch = (uint64_t)OSGetSystemTime();
++   marker_enabled = true;
++   select_mode(marker_mode, marker_variant);
++   process_history.epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+    if (legacy_terrain_attributes) OSReport("Horizon GX2 capture terrain attributes: legacy\n");
+@@ -225,7 +243,7 @@ bool horizon_gx2_profile_opaque_terrain_shader(void)
+ 
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+-   gpu_sample.status = GX2_GPU_NO_SAMPLE;
++   history->gpu_sample.status = GX2_GPU_NO_SAMPLE;
+    if (!gpu_cycle_probe || !recording || current.phase != PLAYING_PHASE) return false;
+    gpu_before = GX2GetLastSubmittedTimeStamp();
+    return true;
+@@ -248,8 +266,8 @@ static uint64_t gpu_slot_read(GpuCycleSlot *slot)
+ 
+ static void gpu_reject(uint32_t status)
+ {
+-   gpu_sample.status = status;
+-   ++gpu_sample.rejected;
++   history->gpu_sample.status = status;
++   ++history->gpu_sample.rejected;
+ }
+ 
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+@@ -257,19 +275,20 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+    // WHB has already flushed and called GX2DrawDone for the presented frame.
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+    const OSTime retired = GX2GetRetiredTimeStamp();
+-   gpu_sample.sequence = total;
+-   gpu_sample.submitted = submitted;
+-   gpu_sample.retired = retired;
+-   memset(gpu_sample.endpoints, 0, sizeof(gpu_sample.endpoints));
++   history->gpu_sample.sequence = history->total;
++   history->gpu_sample.submitted = submitted;
++   history->gpu_sample.retired = retired;
++   memset(history->gpu_sample.endpoints, 0, sizeof(history->gpu_sample.endpoints));
+    if (submitted <= gpu_before || retired < submitted) {
+       // Leave the static slots alone for the rest of this process.
+       gpu_cycle_probe = false;
++      gpu_cycle_rejected = true;
+       gpu_reject(GX2_GPU_NOT_RETIRED);
+       OSReport("Horizon GX2 GPU samples unavailable: submission not verified retired\n");
+       return;
+    }
+    if (outputs != 3) {
+-      ++gpu_sample.unpaired;
++      ++history->gpu_sample.unpaired;
+       gpu_reject(GX2_GPU_UNPAIRED);
+       return;
+    }
+@@ -285,35 +304,37 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+       const uint64_t top = gpu_slot_read(&gpu_slots[target][0]);
+       const uint64_t bottom = gpu_slot_read(&gpu_slots[target][1]);
+       valid &= top != 0 && bottom != UINT64_MAX && bottom > top;
+-      gpu_sample.endpoints[target][0] = top;
+-      gpu_sample.endpoints[target][1] = bottom;
++      history->gpu_sample.endpoints[target][0] = top;
++      history->gpu_sample.endpoints[target][1] = bottom;
+    }
+    if (!valid) {
+       gpu_cycle_probe = false;
++      gpu_cycle_rejected = true;
+       gpu_reject(GX2_GPU_INVALID_ENDPOINTS);
+       OSReport("Horizon GX2 GPU samples unavailable: invalid GPU cycle pair\n");
+       return;
+    }
+-   gpu_sample.status = GX2_GPU_VALID;
+-   ++gpu_sample.valid;
++   history->gpu_sample.status = GX2_GPU_VALID;
++   ++history->gpu_sample.valid;
+ 
+    const OSTime now = OSGetSystemTime();
+-   if (now < gpu_report_at) return;
+-   gpu_report_at = now + OSMillisecondsToTicks(2000);
+-   const uint64_t (*endpoints)[2] = gpu_sample.endpoints;
++   if (now < history->gpu_report_at) return;
++   history->gpu_report_at = now + OSMillisecondsToTicks(2000);
++   const uint64_t (*endpoints)[2] = history->gpu_sample.endpoints;
+    OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu valid=%u unpaired=%u\n",
+-            total, (unsigned long long)(endpoints[0][1] - endpoints[0][0]),
+-            (unsigned long long)(endpoints[1][1] - endpoints[1][0]), gpu_sample.valid, gpu_sample.unpaired);
++            history->total, (unsigned long long)(endpoints[0][1] - endpoints[0][0]),
++            (unsigned long long)(endpoints[1][1] - endpoints[1][0]),
++            history->gpu_sample.valid, history->gpu_sample.unpaired);
+    OSReport("Horizon GX2 GPU endpoints seq=%u tv=%016llx/%016llx drc=%016llx/%016llx\n",
+-            total, (unsigned long long)endpoints[0][0], (unsigned long long)endpoints[0][1],
++            history->total, (unsigned long long)endpoints[0][0], (unsigned long long)endpoints[0][1],
+             (unsigned long long)endpoints[1][0], (unsigned long long)endpoints[1][1]);
+ }
+ 
+ bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample)
+ {
+-   if (gpu_sample.status == GX2_GPU_NO_SAMPLE) return false;
+-   *sample = gpu_sample;
+-   gpu_sample.status = GX2_GPU_NO_SAMPLE;
++   if (history->gpu_sample.status == GX2_GPU_NO_SAMPLE) return false;
++   *sample = history->gpu_sample;
++   history->gpu_sample.status = GX2_GPU_NO_SAMPLE;
+    return true;
+ }
+ 
+@@ -331,7 +352,7 @@ bool horizon_gx2_profile_begin(uint32_t phase)
+ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence)
+ {
+    if (!recording || current.phase != PLAYING_PHASE) return false;
+-   *sequence = total;
++   *sequence = history->total;
+    return true;
+ }
+ 
+@@ -390,23 +411,24 @@ void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4])
+    uint32_t swaps = 0, flips = 0;
+    OSTime flip_time = 0, vsync = 0;
+    GX2GetSwapStatus(&swaps, &flips, &flip_time, &vsync);
+-   if (previous_output.known) {
+-      extra[SWAP_DELTA] = swaps - previous_output.swaps;
+-      extra[FLIP_DELTA] = flips - previous_output.flips;
+-      if (extra[FLIP_DELTA] == 1 && mask == 3 && previous_output.mask == 3 &&
+-          previous_output.phase == current.phase && previous_output.sequence + 1 == total &&
+-          !current.stages[SCREENSHOT_STAGE] && previous_output.flip_time > 0 &&
+-          flip_time > previous_output.flip_time) {
+-         extra[FLIP_INTERVAL_TICKS] = ticks(previous_output.flip_time, flip_time);
++   if (history->previous_output.known) {
++      extra[SWAP_DELTA] = swaps - history->previous_output.swaps;
++      extra[FLIP_DELTA] = flips - history->previous_output.flips;
++      if (extra[FLIP_DELTA] == 1 && mask == 3 && history->previous_output.mask == 3 &&
++          history->previous_output.phase == current.phase &&
++          history->previous_output.sequence + 1 == history->total &&
++          !current.stages[SCREENSHOT_STAGE] && history->previous_output.flip_time > 0 &&
++          flip_time > history->previous_output.flip_time) {
++         extra[FLIP_INTERVAL_TICKS] = ticks(history->previous_output.flip_time, flip_time);
+       }
+    }
+-   previous_output.flip_time = flip_time;
+-   previous_output.swaps = swaps;
+-   previous_output.flips = flips;
+-   previous_output.phase = current.phase;
+-   previous_output.sequence = total;
+-   previous_output.mask = current.stages[SCREENSHOT_STAGE] ? 0 : mask;
+-   previous_output.known = true;
++   history->previous_output.flip_time = flip_time;
++   history->previous_output.swaps = swaps;
++   history->previous_output.flips = flips;
++   history->previous_output.phase = current.phase;
++   history->previous_output.sequence = history->total;
++   history->previous_output.mask = current.stages[SCREENSHOT_STAGE] ? 0 : mask;
++   history->previous_output.known = true;
+ }
+ 
+ void horizon_gx2_profile_world(uint32_t requested, uint32_t effective,
+@@ -479,46 +501,48 @@ static void report_animation_window(uint64_t now)
+    memset(&animation_window, 0, sizeof(animation_window));
+    // The serial write happened after the captured loop. Leave its delay out
+    // of the next start-to-start and flip intervals as with file checkpoints.
+-   previous_phase = 0;
+-   previous_output.phase = 0;
++   history->previous_phase = 0;
++   history->previous_output.phase = 0;
+ }
+ 
+ void horizon_gx2_profile_finish(void)
+ {
+    if (!recording) return;
+-   const uint64_t now = (uint64_t)OSGetSystemTime(), offset = started - epoch;
+-   current.sequence = total;
++   const uint64_t now = (uint64_t)OSGetSystemTime(), offset = started - history->epoch;
++   current.sequence = history->total;
+    current.start_hi = (uint32_t)(offset >> 32);
+    current.start_lo = (uint32_t)offset;
+    current.loop_ticks = ticks(started, now);
+-   if (total && current.phase == previous_phase)
+-      current.pacing_ticks = ticks(previous, started);
+-   previous = started;
+-   previous_phase = current.phase;
++   if (history->total && current.phase == history->previous_phase)
++      current.pacing_ticks = ticks(history->previous, started);
++   history->previous = started;
++   history->previous_phase = current.phase;
+    for (uint32_t i = 0; i < WORKERS; ++i)
+       for (uint32_t j = 0; j < 2; ++j)
+-         current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
+-   ring[total++ % CAPACITY] = current;
++         current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed)
++                                - history->worker_base[i][j];
++   history->ring[history->total++ % CAPACITY] = current;
+    recording = false;
+    if (profile_terrain_animation) report_animation_window(now);
+ 
+    // One bounded checkpoint per phase survives a forced emulator stop.
+    // Skip the next start-to-start interval so the export I/O is excluded.
+-   if (current.phase < 8 && current.counters[GX2_PROFILE_PRESENTED] &&
+-       ++phase_frames[current.phase] == (current.phase == PLAYING_PHASE ? 30u : 300u)) {
++   if (history == &process_history && current.phase < 8 &&
++       current.counters[GX2_PROFILE_PRESENTED] &&
++       ++history->phase_frames[current.phase] == (current.phase == PLAYING_PHASE ? 30u : 300u)) {
+       char path[sizeof(ROOT) + 36], temporary[sizeof(path)];
+       snprintf(path, sizeof(path), ROOT "gx2-profile-phase-%u.hzp", current.phase);
+       snprintf(temporary, sizeof(temporary), ROOT "gx2-profile-phase-%u.tmp", current.phase);
+       flush_to(path, temporary);
+-      previous_phase = 0;
+-      previous_output.phase = 0;
++      history->previous_phase = 0;
++      history->previous_output.phase = 0;
+    }
+ }
+ 
+ static ProfileHeader header(void)
+ {
+    return (ProfileHeader){0x485A5033, 3, OSTimerClockSpeed, sizeof(ProfileFrame),
+-                          CAPACITY, total < CAPACITY ? total : CAPACITY, total};
++                          CAPACITY, history->total < CAPACITY ? history->total : CAPACITY, history->total};
+ }
+ 
+ /* Calling thread must own the renderer. Copy the newest records in order.
+@@ -533,8 +557,8 @@ uint32_t horizon_gx2_profile_snapshot(void *out, uint32_t bytes)
+    uint8_t *dst = out;
+    memcpy(dst, &info, sizeof(info));
+    dst += sizeof(info);
+-   for (uint32_t i = total - info.count; i < total; ++i) {
+-      memcpy(dst, &ring[i % CAPACITY], sizeof(ProfileFrame));
++   for (uint32_t i = history->total - info.count; i < history->total; ++i) {
++      memcpy(dst, &history->ring[i % CAPACITY], sizeof(ProfileFrame));
+       dst += sizeof(ProfileFrame);
+    }
+    return (uint32_t)(dst - (uint8_t *)out);
+@@ -568,7 +592,7 @@ static bool publish_capture(const char *path, const char *temporary)
+       OSReport("Horizon GX2 capture target is not a file: path=%s\n", path);
+       return false;
+    }
+-   char previous[sizeof(ROOT) + 48];
++   char previous[FS_MAX_PATH];
+    const int length = snprintf(previous, sizeof(previous), "%s.previous", path);
+    if (length < 0 || (size_t)length >= sizeof(previous)) return false;
+ 
+@@ -594,42 +618,94 @@ static bool publish_capture(const char *path, const char *temporary)
+    return flush_capture_volume();
+ }
+ 
+-static void flush_to(const char *path, const char *temporary)
++static bool flush_to(const char *path, const char *temporary)
+ {
+-   if (!atomic_load_explicit(&enabled, memory_order_acquire) || !total) return;
++   if (!atomic_load_explicit(&enabled, memory_order_acquire) || !history->total) return false;
+    recording = false;
+    const ProfileHeader info = header();
+-   const uint32_t first = (total - info.count) % CAPACITY;
++   const uint32_t first = (history->total - info.count) % CAPACITY;
+    const uint32_t tail = info.count < CAPACITY - first ? info.count : CAPACITY - first;
+    FILE *file = fopen(temporary, "wb");
+    if (!file) {
+       OSReport("Horizon GX2 capture open failed: errno=%d path=%s\n", errno, temporary);
+-      return;
++      return false;
+    }
+    const bool written = fwrite(&info, sizeof(info), 1, file) == 1 &&
+-      fwrite(&ring[first], sizeof(ProfileFrame), tail, file) == tail &&
+-      fwrite(ring, sizeof(ProfileFrame), info.count - tail, file) == info.count - tail;
++      fwrite(&history->ring[first], sizeof(ProfileFrame), tail, file) == tail &&
++      fwrite(history->ring, sizeof(ProfileFrame), info.count - tail, file) == info.count - tail;
+    const bool closed = fclose(file) == 0;
+    if (!written || !closed) {
+       OSReport("Horizon GX2 capture stage write failed: errno=%d path=%s\n", errno, temporary);
+-      return;
++      return false;
+    }
+-   if (!flush_capture_volume() || !publish_capture(path, temporary)) return;
+-   OSReport("Horizon GX2 capture complete: frames=%u total=%u path=%s\n", info.count, total, path);
++   if (!flush_capture_volume() || !publish_capture(path, temporary)) return false;
++   OSReport("Horizon GX2 capture complete: frames=%u total=%u path=%s\n", info.count, history->total, path);
++   return true;
+ }
+ 
+ void horizon_gx2_profile_checkpoint_session(void)
+ {
+-   static uint32_t previous_session_presents;
+-   const uint32_t presents = phase_frames[PLAYING_PHASE];
+-   if (presents == previous_session_presents) return;
+-   previous_session_presents = presents;
++   const uint32_t presents = history->phase_frames[PLAYING_PHASE];
++   if (presents == history->session_presents) return;
++   history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
+-   previous_phase = 0;
+-   previous_output.phase = 0;
++   history->previous_phase = 0;
++   history->previous_output.phase = 0;
+ }
+ 
+ void horizon_gx2_profile_flush(void)
+ {
+    flush_to(CAPTURE, CAPTURE ".tmp");
+ }
++
++/* The hosted foreground owns history. Worker activities touch only the atomic
++ * process totals; each history records them relative to its own baseline.
++ * The numeric mode values match BenchmarkProfile in the Night launcher. */
++bool horizon_gx2_profile_begin_trial(uint32_t mode)
++{
++   if (history != &process_history || recording || mode > 2) return false;
++   ProfileHistory *trial = calloc(1, sizeof(*trial));
++   if (!trial) return false;
++   for (uint32_t i = 0; i < WORKERS; ++i)
++      for (uint32_t j = 0; j < 2; ++j)
++         trial->worker_base[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
++   trial->epoch = (uint64_t)OSGetSystemTime();
++   history = trial;
++   select_mode('4', mode == 1 ? 'q' : mode == 2 ? 'r' : EOF);
++   atomic_store_explicit(&enabled, true, memory_order_release);
++   const char *name = mode == 1 ? "4q" : mode == 2 ? "4r" : "4";
++   OSReport("Horizon GX2 benchmark capture begin: mode=%s clock_hz=%u gpu_cycles=%u\n",
++            name, OSTimerClockSpeed, (unsigned)gpu_cycle_probe);
++   return true;
++}
++
++bool horizon_gx2_profile_end_trial(const char *path)
++{
++   if (history == &process_history) return false;
++   char temporary[FS_MAX_PATH];
++   bool saved = path == NULL && !recording;
++   if (path && !recording) {
++      const int length = snprintf(temporary, sizeof(temporary), "%s.tmp", path);
++      struct stat existing;
++      if (length >= 0 && (size_t)length < sizeof(temporary) &&
++          stat(path, &existing) != 0 && errno == ENOENT) {
++         saved = flush_to(path, temporary);
++      }
++   }
++   for (uint32_t i = 0; i < WORKERS; ++i)
++      for (uint32_t j = 0; j < 2; ++j)
++         process_history.worker_base[i][j] +=
++            atomic_load_explicit(&workers[i][j], memory_order_relaxed) - history->worker_base[i][j];
++   free(history);
++   history = &process_history;
++   recording = false;
++   // Exclude trial time and swaps from the resumed Night capture.
++   history->previous_phase = 0;
++   history->previous_output = (ProfileOutput){0};
++   memset(&animation_window, 0, sizeof(animation_window));
++   select_mode(marker_mode, marker_variant);
++   atomic_store_explicit(&enabled, marker_enabled, memory_order_release);
++   OSReport("Horizon GX2 benchmark capture end: saved=%u marker_enabled=%u\n",
++            (unsigned)(saved && path != NULL), (unsigned)marker_enabled);
++   return saved;
++}
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 676d4b0a3b7606d8bdc84a200423c34c1c019d49..76f57367b2f2215d11102e79a5c758666232cc27 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -35,6 +35,8 @@ typedef struct {
+ } HorizonGx2GpuSample;
+ 
+ void horizon_gx2_profile_init(void);
++bool horizon_gx2_profile_begin_trial(uint32_t mode);
++bool horizon_gx2_profile_end_trial(const char *path);
+ bool horizon_gx2_profile_legacy_pacing(void);
+ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);

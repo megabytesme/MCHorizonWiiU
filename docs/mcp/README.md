@@ -179,6 +179,18 @@ launch policy. It uses the selected profile and the ordinary connection
 path. Add an entry through `multiplayer_add` when the server is missing
 from the list.
 
+### Remote Night cancellation and close
+
+Ordinary remote `play` and `wiiu_multiplayer_join` responses include a
+`launch_id`. The owning client can use `wiiu_loading_status` with
+`launcher.read` and `wiiu_loading_cancel` with `launcher.manage`,
+`game.control` and Night's remote launch policy. Cancellation completes
+after the worker drain and is available before gameplay handoff.
+
+From idle Night Home, use `wiiu_close_to_menu` with `launcher.manage`.
+The ordinary Close Horizon action requires any previous launch, profile
+selection or save-to-Night transition to have finished.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from
@@ -190,8 +202,14 @@ and route as when started locally.
 Call `wiiu_benchmark_status` with `launcher.read` to follow the queued,
 loading, running and closing phases. A completed run returns its `instance` and `report_id`.
 Call `wiiu_benchmark_cancel` with the same permissions as start to cancel
-a queued or active benchmark. Wait for the `cancelled` phase before starting
-another run.
+a queued or active benchmark. For another run, wait for a terminal phase
+and `night_home_ready: true`. Remote runs return to Night Home after
+cleanup. Local runs continue to open their report in Night.
+
+For a matched diagnostic run, pass `profile` as `4`, `4q` or `4r` to
+`wiiu_benchmark_start`. The selector applies to that isolated run and
+keeps the existing SD marker setting for other sessions. Successful
+profiled runs include `capture_id` in status alongside `report_id`.
 
 With `launcher.read`, call `wiiu_benchmark_reports` to list saved report IDs
 in the selected installation or pass `{"instance":"Lab"}` to list an

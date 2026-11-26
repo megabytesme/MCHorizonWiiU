@@ -249,7 +249,15 @@
     "rpx_sha256": "4acb84c35e900e6289b253c2ce2bfb100fbf9a31a07c1ecf66b03cd0cba07bd0",
     "wuhb_sha256": "efcb58f97b1fe10f248c642286024a494bd4b90ff63c4db789ce522ea66d9226",
     "estimated_aroma_headroom_bytes": 12710400,
-    "authenticated_benchmark_profile_modes": ["4", "4q", "4r"]
+    "authenticated_benchmark_profile_modes": ["4", "4q", "4r"],
+    "cemu_lifecycle": {
+      "prior_four_scope_grant_reused": true,
+      "ordinary_cancel_phases": ["loading", "draining", "cancelled"],
+      "ordinary_save_files_byte_identical": 26,
+      "consecutive_cancelled_modes": ["4q", "4r"],
+      "returned_to_home_and_report_list_unchanged": true,
+      "authenticated_clean_exit": true
+    }
   },
   "next_qualification": {
     "candidate": "0.8.0-rc.45",
