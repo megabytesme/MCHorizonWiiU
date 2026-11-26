@@ -160,6 +160,39 @@ also accepts the stock `renderDistance`, `simulationDistance`,
 the last paired submission before opening a fixed-scale measurement window.
 Graphics writes are unavailable during a running benchmark.
 
+### Benchmarks in the hosted development recipe
+
+With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from
+the Night home page with a scenario such as `{"scenario":"cafe-stationary"}`
+or `{"scenario":"village"}`. Night's remote launch and game control settings
+must be enabled. Each scenario uses the same isolated workspace, settings
+and route as when started locally.
+
+Call `wiiu_benchmark_status` with `launcher.read` to follow the queued,
+loading, running and closing phases. A completed run returns its `report_id`.
+Call `wiiu_benchmark_cancel` with the same permissions as start to cancel
+a queued or active benchmark. Wait for the `cancelled` phase before starting
+another run.
+
+With `launcher.read`, call `wiiu_benchmark_reports` to list saved report IDs
+in the selected installation. Pass an ID such as
+`{"id":"game-20261126142051-village.json"}` to `wiiu_benchmark_report`. Its
+JSON includes the benchmark conditions, metrics and frame distributions.
+Local labels and attachment paths stay on the console.
+
+### Gameplay captures
+
+`game_screenshot` returns the TV PNG during live gameplay. A scratch Cemu
+build with `HORIZON_WIIU_CEMU_GLOBAL_SESSION_LOCK=ON` also advertises
+`game_screenshot_gamepad`. Both require `game.observe`. For a pair, call the
+TV tool and wait for its reply before calling the GamePad tool. Each reply
+contains one PNG and JSON with its `display`, `width` and `height`.
+
+Physical GamePad capture needs bounded staging and qualified GPU retirement
+and cleanup. The RC 26 physical probe reported a fatal readback cleanup error.
+Keep screenshot requests outside timed gameplay windows.
+[RC 26 physical evidence](../gx2/physical-rc26.md)
+
 ## Build and test
 
 The pinned release combination is client **0.7.0**, patch **0.4.0** and

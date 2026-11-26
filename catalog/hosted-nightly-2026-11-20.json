@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
+  "output_tree": "9d7e310c2b2ba9dbbe16bd432a810dec9c4e00ef",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -866,12 +866,48 @@
       "sha256": "b5e35cfdaa27ecc2f2730ecb4d9041a0138c2e908bdda8355c90e68afae2562f",
       "input_tree": "a0bc06b2874d799b112f04db4c8019f5915214b4",
       "output_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0143-read-wiiu-benchmark-reports-through-mcp.patch",
+      "sha256": "43302bf31da982042a90f32de2cef9701c99f2f4952c1e6e30cf98183f7b90a4",
+      "input_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
+      "output_tree": "9453f6007752546aec9d3befab4cfe9b8f075a4c"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0144-trial-gx2-axis-facing-terrain-ranges.patch",
+      "sha256": "3d4d022621637dcbbb9a25c88d8cd143d787acc257ddcc71c473efc3ebfdab96",
+      "input_tree": "9453f6007752546aec9d3befab4cfe9b8f075a4c",
+      "output_tree": "e32dd2b2037b0a78e7995ccf87d3809cd6345964"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0145-control-wiiu-benchmark-lifecycle-through-mcp.patch",
+      "sha256": "93ebdc570b160be222d5f51414a78a22e05bd6f81a51b2a9b32c614c377120d5",
+      "input_tree": "e32dd2b2037b0a78e7995ccf87d3809cd6345964",
+      "output_tree": "d4c4fd9501d9363603ea0abe1c43348d4f972ab9"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0146-decouple-village-tracing-from-gpu-timing.patch",
+      "sha256": "6b340f93e387683a2fb9d5a6f63d508347baa4e8411602f9e4a76410a2319b34",
+      "input_tree": "d4c4fd9501d9363603ea0abe1c43348d4f972ab9",
+      "output_tree": "42912d1dbd0b7e0a39433dbcf9f4e194aa2b1a97"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0147-use-assigned-cafe-dns-for-srv.patch",
+      "sha256": "6be86a2b34ff640e7ea59d12f7760628060211a35a8758794ca679d86fe1908d",
+      "input_tree": "42912d1dbd0b7e0a39433dbcf9f4e194aa2b1a97",
+      "output_tree": "3310f20eeeb460975296393cd353e5f0833a91ef"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0148-route-fixture-gamepad-capture-through-mcp.patch",
+      "sha256": "87680ac94739400ac120a9f86e6679d959c85ccdc578d603aea5d3cf351c0f6c",
+      "input_tree": "3310f20eeeb460975296393cd353e5f0833a91ef",
+      "output_tree": "9d7e310c2b2ba9dbbe16bd432a810dec9c4e00ef"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.41",
-    "patch": "0.5.0-rc.41"
+    "client": "0.8.0-rc.42",
+    "patch": "0.5.0-rc.42"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
