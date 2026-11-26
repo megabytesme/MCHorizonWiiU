@@ -38,5 +38,26 @@ profile home screen and captured both displays.
   index counts, so compare measured cadence and visual correctness in
   the unchanged saved view. [Winding fixture](../../wiiu/diagnostics/gx2-terrain-winding/README.md)
 
-The physical baseline stays at RC 38. Independent package comparison,
-hosted gameplay and settings checks, and console acceptance remain pending.
+## Hosted `4b` saved-world replay
+
+The exact RPX completed one saved-world round in established forced-interpreter
+Cemu. The isolated fixture used fixed 75%, DRS off, render distance 12 and
+simulation distance 12. All 28,171 copied resource files matched their
+source SHA-256 hashes. Serial confirmed the solid and cutout back-face trial.
+
+The first Game frame returned after 509.317 s. The terrain gate reached
+10 sections on each output after 738.875 s. Distinct 1920×1080 TV and
+854×480 GamePad stills showed terrain, cutout vegetation, the HUD and
+first-person hand. HZP3 retained 96 gameplay pairs outside native screenshot
+rows. The final 15 pairs submitted 10–18 sections on each output with
+world targets of 1440×809 and 641×360. The session capture SHA-256 is
+`d1e7cae299ef1a76b420b51a95ce1b8e86725364f5b394e7f8f71117b74adace`.
+
+The backward input moved the saved player 4.313 blocks along negative Z.
+The save returned to Night with 234,880,920 free GX2 bulk bytes and a
+234,880,896-byte largest free block. AX delivered nonzero PCM and its
+final read and write counters agreed. Night exited with `coreinit.exit(0)`.
+
+This replay exercises a single save and the trial renderer. Matched
+control pixels, throughput, native settings, reopen and hardware acceptance
+remain pending. The physical reference stays at RC 38.

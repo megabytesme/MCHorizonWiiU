@@ -28,21 +28,19 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   75% and two at 50%. Next, qualify early TV submission and GPU workload cuts
   separately with matching geometry, scale and capture settings.
 - The RC 39 source recipe keeps owner-approved refresh grants durable and
-  migrates active legacy grants on refresh. The 13 host tests passed and
-  the builder reconstructed the exact tree. The full workflow still needs
-  the pinned tool audit, authenticated graphics and Night actions, and
-  packaged Cemu and physical qualification.
-- Loading agent is tracing the warm critical path through client preparation
-  and integrated-server construction. Compare identical archives and cache states.
-- The standalone winding fixture passed 32 RGB checks across both outputs
-  in forced-interpreter Cemu. Qualify an opt-in solid terrain back-face
-  path in a hosted world before moving on to axis-facing index ranges.
-  [Winding fixture](../../wiiu/diagnostics/gx2-terrain-winding/README.md)
+  migrates active legacy grants on refresh. Real Codex host sessions
+  verified read-only and all four scopes through pairing, independent
+  restart and token refresh. The exact tool audit and RC 41 graphics
+  controls are on main. Complete Night, gameplay, revocation and restart
+  qualification requires a packaged run. [MCP comparison](../mcp/nightly-parity.md)
+- RC 41 measured 8.018 s of duplicate integrated-server CPU preparation
+  in Cemu. A separate source branch stages one-time reuse for the same
+  resource generation. Compare first entry, warm reopen and peak heap
+  with identical archives and cache states. [Handoff experiment](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/loading-cpu-handoff/docs/gx2/loading-performance.md#integrated-server-cpu-handoff-experiment)
 - The RC 40 package builds with the opt-in terrain retirement path and
   prepared server resource reuse. Night passed the independent Cemu
-  display checks. Both saves and the reopen completed. The movement check
-  is still open after a terrain-gated replay. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
-  texture discovery and exposes authenticated live graphics controls.
+  display checks. Both saves and the reopen completed. Forward movement
+  met a sand block at the archived starting pose. [RC 40 package](rc40-validation.md)
 - The Cemu x64 reservation fix passed carry, operand and allocator probes
   in both JIT modes. Exact RC 38 opened one world, played audio and saved
   in multi-core JIT. Warm reopen still panicked, and the scratch emulator
@@ -50,19 +48,18 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   for sustained replay and independent pixels. [Cemu record](../../wiiu/cemu/RECOMPILER.md)
 - RC 41 adds fixed-scale graphics control through authenticated MCP,
   narrower villager texture discovery, a stock Fusion shortcut and the
-  opt-in solid back-face trial. Its verified package passed the Night
-  smoke. The `4b` saved-world replay has a terrain gate and a verified
-  backward GamePad binding. Its fixture copy ran out of space before
-  Cemu launched. [RC 41 package](rc41-validation.md)
+  opt-in back-face trial. After recovering the partial copy and verifying
+  its inputs, the exact `4b` package rendered terrain and HUD on both
+  Cemu displays, moved 4.313 blocks backward and passed PCM, save, heap
+  recovery and clean exit. [RC 41 package](rc41-validation.md)
 - RC 42 is on the [qualification branch](https://github.com/megabytesme/MCHorizonWiiU/tree/codex/rc42-qualification).
   Its exact source includes benchmark control and report access, axis-facing
   terrain ranges, Village trace sequencing, the Cafe SRV adapter and a
-  scratch Cemu GamePad MCP capture. Native packaging needs more free
-  space on the desktop's system drive. The saved-world fixture itself
-  needs about 860 MiB. The runner now checks this before copying.
-- Real Codex host sessions verified read-only and all four scopes through
-  pairing, independent restart and token refresh. Hosted graphics,
-  benchmarks and complete restart and revocation evidence remain open.
+  scratch Cemu GamePad MCP capture. Review fixes preserve coverage edges
+  until a frame is recorded and keep benchmark reports available for the
+  launch instance across selection and restart. The full build exposed a
+  Cafe-only lint in the DNS wrapper. The corrected exact source is in
+  native rebuild. Integrated replay remains pending.
 
 ## Physical queue
 

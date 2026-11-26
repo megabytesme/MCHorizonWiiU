@@ -164,22 +164,32 @@
       "exact_assembly",
       "native_build",
       "package_hashes",
-      "cemu_distinct_night_captures"
+      "cemu_distinct_night_captures",
+      "cemu_4b_paired_terrain_save_audio_and_clean_exit"
     ],
     "native_build": "passed",
     "rpx_sha256": "a1195b54d75715224c7827cf762fb491094282d4ef9454a3724d167409c7694f",
     "wuhb_sha256": "6e3d159782f6da82896dec80a067c704acea12c479276027268332b361e08980",
-    "hosted_4b_replay": "pending_fixture_storage"
+    "hosted_4b_replay": "passed_one_disposable_saved_world_round",
+    "hosted_4b_paired_frames_with_at_least_ten_sections": 15,
+    "hosted_4b_saved_movement_blocks": 4.313
   },
   "source_qualification": {
     "candidate": "0.8.0-rc.42",
     "branch": "codex/rc42-qualification",
-    "commit": "9b0233659c1",
-    "engine_tree": "9d7e310c2b2ba9dbbe16bd432a810dec9c4e00ef",
+    "commit": "b2e4a08296b",
+    "engine_tree": "9c843d3b8b82cb4ecc809eab90edd9c01b90287e",
     "validation": [
       "exact_patch_chain",
       "focused_host_and_cemu_fixtures"
     ],
-    "native_build": "pending_host_storage"
+    "native_build": "retry_started_after_cafe_dns_ffi_compile_fix"
+  },
+  "loading_experiment": {
+    "branch": "codex/loading-cpu-handoff",
+    "commit": "758e021f61a",
+    "engine_tree": "377d9d00b5de87912f6568d59c7f8b8a72b17aac",
+    "rc41_interpreter_duplicate_server_cpu_ms": 8018,
+    "native_build_and_peak_memory": "pending"
   }
 }
