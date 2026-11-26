@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs/mcp"
@@ -67,8 +68,8 @@ SCOPE_CONSTANTS = {
 }
 
 
-def implemented():
-    source = (ROOT / "wiiu/game-bridge/night_mcp.rs").read_text(encoding="utf-8")
+def implemented(source_path=ROOT / "wiiu/game-bridge/night_mcp.rs"):
+    source = source_path.read_text(encoding="utf-8")
     result = {"play": ["launcher.manage", "game.control"]}
     for const, scope in SCOPE_CONSTANTS.items():
         declaration = re.search(rf"const {const}: &\[&str\] = &\[(.*?)\];", source, re.S)[1]
@@ -160,10 +161,63 @@ def write(path, contents, check):
         path.write_text(contents, encoding="utf-8", newline="\n")
 
 
+def nightly_audit(assembled, check):
+    shell = Path("wiiu/loading_app/src")
+    registrations = shell / "night_mcp.rs"
+    inventory = shell / "pinned_tools.json"
+    git = ["git", "-C", str(assembled)]
+    files = [registrations.as_posix(), inventory.as_posix()]
+    subprocess.run([*git, "diff", "--quiet", "--", *files], check=True)
+    tree = subprocess.check_output([*git, "write-tree"], text=True).strip()
+
+    upstream = json.loads((DOCS / "nightly-tools.json").read_bytes())
+    recipe = json.loads((ROOT / "catalog/hosted-nightly-2026-11-20.json").read_bytes())
+    if upstream["revision"] != recipe["upstream"]["commit"]:
+        raise ValueError("Nightly tool inventory differs from the upstream recipe pin")
+    if tree not in {patch["output_tree"] for patch in recipe["series"]}:
+        raise ValueError("Assembled MCP source tree is outside the Nightly recipe")
+
+    runtime = implemented(assembled / registrations)
+    port = json.loads((assembled / inventory).read_bytes())
+    embedded = {row["tool"]["name"]: row["tool"] for row in port["tools"]}
+    official = {row["tool"]["name"]: row for row in upstream["tools"]}
+    if extra := runtime.keys() - embedded.keys():
+        raise ValueError(f"Nightly registers tools missing from its embedded inventory: {extra}")
+
+    tools = {}
+    for name, row in sorted(official.items()):
+        result = classify(row, runtime, pinned=True)
+        entry = {
+            "availability": result["availability"],
+            "scopes": runtime.get(name),
+            "upstreamOutputContract": result["outputContract"],
+            "disposition": result["platformDisposition"],
+        }
+        if name in runtime:
+            entry["embeddedDefinitionDifferences"] = [
+                key for key in ("description", "inputSchema", "outputSchema")
+                if row["tool"].get(key) != embedded[name].get(key)
+            ]
+        tools[name] = entry
+
+    result = {
+        "upstream": upstream["revision"],
+        "assembledTree": tree,
+        "embeddedRevision": port["revision"],
+        "tools": tools,
+        "wiiuOnlyTools": {name: runtime[name] for name in sorted(runtime.keys() - official.keys())},
+    }
+    write(DOCS / "nightly-parity.json", json.dumps(result, indent=2, ensure_ascii=False) + "\n", check)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--nightly-source", type=Path, help="audit a staged Nightly source tree")
     args = parser.parse_args()
+    if args.nightly_source:
+        nightly_audit(args.nightly_source, args.check)
+        return
     runtime = implemented()
     snapshots = []
     report = ["""# MCP tool parity
