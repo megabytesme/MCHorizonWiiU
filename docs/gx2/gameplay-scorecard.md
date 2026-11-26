@@ -259,3 +259,15 @@ change in this Survival session. The sampled health and camera angles
 were unchanged.
 The Inventory view supplies a direct-mode observation with different
 geometry and movement evidence from the fixed-scale camera.
+
+## RC 33 same-binary shared HUD
+
+The repeated same-camera 75% direct windows measured 73.760 and 74.067 ms
+per pair. Shared mode measured 76.753 and 75.670 ms. Both submitted 228
+sections per output. Time of day and the associated screen-effect input
+differed. Shared shifted its explicit GPU wait to WHB finish, which took
+41.777–43.261 ms in the measured gameplay windows. Direct remains the
+production path. [Full hardware comparison](rc33-shared-validation.md)
+
+The first corrected RC 34 hardware entry froze during initial terrain
+streaming. [RC 34 physical record](rc34-validation.md#first-hardware-entry)

@@ -93,3 +93,50 @@ world-update, streaming and client-tick spans on 29 gameplay frames.
 The live serial window reported a positive direct HUD fence duration.
 These checks verify the profiler's data path in the interpreter.
 [Loading scorecard](loading-scorecard.json)
+
+## First hardware entry
+
+The exact corrected RC 34 WUHB was installed after both RC 33 arms were
+archived. The builder receipt, embedded RPX and 23,148-entry instance
+archive verified before safe ejection. Authenticated MCP reported
+`0.8.0-rc.34` in Night. The physical run used direct HUD and marker `4`,
+fixed 75%, and the existing Reopen Fixture at distances 6/5.
+
+| Guest-clock measurement | RC 34 hardware |
+| --- | ---: |
+| First loading draw, ms | 607 |
+| Cafe Game handoff, ms | 73,632 |
+| Original game world-ready marker, ms | 136,641 |
+| Prepared sprite cache hits / misses | 28,639 / 2 |
+| UI atlas discovery, ms | 5,237.691 |
+| UI atlas decode, ms | 7,214.481 |
+| UI atlas assembly, ms | 6,585.190 |
+| Core, ms | 30,785.153 |
+| Mob preparation, ms | 30,864.011 |
+| Block behaviours, ms | 43,068.209 |
+| Parallel world preload, ms | 52,233.558 |
+| Nested generator work, ms | 46,839.170 |
+
+In the trace clock, preload ran from 65.515 to 117.748 seconds.
+Behaviour preparation ended at 113.905 seconds and the mob lane at
+101.702 seconds. The preload ended after both. The stages overlap, so
+these durations describe the dependency timeline.
+
+The TV still showed the HUD, first-person arm and a partially streamed
+view. At 145.896 seconds after game entry, Cafe reported `GET_STAT`,
+`INVALID_PATH`, error `-196642` and `FS_VOLSTATE_FATAL(10)` for an empty
+path. Both GamePad pause and HOME were unresponsive. This run never
+reached a settled paired-terrain measurement. The user powered down and
+the trace and SD artifacts were archived. The archive preflight still
+matched its expected digest. Verified RC 33 was restored to the card.
+
+The failure was reproduced at the source boundary without the console.
+`shader_pack_inputs` can cache an empty `PathBuf` when the hosted presenter
+has no desktop renderer or selected pack. A later `follow_frame` call uses
+that cached path before its 500 ms expiry and calls `Path::exists`. The
+pinned Cafe Rust standard library forwards the empty buffer to `FSGetStat`
+as a lone NUL. The RC 35 fix exits `follow_frame` before any desktop
+path lookup when it has no renderer, and skips a pack existence query
+when the selection is empty. The host regression reproduced the old
+query and verified that the corrected path removes it. The precise
+physical redraw that crossed the refresh boundary is unrecorded.

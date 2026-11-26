@@ -272,3 +272,12 @@ save barrier preceded Night by 34.150 s. Teardown again recovered all
 Process Rust requested memory was 51,290,256 bytes after teardown, with a
 387,286,187-byte high-water mark. The second session published a new
 HZP3 file and the previous one remained readable at its recovery path.
+
+## RC 34 physical entry
+
+The existing prepared instance reached the world-ready marker at
+136.641 seconds. The main preload lasted 52.234 seconds and finished
+after the behaviour and mob lanes. Initial terrain streaming then
+stalled after Cafe rejected an empty filesystem path. The
+[physical record](rc34-validation.md#first-hardware-entry) covers that
+failure and its correction. [Machine-readable scorecard](loading-scorecard.json)

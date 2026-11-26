@@ -638,3 +638,14 @@ Indexed collision remapping replaces 44.7 million identity comparisons
 per build. Mob and HUD texture discovery use the archive's index for
 matching assets, with resource pack and loose-file paths preserved.
 These paths retain prepared schema 7. [Physical loading record](loading-performance.md)
+
+## Hardware outcome and next candidate
+
+The same-binary RC 33 comparison moved the direct HUD and terrain wait
+into WHB frame finish. Paired cadence showed no consistent improvement.
+The direct path remains the production default. [Hardware comparison](rc33-shared-validation.md)
+
+The corrected RC 34 package exposed an empty-path filesystem query on
+hardware during initial streaming. RC 35 skips the desktop frame check
+when the native presenter has no desktop renderer. The verified RC 33
+package was restored for benchmark work. [RC 34 failure and diagnosis](rc34-validation.md#first-hardware-entry)

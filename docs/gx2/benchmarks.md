@@ -104,9 +104,47 @@ correctly bound archive. The fresh world had 11 resident columns at the
 600-second spawn-readiness deadline, below the original gate of 90.
 The run was cancelled, completed the save barrier, restored Night with
 234,880,920 GX2 heap bytes free and left the report list empty. The RC 32
-host harness passed all 33 benchmark and control tests. Timed gameplay
-on the console remains pending. Village keeps its original route and
-acceptance rules.
+host harness passed all 33 benchmark and control tests. Village keeps its
+original route and acceptance rules.
+
+### RC 33 physical benchmarks
+
+The verified RC 33 package ran both benchmarks on 26 November 2026 with
+profile mode `4` and direct HUD. Neither run changed its readiness rules,
+render distance of 6 or simulation distance of 5. Each used the owned
+benchmark world and returned to a report in Night. The teardown restored
+234,880,920 free GX2 bulk bytes and a 234,880,896-byte largest block.
+
+| Physical measurement | Stationary | Stock Village |
+| --- | ---: | ---: |
+| Fixed world resolution | 100% | 75% |
+| Spawn readiness, s | 157.007 | 145.780 |
+| Scene readiness, s | 144.266 | 164.843 |
+| Resident scene columns at readiness | 213 | 213 |
+| Visible sections per display at readiness | 562 | 562 |
+| Timed paired submissions | 295 | 101 |
+| Paired submissions with terrain on both displays | 295 | 58 |
+| Eligible contiguous intervals | 294 | 57 |
+| Timed elapsed / eligible elapsed, ms | 30,047.630 / 29,939.683 | 12,027.886 / 7,498.218 |
+| Eligible wall duration | 99.64% | 62.34% |
+| Eligible interval p50 / p95 / p99, ms | 95.126 / 108.824 / 262.664 | 140.992 / 183.192 / 191.944 |
+| Longest sequence of ineligible frames | 0 | 43 |
+
+The archived report passed the stationary timing and coverage checks. It
+recorded the camera at `(-960, 126.62, 80)`, yaw `0°` and pitch `35°`,
+and 562 sections on each display at both measurement boundaries. The
+view averaged 9.82 paired submissions per second. Both readiness phases
+continued streaming and settling after reaching all 213 columns.
+
+Stock Village improved coverage by 6.08 percentage points from the RC 29
+reference. Coverage still dropped to zero on both outputs during flight.
+The two coarse timing windows that ended with zero visible sections
+reported 111 uploads totalling 5,777,984 bytes. At 161.263 seconds of
+scene readiness, 561 sections were visible on each display and the
+aggregate pending count was still 51. The next bounded diagnostic should
+split pending client mesh work, pending uploads and integrated-server
+messages and relate them to the forward route and terrain loss. The
+stock route and score remain unchanged.
 
 ## Capture format and interpretation
 

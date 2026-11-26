@@ -715,6 +715,228 @@
           }
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.34",
+      "source_commit": "f29203621f6c0cae3b5f672164098c16b528231d",
+      "engine_tree": "ce22c0c33105cb90e2e70b233c051f0d433fa921",
+      "toolchain": "1.1.0",
+      "candidate_wuhb_sha256": "10403e6e8719efc879291670d713708441ae4a66de57bf1037e55bcea62a987e",
+      "minecraft": "26.3",
+      "prepared_schema": 7,
+      "archive_version": 2,
+      "archive_entries": 23148,
+      "manifest_sha256": "635320e23eae6285e515b22a9d426be4d7a0a47f39a71da5a516967cace6c95d",
+      "archive_sha256": "ed03f05069fe4702c748b24cbe4fc8d91ed9cd62328d9cdf52243889ed44801a",
+      "archive_content_sha256": "48f175d7d0a613267191f8c7f478fabf7859daefe5b7cff95c4e79844afeaca8",
+      "profile_mode": "4",
+      "observed_on": "2026-11-26",
+      "clock_notes": "Guest elapsed time starts at hosted entry. Trace spans run concurrently. The fixed-scale world-ready marker preceded the physical fatal error and stable terrain measurement.",
+      "cases": [
+        {
+          "id": "existing_world_rc34_interrupted_before_settled_terrain",
+          "workload": "First hosted launch after boot, existing Reopen Fixture and sprite cache",
+          "effective_scale_percent": 75,
+          "serial_event_bounds": [
+            1868,
+            2044
+          ],
+          "guest_milestone_ms": {
+            "loading first draw returned": 607,
+            "Cafe Game handoff begin": 73632,
+            "original Game initialized; pending entry starts": 114551,
+            "first original Game frame returned": 136641,
+            "Game world-entry pending state cleared": 136641,
+            "Night last observed": -393,
+            "Night loading frame": -144
+          },
+          "startup_trace_spans": {
+            "mods.overlay": [
+              {
+                "trace_start_ms": 503.356,
+                "duration_ms": 13874.998
+              }
+            ],
+            "ui.panorama": [
+              {
+                "trace_start_ms": 15282.176,
+                "duration_ms": 2289.914
+              }
+            ],
+            "ui.atlas_discovery": [
+              {
+                "trace_start_ms": 15282.097,
+                "duration_ms": 5237.691
+              }
+            ],
+            "ui.atlas_decode": [
+              {
+                "trace_start_ms": 20519.895,
+                "duration_ms": 7214.481
+              }
+            ],
+            "ui.atlas_assemble": [
+              {
+                "trace_start_ms": 27734.509,
+                "duration_ms": 6585.19
+              }
+            ],
+            "ui.atlas": [
+              {
+                "trace_start_ms": 15282.091,
+                "duration_ms": 19207.629
+              }
+            ],
+            "ui.load": [
+              {
+                "trace_start_ms": 15282.046,
+                "duration_ms": 19236.309
+              }
+            ],
+            "core.sprite_cache_open": [
+              {
+                "trace_start_ms": 41450.655,
+                "duration_ms": 5027.692
+              }
+            ],
+            "core.block_facts": [
+              {
+                "trace_start_ms": 41450.652,
+                "duration_ms": 11265.369
+              }
+            ],
+            "core.block_models_sprites": [
+              {
+                "trace_start_ms": 41450.65,
+                "duration_ms": 22094.629
+              }
+            ],
+            "core": [
+              {
+                "trace_start_ms": 34519.004,
+                "duration_ms": 30785.153
+              }
+            ],
+            "pack.assemble": [
+              {
+                "trace_start_ms": 67394.373,
+                "duration_ms": 1581.391
+              }
+            ],
+            "handoff.renderer_textures": [
+              {
+                "trace_start_ms": 70806.754,
+                "duration_ms": 2244.347
+              }
+            ],
+            "handoff.game_cpu": [
+              {
+                "trace_start_ms": 70806.164,
+                "duration_ms": 2795.616
+              }
+            ],
+            "rest.mobs": [
+              {
+                "trace_start_ms": 70837.575,
+                "duration_ms": 30864.011
+              }
+            ],
+            "world.preload.generator": [
+              {
+                "trace_start_ms": 65623.401,
+                "duration_ms": 46839.17
+              }
+            ],
+            "rest.behaviours": [
+              {
+                "trace_start_ms": 70836.756,
+                "duration_ms": 43068.209
+              }
+            ],
+            "rest": [
+              {
+                "trace_start_ms": 70808.795,
+                "duration_ms": 43097.153
+              }
+            ],
+            "world.preload": [
+              {
+                "trace_start_ms": 65514.762,
+                "duration_ms": 52233.558
+              }
+            ],
+            "world.make_streaming": [
+              {
+                "trace_start_ms": 116993.484,
+                "duration_ms": 2196.882
+              }
+            ],
+            "sync.network_recipes": [
+              {
+                "trace_start_ms": 119749.89,
+                "duration_ms": 2941.827
+              }
+            ],
+            "server.open_world": [
+              {
+                "trace_start_ms": 128630.29,
+                "duration_ms": 6497.231
+              }
+            ],
+            "server.sync_adopt": [
+              {
+                "trace_start_ms": 135127.635,
+                "duration_ms": 0.029
+              }
+            ]
+          },
+          "original_game_cycle_elapsed_ms": 136119,
+          "generator_data_construction_ms": 46838.962,
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311,
+            "dirty": false
+          },
+          "read_totals": {
+            "ui_atlas": {
+              "archive_opens": 1,
+              "disk_fallbacks": 0,
+              "entry_hits": 8408,
+              "entry_misses": 3722,
+              "reads": 3801,
+              "small_reads": 3400,
+              "read_bytes": 18716915,
+              "read_requests": 8401,
+              "request_bytes": 8692478,
+              "read_ahead_hits": 4600,
+              "seeks": 3801
+            },
+            "block_models_sprites": {
+              "archive_opens": 1,
+              "disk_fallbacks": 1,
+              "entry_hits": 14382,
+              "entry_misses": 5001,
+              "reads": 4516,
+              "small_reads": 3502,
+              "read_bytes": 31784821,
+              "read_requests": 19821,
+              "request_bytes": 18941317,
+              "read_ahead_hits": 15305,
+              "seeks": 4516
+            }
+          },
+          "failure": {
+            "guest_elapsed_ms": 145896,
+            "operation": "GET_STAT",
+            "argument": "",
+            "status": "INVALID_PATH",
+            "error_code": -196642,
+            "client_volume_state": "FS_VOLSTATE_FATAL",
+            "settled_paired_terrain": false
+          }
+        }
+      ]
     }
   ],
   "candidate_measurements": [
