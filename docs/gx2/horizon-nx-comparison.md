@@ -56,3 +56,10 @@ and reopen. Record independent visible sections, presented cadence, server
 TPS and memory recovery. Use 30 FPS-equivalent as the initial measured
 target once this fixture runs. Add two TV viewports as a separate workload
 with simultaneous GamePad output.
+
+An exact-source host fixture now compares two moving views against the
+single-view Cafe visibility and translucency decisions. Shared residency,
+disjoint visibility, exact clip coordinates and replacement invalidation
+passed. Native validation needs independent sorted GPU index storage and
+player-owned HUD and input state.
+[Two-view terrain fixture](../../wiiu/diagnostics/gx2-split-terrain/README.md)
