@@ -151,6 +151,9 @@ runner checks the reopened player's exact durable position, native PCM and
 heap recovery on each round. The evidence includes both display captures,
 the CPU mode and phase timestamps in `acceptance.jsonl`.
 
-The local runner needs no account or network approval. For HTTPS checks, use
-the existing `tools/mcp_codex_cemu_test.py --resume` flow with a previously
-authorized disposable identity, or arrange the normal consent separately.
+The local runner needs no account or network approval. For HTTPS checks,
+use `tools/mcp_codex_cemu_test.py --resume` with the previously authorized
+disposable identity and the same HTTPS endpoint. Add `--game` to repeat
+the hosted launch and save using the persisted scopes and Night settings.
+The resumed run leaves local permission controls alone and requires a new
+save barrier and return to Night for each recorded round.

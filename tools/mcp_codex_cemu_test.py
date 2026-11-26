@@ -9,6 +9,7 @@ import re
 import shutil
 import ssl
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -61,8 +62,12 @@ def call(codex, env, workspace, tool, arguments=None):
         reply = rpc(4, "mcpServer/tool/call", {
             "threadId": thread, "server": "horizon_cemu", "tool": tool, "arguments": arguments or {},
         })
-        if reply.get("isError") or not reply.get("content"):
-            raise RuntimeError(f"Tool call {tool} returned an error or empty result")
+        if reply.get("isError"):
+            detail = next((block["text"] for block in reply.get("content", [])
+                           if block.get("type") == "text" and "text" in block), "No error detail.")
+            raise RuntimeError(f"Tool call {tool} failed. {detail[:300]}")
+        if not reply.get("content"):
+            raise RuntimeError(f"Tool call {tool} returned an empty result")
         return reply
     finally:
         client.close()
@@ -71,10 +76,16 @@ def call(codex, env, workspace, tool, arguments=None):
 def exercise(origin, ca, window, state, resume=False, game=False):
     codex = shutil.which("codex")
     assert codex
-    state.mkdir(parents=True, exist_ok=True)
     env = os.environ | {"CODEX_HOME": str(state), "CODEX_CA_CERTIFICATE": str(ca)}
-    if not resume:
-        (state / "config.toml").write_text(
+    config = state / "config.toml"
+    if resume:
+        with config.open("rb") as file:
+            server = tomllib.load(file).get("mcp_servers", {}).get("horizon_cemu", {})
+        if server.get("url") != f"{origin}/mcp":
+            raise ValueError("resume requires an existing Codex fixture for the same HTTPS endpoint")
+    else:
+        state.mkdir(parents=True, exist_ok=True)
+        config.write_text(
             'mcp_oauth_credentials_store = "file"\n[mcp_servers.horizon_cemu]\n'
             f'url = "{origin}/mcp"\n', encoding="utf-8")
         # The initial Agent Control page is focused on HTTPS connection.
@@ -119,14 +130,16 @@ def exercise(origin, ca, window, state, resume=False, game=False):
         versions = json.loads(result["content"][0]["text"])
         assert versions[0]["minecraft"] == "26.3" and versions[0]["installed"] is True
     print("Two independent Codex processes listed and called the real Night versions tool.")
-    if game and not resume:
-        run_game(lambda tool, args=None: call(codex, env, state, tool, args), window, "Codex")
+    if game:
+        run_game(lambda tool, args=None: call(codex, env, state, tool, args), window, "Codex",
+                 configure_permissions=not resume)
 
 
-def run_game(invoke, window, client_name):
-    # Enter Night's Agent Control settings and grant both local permissions.
-    for key in (83, 83, 83, 83, 90, 83, 90, 83, 90, 88, 88):
-        press(window, key)
+def run_game(invoke, window, client_name, *, configure_permissions=True):
+    if configure_permissions:
+        # Enter Night's Agent Control settings and grant both local permissions.
+        for key in (83, 83, 83, 83, 90, 83, 90, 83, 90, 88, 88):
+            press(window, key)
     rounds = int(os.environ.get("MCHORIZON_CEMU_ROUND_TRIPS", "1"))
     if rounds < 1:
         raise ValueError("at least one hosted game round trip is required")
@@ -155,6 +168,19 @@ def wait_for_cafe_performance(invoke):
             return game
         time.sleep(2)
     raise RuntimeError("Authenticated game_state returned no paired Cafe gameplay window")
+
+
+def wait_for_save_return(log, offset, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with log.open("rb") as handle:
+            handle.seek(offset)
+            tail = handle.read()
+        barrier = tail.find(b"hosted save barrier completed")
+        if barrier != -1 and tail.find(b"frame.home.play", barrier) != -1:
+            return
+        time.sleep(2)
+    raise RuntimeError("The hosted game did not complete its save and return.")
 
 
 def play_and_save(invoke, window, client_name, index, evidence):
@@ -243,6 +269,9 @@ def play_and_save(invoke, window, client_name, index, evidence):
                 json.dump(profile, output, indent=2)
                 output.write("\n")
 
+    if evidence:
+        log = evidence / "portable/log.txt"
+        before_quit = log.stat().st_size
     quit_reply = invoke("game_quit")
     # Launcher read tools remain callable while the original game saves.
     launcher_during_save = invoke("versions", {"installed": True})
@@ -258,17 +287,8 @@ def play_and_save(invoke, window, client_name, index, evidence):
     print(f"{client_name} requested the original hosted quit for session {index} and called Night again.",
           flush=True)
     if evidence:
-        log = evidence / "portable/log.txt"
-        deadline = time.monotonic() + int(os.environ.get("MCHORIZON_CEMU_SAVE_RETURN_TIMEOUT", "120"))
-        while time.monotonic() < deadline:
-            trace = log.read_text(encoding="utf-8", errors="replace")
-            if (trace.count("hosted save barrier completed") >= index
-                    and trace.count("frame.home.play") >= index + 1):
-                print(f"Session {index} completed its save barrier and returned to Night.", flush=True)
-                break
-            time.sleep(2)
-        else:
-            raise RuntimeError(f"Hosted game {index} never completed its save and return.")
+        wait_for_save_return(log, before_quit, int(os.environ.get("MCHORIZON_CEMU_SAVE_RETURN_TIMEOUT", "120")))
+        print(f"Session {index} completed its save barrier and returned to Night.", flush=True)
         launcher_after_save = invoke("versions", {"installed": True})
         receipt = {
             "world": saved,
