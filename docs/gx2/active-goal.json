@@ -313,7 +313,11 @@
       "independent_output_dimensions": [[1920, 1080], [854, 480]],
       "save_barrier": "passed",
       "ordinary_files_byte_identical": 26,
-      "same_session_second_reopen": "running"
+      "same_session_second_reopen": "passed",
+      "same_session_second_game_frame_ms": 533869,
+      "bulk_free_after_game_drop_bytes": [234880920, 234880920],
+      "rust_live_after_game_drop_bytes": [49374088, 49447406],
+      "authenticated_clean_exit": true
     }
   },
   "save_and_revocation_qualification": {
@@ -325,6 +329,10 @@
     "persistence_host_tests": 7,
     "builder_host_tests": 26,
     "revocation_host_regression": "passed",
-    "native_build": "running"
+    "native_build": "passed",
+    "rpx_sha256": "be1ea346a9fd6fac95f9c0248fe72e0cfc08015fcd183435f254fe2f1f4bc6b9",
+    "wuhb_sha256": "0ad9f8282a31f2b11eef68ce1708210fd0615e9f5c6aae9121cddd8d8d4b5159",
+    "estimated_aroma_headroom_bytes": 12657984,
+    "exact_package_runtime": "pending"
   }
 }

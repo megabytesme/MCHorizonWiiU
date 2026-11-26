@@ -1,0 +1,215 @@
+diff --git a/wiiu/loading_app/src/night_benchmark_reports.rs b/wiiu/loading_app/src/night_benchmark_reports.rs
+index a0c3165e5287828c67a8479c8e7394db414d3bce..2a12eabede99c8ef9928272fb11c4e0520abeb51 100644
+--- a/wiiu/loading_app/src/night_benchmark_reports.rs
++++ b/wiiu/loading_app/src/night_benchmark_reports.rs
+@@ -1,5 +1,7 @@
+-use super::{plain, store};
++use super::{plain, store, BenchmarkProfile, BENCHMARK_SCENES};
+ use serde_json::Value;
++use std::fs::File;
++use std::io::{Read, Seek, SeekFrom};
+ use std::path::Path;
+ 
+ const MAX_REPORT_BYTES: u64 = 2 * 1024 * 1024;
+@@ -18,6 +20,60 @@ pub(super) fn read(folder: &Path, id: &str) -> Option<Value> {
+         .then_some(value)
+ }
+ 
++pub(super) const CAPTURE_CHUNK_BYTES: u64 = 48 * 1024;
++// Keep the published HZP3 layout in sync with gx2_profile.c.
++const CAPTURE_HEADER_BYTES: usize = 28;
++const CAPTURE_FRAME_BYTES: u32 = 352;
++const CAPTURE_CAPACITY: u32 = 4096;
++
++pub(super) fn capture_chunk(folder: &Path, id: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
++    let (report_stem, profile) = id.strip_suffix(".hzp")?.rsplit_once('-')?;
++    BenchmarkProfile::parse(profile)?;
++    let (stamp, scenario) = report_stem.strip_prefix("game-")?.split_once('-')?;
++    if stamp.len() != 14
++        || !stamp.bytes().all(|byte| byte.is_ascii_digit())
++        || !BENCHMARK_SCENES.iter().any(|(name, _)| *name == scenario)
++        || !plain(folder, true)
++        || !plain(&folder.join(format!("{report_stem}.json")), false)
++    {
++        return None;
++    }
++    let path = folder.join(id);
++    if !plain(&path, false) {
++        return None;
++    }
++
++    let mut capture = File::open(path).ok()?;
++    let metadata = capture
++        .metadata()
++        .ok()
++        .filter(|metadata| metadata.is_file())?;
++    let mut header = [0; CAPTURE_HEADER_BYTES];
++    capture.read_exact(&mut header).ok()?;
++    let [magic, version, clock_hz, record_size, capacity, count, total] =
++        std::array::from_fn(|index| {
++            u32::from_be_bytes(header[index * 4..index * 4 + 4].try_into().unwrap())
++        });
++    let size = CAPTURE_HEADER_BYTES as u64 + u64::from(count) * u64::from(CAPTURE_FRAME_BYTES);
++    if magic != u32::from_be_bytes(*b"HZP3")
++        || version != 3
++        || clock_hz == 0
++        || record_size != CAPTURE_FRAME_BYTES
++        || capacity != CAPTURE_CAPACITY
++        || count == 0
++        || count != capacity.min(total)
++        || metadata.len() != size
++        || offset >= size
++    {
++        return None;
++    }
++
++    capture.seek(SeekFrom::Start(offset)).ok()?;
++    let mut bytes = vec![0; (size - offset).min(CAPTURE_CHUNK_BYTES) as usize];
++    capture.read_exact(&mut bytes).ok()?;
++    Some((size, bytes))
++}
++
+ /// Keep the standard measurement data and omit local report annotations and attachments.
+ pub(super) fn for_agent(mut report: Value) -> Value {
+     if let Some(fields) = report.as_object_mut() {
+@@ -96,6 +152,48 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn captures_are_bounded_complete_hzp3_files_with_a_published_report() {
++        let scratch = Scratch::new();
++        let folder = &scratch.0;
++        let report = "game-20261126201800-cafe-stationary";
++        let id = "game-20261126201800-cafe-stationary-4r.hzp";
++        let path = folder.join(id);
++        let records = 160;
++        let mut fixture = [
++            u32::from_be_bytes(*b"HZP3"),
++            3,
++            62_156_250,
++            352,
++            4096,
++            records,
++            records,
++        ]
++        .into_iter()
++        .flat_map(u32::to_be_bytes)
++        .collect::<Vec<_>>();
++        fixture.extend((0..records * 352).map(|index| index as u8));
++        fs::write(&path, &fixture).unwrap();
++        assert!(capture_chunk(folder, id, 0).is_none());
++        fs::write(folder.join(format!("{report}.json")), "{}").unwrap();
++
++        let (total, first) = capture_chunk(folder, id, 0).unwrap();
++        assert_eq!(total, fixture.len() as u64);
++        assert_eq!(first.len(), 48 * 1024);
++        let (_, tail) = capture_chunk(folder, id, first.len() as u64).unwrap();
++        assert_eq!([first, tail].concat(), fixture);
++        assert!(capture_chunk(folder, id, total).is_none());
++
++        fs::write(&path, &fixture[..fixture.len() - 1]).unwrap();
++        assert!(capture_chunk(folder, id, 0).is_none());
++        fixture[0] = 0;
++        fs::write(&path, &fixture).unwrap();
++        assert!(capture_chunk(folder, id, 0).is_none());
++        fs::rename(&path, folder.join("loose-4r.hzp")).unwrap();
++        assert!(capture_chunk(folder, "loose-4r.hzp", 0).is_none());
++        assert!(capture_chunk(folder, "../loose-4r.hzp", 0).is_none());
++    }
++
+     #[test]
+     fn refuses_paths_non_reports_and_excess_size() {
+         let scratch = Scratch::new();
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 32c4e5afe18e26dda2c0dda69468f75575ba6cdf..e4a08fbcb61d53598feaf523231a61d97fc2e059 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -588,6 +588,7 @@ const READ: &[&str] = &[
+     "multiplayer_list",
+     "wiiu_benchmark_reports",
+     "wiiu_benchmark_report",
++    "wiiu_benchmark_capture",
+     "wiiu_benchmark_status",
+ ];
+ const MANAGE: &[&str] = &[
+@@ -758,6 +759,19 @@ fn catalog() -> &'static [Value] {
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_benchmark_capture",
++                    "description": "Read one base64 chunk of a published Wii U benchmark HZP3 capture. Use the instance and capture_id from benchmark status. Start at offset 0, decode each chunk separately, append in order, and follow next_offset until null.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {
++                        "type": "object", "properties": {
++                            "instance": {"type": "string", "maxLength": 96},
++                            "capture_id": {"type": "string", "maxLength": 96},
++                            "offset": {"type": "integer", "minimum": 0, "default": 0},
++                        },
++                        "required": ["instance", "capture_id"], "additionalProperties": false,
++                    },
++                }),
+                 json!({
+                     "name": "wiiu_benchmark_start",
+                     "description": "Run a stock Wii U benchmark in the selected installation's isolated benchmark workspace. Starts from the Night home page.",
+@@ -772,7 +786,7 @@ fn catalog() -> &'static [Value] {
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_status",
+-                    "description": "Read the Wii U benchmark lifecycle phase, installation ID, published report ID and selected profile capture ID. Wait for night_home_ready before starting another run.",
++                    "description": "Read the Wii U benchmark lifecycle phase, installation ID, published report ID and selected profile capture ID. Use wiiu_benchmark_capture for the saved capture. Wait for night_home_ready before starting another run.",
+                     "annotations": {"readOnlyHint": true},
+                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                 }),
+@@ -1048,6 +1062,18 @@ impl Backend for NightTools {
+                 "Changing saved bookmarks requires current launcher.manage approval.",
+             ));
+         }
++        if name == "wiiu_benchmark_capture"
++            && (disconnected()
++                || !launcher_allowed()
++                || !principal.is_active()
++                || !principal.scopes.contains(Scopes::LAUNCHER_READ))
++        {
++            return Err(Fault::new(
++                403,
++                -32000,
++                "Reading a saved benchmark capture requires current launcher.read approval.",
++            ));
++        }
+         let result = service.tool(name, args);
+         Ok(match result {
+             Ok(output) => text_result(&output.to_string(), false),
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index 4350477b8e543e225d30a4d7731ef4cce465a23e..430cf4feb702022855f7a0bd3f2063696df0e2c1 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -76,6 +76,27 @@ impl<G: GameFiles> LocalService<G> {
+                     json!({"instance": instance, "id": id, "report": benchmark_reports::for_agent(report)}),
+                 )
+             }
++            "wiiu_benchmark_capture" if contains(&["instance", "capture_id", "offset"]) => {
++                let instance = args["instance"]
++                    .as_str()
++                    .ok_or("The capture's benchmark installation ID is required.")?;
++                let id = args["capture_id"]
++                    .as_str()
++                    .ok_or("The benchmark capture ID is required.")?;
++                let offset = args.get("offset").map_or(Some(0), Value::as_u64)
++                    .ok_or("Use a nonnegative integer byte offset.")?;
++                let folder = self.benchmark_folder(instance)
++                    .ok_or("This benchmark installation is unavailable.")?;
++                let (size, bytes) = benchmark_reports::capture_chunk(&folder, id, offset)
++                    .ok_or("This benchmark capture or byte offset is unavailable.")?;
++                let end = offset + bytes.len() as u64;
++                Ok(json!({
++                    "format": "HZP3", "encoding": "base64", "instance": instance,
++                    "capture_id": id, "offset": offset, "total_bytes": size,
++                    "next_offset": (end < size).then_some(end),
++                    "data": horizon_client::lan::base64(&bytes),
++                }))
++            }
+             "instance_list" if contains(&[]) => {
+                 let versions = self.listing(super::List::Instances);
+                 let rows: Vec<_> = versions

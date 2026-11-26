@@ -1,0 +1,431 @@
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index f1def1ea7653bf1dbb4a8f330ccde1d702e106cb..4f8e25c8f2545c774fca2b71d943451091da68c1 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -590,6 +590,8 @@ const READ: &[&str] = &[
+ const MANAGE: &[&str] = &[
+     "instance_select",
+     "multiplayer_add",
++    "wiiu_multiplayer_edit",
++    "multiplayer_remove",
+     "wiiu_profile_select",
+     CLOSE_TOOL,
+ ];
+@@ -667,6 +669,21 @@ fn catalog() -> &'static [Value] {
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_multiplayer_edit",
++                    "description": "Edit a saved Night bookmark without connecting. Use its exact address from multiplayer_list and supply current_name when duplicate addresses have different labels.",
++                    "inputSchema": {
++                        "type": "object",
++                        "properties": {
++                            "instance": {"type": "string"},
++                            "address": {"type": "string", "maxLength": 253},
++                            "current_name": {"type": "string", "maxLength": 24},
++                            "new_address": {"type": "string", "maxLength": 253},
++                            "name": {"type": "string", "maxLength": 24},
++                        },
++                        "required": ["address"], "additionalProperties": false,
++                    },
++                }),
+                 json!({
+                     "name": "wiiu_multiplayer_join",
+                     "description": "Join an existing Night multiplayer bookmark with the selected profile and installation. Pass the exact address returned by multiplayer_list. Starts from the Night home page.",
+@@ -748,6 +765,20 @@ fn catalog() -> &'static [Value] {
+             .filter_map(|mut tool| {
+                 let name = tool["name"].as_str()?;
+                 NightTools.required(name)?;
++                if name == "multiplayer_remove" {
++                    tool["description"] = "Remove a saved Night bookmark. Pass its exact address from multiplayer_list as server, plus current_name if the address has multiple labels, and confirm the removal.".into();
++                    tool["inputSchema"] = json!({
++                        "type": "object",
++                        "properties": {
++                            "instance": {"type": "string"},
++                            "server": {"type": "string", "maxLength": 253},
++                            "current_name": {"type": "string", "maxLength": 24},
++                            "confirm": {"type": "boolean", "description": "Set to true when the player has agreed to remove this bookmark."},
++                        },
++                        "required": ["server", "confirm"], "additionalProperties": false,
++                    });
++                    return Some(tool);
++                }
+                 let description = match name {
+                     "game_options_get" => Some("Read game option values and valid ranges. Wii U also reports horizonGraphicsPreset, resolutionScale, dynamicResolution and targetFps. Pass a space-separated list of keys or omit keys for all options."),
+                     "game_options_set" => Some("Apply and save one supported Wii U graphics option by key and value. Read its current value and allowed range with game_options_get. For fixed-resolution comparisons use resolutionScale with 50 through 100 in steps of 5."),
+@@ -940,7 +971,20 @@ impl Backend for NightTools {
+         if name.starts_with("game_") {
+             return Ok(game_call(principal, name, args, disconnected));
+         }
+-        let result = local_service().lock().unwrap().tool(name, args);
++        let mut service = local_service().lock().unwrap();
++        if matches!(name, "wiiu_multiplayer_edit" | "multiplayer_remove")
++            && (disconnected()
++                || !launcher_allowed()
++                || !principal.is_active()
++                || !principal.scopes.contains(Scopes::LAUNCHER_MANAGE))
++        {
++            return Err(Fault::new(
++                403,
++                -32000,
++                "Changing saved bookmarks requires current launcher.manage approval.",
++            ));
++        }
++        let result = service.tool(name, args);
+         Ok(match result {
+             Ok(output) => text_result(&output.to_string(), false),
+             Err(error) => text_result(error, true),
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 0b793f2a018c5a4134b3969b4f2afaa0c5d1d046..9445080960a760d51187f126ef2680ceb825f3e5 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -342,6 +342,7 @@ pub struct LocalService<G> {
+     character: usize,
+     keyboard: bool,
+     online: Online,
++    bookmark_changed: bool,
+ }
+ 
+ impl<G: GameFiles> LocalService<G> {
+@@ -378,6 +379,7 @@ impl<G: GameFiles> LocalService<G> {
+             character: 0,
+             keyboard: false,
+             online,
++            bookmark_changed: false,
+         }
+     }
+ 
+@@ -639,6 +641,68 @@ impl<G: GameFiles> LocalService<G> {
+         true
+     }
+ 
++    fn server_record(name: &str, address: &str) -> Result<Server, &'static str> {
++        if !store::label(name, 24) {
++            return Err("Enter a label with 1-24 bytes and no control characters.");
++        }
++        let address = store::endpoint(address)
++            .ok_or("Enter a hostname or IP and an optional port (1-65535).")?;
++        Ok(Server {
++            name: name.to_owned(),
++            address,
++        })
++    }
++
++    fn commit_servers(&mut self, next: Preferences) -> Result<(), &'static str> {
++        if !self.save(next) {
++            return Err(self.message);
++        }
++        if matches!(self.target, Target::Server(_)) {
++            self.target = self
++                .preferences
++                .server
++                .map(|index| Target::Server(self.preferences.servers[index].address.clone()))
++                .unwrap_or(Target::Menu);
++        }
++        Ok(())
++    }
++
++    fn save_server(
++        &mut self,
++        mut next: Preferences,
++        index: Option<usize>,
++        server: Server,
++    ) -> Result<(), &'static str> {
++        match index {
++            Some(index) => {
++                *next
++                    .servers
++                    .get_mut(index)
++                    .ok_or("The saved server is unavailable.")? = server;
++            }
++            None if next.servers.len() < store::ENTRIES => next.servers.push(server),
++            None => return Err("The saved server list is full."),
++        }
++        self.commit_servers(next)
++    }
++
++    fn remove_server(
++        &mut self,
++        mut next: Preferences,
++        index: usize,
++    ) -> Result<Server, &'static str> {
++        if index >= next.servers.len() {
++            return Err("The saved server is unavailable.");
++        }
++        let removed = next.servers.remove(index);
++        next.server = next
++            .server
++            .filter(|&selected| selected != index)
++            .map(|selected| selected - usize::from(selected > index));
++        self.commit_servers(next)?;
++        Ok(removed)
++    }
++
+     fn benchmark_folder(&self, instance: &str) -> Option<PathBuf> {
+         if !store::identifier(instance) {
+             return None;
+@@ -834,7 +898,8 @@ impl<G: GameFiles> LocalService<G> {
+         let selected = self.online.selected();
+         let changed = self.online.tick();
+         self.account_changed(selected);
+-        changed
++        let bookmark_changed = std::mem::take(&mut self.bookmark_changed);
++        changed || bookmark_changed
+     }
+ 
+     pub fn shutdown(&mut self) {
+@@ -1005,20 +1070,10 @@ impl<G: GameFiles> LocalService<G> {
+             Command::Remove {
+                 profile: false,
+                 index,
+-            } => {
+-                next.servers.remove(index);
+-                let selected = next.server == Some(index);
+-                next.server =
+-                    next.server
+-                        .filter(|&i| i != index)
+-                        .map(|i| if i > index { i - 1 } else { i });
+-                if self.save(next) {
+-                    if selected && matches!(self.target, Target::Server(_)) {
+-                        self.target = Target::Menu;
+-                    }
+-                    self.show(Page::Items(List::Servers, 0));
+-                }
+-            }
++            } => match self.remove_server(next, index) {
++                Ok(_) => self.show(Page::Items(List::Servers, 0)),
++                Err(message) => self.message = message,
++            },
+             Command::Toggle(flag) => {
+                 match flag {
+                     SWAP_AB => next.settings.swap_ab = !next.settings.swap_ab,
+@@ -1088,36 +1143,20 @@ impl<G: GameFiles> LocalService<G> {
+                 return;
+             }
+             Edit::Address { index, name } => {
+-                let Some(address) = store::endpoint(text) else {
+-                    self.message = "Enter a hostname or IP and an optional port (1-65535).";
+-                    return;
+-                };
+-                let server = Server {
+-                    name: name.clone(),
+-                    address,
+-                };
+-                match index {
+-                    Some(index) => next.servers[*index] = server,
+-                    None if next.servers.len() < store::ENTRIES => next.servers.push(server),
+-                    None => {
+-                        self.message = "The saved server list is full.";
+-                        return;
+-                    }
++                let result = Self::server_record(name, text)
++                    .and_then(|server| self.save_server(next, *index, server));
++                match result {
++                    Ok(()) => self.show(Page::Items(List::Servers, 0)),
++                    Err(message) => self.message = message,
+                 }
++                return;
+             }
+             _ => {
+                 self.message = "Enter a label with 1-24 bytes and no control characters.";
+                 return;
+             }
+         }
+-        let server_changed = next
+-            .server
+-            .and_then(|index| next.servers.get(index))
+-            .map(|entry| entry.address.clone());
+         if self.save(next) {
+-            if let (Target::Server(_), Some(address)) = (&self.target, server_changed) {
+-                self.target = Target::Server(address);
+-            }
+             self.show(Page::Items(edit.list(), 0));
+         }
+     }
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index d8612712d5318fc722c9c8ef8a5e18024856a8e7..34aef90d2707a75867e4c63d70e5fb83a90c94c0 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -1,4 +1,7 @@
+-use super::{benchmark_reports, store, GameFiles, Launch, LocalService, ResourceStatus, Target};
++use super::{
++    benchmark_reports, store, Edit, GameFiles, Launch, List, LocalService, Page, ResourceStatus,
++    Target,
++};
+ use serde_json::{json, Value};
+ 
+ #[cfg(not(test))]
+@@ -20,6 +23,15 @@ impl<G: GameFiles> LocalService<G> {
+                 .map_or(Some(selected.as_str()), Value::as_str)
+                 .ok_or("Use a valid benchmark installation ID.")
+         };
++        let shared_servers = || {
++            if args
++                .get("instance")
++                .is_some_and(|value| value.as_str() != Some(&selected))
++            {
++                return Err("Night has one shared server list. Use the selected instance.");
++            }
++            Ok(())
++        };
+         match name {
+             "versions" if contains(&["installed"]) => {
+                 if args.get("installed").is_some_and(|v| v != true) {
+@@ -108,49 +120,130 @@ impl<G: GameFiles> LocalService<G> {
+                 Ok(json!(rows))
+             }
+             "multiplayer_list" if contains(&["instance"]) => {
+-                if args
+-                    .get("instance")
+-                    .is_some_and(|v| v.as_str() != Some(&selected))
+-                {
+-                    return Err("Night has one shared server list. Use the selected instance.");
+-                }
++                shared_servers()?;
+                 Ok(json!(self.preferences.servers))
+             }
+             "multiplayer_add" if contains(&["instance", "address", "name"]) => {
+-                if args
+-                    .get("instance")
+-                    .is_some_and(|v| v.as_str() != Some(&selected))
+-                {
+-                    return Err("Night has one shared server list. Use the selected instance.");
+-                }
++                shared_servers()?;
+                 let address = args["address"]
+                     .as_str()
+-                    .and_then(store::endpoint)
+-                    .ok_or("Enter a valid hostname or IP address and optional port.")?;
++                    .ok_or("A server address is required.")?;
+                 let name = args
+                     .get("name")
+                     .map_or(Some("Minecraft Server"), Value::as_str)
+-                    .filter(|name| store::label(name, 48))
+                     .ok_or("Enter a valid server name.")?;
+-                let mut next = self.preferences.clone();
+-                if next.servers.len() >= store::ENTRIES {
++                let server = Self::server_record(name, address)?;
++                if self.preferences.servers.len() >= store::ENTRIES {
+                     return Err("The server list is full.");
+                 }
+-                if !next.servers.iter().any(|server| server.address == address) {
+-                    next.servers.push(store::Server {
+-                        name: name.to_owned(),
+-                        address: address.clone(),
+-                    });
+-                    if !self.save(next) {
+-                        return Err("Could not save the server list.");
+-                    }
++                if !self
++                    .preferences
++                    .servers
++                    .iter()
++                    .any(|entry| entry.address == server.address)
++                {
++                    self.save_server(self.preferences.clone(), None, server.clone())?;
++                }
++                Ok(json!(server))
++            }
++            "wiiu_multiplayer_edit"
++                if contains(&["instance", "address", "current_name", "new_address", "name"]) =>
++            {
++                shared_servers()?;
++                let index = self.bookmark_to_change(args, "address")?;
++                if args.get("new_address").is_none() && args.get("name").is_none() {
++                    return Err("Supply a new address or name for the bookmark.");
++                }
++                let current = &self.preferences.servers[index];
++                let name = args
++                    .get("name")
++                    .map_or(Some(current.name.as_str()), Value::as_str)
++                    .ok_or("Enter a valid server name.")?;
++                let address = args
++                    .get("new_address")
++                    .map_or(Some(current.address.as_str()), Value::as_str)
++                    .ok_or("Enter a valid new server address.")?;
++                let updated = Self::server_record(name, address)?;
++                if updated == *current {
++                    return Ok(json!(updated));
+                 }
+-                Ok(json!({"name": name, "address": address}))
++                if self
++                    .preferences
++                    .servers
++                    .iter()
++                    .enumerate()
++                    .any(|(other, server)| {
++                        other != index
++                            && server.address == updated.address
++                            && (current.address != updated.address || server.name == updated.name)
++                    })
++                {
++                    return Err("Another bookmark would conflict with this address or name.");
++                }
++                self.save_server(self.preferences.clone(), Some(index), updated.clone())?;
++                self.bookmark_changed = true;
++                Ok(json!(updated))
++            }
++            "multiplayer_remove"
++                if contains(&["instance", "server", "current_name", "confirm"]) =>
++            {
++                shared_servers()?;
++                if args["confirm"] != true {
++                    return Err("Confirm removal of this saved bookmark.");
++                }
++                let index = self.bookmark_to_change(args, "server")?;
++                let removed = self.remove_server(self.preferences.clone(), index)?;
++                self.bookmark_changed = true;
++                Ok(json!({"removed": removed}))
+             }
+             _ => Err("This tool's requested options are unavailable on Wii U."),
+         }
+     }
+ 
++    fn bookmark_to_change(&self, args: &Value, key: &str) -> Result<usize, &'static str> {
++        if matches!(
++            self.page,
++            Page::Items(List::Servers, _)
++                | Page::Server(_)
++                | Page::Confirm { profile: false, .. }
++                | Page::Edit(Edit::NewServerName | Edit::ServerName(_) | Edit::Address { .. })
++        ) {
++            return Err("Close Night's local server list or editor before changing a bookmark.");
++        }
++        let address = args[key]
++            .as_str()
++            .filter(|address| store::endpoint(address).as_deref() == Some(*address))
++            .ok_or("Use the exact address from multiplayer_list.")?;
++        let current_name = match args.get("current_name") {
++            Some(value) => Some(
++                value
++                    .as_str()
++                    .filter(|name| store::label(name, 24))
++                    .ok_or("Use the existing bookmark name from multiplayer_list.")?,
++            ),
++            None => None,
++        };
++        let mut matching = self
++            .preferences
++            .servers
++            .iter()
++            .enumerate()
++            .filter(|(_, server)| {
++                server.address == address && current_name.is_none_or(|name| server.name == name)
++            });
++        let (index, _) = matching
++            .next()
++            .ok_or("No saved bookmark matches the supplied identity.")?;
++        if matching.next().is_some() {
++            return Err(if current_name.is_none() {
++                "More than one bookmark has this address. Supply its current_name from multiplayer_list."
++            } else {
++                "Multiple bookmarks have this address and name. Choose one in Night's server list."
++            });
++        }
++        Ok(index)
++    }
++
+     pub(crate) fn tool_launch(&self, args: &Value) -> Result<Launch, &'static str> {
+         if !args.as_object().is_some_and(|a| {
+             a.keys()

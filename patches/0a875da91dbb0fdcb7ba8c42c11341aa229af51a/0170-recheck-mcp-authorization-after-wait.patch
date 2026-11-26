@@ -1,0 +1,67 @@
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index e4a08fbcb61d53598feaf523231a61d97fc2e059..afb8d17f43eff31eac80ab2e7f82054d14389502 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -835,6 +835,9 @@ fn catalog() -> &'static [Value] {
+ 
+ impl Backend for NightTools {
+     fn list(&self, principal: &Principal) -> Vec<Value> {
++        if !launcher_allowed() || !principal.is_active() {
++            return Vec::new();
++        }
+         let live = session().live();
+         catalog()
+             .iter()
+@@ -1050,28 +1053,20 @@ impl Backend for NightTools {
+             return Ok(game_call(principal, name, args, disconnected));
+         }
+         let mut service = local_service().lock().unwrap();
+-        if matches!(name, "wiiu_multiplayer_edit" | "multiplayer_remove")
+-            && (disconnected()
+-                || !launcher_allowed()
+-                || !principal.is_active()
+-                || !principal.scopes.contains(Scopes::LAUNCHER_MANAGE))
+-        {
+-            return Err(Fault::new(
+-                403,
+-                -32000,
+-                "Changing saved bookmarks requires current launcher.manage approval.",
+-            ));
++        if disconnected() {
++            return Err(Fault::new(400, -32000, "Client disconnected"));
+         }
+-        if name == "wiiu_benchmark_capture"
+-            && (disconnected()
+-                || !launcher_allowed()
+-                || !principal.is_active()
+-                || !principal.scopes.contains(Scopes::LAUNCHER_READ))
++        // A local revocation may have landed while this request waited for Night.
++        if !launcher_allowed()
++            || !principal.is_active()
++            || !self
++                .required(name)
++                .is_some_and(|scope| principal.scopes.contains(scope))
+         {
+             return Err(Fault::new(
+                 403,
+                 -32000,
+-                "Reading a saved benchmark capture requires current launcher.read approval.",
++                "This Night tool requires an active grant with its launcher scope.",
+             ));
+         }
+         let result = service.tool(name, args);
+diff --git a/wiiu/mcp/src/session.rs b/wiiu/mcp/src/session.rs
+index 5919f11701dae757668207d6f1038717442774df..b24d84f837b4ec11375a3ef7b39deb6ccc0d0e76 100644
+--- a/wiiu/mcp/src/session.rs
++++ b/wiiu/mcp/src/session.rs
+@@ -156,6 +156,10 @@ impl Session {
+             match result.recv_timeout(DISCONNECT_POLL) {
+                 Ok(value) => {
+                     guard.finished.store(true, Ordering::Release);
++                    // The grant may have been revoked while the game was replying.
++                    if !guard.alive() || disconnected() {
++                        return Err(Error::Cancelled);
++                    }
+                     return Ok(value);
+                 }
+                 Err(mpsc::RecvTimeoutError::Disconnected) => {

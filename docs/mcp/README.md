@@ -179,6 +179,25 @@ launch policy. It uses the selected profile and the ordinary connection
 path. Add an entry through `multiplayer_add` when the server is missing
 from the list.
 
+`wiiu_multiplayer_edit` updates an existing canonical address or label.
+Use `multiplayer_remove` with the exact address as `server` and
+`confirm: true` for an authorized removal. Both use `launcher.manage`.
+Pass `current_name` if more than one saved label uses the same address.
+
+### Disposable worlds in the hosted development recipe
+
+From Night Home, call `wiiu_test_world_create` with an optional signed
+64-bit `seed`. It creates and opens stock Survival under the selected
+installation's private test workspace. Save and return through the
+ordinary gameplay boundary. Use `wiiu_test_worlds_list` with
+`launcher.read` to find your saved test worlds after restart, then call
+`wiiu_test_world_open` with the returned `id`.
+
+Create and open require `launcher.manage`, `game.control` and Night's
+remote launch policy. Their responses carry the ordinary `launch_id`.
+Reopen validates the selected profile and installation, the creator's
+grant, the existing save, lock state and world-directory links.
+
 ### Remote Night cancellation and close
 
 Ordinary remote `play` and `wiiu_multiplayer_join` responses include a
@@ -234,6 +253,16 @@ The JSON includes the benchmark conditions, metrics and frame
 distributions. Saved reports remain available after restarting Night.
 The live status starts in `idle` after a restart. Local labels and
 attachment paths stay on the console.
+
+Use `wiiu_benchmark_capture` with `launcher.read` and the completed run's
+explicit `instance` and `capture_id`. Follow `next_offset` until it is
+null. The Wii U returns up to 48 KiB of bytes per base64 page. The local
+client validates and saves the assembled HZP3 under a new filename.
+
+```powershell
+python -B tools/wiiu_mcp_benchmark_capture.py --codex-home $pairedProfile --ca $pairedCa `
+    --server $serverName --instance default --capture-id $captureId --output $newCapture
+```
 
 ### Gameplay captures
 

@@ -1,0 +1,75 @@
+diff --git a/crates/horizon-client/Cargo.toml b/crates/horizon-client/Cargo.toml
+index 4c27c46f435d387bcff74affaa5a4c82021df92e..b69e627971717bd378995a7c2eb3468acbcb2bdc 100644
+--- a/crates/horizon-client/Cargo.toml
++++ b/crates/horizon-client/Cargo.toml
+@@ -106,7 +106,7 @@ cap-fs-ext = "3"
+ 
+ [target.'cfg(target_os = "cafe")'.dependencies]
+ horizon-client-platform = { path = "../horizon-client-platform", features = ["cafe"] }
+-horizon-mod-api-host = { package = "horizon-mod-api", path = "../horizon-mod-api" }
++mod_platform = { package = "horizon-mod-api", path = "../horizon-mod-api" }
+ mod-points = { package = "horizon-mod-points", path = "../horizon-mod-points" }
+ horizon-wiiu-entropy = { path = "../../wiiu/entropy" }
+ cafe_winit = { package = "winit", path = "../../wiiu/winit" }
+diff --git a/crates/horizon-client/src/entry.rs b/crates/horizon-client/src/entry.rs
+index e86b058860fb8a163d947be0f446b8b5d75bc995..c91bce652399931ce0765b144be36e42e2a55da8 100644
+--- a/crates/horizon-client/src/entry.rs
++++ b/crates/horizon-client/src/entry.rs
+@@ -88,7 +88,7 @@ pub fn run_hosted_cafe(
+ 
+ #[cfg(target_os = "cafe")]
+ fn install_cafe_mod_platform() -> crate::Result<()> {
+-    use horizon_mod_api_host::__private as api;
++    use mod_platform::__private as api;
+     horizon_engine_slots::install_seal(mod_points::__private::seal)?;
+     api::initialize()?;
+     horizon_engine_slots::install_platform(horizon_engine_slots::Platform {
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index f4cb3307733f414f49ac23a113cb98944c6f4861..0e314d97f5f1316fd1df89ff5574a7c1e6de8a68 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -8583,6 +8583,7 @@ impl Game<'_> {
+         pr.lap("pr_projection");
+         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
+         let mut hud = {
++            #[cfg(target_os = "cafe")]
+             horizon_client_platform::cafe_span!(Hud);
+             let mut hud = horizon_client::spans::time("hud", || self.hud(size));
+             self.flush_ime(&mut hud);
+@@ -8667,6 +8668,7 @@ impl Game<'_> {
+         if !title {
+             let (built, static_sections, visible_static_sections, static_stats) =
+                 spans::time("entity_geometry", || {
++                    #[cfg(target_os = "cafe")]
+                     horizon_client_platform::cafe_span!(Entities);
+                     self.entity_geometry(
+                         camera,
+@@ -8782,6 +8784,7 @@ impl Game<'_> {
+         // boundary, not while constructing Frame after geometry has been extracted.
+         let fog = self.frame_fog(camera, &sky, biome, water_fog);
+         if !title {
++            #[cfg(target_os = "cafe")]
+             horizon_client_platform::cafe_span!(Particles);
+             self.client_particle_geometry(camera, alpha, fov_degrees, &mut entities);
+         }
+diff --git a/crates/horizon-client/src/game/world/world_update.rs b/crates/horizon-client/src/game/world/world_update.rs
+index aa9b206b76191c335ac0879aa6e84902c22d08dc..6098afc9f9e3bbb852a352642c4ab740634fe9cb 100644
+--- a/crates/horizon-client/src/game/world/world_update.rs
++++ b/crates/horizon-client/src/game/world/world_update.rs
+@@ -487,10 +487,13 @@ impl Game<'_> {
+                     }
+                     let (key, mesh) = pending.pop().expect("checked above");
+                     match upload(key, &mesh) {
+-                        Err(error)
+-                            if !error
+-                                .is::<horizon_client::presentation::TerrainUploadDeferred>() =>
++                        #[cfg(target_os = "cafe")]
++                        Err(ref error)
++                            if error.is::<horizon_client::presentation::TerrainUploadDeferred>() =>
+                         {
++                            spent.push((key, mesh));
++                        }
++                        Err(error) => {
+                             log::warn!("Horizon: section {key:?} upload failed: {error}");
+                             retry.push((key, mesh));
+                         }

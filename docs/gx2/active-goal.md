@@ -105,24 +105,25 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   revoked that disposable grant before the graceful-close checkpoint.
   The writer fix passed seven host tests covering recovery and concurrent
   saves.
-  [RC 45 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc45-qualification/docs/gx2/rc45-qualification.md)
+  [RC 45 qualification](rc45-qualification.md)
 - RC 46 extends the stock audit to 63 tools and adds authenticated
   retrieval of completed benchmark captures. The pinned native build
   passed and both package hashes verified. The exact package reopened
   the shorter fixture with the original approved grant from a separate
   disposable installation. Both displays reached terrain and the durable
   save barrier completed. All 26 ordinary save files matched by SHA-256.
-  A second reopen is running through the same authenticated session.
+  A second reopen and save passed through the same authenticated session.
   A separate interpreter package is ready to verify report publication
   and HZP3 transport after a paired Title frame. The stock gameplay
   workload still needs a complete timed run.
-  [RC 46 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc46-qualification/docs/gx2/rc46-qualification.md)
+  [RC 46 qualification](rc46-qualification.md)
 
 RC 47 stages shorter Cafe save paths and repeats authorization checks
 after blocked Night operations and game reply delivery. The assembled
 recipe preserves all 63 stock registrations and scopes. The host
 regression rejects a revoked grant after restart and verifies isolation
-of a newly paired read-only grant. The native build is running.
+of a newly paired read-only grant. The native build and package hashes
+passed. [RC 47 qualification](rc47-qualification.md)
 
 ## Physical queue
 
