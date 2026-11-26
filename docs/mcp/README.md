@@ -160,6 +160,16 @@ also accepts the stock `renderDistance`, `simulationDistance`,
 the last paired submission before opening a fixed-scale measurement window.
 Graphics writes are unavailable during a running benchmark.
 
+### Existing profiles in the hosted development recipe
+
+Use `wiiu_profiles_list` with `launcher.read` to get existing profile IDs,
+display labels and readiness. From the Night home page, use
+`wiiu_profile_select` with `launcher.manage` and the returned `id`.
+When an online selection reports `refreshing`, poll `wiiu_profiles_list`
+until the profile is selected and ready before starting a launch. Locked
+profiles use Night's local unlock flow. World listing continues to report
+when a save belongs to a different profile.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from

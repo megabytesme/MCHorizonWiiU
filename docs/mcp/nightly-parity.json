@@ -1,6 +1,6 @@
 {
   "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
-  "assembledTree": "9c843d3b8b82cb4ecc809eab90edd9c01b90287e",
+  "assembledTree": "ef439f4326d8a33a220970dd34f4ddd8c59840ea",
   "embeddedRevision": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
   "tools": {
     "account_list": {
@@ -1338,6 +1338,12 @@
       "game.control"
     ],
     "wiiu_benchmark_status": [
+      "launcher.read"
+    ],
+    "wiiu_profile_select": [
+      "launcher.manage"
+    ],
+    "wiiu_profiles_list": [
       "launcher.read"
     ]
   }

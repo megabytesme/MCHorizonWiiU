@@ -1,0 +1,605 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 489a5a1ec19ba202c69716f519c1054600b7cbbd..0c48536f73fbe036ffc29ea7bb71858957de3bb4 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -131,9 +131,10 @@ pub unsafe extern "C" fn horizon_night_local(
+         return;
+     }
+     let agent_menu = command == local_wire::OPEN_AGENT || mcp::menu_open();
++    let profile_changed = command == local_wire::TICK && !agent_menu && mcp::poll_profile();
+     let mut service = local_service().lock().unwrap_or_else(|e| e.into_inner());
+     if command == local_wire::TICK {
+-        if !service.tick() && !agent_menu {
++        if !service.tick() && !agent_menu && !profile_changed {
+             let mut unchanged = local_wire::LocalMenu::default();
+             unchanged.mode = local_wire::NO_UPDATE;
+             unsafe { output.write(unchanged) };
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 6e9fab8dd26aa78b92ae2d90d6c1c4c37c7d1bd1..01ca4ce74de348e197c8e156a99f34b6e54b2e3f 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -1,7 +1,7 @@
+ //! Hosted Cafe wiring. The HTTP workers never hold or access Game.
+ use super::{
+     local_service, local_wire as wire,
+-    night_menu::{BenchmarkOutcome, BenchmarkRequest, Launch, BENCHMARK_SCENES},
++    night_menu::{BenchmarkOutcome, BenchmarkRequest, Launch, ProfileSelection, BENCHMARK_SCENES},
+     CAFE_APP_ROOT,
+ };
+ use horizon_wiiu_mcp::{
+@@ -14,7 +14,7 @@ use horizon_wiiu_mcp::{
+ use serde_json::{json, Value};
+ use std::path::Path;
+ use std::sync::atomic::{AtomicBool, Ordering};
+-use std::sync::{Mutex, OnceLock};
++use std::sync::{mpsc, Arc, Mutex, OnceLock};
+ use std::time::{Duration, Instant};
+ 
+ #[allow(dead_code)]
+@@ -24,6 +24,7 @@ mod commands;
+ mod menu;
+ 
+ static HOME: AtomicBool = AtomicBool::new(false);
++static LAUNCHER_ALLOWED: AtomicBool = AtomicBool::new(false);
+ static GAME_ALLOWED: AtomicBool = AtomicBool::new(false);
+ static REMOTE_LAUNCH: AtomicBool = AtomicBool::new(false);
+ static NO_AI: AtomicBool = AtomicBool::new(false);
+@@ -63,6 +64,102 @@ static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
+ });
+ static BENCHMARK_CANCEL: AtomicBool = AtomicBool::new(false);
+ 
++struct PendingProfile {
++    principal: Principal,
++    profile: ProfileSelection,
++    cancelled: Arc<AtomicBool>,
++    deadline: Instant,
++    reply: mpsc::SyncSender<Result<&'static str, &'static str>>,
++}
++
++static PROFILE: Mutex<Option<PendingProfile>> = Mutex::new(None);
++const PROFILE_UNAVAILABLE: &str = "Profile selection expired or Night left the home page.";
++
++impl PendingProfile {
++    fn active(&self) -> bool {
++        HOME.load(Ordering::Acquire)
++            && launcher_allowed()
++            && !self.cancelled.load(Ordering::Acquire)
++            && Instant::now() < self.deadline
++            && self.principal.is_active()
++    }
++}
++
++fn discard_profile() {
++    if let Some(request) = PROFILE.lock().unwrap().take() {
++        let _ = request.reply.send(Err(PROFILE_UNAVAILABLE));
++    }
++}
++
++pub(super) fn poll_profile() -> bool {
++    let mut pending = PROFILE.lock().unwrap();
++    let Some(request) = pending.take() else {
++        return false;
++    };
++    // Keep the slot locked through application so a launch cannot preflight
++    // using the previous profile. Recheck after waiting for the owner mutex.
++    let mut service = local_service().lock().unwrap();
++    let result = if request.active() {
++        service.select_agent_profile(request.profile, &request.principal)
++    } else {
++        Err(PROFILE_UNAVAILABLE)
++    };
++    drop(service);
++    let _ = request.reply.send(result);
++    true
++}
++
++fn select_profile(principal: &Principal, args: &Value, disconnected: &dyn Fn() -> bool) -> Value {
++    let requested = args
++        .as_object()
++        .filter(|args| args.len() == 1)
++        .and_then(|args| args.get("id"))
++        .and_then(Value::as_str);
++    let Some((id, profile)) = requested.and_then(|id| Some((id, ProfileSelection::parse(id)?)))
++    else {
++        return text_result("An existing Night profile ID is required.", true);
++    };
++    let deadline = Instant::now() + Duration::from_secs(3);
++    let cancelled = Arc::new(AtomicBool::new(false));
++    let (reply, result) = mpsc::sync_channel(1);
++    let request = PendingProfile {
++        principal: principal.clone(),
++        profile,
++        cancelled: cancelled.clone(),
++        deadline,
++        reply,
++    };
++    {
++        let launch = LAUNCH.lock().unwrap();
++        let mut pending = PROFILE.lock().unwrap();
++        if disconnected() || !request.active() {
++            return text_result(PROFILE_UNAVAILABLE, true);
++        }
++        if pending.as_ref().is_some_and(|old| !old.active()) {
++            pending.take();
++        }
++        if launch.is_some() || pending.is_some() {
++            return text_result(
++                "Night is already starting a game or selecting a profile.",
++                true,
++            );
++        }
++        *pending = Some(request);
++    }
++    while Instant::now() < deadline && !disconnected() {
++        match result.recv_timeout(Duration::from_millis(30)) {
++            Ok(Ok(state)) => {
++                return text_result(&json!({"id": id, "state": state}).to_string(), false)
++            }
++            Ok(Err(error)) => return text_result(error, true),
++            Err(mpsc::RecvTimeoutError::Disconnected) => break,
++            Err(mpsc::RecvTimeoutError::Timeout) => {}
++        }
++    }
++    cancelled.store(true, Ordering::Release);
++    text_result(PROFILE_UNAVAILABLE, true)
++}
++
+ fn benchmark_state() -> Value {
+     let state = BENCHMARK.lock().unwrap();
+     json!({"scenario": state.scenario, "instance": state.instance,
+@@ -195,7 +292,12 @@ pub(super) fn change_policy(service: &mut Service<NightTools>, policy: Policy) -
+     written
+ }
+ 
++pub(super) fn launcher_allowed() -> bool {
++    LAUNCHER_ALLOWED.load(Ordering::Acquire)
++}
++
+ fn load_policy(policy: Policy) {
++    LAUNCHER_ALLOWED.store(policy.enabled && !policy.no_ai, Ordering::Release);
+     GAME_ALLOWED.store(
+         policy.enabled && policy.allow_game && !policy.no_ai,
+         Ordering::Release,
+@@ -208,6 +310,7 @@ fn load_policy(policy: Policy) {
+     if policy.no_ai || !policy.enabled {
+         session().withdraw();
+         discard_launch();
++        discard_profile();
+     }
+ }
+ 
+@@ -234,6 +337,7 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+     }
+     if changed {
+         discard_launch();
++        discard_profile();
+     }
+     false
+ }
+@@ -242,6 +346,7 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+ pub extern "C" fn horizon_night_mcp_shutdown() {
+     HOME.store(false, Ordering::Release);
+     discard_launch();
++    discard_profile();
+     session().withdraw();
+     if let Some(mut menu) = menu().lock().ok() {
+         menu.shutdown();
+@@ -250,6 +355,7 @@ pub extern "C" fn horizon_night_mcp_shutdown() {
+ 
+ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+     HOME.store(false, Ordering::Release);
++    discard_profile();
+     let mut pending = LAUNCH.lock().unwrap();
+     let Some(request) = pending.take() else {
+         return Ok(None);
+@@ -333,6 +439,7 @@ pub(super) struct NightTools;
+ const READ: &[&str] = &[
+     "versions",
+     "settings",
++    "wiiu_profiles_list",
+     "instance_list",
+     "worlds_list",
+     "multiplayer_list",
+@@ -340,7 +447,7 @@ const READ: &[&str] = &[
+     "wiiu_benchmark_report",
+     "wiiu_benchmark_status",
+ ];
+-const MANAGE: &[&str] = &["instance_select", "multiplayer_add"];
++const MANAGE: &[&str] = &["instance_select", "multiplayer_add", "wiiu_profile_select"];
+ const GAMEPAD_SCREENSHOT: &str = "game_screenshot_gamepad";
+ // The stock build recipe does not enable this scratch Cemu configuration.
+ // Physical GamePad readback needs qualification before advertising it.
+@@ -401,6 +508,20 @@ fn catalog() -> &'static [Value] {
+             .iter()
+             .flat_map(|row| row.get("tool").cloned())
+             .chain([
++                json!({
++                    "name": "wiiu_profiles_list",
++                    "description": "List existing Night profile IDs, display labels, selection and readiness.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
++                json!({
++                    "name": "wiiu_profile_select",
++                    "description": "Select an existing Night profile from the home page. If an online profile returns refreshing, wait for wiiu_profiles_list to show it selected and ready.",
++                    "inputSchema": {
++                        "type": "object", "properties": {"id": {"type": "string", "maxLength": 39}},
++                        "required": ["id"], "additionalProperties": false,
++                    },
++                }),
+                 json!({
+                     "name": "wiiu_benchmark_reports",
+                     "description": "List saved Wii U benchmark report IDs in the requested installation. Omit instance to use the selected installation.",
+@@ -518,6 +639,9 @@ impl Backend for NightTools {
+                 "AI features are off: turn off No AI in the launcher's settings",
+             ));
+         }
++        if name == "wiiu_profile_select" {
++            return Ok(select_profile(principal, args, disconnected));
++        }
+         if matches!(name, "wiiu_benchmark_status" | "wiiu_benchmark_cancel") {
+             if !args.as_object().is_some_and(|args| args.is_empty()) {
+                 return Ok(text_result("This tool does not take arguments.", true));
+@@ -553,6 +677,12 @@ impl Backend for NightTools {
+             if request.is_some() {
+                 return Ok(text_result("The game is already starting.", true));
+             }
++            if PROFILE.lock().unwrap().is_some() {
++                return Ok(text_result(
++                    "Wait for Night to finish selecting the profile.",
++                    true,
++                ));
++            }
+             if !REMOTE_LAUNCH.load(Ordering::Acquire) || !principal.is_active() {
+                 return Ok(text_result(
+                     "The player has disabled remote game launches.",
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 1dbe6d2fc0c951ca5edced39bf80c96a8772e17e..419e596b8d8113f4180319850286fe0529b42ab0 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
+ use super::local_wire::*;
+ use super::night_online::{self, Online};
+ use super::night_store::{self as store, Preferences, Profile, Server, Store};
+-use horizon_wiiu_microsoft::{Identity, Provider};
++use horizon_wiiu_mcp::oauth::Principal;
++use horizon_wiiu_microsoft::{Identity, ProfileId, Provider};
+ 
+ #[path = "night_benchmark_reports.rs"]
+ mod benchmark_reports;
+@@ -47,6 +48,22 @@ pub(super) struct BenchmarkRequest {
+     pub(super) instance: String,
+ }
+ 
++pub(super) enum ProfileSelection {
++    Offline(String),
++    Online(ProfileId),
++}
++
++impl ProfileSelection {
++    pub(super) fn parse(value: &str) -> Option<Self> {
++        let (kind, id) = value.split_once(':')?;
++        match kind {
++            "offline" if store::identity(id) => Some(Self::Offline(id.to_owned())),
++            "online" => ProfileId::parse(id).map(Self::Online),
++            _ => None,
++        }
++    }
++}
++
+ pub struct ResourcePin<'a> {
+     pub version: &'a str,
+     pub schema: u64,
+@@ -466,6 +483,9 @@ impl<G: GameFiles> LocalService<G> {
+             return Err(2);
+         }
+         let game = self.game_dir(&self.preferences.instance);
++        if self.online.agent_profile_refreshing() {
++            return Err(5);
++        }
+         let identity = self.online.active();
+         if self.online.selected().is_some() && (identity.is_none() || ACCOUNT_FIXTURE) {
+             return Err(5);
+@@ -734,6 +754,51 @@ impl<G: GameFiles> LocalService<G> {
+         self.online.shutdown();
+     }
+ 
++    fn select_offline_profile(&mut self, index: usize) -> Result<(), &'static str> {
++        let prior_online = self.online.selected();
++        self.online.offline().map_err(night_online::error_label)?;
++        self.account_changed(prior_online);
++        if self.preferences.profile != index {
++            let mut next = self.preferences.clone();
++            next.profile = index;
++            if !self.save(next) {
++                return Err(self.message);
++            }
++            if matches!(self.target, Target::World(_)) {
++                self.target = Target::Menu;
++            }
++        }
++        Ok(())
++    }
++
++    pub(super) fn select_agent_profile(
++        &mut self,
++        profile: ProfileSelection,
++        principal: &Principal,
++    ) -> Result<&'static str, &'static str> {
++        if !matches!(self.page, Page::Home) {
++            return Err("Return to the Night home page before selecting a profile.");
++        }
++        match profile {
++            ProfileSelection::Offline(identity) => {
++                let index = self
++                    .preferences
++                    .profiles
++                    .iter()
++                    .position(|p| p.identity == identity)
++                    .ok_or("The offline profile does not exist.")?;
++                self.select_offline_profile(index)?;
++                Ok("selected")
++            }
++            ProfileSelection::Online(id) => {
++                let prior = self.online.selected();
++                let result = self.online.select_with_agent(id, principal);
++                self.account_changed(prior);
++                result
++            }
++        }
++    }
++
+     fn account_changed(&mut self, previous: Option<horizon_wiiu_microsoft::ProfileId>) {
+         if self.online.selected() != previous && matches!(self.target, Target::World(_)) {
+             self.target = Target::Menu;
+@@ -780,18 +845,10 @@ impl<G: GameFiles> LocalService<G> {
+                 self.show(Page::Online);
+             }
+             Command::Show(page) => self.show(page),
+-            Command::Profile(index) => {
+-                let selected = self.online.selected();
+-                if let Err(error) = self.online.offline() {
+-                    self.message = night_online::error_label(error);
+-                    return;
+-                }
+-                self.account_changed(selected);
+-                next.profile = index;
+-                if self.save(next) {
+-                    self.show(Page::Items(List::Profiles, 0));
+-                }
+-            }
++            Command::Profile(index) => match self.select_offline_profile(index) {
++                Ok(()) => self.show(Page::Items(List::Profiles, 0)),
++                Err(message) => self.message = message,
++            },
+             Command::Server(index) => {
+                 next.server = Some(index);
+                 let address = next.servers[index].address.clone();
+@@ -979,6 +1036,7 @@ impl<G: GameFiles> LocalService<G> {
+         let status = self.installed(&self.preferences.instance);
+         let online = self.online.selected_label();
+         let requires_account = online.is_some() && self.online.active().is_none();
++        let profile_refreshing = self.online.agent_profile_refreshing();
+         let report = match self.page {
+             Page::Report(index, _) => self
+                 .items
+@@ -995,6 +1053,8 @@ impl<G: GameFiles> LocalService<G> {
+                 status.text()
+             } else if let Some(scene) = self.benchmark {
+                 night_online::tr(BENCHMARK_SCENES[scene].1)
++            } else if profile_refreshing {
++                night_online::tr("refreshing")
+             } else if requires_account {
+                 online.map_or("", |(_, status)| status)
+             } else {
+@@ -1007,7 +1067,9 @@ impl<G: GameFiles> LocalService<G> {
+             ready: u8::from(
+                 status == ResourceStatus::Ready
+                     && (self.benchmark.is_some()
+-                        || (!requires_account && (!ACCOUNT_FIXTURE || online.is_none()))),
++                        || (!profile_refreshing
++                            && !requires_account
++                            && (!ACCOUNT_FIXTURE || online.is_none()))),
+             ),
+             settings: (if self.preferences.settings.swap_ab {
+                 SWAP_AB
+diff --git a/wiiu/loading_app/src/night_online.rs b/wiiu/loading_app/src/night_online.rs
+index 46f68a059e401b7ecdc6d2f43a1fe38df3e5377d..2b5fbf7c13c0a7c75e4b9202b6fc908b5ff924d0 100644
+--- a/wiiu/loading_app/src/night_online.rs
++++ b/wiiu/loading_app/src/night_online.rs
+@@ -1,10 +1,12 @@
+ use std::path::Path;
+ 
++use horizon_wiiu_mcp::oauth::Principal;
+ use horizon_wiiu_microsoft::{
+     Accounts, DevicePrompt, Error, Event, Identity, ProfileId, ProfileState, Provider, Verified,
+     Work,
+ };
+ use horizon_wiiu_security::{Protection, Secret, StorageMode, VaultError};
++use serde_json::{json, Value};
+ 
+ use super::local_wire::*;
+ 
+@@ -60,6 +62,7 @@ struct Task {
+     refresh: Option<ProfileId>,
+     expected: Option<ProfileId>,
+     visible: bool,
++    principal: Option<Principal>,
+ }
+ 
+ pub struct Online {
+@@ -142,6 +145,14 @@ impl Online {
+ 
+     pub fn tick(&mut self) -> bool {
+         if let Some(task) = &self.task {
++            if task
++                .principal
++                .as_ref()
++                .is_some_and(|p| !super::night_mcp::launcher_allowed() || !p.is_active())
++            {
++                self.abandon();
++                return true;
++            }
+             if let Some(event) = task.work.poll() {
+                 let (refresh, expected, visible) = (task.refresh, task.expected, task.visible);
+                 match event {
+@@ -227,7 +238,7 @@ impl Online {
+                     .as_ref()
+                     .is_ok_and(|accounts| matches!(accounts.state(id), ProfileState::Saved(_)))
+                 {
+-                    match self.refresh(id, false) {
++                    match self.refresh(id, false, None) {
+                         Ok(()) => return true,
+                         Err(error) => {
+                             if let Ok(accounts) = self.accounts() {
+@@ -305,7 +316,12 @@ impl Online {
+         false
+     }
+ 
+-    fn refresh(&mut self, id: ProfileId, visible: bool) -> Result<(), Error> {
++    fn refresh(
++        &mut self,
++        id: ProfileId,
++        visible: bool,
++        principal: Option<Principal>,
++    ) -> Result<(), Error> {
+         let provider = self.provider.clone();
+         let task = self.accounts()?.refresh(id, &provider)?;
+         self.task = Some(Task {
+@@ -313,6 +329,7 @@ impl Online {
+             refresh: Some(id),
+             expected: Some(id),
+             visible,
++            principal,
+         });
+         if self.selected() == Some(id) {
+             self.automatic_attempted = true;
+@@ -325,16 +342,88 @@ impl Online {
+     }
+ 
+     fn select(&mut self, id: ProfileId) -> Result<(), Error> {
++        if self.agent_profile_refreshing() {
++            self.abandon();
++        }
+         if self.accounts()?.state(id) == ProfileState::Locked {
+             self.page = Page::Pin(Pin::Unlock(id, AfterUnlock::Select));
+-        } else if self.accounts()?.select_current(id)? {
+-            self.message = tr("verified");
+         } else {
+-            self.refresh(id, true)?;
++            self.select_unlocked(id, true, None)?;
+         }
+         Ok(())
+     }
+ 
++    fn select_unlocked(
++        &mut self,
++        id: ProfileId,
++        visible: bool,
++        principal: Option<Principal>,
++    ) -> Result<&'static str, Error> {
++        if self.accounts()?.select_current(id)? {
++            self.message = tr("verified");
++            Ok("selected")
++        } else {
++            self.refresh(id, visible, principal)?;
++            Ok("refreshing")
++        }
++    }
++
++    pub(super) fn select_with_agent(
++        &mut self,
++        id: ProfileId,
++        principal: &Principal,
++    ) -> Result<&'static str, &'static str> {
++        let accounts = self
++            .accounts
++            .as_ref()
++            .map_err(|error| error_label(*error))?;
++        if accounts.profile(id).is_none() {
++            return Err(tr("no_profile"));
++        }
++        match accounts.state(id) {
++            ProfileState::Locked => return Err(tr("locked")),
++            ProfileState::Reauthenticate => return Err(tr("reauthenticate")),
++            ProfileState::Unavailable => return Err(tr("storage_error")),
++            ProfileState::Saved(_) | ProfileState::SignedIn(_) => {}
++        }
++        if let Some(task) = &self.task {
++            return if task.refresh == Some(id) {
++                Ok("refreshing")
++            } else {
++                Err(tr("refreshing"))
++            };
++        }
++        self.select_unlocked(id, false, Some(principal.clone()))
++            .map_err(error_label)
++    }
++
++    pub(super) fn agent_profiles(&self) -> Vec<Value> {
++        let Ok(accounts) = &self.accounts else {
++            return Vec::new();
++        };
++        accounts.profiles().map(|profile| {
++            let state = if self.task.as_ref().and_then(|task| task.refresh) == Some(profile.id) {
++                "refreshing"
++            } else {
++                match accounts.state(profile.id) {
++                    ProfileState::SignedIn(_) => "ready",
++                    ProfileState::Saved(_) => "saved",
++                    ProfileState::Locked => "locked",
++                    ProfileState::Reauthenticate => "reauthentication_required",
++                    ProfileState::Unavailable => "unavailable",
++                }
++            };
++            json!({"id": format!("online:{:032x}", profile.id.0), "name": profile.name,
++                "kind": "online", "state": state, "selected": accounts.selected() == Some(profile.id)})
++        }).collect()
++    }
++
++    pub(super) fn agent_profile_refreshing(&self) -> bool {
++        self.task
++            .as_ref()
++            .is_some_and(|task| task.principal.is_some())
++    }
++
+     fn apply(&mut self, action: Action) -> Result<(), Error> {
+         match action {
+             Action::Show(page) => self.page = page,
+@@ -346,6 +435,7 @@ impl Online {
+                     refresh: None,
+                     expected,
+                     visible: true,
++                    principal: None,
+                 });
+                 self.progress = tr("starting");
+                 self.page = Page::Progress;
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index 868eb006787ea888ac54e52563ed67b5b84b5d89..d5486f76af567c4547c1ce1336f816327160d140 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -36,6 +36,14 @@ impl<G: GameFiles> LocalService<G> {
+                 "swap_xy": self.preferences.settings.swap_xy,
+                 "touch": self.preferences.settings.touch,
+             })),
++            "wiiu_profiles_list" if contains(&[]) => {
++                let online = self.online.selected();
++                let profiles: Vec<_> = self.preferences.profiles.iter().enumerate().map(|(i, profile)|
++                    json!({"id": format!("offline:{}", profile.identity), "name": profile.name,
++                        "kind": "offline", "state": "ready", "selected": online.is_none() && i == self.preferences.profile})
++                ).chain(self.online.agent_profiles()).collect();
++                Ok(json!({"profiles": profiles}))
++            }
+             "wiiu_benchmark_reports" if contains(&["instance"]) => {
+                 let instance = report_instance()?;
+                 let ids = self.benchmark_report_ids(instance);
+@@ -161,6 +169,9 @@ impl<G: GameFiles> LocalService<G> {
+         {
+             return Err("Select the requested installation in Night first.");
+         }
++        if self.online.agent_profile_refreshing() {
++            return Err("Wait for the selected online profile to finish refreshing.");
++        }
+         let mut launch = self
+             .launch_game()
+             .map_err(|_| "The selected installation or world is unavailable.")?;
