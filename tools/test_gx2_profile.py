@@ -266,6 +266,33 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting GPU serial records"):
             profile.correlate_gpu_spans(frames, [first, different], 0, 1)
 
+    def test_solid_boundary_must_match_a_valid_base_pair(self):
+        frames = gpu_capture()
+        first = gpu_serial(0, [27, 108_027, 81_027, 162_027])
+        second = gpu_serial(1, [600_000, 627_000, 654_000, 681_000])
+        no_drc_solid = gpu_serial(3, [900_000, 927_000, 954_000, 981_000])
+        frames[3]["drc_sections_drawn"] = 0
+
+        def boundary(sequence, hz, tv, drc):
+            intervals = ["/".join(f"{tick:016x}" for tick in ticks) for ticks in (tv, drc)]
+            return (f"Horizon GX2 GPU solid boundary hz={hz} seq={sequence} "
+                    f"tv={intervals[0]} drc={intervals[1]}\n")
+
+        valid = boundary(0, 27_000_000, [27, 54_027, 108_027], [81_027, 108_027, 162_027])
+        wrong_clock = boundary(1, 26_000_000, [600_000, 610_000, 627_000], [654_000, 660_000, 681_000])
+        no_draw = boundary(3, 27_000_000, [900_000, 910_000, 927_000], [954_000, 960_000, 981_000])
+        missing = boundary(100, 27_000_000, [100, 200, 300], [301, 401, 501])
+        serial = "".join((valid, first, valid, second, wrong_clock, no_drc_solid, no_draw, missing))
+        report = profile.correlate_gpu_spans(frames, serial.splitlines(), 0, 1)
+        self.assertEqual(report["matched_samples"], 3)
+        split = report["solid_boundary"]
+        self.assertEqual((split["matched_samples"], split["unmatched_samples"], split["invalid_samples"]), (1, 1, 2))
+        self.assertEqual(split["samples"], [{
+            "sequence": 0, "scale": 100, "tv_through_solid_ms": 2.0, "tv_after_solid_ms": 2.0,
+            "gamepad_through_solid_ms": 1.0, "gamepad_after_solid_ms": 2.0,
+        }])
+        self.assertEqual(split["by_effective_scale"]["100"]["tv_through_solid_ms"]["median"], 2.0)
+
     def test_uwp_serial_capture_restores_split_lines_across_segments(self):
         trace = gpu_serial(0, [27, 108_027, 81_027, 162_027]).replace("\n", "\r\n").encode()
         with TemporaryDirectory() as folder:

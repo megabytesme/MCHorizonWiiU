@@ -131,6 +131,13 @@ individual display scanout where available, camera and stock settings,
 serial TPS, images and memory recovery alongside the HZP3 summaries.
 Keep the heavy stationary and Village runs separate.
 
+When the test package emits a solid-terrain completion marker, the GPU
+serial join adds `solid_boundary` to its report. It matches both original
+TV and GamePad endpoints, the GPU clock and the HZP3 sequence. The split
+measures completion through solid terrain and the remaining callback on
+each output. Both intervals can contain submission gaps. Use unsampled
+frames and their intervals for the cadence comparison.
+
 ## Stationary render diagnostic
 
 RC 30 adds **Stationary render diagnostic** to the Night benchmark menu.
