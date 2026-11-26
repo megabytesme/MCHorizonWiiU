@@ -70,7 +70,9 @@ SCOPE_CONSTANTS = {
 
 def implemented(source_path=ROOT / "wiiu/game-bridge/night_mcp.rs"):
     source = source_path.read_text(encoding="utf-8")
-    result = {"play": ["launcher.manage", "game.control"]}
+    launch_policy = re.search(r"^fn requires_launch_policy\([^)]*\)[^{]*\{(.*?)^\}", source, re.M | re.S)
+    launch_names = re.findall(r'"([a-z_]+)"', launch_policy[1]) if launch_policy else ["play"]
+    result = {name: ["launcher.manage", "game.control"] for name in launch_names}
     for const, scope in SCOPE_CONSTANTS.items():
         declaration = re.search(rf"const {const}: &\[&str\] = &\[(.*?)\];", source, re.S)[1]
         for name in re.findall(r'"([a-z_]+)"', declaration):
@@ -177,12 +179,16 @@ def nightly_audit(assembled, check):
     if tree not in {patch["output_tree"] for patch in recipe["series"]}:
         raise ValueError("Assembled MCP source tree is outside the Nightly recipe")
 
-    runtime = implemented(assembled / registrations)
+    registration_file = assembled / registrations
+    runtime = implemented(registration_file)
+    registration_source = registration_file.read_text(encoding="utf-8")
     port = json.loads((assembled / inventory).read_bytes())
     embedded = {row["tool"]["name"]: row["tool"] for row in port["tools"]}
     official = {row["tool"]["name"]: row for row in upstream["tools"]}
-    if extra := runtime.keys() - embedded.keys():
-        raise ValueError(f"Nightly registers tools missing from its embedded inventory: {extra}")
+    catalog = re.search(r"^fn catalog\([^)]*\)[^{]*\{(.*?)^\}", registration_source, re.M | re.S)
+    extensions = set(re.findall(r'"name":\s*"([a-z_]+)"', catalog[1])) if catalog else set()
+    if extra := runtime.keys() - embedded.keys() - extensions:
+        raise ValueError(f"Nightly registers tools with no catalog definition: {extra}")
 
     tools = {}
     for name, row in sorted(official.items()):
@@ -193,7 +199,7 @@ def nightly_audit(assembled, check):
             "upstreamOutputContract": result["outputContract"],
             "disposition": result["platformDisposition"],
         }
-        if name in runtime:
+        if name in runtime and name in embedded:
             entry["embeddedDefinitionDifferences"] = [
                 key for key in ("description", "inputSchema", "outputSchema")
                 if row["tool"].get(key) != embedded[name].get(key)
