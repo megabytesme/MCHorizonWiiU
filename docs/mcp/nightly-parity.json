@@ -1,6 +1,6 @@
 {
   "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
-  "assembledTree": "daffe5670e195a4870cff3851d0dde16d744f9eb",
+  "assembledTree": "037bcf9dc59e000d0de76509f3f8304f63a9c5f6",
   "embeddedRevision": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
   "tools": {
     "account_list": {
@@ -1329,6 +1329,9 @@
     "wiiu_benchmark_cancel": [
       "launcher.manage",
       "game.control"
+    ],
+    "wiiu_benchmark_capture": [
+      "launcher.read"
     ],
     "wiiu_benchmark_report": [
       "launcher.read"

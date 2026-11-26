@@ -240,6 +240,16 @@ distributions. Saved reports remain available after restarting Night.
 The live status starts in `idle` after a restart. Local labels and
 attachment paths stay on the console.
 
+Use `wiiu_benchmark_capture` with `launcher.read` and the completed run's
+explicit `instance` and `capture_id`. Follow `next_offset` until it is
+null. The Wii U returns up to 48 KiB of bytes per base64 page. The local
+client validates and saves the assembled HZP3 under a new filename.
+
+```powershell
+python -B tools/wiiu_mcp_benchmark_capture.py --codex-home $pairedProfile --ca $pairedCa `
+    --server $serverName --instance default --capture-id $captureId --output $newCapture
+```
+
 ### Gameplay captures
 
 `game_screenshot` returns the TV PNG during live gameplay. A scratch Cemu
