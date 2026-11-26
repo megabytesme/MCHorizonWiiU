@@ -76,6 +76,21 @@ simulation and time of day where needed, using the same viewport resolution
 on the corresponding output. Screenshot capture is its own measured
 stage. Record mode, hash, settings and screenshot pairing for every run.
 
+## Disposable-world lifecycle
+
+On RC 45 and later, use one existing paired Codex profile throughout a
+scratch create, save and reopen round. Point the runner at the actual
+PC-visible installation and use a short Windows path for portable Cemu.
+
+    python tools/wiiu_mcp_test_world.py --codex-home PROFILE --ca CA --server NAME --install-root SCRATCH --output RECEIPT
+
+The runner records gameplay readiness, a new paired terrain sample, return
+to Night, persistent world and player files and a second launch of the same
+world. It also compares the ordinary saves directory before and after each
+round. Give readiness, terrain, save and reopening their own time limits.
+Reserve the paired profile for this runner so another process cannot present
+an older rotating credential.
+
 ## Physical fixed 75% saved view
 
 Use the original 174-section archived pose with stock Full Performance,
