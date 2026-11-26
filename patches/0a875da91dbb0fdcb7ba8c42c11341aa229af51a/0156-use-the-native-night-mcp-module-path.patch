@@ -1,0 +1,13 @@
+diff --git a/wiiu/loading_app/src/night_online.rs b/wiiu/loading_app/src/night_online.rs
+index 2b5fbf7c13c0a7c75e4b9202b6fc908b5ff924d0..037e159fd8a834e141fa2e9d234b835541351248 100644
+--- a/wiiu/loading_app/src/night_online.rs
++++ b/wiiu/loading_app/src/night_online.rs
+@@ -148,7 +148,7 @@ impl Online {
+             if task
+                 .principal
+                 .as_ref()
+-                .is_some_and(|p| !super::night_mcp::launcher_allowed() || !p.is_active())
++                .is_some_and(|p| !super::mcp::launcher_allowed() || !p.is_active())
+             {
+                 self.abandon();
+                 return true;

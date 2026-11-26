@@ -206,7 +206,7 @@
     "commit": "758e021f61a",
     "engine_tree": "377d9d00b5de87912f6568d59c7f8b8a72b17aac",
     "rc41_interpreter_duplicate_server_cpu_ms": 8018,
-    "native_build_and_peak_memory": "pending"
+    "native_build_and_peak_memory": "rc43_native_package_and_interpreter_memory_verified"
   },
   "next_source_qualification": {
     "branch": "codex/rc43-qualification",
@@ -218,7 +218,18 @@
     "rpx_sha256": "356f9cf09d578b701b61aeb8044947d1e9fc6479dc5a49119938599ef0cf638a",
     "wuhb_sha256": "a717bebe1ff39d72376f1ae69c45fd801b63b56e7d3377d0d123e42b2e438561",
     "estimated_aroma_headroom_bytes": 12728576,
-    "cemu_saved_world_replay": "running"
+    "cemu_saved_world_replay": {
+      "status": "passed_two_rounds_4o_interpreter",
+      "first_game_frame_ms": [571271, 526579],
+      "first_ten_sections_per_display_ms": [835774, 1013034],
+      "prepared_server_cpu_fork_ms": [493.226, 527.785],
+      "horizontal_movement_blocks": 4.313,
+      "rust_live_after_drop_bytes": [50539636, 50620425],
+      "rust_peak_requested_bytes": [337590071, 370303983],
+      "gx2_bulk_free_after_drop_bytes": [234880920, 234880920],
+      "warm_pose_preserved": true,
+      "clean_exit": true
+    }
   },
   "night_load_cancellation": {
     "branch": "codex/night-load-cancellation",
@@ -234,7 +245,19 @@
     "engine_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
     "stock_mcp_tools": 57,
     "synthetic_stale_mesh_jobs": [157, 0],
-    "native_build": "running",
+    "native_build": "passed",
+    "rpx_sha256": "4acb84c35e900e6289b253c2ce2bfb100fbf9a31a07c1ecf66b03cd0cba07bd0",
+    "wuhb_sha256": "efcb58f97b1fe10f248c642286024a494bd4b90ff63c4db789ce522ea66d9226",
+    "estimated_aroma_headroom_bytes": 12710400,
     "authenticated_benchmark_profile_modes": ["4", "4q", "4r"]
+  },
+  "next_qualification": {
+    "candidate": "0.8.0-rc.45",
+    "branch": "codex/rc45-qualification",
+    "commit": "fe0b21b6770",
+    "engine_tree": "daffe5670e195a4870cff3851d0dde16d744f9eb",
+    "stock_mcp_tools": 62,
+    "experimental_profile_modes": ["4j", "4v"],
+    "native_build": "running"
   }
 }

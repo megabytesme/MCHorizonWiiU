@@ -1,0 +1,13 @@
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index 36a91dea6eab719335699fb57205ca5523b21680..64e01cfee80e7b6eee5345a03aaa7e11cc718ab4 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -9,7 +9,7 @@
+ //! Every single-player world runs this way; LAN guests and dedicated servers
+ //! use the same server code.
+ use super::{
+-    Dim, Game, Options, PackResources, Resources, UiResources, WorldIcon,
++    Dim, Game, GameCpuResources, Options, PackResources, Resources, UiResources, WorldIcon,
+     execution_role::ExecutionRole,
+     lan::{
+         LanSettings, Owner,

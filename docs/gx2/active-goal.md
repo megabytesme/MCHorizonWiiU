@@ -69,20 +69,23 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   90 required columns before the harness cancelled. Teardown restored
   the GX2 bulk heap and exited normally. A timed result is still open.
   [RC 42 qualification](rc42-qualification.md)
-- The next source recipe adds Night profile selection, the CPU handoff and
+- RC 43 adds Night profile selection, the CPU handoff and
   an opt-in solid shader specialization, plus authenticated saved-bookmark
   joins. The standalone Cemu control and shader trial matched both full
   outputs with fog enabled and disabled. The profile-refresh path now
   passes the host fixture using the native module layout. The pinned
-  native build and both package hashes passed. A two-round Cemu replay
-  of the exact package is measuring loading and save recovery.
-  [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
+  native build and both package hashes passed. The exact package passed
+  two Cemu saved-world rounds with both displays, 4.313 blocks of movement,
+  audio, pose restoration and complete GX2 bulk heap recovery. The CPU
+  fork took 0.493 and 0.528 s. The warm Game frame arrived earlier, and
+  the later 10-section sample used a different saved pose.
+  [RC 43 qualification](rc43-qualification.md)
 - RC 44 stages same-client load cancellation, remote return to Home,
   idle Night close and per-run authenticated GX2 profile captures. It also
   drops queued mesh snapshots once a newer revision supersedes them on
   Cafe. The deterministic host fixture reduced stale work from 157 jobs
   to zero and kept the final revisions identical. The pinned source
-  assembly passed and the native build started. The original Village
+  assembly and native package verification passed. The original Village
   route still needs a physical comparison.
   [RC 44 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc44-qualification/docs/gx2/rc44-qualification.md)
 

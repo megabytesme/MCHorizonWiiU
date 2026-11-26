@@ -1,0 +1,281 @@
+diff --git a/crates/horizon-client-gameplay/src/boat_models.rs b/crates/horizon-client-gameplay/src/boat_models.rs
+index 07135cda15534e824a68a3b7db41ad0c459dc384..72977246ad61ee122b6f8e6bbe8dbaa0f33c401f 100644
+--- a/crates/horizon-client-gameplay/src/boat_models.rs
++++ b/crates/horizon-client-gameplay/src/boat_models.rs
+@@ -2,6 +2,7 @@
+ use horizon_client::mobs::Part;
+ use std::collections::HashMap;
+ 
++#[derive(Clone)]
+ pub struct BoatModels {
+     pub models: HashMap<String, Part>,
+     pub chest_models: HashMap<String, Part>,
+diff --git a/crates/horizon-client/src/creative.rs b/crates/horizon-client/src/creative.rs
+index 73d0547c5ca48cc03cc48124ac2e02bc6360e5d7..8285a27393c0a752ac9b4c019cf22070a786fe25 100644
+--- a/crates/horizon-client/src/creative.rs
++++ b/crates/horizon-client/src/creative.rs
+@@ -138,8 +138,8 @@ pub struct Creative {
+     enchantments: Arc<Enchantments>,
+     /// Every exported tab, and the search tab's stacks with their entries and
+     /// whether only permissions list them: `rebuild` keeps what is shown.
+-    exported: Vec<Exported>,
+-    exported_search: Vec<(ItemStack, SearchEntry, bool)>,
++    exported: Arc<[Exported]>,
++    exported_search: Arc<[(ItemStack, SearchEntry, bool)]>,
+     /// The `hasPermissions` the tabs were last built with
+     /// (`CreativeModeTabs.tryRebuildTabContents`).
+     permissions: bool,
+@@ -458,6 +458,23 @@ impl Creative {
+         Ok(Self::new(tabs, search))
+     }
+     fn new(exported: Vec<Exported>, exported_search: Vec<(ItemStack, SearchEntry, bool)>) -> Self {
++        Self::with_exports(exported.into(), exported_search.into(), Vec::new())
++    }
++
++    /// Start an independent screen from the same exported items and pack modifiers.
++    pub fn fresh_with_same_resources(&self) -> Self {
++        Self::with_exports(
++            self.exported.clone(),
++            self.exported_search.clone(),
++            self.pack.clone(),
++        )
++    }
++
++    fn with_exports(
++        exported: Arc<[Exported]>,
++        exported_search: Arc<[(ItemStack, SearchEntry, bool)]>,
++        pack: Vec<crate::polytone_creative_tabs::TabModifier>,
++    ) -> Self {
+         let mut creative = Self {
+             tabs: Vec::new(),
+             selected: 0,
+@@ -481,7 +498,7 @@ impl Creative {
+             added: Vec::new(),
+             shown: Mutex::new(None),
+             lines_cache: Mutex::new(None),
+-            pack: Vec::new(),
++            pack,
+         };
+         creative.rebuild();
+         creative
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index abdd3123f5910e17cedb2ee297fd69409ec22778..f4cb3307733f414f49ac23a113cb98944c6f4861 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -1577,6 +1577,8 @@ struct Game<'a> {
+     /// A hosted local-world handoff consumes the parsed document once on the server thread.
+     #[cfg(target_os = "cafe")]
+     server_entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
++    #[cfg(target_os = "cafe")]
++    server_prepared_cpu: Option<resource_loader::PreparedServerCpu>,
+     carts: horizon_client::join_seq::JoinList<minecarts::Minecart, false>,
+     /// The boats and minecarts `native_vehicle_moved` follows (lan_vehicles.rs).
+     watched_vehicles: Vec<lan_vehicles::WatchedVehicle>,
+@@ -11072,6 +11074,8 @@ impl<'a> Game<'a> {
+             entity_models: prepared.entity_models,
+             #[cfg(target_os = "cafe")]
+             server_entity_models: None,
++            #[cfg(target_os = "cafe")]
++            server_prepared_cpu: None,
+             carts: Default::default(),
+             watched_vehicles: Vec::new(),
+             jukebox_sounds: HashMap::new(),
+diff --git a/crates/horizon-client/src/game/entities/armor_stands.rs b/crates/horizon-client/src/game/entities/armor_stands.rs
+index fc0f2d2769cfdf9d330f526c18c92816586648c8..0c9c746ff2a68d91f1cb5f583ddb8061960ad529 100644
+--- a/crates/horizon-client/src/game/entities/armor_stands.rs
++++ b/crates/horizon-client/src/game/entities/armor_stands.rs
+@@ -157,6 +157,7 @@ fn layer_color(undyed: Option<u32>, stack: Option<&ItemStack>) -> u32 {
+ }
+ 
+ /// Armor stand models and the humanoid layers of every equipment asset.
++#[derive(Clone)]
+ pub(super) struct ArmorStandAssets {
+     /// Shared (`Arc`) so the GPU path (`mobs::skin`) keeps one stored copy of each.
+     pub main: Option<Arc<Part>>,
+diff --git a/crates/horizon-client/src/game/entities/paintings.rs b/crates/horizon-client/src/game/entities/paintings.rs
+index 7ce6c78a9c3ad9ecb06d182172aed3868ed767b1..3c6f681d20863d7e2c616a32744aceb30b85ed79 100644
+--- a/crates/horizon-client/src/game/entities/paintings.rs
++++ b/crates/horizon-client/src/game/entities/paintings.rs
+@@ -27,7 +27,7 @@ pub(super) struct Variant {
+     pub author: Option<serde_json::Value>,
+ }
+ /// Variants by id plus the `#minecraft:placeable` list.
+-#[derive(Default)]
++#[derive(Clone, Default)]
+ pub(super) struct PaintingVariants {
+     pub all: Vec<Variant>,
+     pub placeable: Vec<Arc<str>>,
+diff --git a/crates/horizon-client/src/game/runtime/resource_loader.rs b/crates/horizon-client/src/game/runtime/resource_loader.rs
+index 582563ac9473e6df12e055c6d00b140b5683fb55..986dfc8bf6fdf9a7d72d7ea705b4a731c77582aa 100644
+--- a/crates/horizon-client/src/game/runtime/resource_loader.rs
++++ b/crates/horizon-client/src/game/runtime/resource_loader.rs
+@@ -29,7 +29,7 @@ pub(super) struct GameCpuResources {
+ /// Baked layers of entities that may first show up deep into a session. They come from the
+ /// document parsed once at startup: parsing entity-models.json (2.4 MB) when the first one
+ /// appeared stalled that frame by 40 ms of CPU and the file read.
+-#[derive(Default)]
++#[derive(Clone, Default)]
+ pub(super) struct EntityModels {
+     /// LeashKnotModel.
+     pub(super) leash_knot: Option<horizon_client::mobs::Part>,
+@@ -60,7 +60,37 @@ impl EntityModels {
+     }
+ }
+ 
++#[cfg(target_os = "cafe")]
++pub(super) struct PreparedServerCpu {
++    pub(super) root: PathBuf,
++    pub(super) source: horizon_assets::resource_source::ResourceSource,
++    pub(super) prepared: GameCpuResources,
++}
++
+ impl GameCpuResources {
++    #[cfg(any(target_os = "cafe", test))]
++    pub(super) fn fork_for_server(&self) -> Self {
++        Self {
++            painting_variants: self.painting_variants.clone(),
++            frame_model: self.frame_model.clone(),
++            glow_frame_model: self.glow_frame_model.clone(),
++            map_frame_model: self.map_frame_model.clone(),
++            glow_map_frame_model: self.glow_map_frame_model.clone(),
++            armor_stand_assets: self.armor_stand_assets.clone(),
++            waypoint_styles: self.waypoint_styles.clone(),
++            boat_models: self.boat_models.clone(),
++            cart_models: self.cart_models.clone(),
++            crystal_model: self.crystal_model.clone(),
++            cushion_model: self.cushion_model.clone(),
++            dragon_model: self.dragon_model.clone(),
++            arrow_model: self.arrow_model.clone(),
++            bee_stinger_model: self.bee_stinger_model.clone(),
++            trident_model: self.trident_model.clone(),
++            entity_models: self.entity_models.clone(),
++            creative_screen: self.creative_screen.fresh_with_same_resources(),
++        }
++    }
++
+     pub(super) fn load(
+         resources: &horizon_assets::resource_source::ResourceRoot,
+         document: Option<&horizon_client::mobs::EntityModelDocument>,
+diff --git a/crates/horizon-client/src/game/runtime/startup_cpu_tests.rs b/crates/horizon-client/src/game/runtime/startup_cpu_tests.rs
+index 597fd9b8532f4b6e62a144d353b8a4ffa59880c7..4321881d0f05ad4469e502b3c640a0402a4c3dad 100644
+--- a/crates/horizon-client/src/game/runtime/startup_cpu_tests.rs
++++ b/crates/horizon-client/src/game/runtime/startup_cpu_tests.rs
+@@ -92,6 +92,17 @@ fn worker_prepares_owned_models_and_inventory_before_handoff() {
+         prepared.creative_screen.tabs[0].items[0].item.as_ref(),
+         "minecraft:stone"
+     );
++    let mut server = prepared.fork_for_server();
++    assert!(server.crystal_model.is_some());
++    assert_eq!(
++        server.creative_screen.tabs[0].items[0].item.as_ref(),
++        "minecraft:stone"
++    );
++    server.creative_screen.tabs[0].items.clear();
++    assert_eq!(
++        prepared.creative_screen.tabs[0].items[0].item.as_ref(),
++        "minecraft:stone"
++    );
+     // No documents from the old generation remain available to reload.
+     assert!(
+         GameCpuResources::load(
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index ef98beaafabb3395decbe70bdac292772f63e561..36a91dea6eab719335699fb57205ca5523b21680 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -563,6 +563,16 @@ impl Game<'_> {
+         let (tasks, server_tasks) = channel();
+         let server_flags = flags.clone();
+         let startup_resources = ServerStartupResources {
++            #[cfg(target_os = "cafe")]
++            prepared: self
++                .server_prepared_cpu
++                .take()
++                .filter(|cpu| {
++                    cpu.root == options.resources && cpu.source.same_generation(&pack.source)
++                })
++                .map(|cpu| cpu.prepared),
++            #[cfg(not(target_os = "cafe"))]
++            prepared: None,
+             sound_registry: self.audio.registry_for(&pack.source),
+             #[cfg(target_os = "cafe")]
+             entity_models: self.server_entity_models.take(),
+@@ -1428,6 +1438,7 @@ impl Game<'_> {
+ /// Assets prepared by the client for this integrated server's pack.
+ #[derive(Default)]
+ struct ServerStartupResources {
++    prepared: Option<GameCpuResources>,
+     sound_registry: Option<horizon_client::sound_events::SoundRegistry>,
+     entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
+ }
+@@ -1565,7 +1576,7 @@ fn server_game(
+             options,
+             settings,
+             audio,
+-            None,
++            startup_resources.prepared,
+             startup_resources.entity_models,
+         )
+     })
+diff --git a/crates/horizon-client/src/game/world/packs/mod.rs b/crates/horizon-client/src/game/world/packs/mod.rs
+index c76489feda9f256244806ca73b0e418f2469ede1..df94dab1c4cb2b9945f1b2d88dacf907c17a6104 100644
+--- a/crates/horizon-client/src/game/world/packs/mod.rs
++++ b/crates/horizon-client/src/game/world/packs/mod.rs
+@@ -553,6 +553,7 @@ impl Game<'_> {
+         #[cfg(target_os = "cafe")]
+         {
+             self.server_entity_models = None;
++            self.server_prepared_cpu = None;
+         }
+         let skip = self
+             .settings
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 925e9745fd28935d1d60ac445ea1ab3f61fe3c41..34df5bb07c9746ac2bd29ec58b6dab35f4466431 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -471,11 +471,24 @@ impl<'resources> CafeLoadingSession<'resources> {
+         self.resources.set(resources).map_err(|_| "Cafe session already received resources")?;
+         let res = self.resources.get().expect("Cafe session resources assigned");
+         #[cfg(target_os = "cafe")]
+-        let server_entity_models = if entry_kind == CafeGameEntryKind::LocalWorld {
+-            entity_models.clone()
++        let server_prepared_cpu = if entry_kind == CafeGameEntryKind::LocalWorld {
++            game_cpu
++                .as_ref()
++                .map(|cpu| resource_loader::PreparedServerCpu {
++                    root: options.resources.clone(),
++                    source: pack.source.clone(),
++                    prepared: startup::time("handoff.server_cpu_fork", || cpu.fork_for_server()),
++                })
+         } else {
+             None
+         };
++        #[cfg(target_os = "cafe")]
++        let server_entity_models =
++            if server_prepared_cpu.is_none() && entry_kind == CafeGameEntryKind::LocalWorld {
++                entity_models.clone()
++            } else {
++                None
++            };
+         let Some(mut game) = start_game(
+             res,
+             pack,
+@@ -497,6 +510,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+         #[cfg(target_os = "cafe")]
+         {
+             game.server_entity_models = server_entity_models;
++            game.server_prepared_cpu = server_prepared_cpu;
+         }
+         let shell_pending = self.loading.menu.pending.clone();
+         self.loading.menu.handoff(&mut game);
+diff --git a/crates/horizon-gameplay/src/minecarts.rs b/crates/horizon-gameplay/src/minecarts.rs
+index 96dc525e485db0ff4ef1f33b937b9dfb3633abee..e6b4c3957c8ba7ebbc0eb1ab399cdabfa40ea3c9 100644
+--- a/crates/horizon-gameplay/src/minecarts.rs
++++ b/crates/horizon-gameplay/src/minecarts.rs
+@@ -592,6 +592,7 @@ pub fn container_keep(signal: i32, loot_pending: bool, in_water: bool) -> f64 {
+     }
+     f64::from(keep)
+ }
++#[derive(Clone)]
+ pub struct CartModels {
+     pub models: HashMap<CartKind, Part>,
+ }
