@@ -42,3 +42,9 @@ incompatible cameras and viewports. Screen-space outlines require their
 native displayed width and depth relationship. First-person geometry,
 water and other world passes need matched pixels on both displays before
 sharing their world target. Physical GPU and paired cadence remain open.
+
+The host fixture confirms crop-equivalent hand and held-item projection
+at the fitted TV and GamePad viewports. It also measures the change in
+outline width and screen-effect coordinates under a crop. Compare
+first-person pixels after per-output hand rendering and keep active
+outlines on independent world rendering. [First-person fixture](first-person/README.md)
