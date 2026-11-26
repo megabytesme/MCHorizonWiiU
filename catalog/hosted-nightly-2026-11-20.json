@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "d5a90d2744d1be4ab590e4626140052d319cb0e4",
+  "output_tree": "d377ac3bbf63753e023fda7c30bcdd632d456d41",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -938,6 +938,12 @@
       "sha256": "b5d78589634fcfd8e790951fd71d52e08d5db1b52433c9b82ba7800f3200877d",
       "input_tree": "ef439f4326d8a33a220970dd34f4ddd8c59840ea",
       "output_tree": "d5a90d2744d1be4ab590e4626140052d319cb0e4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0155-import-the-prepared-integrated-server-cpu-bundle.patch",
+      "sha256": "24558807d3188d5a004028cc829be94505389a028b4d9ea8e333a064923eaa40",
+      "input_tree": "d5a90d2744d1be4ab590e4626140052d319cb0e4",
+      "output_tree": "d377ac3bbf63753e023fda7c30bcdd632d456d41"
     }
   ],
   "candidate": {

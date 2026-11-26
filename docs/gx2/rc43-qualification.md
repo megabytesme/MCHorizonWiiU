@@ -1,8 +1,8 @@
 # RC 43 source qualification
 
-The source recipe adds patches 0151–0154 to the corrected RC 42 tree and
-reconstructs `d5a90d2744d1be4ab590e4626140052d319cb0e4`. The components
-passed focused tests. The integrated Cafe package is pending.
+The source recipe adds patches 0151–0155 to the corrected RC 42 tree and
+reconstructs `d377ac3bbf63753e023fda7c30bcdd632d456d41`. The components
+passed focused tests. The first full Cafe compile found a missing type import in the server handoff. The corrected package is pending.
 
 | Change | Evidence and qualification |
 | --- | --- |
