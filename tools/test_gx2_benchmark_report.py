@@ -43,6 +43,22 @@ def benchmark(scenario="village", **coverage):
     }
 
 
+def village_frame(sequence, drawn):
+    return {
+        "sequence": sequence,
+        "phase": "playing",
+        "start_ms": sequence * 150,
+        "loop_ms": 15,
+        "tv_submissions": 1,
+        "gamepad_submissions": 1,
+        "tv_sections_drawn": drawn,
+        "drc_sections_drawn": drawn,
+        "tv_sections_tested": 12,
+        "drc_sections_tested": 11,
+        "terrain_upload_bytes": 3500,
+    }
+
+
 class BenchmarkReportTests(unittest.TestCase):
     def test_reports_fallback_and_coverage_separately(self):
         result = audit.summarize(benchmark())
@@ -70,6 +86,61 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(result["scenario"], "cafe-diagnostic-village")
         self.assertEqual(result["coverage"]["evidence"], "gaps")
         self.assertAlmostEqual(result["coverage"]["eligible_wall_fraction"], 300 / 12300)
+
+    def test_village_profile_keeps_uploads_and_tested_sections_during_terrain_loss(self):
+        result = audit.summarize(benchmark(
+            host_frames=5, paired_frames=5, terrain_paired_frames=3,
+            eligible_intervals=2, paired_terrain_intervals=2,
+            eligible_interval_ms=300, longest_ineligible_run_frames=2,
+        ))
+        rows = [village_frame(seq, 5 if seq < 103 else 0) for seq in range(100, 105)]
+        trace = (
+            "Cafe Village streaming seq=103 elapsed_ms=450 reason=lost camera=-960.00,87.20"
+            " sections=0/0 columns=60 client_pending=12 uploads=9 remote_pending=2"
+            " forward_resident=3 forward_lit=1"
+        )
+        profile = audit.village_profile(result, rows, serial=[trace, trace])
+        self.assertEqual(profile["first_sequence"], 100)
+        self.assertEqual(profile["last_sequence"], 104)
+        self.assertEqual(profile["eligible_ms_from_profile_starts"], 300)
+        gap, = profile["ineligible_runs"]
+        self.assertEqual(gap["frames"], 2)
+        self.assertEqual(gap["start_offset_ms"], 450)
+        self.assertEqual(gap["sections_tested_at_start"], [12, 11])
+        self.assertEqual(gap["terrain_upload_vertex_bytes"], 7_000)
+        sample, = profile["forward_streaming_samples"]
+        self.assertEqual(sample["camera_xz"], [-960.0, 87.2])
+        self.assertEqual(sample["forward_resident_mask"], 3)
+        self.assertEqual(sample["forward_lit_mask"], 1)
+        with self.assertRaisesRegex(ValueError, "sections disagree"):
+            audit.village_profile(result, rows, serial=[trace.replace("sections=0/0", "sections=3/0")])
+
+    def test_village_profile_rejects_ambiguous_or_mismatched_retained_frames(self):
+        result = audit.summarize(benchmark(
+            host_frames=3, paired_frames=3, terrain_paired_frames=3,
+            eligible_intervals=2, paired_terrain_intervals=2, eligible_interval_ms=300,
+        ))
+        rows = [village_frame(seq, 5) for seq in range(100, 105)]
+        with self.assertRaisesRegex(ValueError, "multiple Village windows"):
+            audit.village_profile(result, rows)
+        self.assertEqual(audit.village_profile(result, rows, 101)["last_sequence"], 103)
+        rows[2]["gamepad_submissions"] = 0
+        with self.assertRaisesRegex(ValueError, "no retained gameplay window"):
+            audit.village_profile(result, rows, 101)
+
+    def test_village_profile_rejects_empty_measurements(self):
+        with self.assertRaisesRegex(ValueError, "requires measured host frames"):
+            audit.village_window([], {"host_frames": 0})
+
+    def test_village_profile_rejects_equal_counts_with_other_frame_timing(self):
+        result = audit.summarize(benchmark(
+            host_frames=3, paired_frames=3, terrain_paired_frames=3,
+            eligible_intervals=2, paired_terrain_intervals=2, eligible_interval_ms=306,
+        ))
+        rows = [village_frame(seq, 5) for seq in range(100, 107)]
+        rows[0]["start_ms"], rows[1]["start_ms"], rows[2]["start_ms"] = 100, 150, 200
+        rows[3]["phase"] = "menu"
+        self.assertEqual(audit.village_profile(result, rows)["first_sequence"], 104)
 
     def test_stationary_reports_the_existing_coverage_threshold(self):
         for wall, expected in ((24_000, True), (23_999, False)):

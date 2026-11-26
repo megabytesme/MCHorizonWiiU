@@ -146,6 +146,29 @@ split pending client mesh work, pending uploads and integrated-server
 messages and relate them to the forward route and terrain loss. The
 stock route and score remain unchanged.
 
+### Correlate Village coverage with native frames
+
+Pair a stock Village report with its HZP3 capture.
+
+~~~sh
+python -B tools/gx2_benchmark_report.py "$village_report" --profile "$capture"
+~~~
+
+The report matches the contiguous gameplay window by host frames, paired
+submissions, visible terrain, contiguous eligible intervals and timing
+bounds. If several windows match, pass the verified starting HZP sequence
+as `--profile-first-frame`. Add `--serial-capture` with both serial sequence
+bounds to join matching forward terrain samples. The join checks the
+section counts on both outputs. The original Village eligibility stays
+unchanged.
+
+The two archived RC 33 captures independently matched frames 18545–18645.
+The 43-frame loss starts at 18603. The renderer tested 821 resident
+sections per output at the start of that gap and 444 at its end, while
+5,333,104 vertex upload bytes crossed it. The RC 33 capture predates
+forward queue samples, so it cannot locate the missing terrain among
+generation, delivery, lighting, meshing and upload admission.
+
 ## Fixed-scale GX2 A/B
 
 Use one candidate WUHB, one prepared archive, the stock stationary scene, and

@@ -2,9 +2,13 @@
 """Summarize recorded terrain coverage in hosted GX2 benchmark reports."""
 
 import argparse
+from itertools import groupby
 import json
 from pathlib import Path
+import re
 from sys import float_info
+
+import gx2_profile
 
 
 SCENARIOS = {
@@ -34,6 +38,12 @@ TARGETS = (
     "gamepad_world_width",
     "gamepad_world_height",
     "world_surface_bytes",
+)
+VILLAGE_TRACE = re.compile(
+    r"Cafe Village streaming seq=(\d+) elapsed_ms=(\d+) reason=(progress|lost|recovered)"
+    r" camera=(-?\d+\.\d+),(-?\d+\.\d+) sections=(\d+)/(\d+)"
+    r" columns=(\d+) client_pending=(\d+) uploads=(\d+) remote_pending=(\d+)"
+    r" forward_resident=([0-9a-f]) forward_lit=([0-9a-f])\b"
 )
 
 
@@ -232,18 +242,147 @@ def load_report(path):
         return json.load(file)
 
 
+def village_window(frames, coverage, first_sequence=None):
+    count = int(coverage["host_frames"])
+    if count <= 0:
+        raise ValueError("Village profile correlation requires measured host frames")
+    matched = None
+    for start in range(len(frames) - count + 1):
+        if first_sequence is not None and frames[start]["sequence"] != first_sequence:
+            continue
+        rows = frames[start:start + count]
+        if any(row["phase"] != "playing" for row in rows):
+            continue
+        paired = [row["tv_submissions"] == row["gamepad_submissions"] == 1 for row in rows]
+        if sum(paired) != coverage["paired_frames"]:
+            continue
+        eligible = [pair and min(row["tv_sections_drawn"], row["drc_sections_drawn"]) > 0
+                    for pair, row in zip(paired, rows)]
+        if sum(eligible) != coverage["terrain_paired_frames"]:
+            continue
+        intervals = []
+        gaps = []
+        start_slack = end_slack = 0.0
+        for terrain, group in groupby(zip(eligible, rows), key=lambda pair: pair[0]):
+            run = [row for _, row in group]
+            if not terrain:
+                gaps.append(run)
+            elif len(run) > 1:
+                intervals.extend(b["start_ms"] - a["start_ms"] for a, b in zip(run, run[1:]))
+                # The Game starts inside each host frame. Over a continuous
+                # run the offset cancels except at the first and last frame.
+                start_slack += run[0]["loop_ms"]
+                end_slack += run[-1]["loop_ms"]
+        elapsed = sum(intervals)
+        reported_ms = coverage["eligible_interval_ms"]
+        rounding_ms = 0.001
+        if (len(intervals) == coverage["eligible_intervals"]
+                and max(map(len, gaps), default=0) == coverage["longest_ineligible_run_frames"]
+                and elapsed - start_slack - rounding_ms <= reported_ms
+                <= elapsed + end_slack + rounding_ms):
+            if matched is not None:
+                raise ValueError("multiple Village windows match. Use --profile-first-frame")
+            matched = rows, intervals, gaps
+    if matched is None:
+        raise ValueError("no retained gameplay window matches the Village frame coverage")
+    return matched
+
+
+def village_streaming_samples(rows, lines):
+    frames = {row["sequence"]: row for row in rows}
+    samples = {}
+    for line in lines:
+        match = VILLAGE_TRACE.search(line)
+        if not match:
+            continue
+        seq, elapsed, reason, x, z, tv, drc, columns, client, uploads, remote, resident, lit = match.groups()
+        sequence = int(seq)
+        row = frames.get(sequence)
+        if row is None:
+            continue
+        sections = [int(tv), int(drc)]
+        if sections != [row["tv_sections_drawn"], row["drc_sections_drawn"]]:
+            raise ValueError(f"Village serial and HZP3 sections disagree at frame {sequence}")
+        sample = {
+            "sequence": sequence,
+            "elapsed_ms": int(elapsed),
+            "reason": reason,
+            "camera_xz": [float(x), float(z)],
+            "drawn_sections": sections,
+            "columns": int(columns),
+            "client_pending": int(client),
+            "uploads": int(uploads),
+            "remote_pending": int(remote),
+            "forward_resident_mask": int(resident, 16),
+            "forward_lit_mask": int(lit, 16),
+        }
+        if samples.setdefault(sequence, sample) != sample:
+            raise ValueError(f"conflicting Village serial reports for frame {sequence}")
+    return [samples[seq] for seq in sorted(samples)]
+
+
+def village_profile(summary, frames, first_sequence=None, serial=()):
+    if summary["scenario"] != "village" or summary["coverage"]["evidence"] == "missing":
+        raise ValueError("profile correlation requires a stock Village coverage report")
+    rows, intervals, gaps = village_window(frames, summary["coverage"], first_sequence)
+    start_ms = rows[0]["start_ms"]
+    tested = ("tv_sections_tested", "drc_sections_tested")
+    return {
+        "first_sequence": rows[0]["sequence"],
+        "last_sequence": rows[-1]["sequence"],
+        "first_to_last_start_ms": round(rows[-1]["start_ms"] - start_ms, 3),
+        "eligible_ms_from_profile_starts": round(sum(intervals), 3),
+        "ineligible_runs": [{
+            "first_sequence": run[0]["sequence"],
+            "last_sequence": run[-1]["sequence"],
+            "start_offset_ms": round(run[0]["start_ms"] - start_ms, 3),
+            "frames": len(run),
+            "sections_tested_at_start": [run[0][field] for field in tested],
+            "sections_tested_at_end": [run[-1][field] for field in tested],
+            "sections_tested_tv_and_gamepad": [
+                gx2_profile.stats([row[field] for row in run]) for field in tested
+            ],
+            "terrain_upload_vertex_bytes": sum(row["terrain_upload_bytes"] for row in run),
+        } for run in gaps],
+        "forward_streaming_samples": village_streaming_samples(rows, serial),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="a saved Village or stationary benchmark JSON")
     parser.add_argument("--against", type=Path, metavar="TRIAL",
                         help="compare a control stationary report with a separate trial")
+    parser.add_argument("--profile", type=Path, metavar="HZP3",
+                        help="correlate a stock Village report with its native capture")
+    parser.add_argument("--profile-first-frame", type=int,
+                        help="identify the first Village frame when coverage alone is ambiguous")
+    parser.add_argument("--serial-capture", type=Path, help="join Village streaming samples from UWP serial")
+    parser.add_argument("--serial-first-seq", type=int)
+    parser.add_argument("--serial-last-seq", type=int)
     args = parser.parse_args()
+    first, last = args.serial_first_seq, args.serial_last_seq
+    if args.profile is not None and args.against is not None:
+        parser.error("--profile and --against are mutually exclusive")
+    if args.profile is None and (args.profile_first_frame is not None or args.serial_capture is not None):
+        parser.error("--profile is required for frame selection or serial correlation")
+    if args.serial_capture is not None or first is not None or last is not None:
+        if args.serial_capture is None or first is None or last is None or not 1 <= first <= last:
+            parser.error("specify --serial-capture with both serial bounds in increasing order")
     try:
         report = load_report(args.report)
         if args.against:
             result = compare_stationary(report, load_report(args.against))
         else:
             result = summarize(report)
+            if args.profile is not None:
+                metadata, frames = gx2_profile.read(args.profile.read_bytes())
+                if metadata["version"] != 3:
+                    raise ValueError("Village profile correlation requires HZP3")
+                lines = () if args.serial_capture is None else gx2_profile.uwp_serial_lines(
+                    args.serial_capture, first, last,
+                )
+                result["village_profile"] = village_profile(result, frames, args.profile_first_frame, lines)
         print(json.dumps(result, indent=2, allow_nan=False))
     except (OSError, ValueError) as error:
         parser.exit(2, f"{error}\n")
