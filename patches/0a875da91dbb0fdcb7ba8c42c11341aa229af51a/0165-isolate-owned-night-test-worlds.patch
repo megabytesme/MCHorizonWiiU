@@ -1,0 +1,645 @@
+diff --git a/crates/horizon-client/src/game/interface/startup_menu.rs b/crates/horizon-client/src/game/interface/startup_menu.rs
+index 2962e7b8dff67e8091443378f84774e71e0cf512..80af82230ef3a05efa9e06f274490cdf728f3237 100644
+--- a/crates/horizon-client/src/game/interface/startup_menu.rs
++++ b/crates/horizon-client/src/game/interface/startup_menu.rs
+@@ -87,7 +87,7 @@ impl StartupMenu {
+                     seed: Some(options.seed),
+                     creative: options.creative,
+                     create: None,
+-                    existing_only: false,
++                    existing_only: options.quick_play.as_ref() == Some(folder),
+                 })
+         };
+         let mut menu = Self {
+@@ -1525,6 +1525,24 @@ fn list_menu_mods(mods: &mut horizon_client::mod_list::ModList) {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn a_resolved_quick_play_world_remains_existing_only() {
++        let folder = "resolved existing world";
++        let mut options = Options::parse(["--world", folder].into_iter().map(str::to_owned))
++            .unwrap()
++            .unwrap();
++        assert!(matches!(
++            StartupMenu::new(&options, None).unwrap().pending,
++            Some(PendingWorldEntry::Local { existing_only: false, .. })
++        ));
++
++        options.quick_play = Some(folder.to_owned());
++        assert!(matches!(
++            StartupMenu::new(&options, None).unwrap().pending,
++            Some(PendingWorldEntry::Local { existing_only: true, .. })
++        ));
++    }
++
+     #[test]
+     fn a_server_joined_at_start_is_kept_in_the_server_list() {
+         let root = std::env::temp_dir().join(format!("horizon-quick-play-{}", std::process::id()));
+diff --git a/crates/horizon-client/src/game/runtime/launch_options.rs b/crates/horizon-client/src/game/runtime/launch_options.rs
+index 8bf13207c43a4d1e8972ac3dbe48ab61a7cfcbdd..c6926086b28e702e4468a46848694700618c70cc 100644
+--- a/crates/horizon-client/src/game/runtime/launch_options.rs
++++ b/crates/horizon-client/src/game/runtime/launch_options.rs
+@@ -155,16 +155,17 @@ impl Options {
+         }
+         // Vanilla's quick play (Main, QuickPlay.joinSingleplayerWorld): only a
+         // world that exists opens; else the title screen. --world also creates one.
+-        if let Some(world) = o.quick_play.take() {
++        if let Some(world) = &o.quick_play {
+             if std::env::current_dir()?
+                 .join("saves")
+                 .join(&world)
+                 .join("level.dat")
+                 .is_file()
+             {
+-                o.world = Some(world);
++                o.world = Some(world.clone());
+             } else {
+                 eprintln!("Quick play: there is no world {world} in saves/");
++                o.quick_play = None;
+             }
+         }
+         Ok(o)
+diff --git a/crates/horizon-client/src/game/world/world_loading.rs b/crates/horizon-client/src/game/world/world_loading.rs
+index 77feb769cbde966e3fbf788e810330ff9dc6b941..a0d0227e4f89b5d2ce822d4f3741c06c095878e7 100644
+--- a/crates/horizon-client/src/game/world/world_loading.rs
++++ b/crates/horizon-client/src/game/world/world_loading.rs
+@@ -199,13 +199,14 @@ impl WorldRequest {
+         // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
+         // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
+         let owner_migration = owner.and_then(|(player, account)| {
++            if created {
++                // Persist the selected profile from the first level.dat for both
++                // named offline profiles and signed-in accounts.
++                level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
++            }
+             let old = horizon_protocol::crypto::offline_uuid(&player);
+             (old != account).then(|| {
+-                if created {
+-                    // `IntegratedServer.initServer` saves with the profile before the first
+-                    // tick: a world made under the account names it from its first level.dat.
+-                    level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
+-                } else if horizon_client::lan::playerdata::migrate_owner(
++                if !created && horizon_client::lan::playerdata::migrate_owner(
+                     &save_root, &mut level, old, account,
+                 ) {
+                     log::info!(
+@@ -1497,6 +1498,33 @@ mod tests {
+         horizon_world::level::set_sea_levels(Vec::new());
+     }
+ 
++    #[test]
++    #[ignore = "daily"]
++    fn new_integrated_save_starts_with_the_selected_offline_owner() {
++        use super::super::native_entity_refs::tests::with_game;
++
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("disposable-world");
++        with_game(|game| {
++            let request = WorldRequest {
++                owner: Some(("Guest".into(), 0x404198aa_cc64_3021_9fdf_8766c0d0096c)),
++                save_root: path.clone(),
++                folder: "disposable-world".into(),
++                name: None,
++                seed: Some(0),
++                creative: false,
++                create: None,
++                rule_registry: Level::default().rule_registry,
++            };
++            game.load_world(request).unwrap();
++            let saved = Level::read_summary(&path).unwrap();
++            assert_eq!(
++                saved.player_uuid,
++                Some([1078040746, -865849311, -1612740762, -1060107924])
++            );
++        });
++    }
++
+     #[test]
+     #[ignore = "daily"]
+     fn creation_rule_selection_reaches_the_saved_world() {
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 2ea0a5e8c57efd7265971a92b4e79dde284493f5..3353a68feb1594b7e0b7ccd0512bb15b832c946f 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -38,6 +38,11 @@ const AGENT_QUIT_REQUESTED: u8 = 8;
+ struct NativeFiles;
+ 
+ impl night_menu::GameFiles for NativeFiles {
++    fn world_tree_safe(&self, saves: &Path, folder: &str) -> bool {
++        horizon_client::title::world_management::symlinks(saves, folder)
++            .is_ok_and(|links| links.is_empty())
++    }
++
+     fn world(
+         &self,
+         path: &Path,
+@@ -303,7 +308,7 @@ fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
+         launch.player,
+     ];
+     if let Some(world) = launch.world {
+-        options.extend(["--quickPlaySingleplayer".into(), world]);
++        world.append_args(&mut options);
+     }
+     if let Some(server) = launch.server {
+         options.extend(["--quickPlayMultiplayer".into(), server]);
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 4f8e25c8f2545c774fca2b71d943451091da68c1..32c4e5afe18e26dda2c0dda69468f75575ba6cdf 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -2,8 +2,8 @@
+ use super::{
+     local_service, local_wire as wire,
+     night_menu::{
+-        BenchmarkOutcome, BenchmarkProfile, BenchmarkRequest, BookmarkRequest, Launch, ProfileSelection,
+-        BENCHMARK_SCENES,
++        BenchmarkOutcome, BenchmarkProfile, BenchmarkRequest, BookmarkRequest, Launch,
++        ProfileSelection, TestWorldRequest, BENCHMARK_SCENES,
+     },
+     CAFE_APP_ROOT,
+ };
+@@ -39,6 +39,7 @@ enum LaunchArgs {
+     Game(Value),
+     Benchmark(BenchmarkRequest),
+     Bookmark(BookmarkRequest),
++    TestWorld(TestWorldRequest),
+ }
+ 
+ struct PendingLaunch {
+@@ -525,6 +526,7 @@ pub(super) fn take_launch() -> Result<Option<RemoteLaunch>, LaunchError> {
+             let launch = match ordinary {
+                 LaunchArgs::Game(args) => service.tool_launch(&args),
+                 LaunchArgs::Bookmark(bookmark) => service.launch_bookmark(&bookmark),
++                LaunchArgs::TestWorld(world) => service.launch_test_world(&world),
+                 LaunchArgs::Benchmark(_) => unreachable!("benchmark handled above"),
+             };
+             match launch {
+@@ -582,6 +584,7 @@ const READ: &[&str] = &[
+     "wiiu_loading_status",
+     "instance_list",
+     "worlds_list",
++    "wiiu_test_worlds_list",
+     "multiplayer_list",
+     "wiiu_benchmark_reports",
+     "wiiu_benchmark_report",
+@@ -669,6 +672,29 @@ fn catalog() -> &'static [Value] {
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_test_world_create",
++                    "description": "Create and open a disposable stock Survival world in its own Night workspace. Use the returned world_id to reopen it. Starts from Night Home.",
++                    "inputSchema": {
++                        "type": "object",
++                        "properties": {"seed": {"type": "integer", "description": "Signed 64-bit seed. Default: 0."}},
++                        "additionalProperties": false,
++                    },
++                }),
++                json!({
++                    "name": "wiiu_test_world_open",
++                    "description": "Open an existing disposable test world for the selected installation and profile. Use an ID from wiiu_test_worlds_list. Starts from Night Home.",
++                    "inputSchema": {
++                        "type": "object", "properties": {"id": {"type": "string", "minLength": 32, "maxLength": 32}},
++                        "required": ["id"], "additionalProperties": false,
++                    },
++                }),
++                json!({
++                    "name": "wiiu_test_worlds_list",
++                    "description": "List disposable world IDs and availability for the selected Night installation and profile.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
+                 json!({
+                     "name": "wiiu_multiplayer_edit",
+                     "description": "Edit a saved Night bookmark without connecting. Use its exact address from multiplayer_list and supply current_name when duplicate addresses have different labels.",
+@@ -872,7 +898,11 @@ impl Backend for NightTools {
+         }
+         if matches!(
+             name,
+-            "play" | "wiiu_benchmark_start" | "wiiu_multiplayer_join"
++            "play"
++                | "wiiu_benchmark_start"
++                | "wiiu_multiplayer_join"
++                | "wiiu_test_world_create"
++                | "wiiu_test_world_open"
+         ) {
+             if !REMOTE_LAUNCH.load(Ordering::Acquire) {
+                 return Ok(text_result(
+@@ -909,7 +939,33 @@ impl Backend for NightTools {
+                     true,
+                 ));
+             }
+-            let start = if name == "wiiu_multiplayer_join" {
++            let start = if name == "wiiu_test_world_create" {
++                let seed = args
++                    .as_object()
++                    .filter(|args| args.keys().all(|key| key == "seed"))
++                    .and_then(|args| args.get("seed").map_or(Some(0), Value::as_i64));
++                let Some(seed) = seed else {
++                    return Ok(text_result(
++                        "The seed must be a signed 64-bit integer.",
++                        true,
++                    ));
++                };
++                service
++                    .test_world_request(None, seed)
++                    .map(LaunchArgs::TestWorld)
++            } else if name == "wiiu_test_world_open" {
++                let id = args
++                    .as_object()
++                    .filter(|args| args.len() == 1)
++                    .and_then(|args| args.get("id"))
++                    .and_then(Value::as_str);
++                let Some(id) = id else {
++                    return Ok(text_result("A disposable test-world ID is required.", true));
++                };
++                service
++                    .test_world_request(Some(id), 0)
++                    .map(LaunchArgs::TestWorld)
++            } else if name == "wiiu_multiplayer_join" {
+                 let address = args
+                     .as_object()
+                     .filter(|args| args.len() == 1)
+@@ -948,11 +1004,19 @@ impl Backend for NightTools {
+                         let Ok(startup) = Startup::new(principal).map(Arc::new) else {
+                             return Ok(text_result("Night could not identify this launch.", true));
+                         };
+-                        let mut result = text_result(
+-                            &format!("Horizon is starting. Use game_wait_ready once the game tools appear.\nLaunch ID: {}", startup.id),
+-                            false,
++                        let mut message = format!(
++                            "Horizon is starting. Use game_wait_ready once the game tools appear.\nLaunch ID: {}",
++                            startup.id
+                         );
+-                        result["structuredContent"] = startup.status();
++                        let mut status = startup.status();
++                        if let LaunchArgs::TestWorld(world) = &args {
++                            status["world_id"] = json!(world.id);
++                            status["instance"] = json!(world.instance);
++                            message.push_str("\nTest world ID: ");
++                            message.push_str(&world.id);
++                        }
++                        let mut result = text_result(&message, false);
++                        result["structuredContent"] = status;
+                         *STARTUP.lock().unwrap() = Some(startup.clone());
+                         (Some(startup), result)
+                     };
+@@ -1050,6 +1114,8 @@ fn requires_launch_policy(name: &str) -> bool {
+             | "wiiu_benchmark_cancel"
+             | "wiiu_multiplayer_join"
+             | "wiiu_loading_cancel"
++            | "wiiu_test_world_create"
++            | "wiiu_test_world_open"
+     )
+ }
+ 
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 9445080960a760d51187f126ef2680ceb825f3e5..29565457398ca5dbcc130656a65be9dbbde5bed1 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -128,6 +128,7 @@ pub struct World {
+ 
+ pub trait GameFiles {
+     fn world(&self, path: &Path, identity: &str, online_uuid: Option<u128>) -> Option<World>;
++    fn world_tree_safe(&self, saves: &Path, folder: &str) -> bool;
+ }
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+@@ -217,11 +218,30 @@ enum Target {
+     Server(String),
+ }
+ 
++pub enum WorldLaunch {
++    Existing(String),
++    CreateTest(i64),
++}
++
++impl WorldLaunch {
++    pub(super) fn append_args(self, options: &mut Vec<String>) {
++        match self {
++            Self::Existing(world) => options.extend(["--quickPlaySingleplayer".into(), world]),
++            Self::CreateTest(seed) => options.extend([
++                "--world".into(),
++                night_test_world::FOLDER.into(),
++                "--seed".into(),
++                seed.to_string(),
++            ]),
++        }
++    }
++}
++
+ pub struct Launch {
+     pub game: PathBuf,
+     pub resources: PathBuf,
+     pub player: String,
+-    pub world: Option<String>,
++    pub world: Option<WorldLaunch>,
+     pub server: Option<String>,
+     pub swap_ab: bool,
+     pub swap_xy: bool,
+@@ -414,7 +434,11 @@ impl<G: GameFiles> LocalService<G> {
+     }
+ 
+     fn world(&self, id: &str) -> Option<World> {
+-        let saves = self.game_dir(&self.preferences.instance).join("saves");
++        self.world_in(&self.game_dir(&self.preferences.instance), id)
++    }
++
++    fn world_in(&self, game: &Path, id: &str) -> Option<World> {
++        let saves = game.join("saves");
+         let path = saves.join(id);
+         if !store::identifier(id) || !plain(&saves, true) || !plain(&path, true) {
+             return None;
+@@ -577,7 +601,7 @@ impl<G: GameFiles> LocalService<G> {
+         let (world, server) = match target {
+             Target::Menu => (None, None),
+             Target::World(id) if self.world(id).is_some_and(|w| w.unavailable.is_none()) => {
+-                (Some(id.clone()), None)
++                (Some(WorldLaunch::Existing(id.clone())), None)
+             }
+             Target::World(_) => return Err(5),
+             Target::Server(address) if store::endpoint(address).as_ref() == Some(address) => {
+@@ -1677,5 +1701,9 @@ fn directories(path: &Path) -> Vec<String> {
+     entries(path, true)
+ }
+ 
++#[path = "night_test_world.rs"]
++mod night_test_world;
++pub(super) use night_test_world::TestWorldRequest;
++
+ #[path = "night_tools.rs"]
+ mod night_tools;
+diff --git a/wiiu/loading_app/src/night_test_world.rs b/wiiu/loading_app/src/night_test_world.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..915f1483ca2eb4cc1140ad35fd7d39ecd6ff7eef
+--- /dev/null
++++ b/wiiu/loading_app/src/night_test_world.rs
+@@ -0,0 +1,239 @@
++//! Disposable workspaces for the selected installation and profile.
++use std::fs::{self, OpenOptions};
++use std::io::{ErrorKind, Write};
++use std::path::{Path, PathBuf};
++
++use horizon_wiiu_mcp::oauth;
++use serde::{Deserialize, Serialize};
++use serde_json::{json, Value};
++
++use super::{
++    entries, plain, store, GameFiles, Launch, LocalService, Page, ResourceStatus, Target,
++    WorldLaunch,
++};
++
++const ROOT: &str = ".night-test-worlds";
++const MARKER: &str = "horizon-night-test-world.json";
++pub(crate) const FOLDER: &str = "Disposable Test World";
++
++enum TestWorldAction {
++    Create(i64),
++    Open,
++}
++
++pub(crate) struct TestWorldRequest {
++    pub(crate) id: String,
++    pub(crate) instance: String,
++    owner: String,
++    action: TestWorldAction,
++}
++
++#[derive(Deserialize, Eq, PartialEq, Serialize)]
++#[serde(deny_unknown_fields)]
++struct Marker {
++    schema: u8,
++    id: String,
++    instance: String,
++    owner: String,
++}
++
++impl Marker {
++    fn for_request(request: &TestWorldRequest) -> Self {
++        Self {
++            schema: 1,
++            id: request.id.clone(),
++            instance: request.instance.clone(),
++            owner: request.owner.clone(),
++        }
++    }
++}
++
++fn valid_id(id: &str) -> bool {
++    id.len() == 32
++        && id
++            .bytes()
++            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
++}
++
++fn sandbox_marker(root: &Path, id: &str) -> Option<Marker> {
++    if !valid_id(id) || !plain(root, true) {
++        return None;
++    }
++    let workspace = root.join(id);
++    let path = workspace.join(MARKER);
++    if !plain(&workspace, true) || !plain(&path, false) {
++        return None;
++    }
++    let record: Marker = serde_json::from_slice(&store::read_limited(&path, 512).ok()?).ok()?;
++    (record.schema == 1 && id == record.id).then_some(record)
++}
++
++fn reserve_workspace(root: &Path, request: &TestWorldRequest) -> Result<PathBuf, &'static str> {
++    if !valid_id(&request.id) {
++        return Err("The disposable test-world ID is invalid.");
++    }
++    match fs::create_dir(root) {
++        Ok(()) => {}
++        Err(error) if error.kind() == ErrorKind::AlreadyExists && plain(root, true) => {}
++        Err(_) => return Err("The disposable test-world directory is unavailable."),
++    }
++    let marker = Marker::for_request(request);
++    let payload =
++        serde_json::to_vec(&marker).map_err(|_| "Could not encode the test-world marker.")?;
++    let workspace = root.join(&request.id);
++    // An existing directory might be any save. Only a fresh allocation can be created.
++    fs::create_dir(&workspace).map_err(|_| "Could not reserve a fresh test-world workspace.")?;
++    let marker_path = workspace.join(MARKER);
++    let mut file = OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(&marker_path)
++        .map_err(|_| "Could not create the test-world marker.")?;
++    file.write_all(&payload)
++        .and_then(|()| file.sync_all())
++        .map_err(|_| "Could not persist the test-world marker.")?;
++    Ok(workspace)
++}
++
++impl<G: GameFiles> LocalService<G> {
++    fn test_world_owner(&self) -> Option<String> {
++        if self.online.agent_profile_refreshing() {
++            return None;
++        }
++        if self.online.selected().is_some() {
++            return self
++                .online
++                .active()
++                .map(|identity| format!("online:{:032x}", identity.id.0));
++        }
++        Some(format!(
++            "offline:{}",
++            self.preferences.profiles[self.preferences.profile].identity
++        ))
++    }
++
++    pub(in crate::hosted) fn test_world_request(
++        &self,
++        id: Option<&str>,
++        seed: i64,
++    ) -> Result<TestWorldRequest, &'static str> {
++        if !matches!(self.page, Page::Home) {
++            return Err("Return to the Night home page before opening a test world.");
++        }
++        let launch = self.launch_game_for_target(&Target::Menu).map_err(|_| {
++            "The installation or selected profile is not ready to open a test world."
++        })?;
++        let owner = self
++            .test_world_owner()
++            .ok_or("The selected profile is unavailable.")?;
++        let (id, action) = match id {
++            Some(id) if valid_id(id) => (id.to_owned(), TestWorldAction::Open),
++            Some(_) => return Err("Use a disposable ID from wiiu_test_worlds_list."),
++            None => {
++                let bytes: [u8; 16] = oauth::random_bytes()
++                    .map_err(|_| "Night could not allocate a test-world ID.")?;
++                (
++                    format!("{:032x}", u128::from_be_bytes(bytes)),
++                    TestWorldAction::Create(seed),
++                )
++            }
++        };
++        let request = TestWorldRequest {
++            id,
++            action,
++            owner,
++            instance: self.preferences.instance.clone(),
++        };
++        if matches!(request.action, TestWorldAction::Open) {
++            self.reopen_test_world(&launch.game.join(ROOT), &request)?;
++        }
++        Ok(request)
++    }
++
++    fn reopen_test_world(
++        &self,
++        root: &Path,
++        request: &TestWorldRequest,
++    ) -> Result<PathBuf, &'static str> {
++        if sandbox_marker(root, &request.id) != Some(Marker::for_request(request)) {
++            return Err(
++                "No disposable test world belongs to the selected installation and profile.",
++            );
++        }
++        let workspace = root.join(&request.id);
++        self.check_test_save(&workspace)?;
++        Ok(workspace)
++    }
++
++    fn check_test_save(&self, workspace: &Path) -> Result<(), &'static str> {
++        let saves = workspace.join("saves");
++        if !plain(&saves, true) {
++            return Err("The disposable saves directory is missing or unsafe.");
++        }
++        // Quick Play skips the title-screen access prompt that inspects nested links.
++        if !self.game.world_tree_safe(&saves, FOLDER) {
++            return Err("Night could not validate the disposable world directory for links.");
++        }
++        if !self
++            .world_in(workspace, FOLDER)
++            .is_some_and(|world| world.unavailable.is_none())
++        {
++            return Err("The disposable save is missing, locked, or unavailable to this profile.");
++        }
++        Ok(())
++    }
++
++    pub(in crate::hosted) fn launch_test_world(
++        &self,
++        request: &TestWorldRequest,
++    ) -> Result<Launch, &'static str> {
++        if !matches!(self.page, Page::Home)
++            || self.preferences.instance != request.instance
++            || self.test_world_owner().as_deref() != Some(request.owner.as_str())
++        {
++            return Err(
++                "Return to the same installation and profile before opening the test world.",
++            );
++        }
++        let mut launch = self.launch_game_for_target(&Target::Menu).map_err(|_| {
++            "The installation or selected profile is not ready to open a test world."
++        })?;
++        let root = launch.game.join(ROOT);
++        let (workspace, entry) = match request.action {
++            TestWorldAction::Create(seed) => (
++                reserve_workspace(&root, request)?,
++                WorldLaunch::CreateTest(seed),
++            ),
++            TestWorldAction::Open => (
++                self.reopen_test_world(&root, request)?,
++                WorldLaunch::Existing(FOLDER.to_owned()),
++            ),
++        };
++        launch.game = workspace;
++        launch.world = Some(entry);
++        Ok(launch)
++    }
++
++    pub(super) fn list_test_worlds(&self) -> Result<Value, &'static str> {
++        if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
++            return Err("Select a compatible installation before listing disposable test worlds.");
++        }
++        let owner = self
++            .test_world_owner()
++            .ok_or("The selected profile is unavailable.")?;
++        let instance = self.preferences.instance.as_str();
++        let root = self.game_dir(instance).join(ROOT);
++        let worlds: Vec<_> = entries(&root, true)
++            .into_iter()
++            .filter_map(|id| {
++                let marker = sandbox_marker(&root, &id)?;
++                if marker.instance != instance || marker.owner != owner {
++                    return None;
++                }
++                let available = self.check_test_save(&root.join(&id)).is_ok();
++                Some(json!({"id":id, "available":available}))
++            })
++            .collect();
++        Ok(json!({"instance":instance, "worlds":worlds}))
++    }
++}
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index 34aef90d2707a75867e4c63d70e5fb83a90c94c0..4350477b8e543e225d30a4d7731ef4cce465a23e 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -1,6 +1,6 @@
+ use super::{
+     benchmark_reports, store, Edit, GameFiles, Launch, List, LocalService, Page, ResourceStatus,
+-    Target,
++    Target, WorldLaunch,
+ };
+ use serde_json::{json, Value};
+ 
+@@ -119,6 +119,7 @@ impl<G: GameFiles> LocalService<G> {
+                     .collect();
+                 Ok(json!(rows))
+             }
++            "wiiu_test_worlds_list" if contains(&[]) => self.list_test_worlds(),
+             "multiplayer_list" if contains(&["instance"]) => {
+                 shared_servers()?;
+                 Ok(json!(self.preferences.servers))
+@@ -280,7 +281,7 @@ impl<G: GameFiles> LocalService<G> {
+             {
+                 return Err("The existing world is missing, locked, or owned by another profile.");
+             }
+-            launch.world = Some(id.to_owned());
++            launch.world = Some(WorldLaunch::Existing(id.to_owned()));
+         }
+         Ok(launch)
+     }

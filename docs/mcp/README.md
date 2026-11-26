@@ -179,6 +179,25 @@ launch policy. It uses the selected profile and the ordinary connection
 path. Add an entry through `multiplayer_add` when the server is missing
 from the list.
 
+`wiiu_multiplayer_edit` updates an existing canonical address or label.
+Use `multiplayer_remove` with the exact address as `server` and
+`confirm: true` for an authorized removal. Both use `launcher.manage`.
+Pass `current_name` if more than one saved label uses the same address.
+
+### Disposable worlds in the hosted development recipe
+
+From Night Home, call `wiiu_test_world_create` with an optional signed
+64-bit `seed`. It creates and opens stock Survival under the selected
+installation's private test workspace. Save and return through the
+ordinary gameplay boundary. Use `wiiu_test_worlds_list` with
+`launcher.read` to find your saved test worlds after restart, then call
+`wiiu_test_world_open` with the returned `id`.
+
+Create and open require `launcher.manage`, `game.control` and Night's
+remote launch policy. Their responses carry the ordinary `launch_id`.
+Reopen validates the selected profile and installation, the creator's
+grant, the existing save, lock state and world-directory links.
+
 ### Remote Night cancellation and close
 
 Ordinary remote `play` and `wiiu_multiplayer_join` responses include a

@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "070df8f4786fadc2af08446ef1cc542f8a3f8d9c",
+  "output_tree": "0865ec25196ea2a96a6a330009a930d9c0ce16ea",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -998,6 +998,12 @@
       "sha256": "340eaf35a1771adfc7d091f72a90a622362a9db415098cc5f41662631d8f04ac",
       "input_tree": "b793146151bca68c0d7bb7c13f194b0d5257d670",
       "output_tree": "070df8f4786fadc2af08446ef1cc542f8a3f8d9c"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0165-isolate-owned-night-test-worlds.patch",
+      "sha256": "f69a8bb79adbc3050020e9b2a18a3c83c6cc9ba2753093a6bc8f165e75eeda1c",
+      "input_tree": "070df8f4786fadc2af08446ef1cc542f8a3f8d9c",
+      "output_tree": "0865ec25196ea2a96a6a330009a930d9c0ce16ea"
     }
   ],
   "candidate": {
