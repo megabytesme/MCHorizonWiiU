@@ -202,8 +202,9 @@ and route as when started locally.
 Call `wiiu_benchmark_status` with `launcher.read` to follow the queued,
 loading, running and closing phases. A completed run returns its `instance` and `report_id`.
 Call `wiiu_benchmark_cancel` with the same permissions as start to cancel
-a queued or active benchmark. Wait for the `cancelled` phase before starting
-another run.
+a queued or active benchmark. For another run, wait for a terminal phase
+and `night_home_ready: true`. Remote runs return to Night Home after
+cleanup. Local runs continue to open their report in Night.
 
 With `launcher.read`, call `wiiu_benchmark_reports` to list saved report IDs
 in the selected installation or pass `{"instance":"Lab"}` to list an

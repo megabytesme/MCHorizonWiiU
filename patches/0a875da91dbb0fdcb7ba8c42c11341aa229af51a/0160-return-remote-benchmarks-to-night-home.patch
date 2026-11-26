@@ -1,0 +1,113 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 489a5a1ec19ba202c69716f519c1054600b7cbbd..66ff2b3870511d6f7e7587a0120b13142d5779c9 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -279,7 +279,7 @@ fn run(launch: night_menu::Launch) -> i32 {
+         local_service()
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+-            .benchmark_finished(&benchmark.instance, outcome, report);
++            .benchmark_finished(&benchmark, outcome, report);
+         mcp::benchmark_finished(outcome, report);
+         return RETURNED;
+     }
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 6e9fab8dd26aa78b92ae2d90d6c1c4c37c7d1bd1..3f7ce361fa941ef0457bce9e27763f867971b853 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -67,7 +67,8 @@ fn benchmark_state() -> Value {
+     let state = BENCHMARK.lock().unwrap();
+     json!({"scenario": state.scenario, "instance": state.instance,
+         "phase": state.phase, "report_id": state.report,
+-        "cancel_requested": state.cancel.is_some()})
++        "cancel_requested": state.cancel.is_some(),
++        "night_home_ready": HOME.load(Ordering::Acquire)})
+ }
+ 
+ fn benchmark_queued(request: &BenchmarkRequest) {
+@@ -429,7 +430,7 @@ fn catalog() -> &'static [Value] {
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_status",
+-                    "description": "Read the Wii U benchmark lifecycle phase, its installation ID, and the published report ID when available.",
++                    "description": "Read the Wii U benchmark lifecycle phase, installation ID, and published report ID. Wait for night_home_ready before starting another run.",
+                     "annotations": {"readOnlyHint": true},
+                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                 }),
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 1dbe6d2fc0c951ca5edced39bf80c96a8772e17e..be6c02f2cb27dd5d556777921a73fc1f9caad89a 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -36,10 +36,16 @@ pub enum BenchmarkOutcome {
+     Failed,
+ }
+ 
++enum BenchmarkOrigin {
++    Local,
++    AgentControl,
++}
++
+ pub struct BenchmarkLaunch {
+     pub scenario: &'static str,
+     pub instance: String,
+     pub reports: PathBuf,
++    origin: BenchmarkOrigin,
+ }
+ 
+ pub(super) struct BenchmarkRequest {
+@@ -387,7 +393,7 @@ impl<G: GameFiles> LocalService<G> {
+             return Err(2);
+         }
+         if let Some(scene) = self.benchmark.take() {
+-            return self.launch_benchmark(BENCHMARK_SCENES[scene].0);
++            return self.launch_benchmark(BENCHMARK_SCENES[scene].0, BenchmarkOrigin::Local);
+         }
+         self.launch_game()
+     }
+@@ -424,12 +430,16 @@ impl<G: GameFiles> LocalService<G> {
+             return Err(5);
+         }
+         self.benchmark_request(request.scenario).map_err(|_| 5_u8)?;
+-        let launch = self.launch_benchmark(request.scenario)?;
++        let launch = self.launch_benchmark(request.scenario, BenchmarkOrigin::AgentControl)?;
+         self.benchmark = None;
+         Ok(launch)
+     }
+ 
+-    fn launch_benchmark(&self, scenario: &'static str) -> Result<Launch, u8> {
++    fn launch_benchmark(
++        &self,
++        scenario: &'static str,
++        origin: BenchmarkOrigin,
++    ) -> Result<Launch, u8> {
+         let game = self.game_dir(&self.preferences.instance);
+         let scratch = game.join(".benchmark-run");
+         use horizon_client::benchmark::{CAFE_WORKSPACE_MARKER, CAFE_WORKSPACE_OWNER};
+@@ -457,6 +467,7 @@ impl<G: GameFiles> LocalService<G> {
+                 scenario,
+                 instance: self.preferences.instance.clone(),
+                 reports: game.join("benchmarks"),
++                origin,
+             }),
+         })
+     }
+@@ -503,12 +514,17 @@ impl<G: GameFiles> LocalService<G> {
+ 
+     pub fn benchmark_finished(
+         &mut self,
+-        instance: &str,
++        run: &BenchmarkLaunch,
+         outcome: BenchmarkOutcome,
+         report: Option<&str>,
+     ) {
++        if matches!(run.origin, BenchmarkOrigin::AgentControl) {
++            self.show(Page::Home);
++            self.message = "";
++            return;
++        }
+         self.show(Page::Items(List::Reports, 0));
+-        if outcome == BenchmarkOutcome::Completed && instance == self.preferences.instance {
++        if outcome == BenchmarkOutcome::Completed && run.instance == self.preferences.instance {
+             if let Some(index) =
+                 report.and_then(|name| self.items.iter().position(|item| item.key == name))
+             {

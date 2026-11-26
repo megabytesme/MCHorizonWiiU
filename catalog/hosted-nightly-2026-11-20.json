@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
+  "output_tree": "f992e986276f7a2a5ea2306ee650d4c0d60c18c8",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -968,6 +968,12 @@
       "sha256": "6e403d8cde23b9900445552e4892cea58a54ab3f232bb2d9f37cfea6c871d294",
       "input_tree": "4f968078fe05d8805642f2a1464aaa14607e5620",
       "output_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0160-return-remote-benchmarks-to-night-home.patch",
+      "sha256": "3b57bb1d1c860c7424486c3281392440f31520b2f20c036cd6a452c0e8167769",
+      "input_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
+      "output_tree": "f992e986276f7a2a5ea2306ee650d4c0d60c18c8"
     }
   ],
   "candidate": {
