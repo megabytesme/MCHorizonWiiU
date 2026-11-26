@@ -1,4 +1,4 @@
-# Standalone game profiles and x64 carry diagnostic
+# Standalone game profiles and x64 recompiler diagnostics
 
 Cemu 2.6 loads a game profile when starting an installed title. Its standalone
 RPX path derives a placeholder title ID but skips profile loading, so writing
@@ -29,6 +29,81 @@ run completed core resource preparation and returned to Night's startup
 error. Both showed invalid Rust allocation counters before the world opened.
 The passing instruction probe establishes one corrected translation and the
 profile mode selection. Full recompiler gameplay remains unverified.
+
+## Indexed reservation operands
+
+Cemu 2.6's x64 emitter calculated the effective address for an indexed
+`stwcx.` by adding the index to the native register that held the guest
+base. Neither the successful store nor the address-mismatch path restored
+the base. The next guest load could use the store address in place of its
+original base. The ordinary indexed stores examined restore the base
+after using it. Equal real address operands are handled by the existing
+interpreter fallback.
+
+The [reservation patch](x64-preserve-reservation-inputs-cemu-2.6.patch)
+uses a scratch effective-address register for `lwarx` and saved EAX for
+`stwcx.` so the indexed paths leave both guest operands intact. It keeps
+the original compare-and-store and reservation conditions. Apply it
+with `git apply --check` to pinned Cemu 2.6
+`a6fb0a48eb437a8a41c13b782ac8ae0433bf8f98`. The earlier profile and carry
+patches remain separate. Build in a disposable Cemu checkout.
+
+A single-threaded [assembly fixture](../diagnostics/ppc_reservation/README.md)
+reproduced the corruption on the carry-corrected build. After compilation
+warmup, a successful indexed store made the following load from the base
+return the value stored at base + 4. On a reservation address mismatch, the
+following load read base + 128. Forced-interpreter mode passed both cases.
+A separate Cafe Rust fixture reproduced incorrect peak and live-block
+counters with a chain of relaxed atomics matching Horizon's measured
+allocator. The diagnostic operations require no game allocations, world
+data or GX2.
+
+| Input | SHA-256 |
+| --- | --- |
+| Previous carry-corrected Cemu | `74ef9d30ec9f6de8c8adf5b2df64144b17bb656ded96cd7ac1be0547e3dbc6d5` |
+| Reservation-corrected Cemu | `59c095297b50ca654ea014d7c950dbac2005e64754a101a1cb8184af7b409140` |
+| Carry RPX | `8b4ff6bcfec63966817f50d8cd722d87b74f0266c9fdd122aacc9f67ba9305e4` |
+| Reservation operand RPX | `c455416db37056bfdaec0fb741daffd0f03ac7941d8631e088ae6e17cfb474ad` |
+| Rust allocator-counter RPX | `1d0d69fccb48838882339572c40b1ab5af17795e4b99e1cc161ff75a4b1c0c16` |
+
+On the reservation-corrected build, each confirmed JIT mode passed
+one million carry cases, one million reservation-operand iterations,
+and 800,000 allocator-counter iterations. The repaired binary was linked
+from the previous scratch Cemu build inputs with only its x64 emitter
+translation unit recompiled. The checks validate targeted instructions.
+The forced interpreter remains the fallback for hosted gameplay.
+
+### RC 38 hosted gameplay in multi-core Cemu
+
+On 26 November 2026, the reservation-corrected Cemu ran the exact RC 38 RPX
+`2da87b74841f9c570a0efde9b7fd85577e1c5a0bc17c4b4fbc8010deab243553`
+with the disposable offline Reopen Fixture. The earlier carry-corrected
+build returned to Night's startup error on its first entry with the same
+RPX and starting fixture. Its `hosted.before_game` counters reported
+4,291,873,234 live and 4,294,965,399 peak Rust bytes. With the reservation
+fix, those counters reported 16,496 live and 120,692 peak bytes.
+
+First entry reached the original game's world-ready frame after 83.369 s.
+The retained HZP3 session contained 82 playing records with one submission
+to each output, with TV at 1920×1080 and GamePad at 854×480. Fixed 75%
+world targets were 1440×809 and 641×360. The player moved, the save recorded
+the new position, and the run returned to Night with 234,880,920 free
+GX2 bulk bytes and a largest free block of 234,880,896 bytes. Native audio
+callbacks delivered nonzero PCM and the final queue read/write counts agreed.
+
+The same-process reopen restored preparation caches and then the
+`resource-loader` thread panicked in Rust's BTreeMap traversal
+(`alloc/src/collections/btree/navigate.rs:164`). The runner stopped before
+the second session could reach gameplay or verify the saved position
+after reopening. Cemu saved byte-identical 854×480 PNGs under the TV and
+GamePad filenames. With the same RC 38 RPX and Night settings, the previous
+carry-corrected and reservation-corrected executables both reproduced the
+duplicate in forced-interpreter mode. The established NSS interpreter,
+SHA-256 `e80e74c64334bdbf27151aa2c248a3beac12f42cfdf3322f570f433dfb99d19d`,
+produced a separate 1920×1080 TV PNG and 854×480 GamePad PNG. Use that
+interpreter build for independent output captures and full lifecycle tests.
+Authenticated multiplayer, repeated saves and reopens, and an in-app exit
+remain unqualified on the reservation-corrected executable.
 
 ## Disposable saved-world runs
 
