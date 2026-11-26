@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "daffe5670e195a4870cff3851d0dde16d744f9eb",
+  "output_tree": "6741c5bd7f9284d0717e01244e62ef9fb0658ae3",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1010,12 +1010,18 @@
       "sha256": "b9379942ecb019f0aa5c3a4b72026091aecfd1b3934a32ae7d2011b6cf506f24",
       "input_tree": "0865ec25196ea2a96a6a330009a930d9c0ce16ea",
       "output_tree": "daffe5670e195a4870cff3851d0dde16d744f9eb"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0167-observe-the-cafe-drs-controller.patch",
+      "sha256": "0f8b53f3d2fb808a4e466e1d686e90041ffa0a3e2d159a7efc3398aabd34b3a0",
+      "input_tree": "daffe5670e195a4870cff3851d0dde16d744f9eb",
+      "output_tree": "6741c5bd7f9284d0717e01244e62ef9fb0658ae3"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.45",
-    "patch": "0.5.0-rc.45"
+    "client": "0.8.0-rc.46",
+    "patch": "0.5.0-rc.46"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

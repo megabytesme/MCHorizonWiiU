@@ -1,0 +1,446 @@
+diff --git a/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs b/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs
+index 1362b07416de94dcb01ada4d2c8363966d047c90..44fbe71c05cb67eb59d3af77b089d267fdee24d7 100644
+--- a/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs
++++ b/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs
+@@ -104,6 +104,7 @@ impl super::Game<'_> {
+             )
+         {
+             self.dynamic_resolution.reset();
++            self.cafe_performance.drs = Default::default();
+         }
+         self.handle_option_events(vec![super::Event::Changed])?;
+         self.ui_wait.clicked();
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index c3b2684fb5b0e4cc00dd04952f84ce455bb4e8cd..74107c9546dda0ce773108348226d99d655b3186 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1636,14 +1636,30 @@ impl Game<'_> {
+         state["cafe_gpu_timing"] = json!(self.cafe_performance.gpu_timing_json(now));
+         let graphics = &self.settings.horizon;
+         let drs_trial_active = self.cafe_drs_trial_active();
++        let inactive_reason = if self.options.benchmark.is_some() {
++            Some("benchmark")
++        } else if !graphics.dynamic_resolution {
++            Some("disabled")
++        } else if !drs_trial_active {
++            Some("trial_unavailable")
++        } else {
++            None
++        };
++        let (timing_available, drs) = self.cafe_performance.drs.status(
++            now,
++            graphics.resolution_scale,
++            graphics.target_fps,
++            inactive_reason,
++        );
+         state["cafe_graphics"] = json!({
+             "preset": graphics.preset.name(),
+             "configured_scale": graphics.resolution_scale,
+             "scaling_mode": if drs_trial_active { "experimental_dynamic" } else { "fixed" },
+             "dynamic_resolution": graphics.dynamic_resolution,
+             "dynamic_resolution_active": drs_trial_active,
+-            "dynamic_timing_available": false,
++            "dynamic_timing_available": timing_available,
+             "target_fps": graphics.target_fps,
++            "experimental_drs": drs,
+         });
+     }
+ 
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 945e6e86dd2727f9f22bb528eb8e4f2f47a5a70f..f49af50484119327b1713aca1baf2c1760cef056 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -921,24 +921,39 @@ impl CafeGameSession<'_> {
+             let graphics = &self.game.settings.horizon;
+             let frame = end.duration_since(start);
+             let frame_ms = frame.as_secs_f32() * 1000.0;
+-            let pipeline_ms = (phase == performance::Phase::Gameplay)
+-                .then(|| work.drs_pipeline_ms(frame, graphics.target_fps))
+-                .flatten();
+-            if let Some(pipeline_ms) = pipeline_ms {
+-                if let Some(scale) = self.game.dynamic_resolution.observe(
+-                    Some(pipeline_ms),
+-                    frame_ms,
+-                    graphics.resolution_scale,
+-                    graphics.target_fps,
+-                    horizon_client::dynamic_resolution::Pace::Gentle,
+-                ) {
+-                    log::info!("Horizon Cafe experimental DRS requested scale={scale}");
+-                }
++            let floor = graphics.resolution_scale;
++            let target = graphics.target_fps;
++            let timing = if phase == performance::Phase::Gameplay {
++                work.drs_pipeline_ms(frame, target)
+             } else {
+-                self.game.dynamic_resolution.discard_measurements();
+-            }
++                Err("outside_gameplay")
++            };
++            let controller = &mut self.game.dynamic_resolution;
++            let transition = if let Ok(pipeline_ms) = timing {
++                let previous = controller.scale(floor);
++                controller
++                    .observe(
++                        Some(pipeline_ms),
++                        frame_ms,
++                        floor,
++                        target,
++                        horizon_client::dynamic_resolution::Pace::Gentle,
++                    )
++                    .map(|scale| {
++                        log::info!("Horizon Cafe experimental DRS requested scale={scale}");
++                        (previous, scale)
++                    })
++            } else {
++                controller.discard_measurements();
++                None
++            };
++            self.game
++                .cafe_performance
++                .drs
++                .record(end, floor, target, timing, transition);
+         } else {
+             self.game.dynamic_resolution.reset();
++            self.game.cafe_performance.drs = Default::default();
+         }
+         #[cfg(target_os = "cafe")]
+         if self.benchmark.is_some() {
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index a723b0ca09bbfd339cd72d0055346a32138a1622..df2a63177482ecc52312aa12504609281991b7e0 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -100,32 +100,44 @@ impl CafeFrameWork {
+         &self,
+         frame: Duration,
+         target_fps: u32,
+-    ) -> Option<f32> {
+-        let sample = self.gpu_sample?;
+-        let resolution = self.world_resolution?;
++    ) -> Result<f32, &'static str> {
++        if self.presented != [true; 2] {
++            return Err("unpaired_submission");
++        }
++        let sample = self.gpu_sample.ok_or("missing_gpu_sample")?;
++        let resolution = self.world_resolution.ok_or("missing_world_resolution")?;
+         let [[tv_top, tv_bottom], [pad_top, pad_bottom]] = sample.endpoints;
+-        let target_ms = 1000.0 / target_fps.max(1) as f32;
+         if sample.status != 1
+             || sample.submitted == 0
+             || sample.retired < sample.submitted
+-            || self.presented != [true; 2]
+-            || self.terrain_sections.contains(&0)
+-            || resolution.requested_scale != resolution.effective_scale
+             || tv_top == 0
+             || tv_top >= tv_bottom
+             || tv_bottom > pad_top
+             || pad_top >= pad_bottom
+             || pad_bottom == u64::MAX
+-            || self.gpu_wait > self.submission
+-            || self.submission > frame
+-            || (frame - self.gpu_wait).as_secs_f32() * 1000.0 >= target_ms
+         {
+-            return None;
++            return Err("invalid_gpu_endpoints");
++        }
++        if self.terrain_sections.contains(&0) {
++            return Err("missing_terrain");
++        }
++        if resolution.requested_scale != resolution.effective_scale {
++            return Err("scale_fallback");
++        }
++        if self.gpu_wait > self.submission || self.submission > frame {
++            return Err("invalid_wall_times");
++        }
++        let target_ms = 1000.0 / target_fps.max(1) as f32;
++        if (frame - self.gpu_wait).as_secs_f32() * 1000.0 >= target_ms {
++            return Err("cpu_budget_exceeded");
+         }
+         let ticks_to_ms = 1000.0 / GX2_GPU_HZ as f32;
+         let bracket_ms = (pad_bottom - tv_top) as f32 * ticks_to_ms;
+         let output_ms = ((tv_bottom - tv_top) + (pad_bottom - pad_top)) as f32 * ticks_to_ms;
+-        (bracket_ms <= frame.as_secs_f32() * 1000.0).then_some(output_ms)
++        if bracket_ms > frame.as_secs_f32() * 1000.0 {
++            return Err("gpu_span_exceeds_frame");
++        }
++        Ok(output_ms)
+     }
+ }
+ 
+@@ -211,6 +223,84 @@ impl WallTimes {
+     }
+ }
+ 
++#[derive(Default)]
++pub(in crate::game) struct DrsDiagnostics {
++    sample: Option<DrsSample>,
++    transition: Option<(Instant, u32, u32)>,
++}
++
++struct DrsSample {
++    at: Instant,
++    target_fps: u32,
++    floor: u32,
++    timing: Result<f32, &'static str>,
++}
++
++impl DrsDiagnostics {
++    pub(super) fn record(
++        &mut self,
++        at: Instant,
++        floor: u32,
++        target_fps: u32,
++        timing: Result<f32, &'static str>,
++        transition: Option<(u32, u32)>,
++    ) {
++        if self
++            .sample
++            .as_ref()
++            .is_some_and(|sample| sample.floor != floor || sample.target_fps != target_fps)
++        {
++            self.transition = None;
++        }
++        self.sample = Some(DrsSample {
++            at,
++            target_fps,
++            floor,
++            timing,
++        });
++        if let Some((from, to)) = transition {
++            self.transition = Some((at, from, to));
++        }
++    }
++
++    pub(in crate::game) fn status(
++        &self,
++        now: Instant,
++        floor: u32,
++        target_fps: u32,
++        inactive_reason: Option<&str>,
++    ) -> (bool, serde_json::Value) {
++        let Some(sample) = self.sample.as_ref().filter(|sample| {
++            inactive_reason.is_none() && sample.floor == floor && sample.target_fps == target_fps
++        }) else {
++            return (
++                false,
++                serde_json::json!({"status": inactive_reason.unwrap_or("awaiting_sample")}),
++            );
++        };
++        let age = |at| now.saturating_duration_since(at).as_secs_f64() * 1000.0;
++        let (status, pipeline_ms) = match sample.timing {
++            Ok(ms) => ("accepted", Some(ms)),
++            Err(reason) => (reason, None),
++        };
++        let transition = self.transition.map(|(at, from, to)| {
++            serde_json::json!({
++                "from": from, "to": to, "age_ms": age(at),
++                "reason": if to > from { "gpu_headroom" } else { "gpu_over_budget" },
++            })
++        });
++        (
++            sample.timing.is_ok(),
++            serde_json::json!({
++                "status": status,
++                "sample_age_ms": age(sample.at),
++                "pipeline_ms": pipeline_ms,
++                "last_transition": transition,
++            }),
++        )
++    }
++}
++
+ #[derive(Default)]
+ pub(in crate::game) struct CafePerformance {
+     active: Option<Window>,
+@@ -218,6 +308,7 @@ pub(in crate::game) struct CafePerformance {
+     pub(in crate::game) presented: u64,
+     pub(in crate::game) paired_resolution: Option<(WorldResolution, Instant)>,
+     gpu_timing: Option<GpuTimingObservation>,
++    pub(in crate::game) drs: DrsDiagnostics,
+ }
+ 
+ struct Window {
+@@ -232,6 +323,7 @@ struct Window {
+     omitted_pass_mask: u32,
+     terrain_sections: [usize; 2],
+     world_resolution: Option<WorldResolution>,
++    dynamic_timing_available: bool,
+     previous_paired: Option<Instant>,
+     cadence_ms: [f32; CADENCE_SAMPLES],
+     cadence_count: usize,
+@@ -273,6 +365,7 @@ impl CafePerformance {
+                 omitted_pass_mask: 0,
+                 terrain_sections: [0; 2],
+                 world_resolution: None,
++                dynamic_timing_available: false,
+                 previous_paired: None,
+                 cadence_ms: [0.0; CADENCE_SAMPLES],
+                 cadence_count: 0,
+@@ -324,6 +417,11 @@ impl CafePerformance {
+             window.omitted_pass_mask |= work.omitted_pass_mask;
+             window.terrain_sections = work.terrain_sections;
+             window.world_resolution = work.world_resolution;
++            window.dynamic_timing_available = self
++                .drs
++                .sample
++                .as_ref()
++                .is_some_and(|sample| sample.at == now && sample.timing.is_ok());
+             if let Some(previous) = window.previous_paired.replace(loop_start) {
+                 window.cadence_ms[window.cadence_count % CADENCE_SAMPLES] =
+                     loop_start.duration_since(previous).as_secs_f32() * 1000.0;
+@@ -481,14 +579,16 @@ impl Sample {
+                     "max": max,
+                 })
+             });
+-        let world_resolution = window.world_resolution.map(|resolution| serde_json::json!({
+-            "requested_scale": resolution.requested_scale,
+-            "effective_scale": resolution.effective_scale,
+-            "tv": resolution.dimensions[0],
+-            "gamepad": resolution.dimensions[1],
+-            "surface_bytes": resolution.surface_bytes,
+-            "dynamic_timing_available": false,
+-        }));
++        let world_resolution = window.world_resolution.map(|resolution| {
++            serde_json::json!({
++                "requested_scale": resolution.requested_scale,
++                "effective_scale": resolution.effective_scale,
++                "tv": resolution.dimensions[0],
++                "gamepad": resolution.dimensions[1],
++                "surface_bytes": resolution.surface_bytes,
++                "dynamic_timing_available": window.dynamic_timing_available,
++            })
++        });
+         serde_json::json!({
+             "phase": window.phase.name(),
+             "window_ms": seconds * 1000.0,
+@@ -549,27 +649,122 @@ mod tests {
+             }),
+             ..Default::default()
+         };
+-        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), Some(9.0));
+-        assert_eq!(frame.drs_pipeline_ms(ms(25), 60), None);
+-        assert_eq!(frame.drs_pipeline_ms(ms(25), 30), Some(9.0));
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), Ok(9.0));
++        assert_eq!(
++            frame.drs_pipeline_ms(ms(25), 60),
++            Err("cpu_budget_exceeded")
++        );
++        assert_eq!(frame.drs_pipeline_ms(ms(25), 30), Ok(9.0));
+         frame.submission = ms(14);
+         frame.gpu_wait = ms(1);
+-        assert_eq!(frame.drs_pipeline_ms(ms(18), 60), None);
++        assert_eq!(
++            frame.drs_pipeline_ms(ms(18), 60),
++            Err("cpu_budget_exceeded")
++        );
+ 
+         frame.gpu_sample.as_mut().unwrap().endpoints[1] = [459_000, 567_000];
+-        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
++        assert_eq!(
++            frame.drs_pipeline_ms(ms(15), 60),
++            Err("gpu_span_exceeds_frame")
++        );
+         frame.gpu_wait = ms(8);
+-        assert_eq!(frame.drs_pipeline_ms(ms(22), 60), Some(9.0));
++        assert_eq!(frame.drs_pipeline_ms(ms(22), 60), Ok(9.0));
+         frame.gpu_sample.as_mut().unwrap().endpoints[1] = [189_000, 297_000];
+ 
+         frame.world_resolution.as_mut().unwrap().effective_scale = 100;
+-        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), Err("scale_fallback"));
+         frame.world_resolution.as_mut().unwrap().effective_scale = 75;
+         frame.gpu_sample.as_mut().unwrap().endpoints[1][0] = 150_000;
+-        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
++        assert_eq!(
++            frame.drs_pipeline_ms(ms(15), 60),
++            Err("invalid_gpu_endpoints")
++        );
+         frame.gpu_sample.as_mut().unwrap().endpoints[1][0] = 189_000;
+         frame.terrain_sections[1] = 0;
+-        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), None);
++        assert_eq!(frame.drs_pipeline_ms(ms(15), 60), Err("missing_terrain"));
++    }
++
++    #[test]
++    fn drs_status_tracks_accepted_rejected_and_fixed_steps_without_reusing_old_targets() {
++        let start = Instant::now();
++        let ms = Duration::from_millis;
++        let mut drs = DrsDiagnostics::default();
++        assert_eq!(
++            drs.status(start, 75, 60, None).1["status"],
++            "awaiting_sample"
++        );
++
++        drs.record(start, 75, 60, Ok(8.0), Some((75, 85)));
++        let (available, status) = drs.status(start + ms(20), 75, 60, None);
++        assert!(available);
++        assert_eq!(status["pipeline_ms"], 8.0);
++        assert_eq!(status["sample_age_ms"], 20.0);
++        assert_eq!(status["last_transition"]["reason"], "gpu_headroom");
++        assert_eq!(status["last_transition"]["to"], 85);
++
++        drs.record(start + ms(25), 75, 60, Err("invalid_gpu_endpoints"), None);
++        let (available, status) = drs.status(start + ms(40), 75, 60, None);
++        assert!(!available);
++        assert_eq!(status["status"], "invalid_gpu_endpoints");
++        assert!(status["pipeline_ms"].is_null());
++        assert_eq!(status["last_transition"]["age_ms"], 40.0);
++
++        drs.record(start + ms(50), 75, 60, Ok(20.0), Some((85, 75)));
++        let (_, status) = drs.status(start + ms(60), 75, 60, None);
++        assert_eq!(status["last_transition"]["reason"], "gpu_over_budget");
++        assert_eq!(status["last_transition"]["from"], 85);
++
++        let (available, status) = drs.status(start + ms(65), 75, 60, Some("benchmark"));
++        assert!(!available);
++        assert_eq!(status, serde_json::json!({"status": "benchmark"}));
++        assert_eq!(
++            drs.status(start + ms(65), 75, 30, None).1["status"],
++            "awaiting_sample"
++        );
++        drs.record(start + ms(70), 75, 30, Ok(20.0), None);
++        let (available, status) = drs.status(start + ms(80), 75, 30, None);
++        assert!(available);
++        assert!(status["last_transition"].is_null());
++    }
++
++    #[test]
++    fn paired_resolution_reports_the_sample_used_by_the_trial_on_that_frame() {
++        let start = Instant::now();
++        let span = Duration::from_secs(2);
++        let totals = Totals::default();
++        let mut performance = CafePerformance::default();
++        let frame = CafeFrameWork {
++            presented: [true; 2],
++            world_resolution: Some(WorldResolution {
++                requested_scale: 75,
++                effective_scale: 75,
++                dimensions: [[1440, 810], [640, 360]],
++                surface_bytes: 0,
++            }),
++            ..Default::default()
++        };
++        performance.begin(Phase::Gameplay, start, totals);
++        for (index, accepted) in [true, false].into_iter().enumerate() {
++            let frame_start = start + span * index as u32;
++            let now = frame_start + span;
++            if accepted {
++                performance.drs.record(now, 75, 60, Ok(9.0), None);
++            }
++            assert!(performance.finish(
++                now,
++                frame_start,
++                totals,
++                true,
++                StepSpans::default(),
++                frame
++            ));
++            let snapshot = performance.latest.as_ref().unwrap().json(start, now);
++            assert_eq!(
++                snapshot["world_resolution"]["dynamic_timing_available"],
++                accepted
++            );
++            assert_eq!(snapshot["world_resolution"]["effective_scale"], 75);
++        }
+     }
+ 
+     #[test]
