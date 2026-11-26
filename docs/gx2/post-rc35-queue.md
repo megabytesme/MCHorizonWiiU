@@ -27,4 +27,4 @@ and embeds RPX SHA-256
 `1c596cf9a5d4fb8fa8f64bc2c549a1bea010e1e0df4be4320911b8e5424016a3`.
 Capture its light, heavy and light transitions. The original package
 (`512ecdfb30a52c29d5164e23547426ce9331532fc52b1205f70be9b2f3d480e2`)
-failed with error 160-2203 before entry and is retired.
+failed with error 160-2203 before entry and is retired. [Build and hardware procedure](../../wiiu/diagnostics/gx2-drs60/README.md)
