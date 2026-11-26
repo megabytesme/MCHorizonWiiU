@@ -96,6 +96,26 @@ The local directory contains `HorizonWiiU.rpx`, `HorizonWiiU.wuhb` and
 `build-record.json`. The recipe records its own candidate versions.
 The active `build-hosted` command still uses the 0.7.0 release recipe.
 
+
+### Reuse a fixed-path Cargo cache during development
+
+Assemble the new recipe into a fresh build directory. Seed its Cargo cache
+from an earlier local build made with the same fixed-path wrapper. The
+helper verifies both staged engine trees and preserves the earlier mtime
+only for unchanged Git entries and byte-identical dependency files. Cargo
+can then reuse their fingerprints and rebuild changed inputs.
+
+```sh
+python3 -B wiiu/builder/build.py assemble-hosted-nightly \
+  --source "$nightly_checkout" --inputs "$cafe_inputs" --output "$candidate_output"
+python3 -B tools/seed_cafe_build_cache.py "$previous_output" "$candidate_output"
+bash tools/build_cafe_game_isolated.sh --hosted-nightly "$candidate_output" \
+  --source "$nightly_checkout" --inputs "$cafe_inputs"
+```
+
+Run both builds from the same pinned toolchain. Use separate output
+directories and independent inputs for candidate reproducibility.
+
 Inspect an RPX against the measured Aroma loader budget before hardware use.
 The command verifies the mapped code span against the RPL file info. It
 estimates the simultaneous allocations for executable text and the stored
