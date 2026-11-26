@@ -308,3 +308,35 @@ world-ready from 616.598 to 594.048 seconds and first paired terrain from
 652.007 to 640.381 seconds. Both entries saved and recovered the GX2 bulk
 heap. The two interpreter entries overlapped other development work.
 [Replay and build identity](rc36-validation.md#exact-saved-world-replay)
+
+## RC 38 upgraded and warm physical entries
+
+The same prepared archive and Reopen Fixture reached the first returned
+Game frame in 116.798 s after upgrade and 106.918 s on a same-process
+reopen. First paired terrain arrived at 124.937 s and 114.999 s. The
+upgrade regenerated the two native snapshots. Warm reopen restored
+both snapshots and reused the inputs across worldgen and the client.
+The legacy verbose PNG trace was absent in both entries.
+[Guest-clock boundaries and package](rc38-validation.md#physical-saved-world-entry)
+
+On the first entry the parallel world preload extended 4.280 s beyond
+the client preparation branch. With valid snapshots the warm preload
+withdrew to 16.821 s and the other branch extended 5.524 s beyond it.
+Core model and sprite preparation still took 20.509 s in the warm
+entry. The first original Game frame took another 23.833 s after
+initialization, including 15.309 s constructing the integrated-server
+Game and 6.905 s opening the save.
+
+1. Break the integrated-server construction into font metrics, silent
+   audio registry setup, and headless Game resource creation. Reuse
+   immutable prepared data where the client and server share the same
+   pack generation. Retain session-owned simulation and save state.
+2. Move deterministic stock model bake output into the verified PC
+   preparation format, with resource identity and fallback for pack
+   overrides. Model bake alone was 8.159 s on the warm path.
+3. Split the 13.983 s warm mob data stage into decode, tag resolution
+   and OptiFine inputs. Compare candidate immutable caches against the
+   same pack generation. Revisit the overlapping stock generator path
+   if it again gates first entry. The root and worldgen stock collision
+   registries are byte-identical in this preparation, making shared raw
+   shape data a candidate with an alternate-input fallback.

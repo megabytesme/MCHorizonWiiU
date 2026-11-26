@@ -120,6 +120,49 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(playing["workload"]["translucent_index_upload_bytes"]["median"], 512)
         self.assertEqual(playing["stages_ms_on_presented_loops"]["world_entities_drc"]["median"], 15)
 
+    def test_flip_quantization_requires_consecutive_matched_pairs(self):
+        reference = gpu_capture()[0]
+
+        def frame(sequence, interval, **overrides):
+            return {
+                **reference, "sequence": sequence, "start_ms": sequence * 50,
+                "world_requested_scale": 75, "world_effective_scale": 75,
+                "tv_sections_drawn": 174, "drc_sections_drawn": 174,
+                "gx2_flip_interval_ms": interval, **overrides,
+            }
+
+        frames = [
+            frame(0, 50),  # Precedes the selected interval.
+            frame(1, 50),  # Cannot import the preceding frame's timing.
+            frame(2, 50.05, partial=1),
+            frame(3, 36),  # Valid timing away from the measured refresh grid.
+            frame(4, 50, gx2_flip_delta=2),
+            frame(5, 50, screenshot_ms=1),
+            frame(6, 50),
+            frame(7, 33, world_requested_scale=50, world_effective_scale=50),
+            frame(8, 50),
+            frame(9, 50, tv_sections_drawn=173),
+            frame(10, 50),
+            frame(11, 50, world_requested_scale=100),
+            frame(12, 50),
+            frame(13, 50, tv_submissions=0),
+            frame(14, 50),
+            frame(16, 50),  # Capture sequence gap.
+            frame(17, 34, gx2_flip_interval_ms=None),
+        ]
+        reports = profile.summarize_flip_quantization(frames, 0.05, 1, 59.94, 174)["cohorts"]
+        self.assertEqual([r["requested_and_effective_scale"] for r in reports], [50, 75])
+        fifty, seventy_five = reports
+        self.assertIsNone(fifty["combined_flip_interval_ms"])
+        self.assertEqual(seventy_five["paired_submissions"], 11)
+        self.assertEqual(seventy_five["consecutive_pairs"], 4)
+        self.assertEqual(seventy_five["gx2_swap_delta"], 4)
+        self.assertEqual(seventy_five["gx2_flip_delta"], 5)
+        self.assertEqual(seventy_five["flips_by_refresh_count"], {3: 1})
+        self.assertEqual(seventy_five["off_grid_flip_intervals"], 1)
+        self.assertEqual(seventy_five["intervals_without_one_timed_flip"], 2)
+        self.assertEqual(seventy_five["combined_flip_interval_ms"]["samples"], 2)
+
     def test_reads_wrapped_counters_and_the_retained_tail(self):
         metadata, frames = profile.read(capture(
             row(398, 1, 50, worker=2**32 - 3), row(399, 1, 60, worker=2), total=400,

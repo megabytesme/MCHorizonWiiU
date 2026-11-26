@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+from collections import Counter
 import csv
 import json
 import math
@@ -185,6 +186,69 @@ def summarize(frames, start, end, stall_ms=50):
                 row["translucent_index_upload_bytes"] for row in world_frames
             )
     return summaries
+
+
+def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections=None):
+    """Group matched dual-output gameplay by scale, dimensions and visible terrain."""
+    refresh_ms = 1000 / refresh_hz
+    tolerance_ms = refresh_ms * 0.05
+    cohorts = {}
+    previous_cohort = previous_sequence = None
+    for row in frames:
+        cohort = None
+        if (row["phase"] == "playing" and start <= row["start_ms"] / 1000 < end
+                and row["presented"] == row["tv_submissions"] == row["gamepad_submissions"] == 1
+                and not row["screenshot_ms"]
+                and row["world_requested_scale"] == row["world_effective_scale"] > 0
+                and min(row["tv_sections_drawn"], row["drc_sections_drawn"]) > 0
+                and (terrain_sections is None
+                     or row["tv_sections_drawn"] == row["drc_sections_drawn"] == terrain_sections)):
+            cohort = (
+                row["world_effective_scale"], row["tv_world_width"], row["tv_world_height"],
+                row["drc_world_width"], row["drc_world_height"],
+                row["tv_sections_drawn"], row["drc_sections_drawn"],
+            )
+            counts, flips, waits, finishes = cohorts.setdefault(cohort, (Counter(), [], [], []))
+            counts["paired_submissions"] += 1
+            waits.append(row["wait_flip_ms"])
+            finishes.append(row["finish_present_ms"])
+            if cohort == previous_cohort and row["sequence"] == previous_sequence + 1:
+                counts["consecutive_pairs"] += 1
+                counts["gx2_swap_delta"] += row["gx2_swap_delta"]
+                counts["gx2_flip_delta"] += row["gx2_flip_delta"]
+                if row["gx2_flip_delta"] == 1 and row["gx2_flip_interval_ms"] is not None:
+                    flips.append(row["gx2_flip_interval_ms"])
+        previous_cohort, previous_sequence = cohort, row["sequence"]
+
+    groups = []
+    for cohort, (counts, flips, waits, finishes) in sorted(cohorts.items()):
+        scale, tv_w, tv_h, pad_w, pad_h, tv_sections, pad_sections = cohort
+        bins = Counter()
+        for interval in flips:
+            refreshes = round(interval / refresh_ms)
+            if refreshes >= 1 and abs(interval - refreshes * refresh_ms) <= tolerance_ms:
+                bins[refreshes] += 1
+        groups.append({
+            "requested_and_effective_scale": scale,
+            "world_dimensions_tv_gamepad": [[tv_w, tv_h], [pad_w, pad_h]],
+            "sections_tv_gamepad": [tv_sections, pad_sections],
+            "paired_submissions": counts["paired_submissions"],
+            "consecutive_pairs": counts["consecutive_pairs"],
+            "gx2_swap_delta": counts["gx2_swap_delta"],
+            "gx2_flip_delta": counts["gx2_flip_delta"],
+            "combined_flip_interval_ms": stats(flips),
+            "intervals_without_one_timed_flip": counts["consecutive_pairs"] - len(flips),
+            "flips_by_refresh_count": dict(sorted(bins.items())),
+            "off_grid_flip_intervals": len(flips) - sum(bins.values()),
+            "whb_wait_flip_ms": stats(waits),
+            "whb_finish_ms": stats(finishes),
+        })
+    return {
+        "refresh_hz": refresh_hz,
+        "refresh_period_ms": refresh_ms,
+        "bin_tolerance_ms": tolerance_ms,
+        "cohorts": groups,
+    }
 
 
 def _remember_gpu_record(records, sequence, record):
@@ -387,9 +451,16 @@ def main():
     parser.add_argument("--start", type=float, default=0, help="start in seconds after capture activation")
     parser.add_argument("--end", type=float, default=math.inf, help="end in seconds after capture activation")
     parser.add_argument("--stall-ms", type=float, default=50, help="pacing stall threshold")
+    parser.add_argument("--flip-refresh-hz", type=float, help="bin combined driver flips against this measured refresh rate")
+    parser.add_argument("--flip-terrain-sections", type=int, help="require this visible section count on both outputs")
     args = parser.parse_args()
     if not (0 <= args.start < args.end and 0 < args.stall_ms < math.inf):
         parser.error("invalid interval or stall threshold")
+    if args.flip_refresh_hz is not None and not (1 <= args.flip_refresh_hz < math.inf):
+        parser.error("invalid flip refresh rate")
+    if args.flip_terrain_sections is not None and (
+            args.flip_refresh_hz is None or args.flip_terrain_sections < 1):
+        parser.error("use a positive flip terrain section count with --flip-refresh-hz")
     first, last = args.serial_first_seq, args.serial_last_seq
     if first is not None or last is not None:
         if args.gpu_serial_capture is None or first is None or last is None or not 1 <= first <= last:
@@ -397,6 +468,14 @@ def main():
     try:
         metadata, frames = read(args.capture.read_bytes())
         report = {**metadata, "phases": summarize(frames, args.start, args.end, args.stall_ms)}
+        if args.flip_refresh_hz is not None:
+            if metadata["version"] != 3:
+                raise ValueError("matched flip quantization requires HZP3")
+            if args.flip_refresh_hz > metadata["clock_hz"]:
+                raise ValueError("flip refresh rate exceeds the capture clock frequency")
+            report["gx2_flip_quantization"] = summarize_flip_quantization(
+                frames, args.start, args.end, args.flip_refresh_hz, args.flip_terrain_sections,
+            )
         if (args.gpu_serial is not None or args.gpu_serial_capture is not None) and metadata["version"] != 3:
             raise ValueError("GPU serial correlation requires HZP3")
         if args.gpu_serial is not None:

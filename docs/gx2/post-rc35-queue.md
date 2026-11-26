@@ -1,9 +1,9 @@
 # Post-RC 35 engineering queue
 
 Use canonical `main`, the locked Nightly source recipe and an isolated
-portable Cemu profile. The existing test SD retains RC 35 until a
-supervised transfer. Use the RC 38 package identities to verify the
-candidate for the next console session. [RC 38 package](rc38-validation.md) ·
+portable Cemu profile. The last SD receipt records RC 38 and the corrected
+DRS60 probe, then a safe eject. Verify this state before the next console
+session. [RC 38 package](rc38-validation.md) ·
 [Verified RC 35 fallback](rc35-validation.md)
 
 | Workstream | Next verification |
@@ -21,7 +21,10 @@ candidate for the next console session. [RC 38 package](rc38-validation.md) ·
 [Loading scorecard](loading-scorecard.json) ·
 [Online-mode record](online-mode.md)
 
-The standalone DRS60 WUHB has SHA-256
-`512ecdfb30a52c29d5164e23547426ce9331532fc52b1205f70be9b2f3d480e2`.
-Capture its light, heavy and light transitions before using the hosted
-gameplay DRS results to tune the mixed-workload guard.
+The corrected DRS60 WUHB has SHA-256
+`a86766fa02bb505f24873c502d54e672726932324b3d489dd5349343aef91139`
+and embeds RPX SHA-256
+`1c596cf9a5d4fb8fa8f64bc2c549a1bea010e1e0df4be4320911b8e5424016a3`.
+Capture its light, heavy and light transitions. The original package
+(`512ecdfb30a52c29d5164e23547426ce9331532fc52b1205f70be9b2f3d480e2`)
+failed with error 160-2203 before entry and is retired.

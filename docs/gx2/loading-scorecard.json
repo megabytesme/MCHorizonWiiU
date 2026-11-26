@@ -1173,6 +1173,81 @@
           }
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.38",
+      "source_commit": "4f79e04090c3c0f792f46b74e26c05c8fa273c29",
+      "engine_tree": "8ecf49ba0a2c12da512ccc803730d79ece8aeb61",
+      "toolchain": "1.1.0",
+      "candidate_wuhb_sha256": "226116e5803c8bffa39f6b57e0336ab5a118ee26f98e0ffb09729936a7934fb6",
+      "minecraft": "26.3",
+      "prepared_schema": 7,
+      "archive_version": 2,
+      "archive_entries": 23148,
+      "archive_sha256": "ed03f05069fe4702c748b24cbe4fc8d91ed9cd62328d9cdf52243889ed44801a",
+      "profile_mode": "4a",
+      "observed_on": "2026-11-26",
+      "cases": [
+        {
+          "id": "existing_world_after_upgrade",
+          "workload": "Reopen Fixture with existing resources and snapshots from an older engine",
+          "effective_scale_percent": 75,
+          "serial_event_bounds": [4245, 4528],
+          "guest_milestone_ms": {
+            "loading first draw returned": 573,
+            "Cafe Game handoff begin": 67146,
+            "original Game initialized; pending entry starts": 92660,
+            "first original Game frame returned": 116798,
+            "first paired nonzero sampled terrain": 124937,
+            "first sampled 75 sections per display": 137071
+          },
+          "startup_durations_ms": {
+            "core": 30871,
+            "rest.mobs": 23782,
+            "rest.behaviours": 28264,
+            "world.preload.generator": 33573,
+            "world.preload": 37612,
+            "server.game_new": 15936,
+            "server.open_world": 6584
+          },
+          "snapshot_status": {"registry": "written", "behaviour": "written"},
+          "verbose_png_logged": false,
+          "memory_after_game_drop": {
+            "rust_live": 52422678,
+            "rust_peak": 366042653,
+            "rust_blocks": 515480,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896
+          }
+        },
+        {
+          "id": "existing_world_warm_same_process",
+          "workload": "Same fixture reopened with valid RC 38 snapshots",
+          "effective_scale_percent": 75,
+          "serial_event_bounds": [4529, 4625],
+          "guest_milestone_ms": {
+            "loading first draw returned": 351,
+            "Cafe Game handoff begin": 65510,
+            "original Game initialized; pending entry starts": 83084,
+            "first original Game frame returned": 106918,
+            "first paired nonzero sampled terrain": 114999,
+            "first sampled 75 sections per display": 127220
+          },
+          "startup_durations_ms": {
+            "core": 27221,
+            "core.block_models_sprites": 20509,
+            "core.models_bake": 8159,
+            "rest.mobs": 17843,
+            "rest.mobs.data": 13983,
+            "world.preload.generator": 10628,
+            "world.preload": 16821,
+            "server.game_new": 15309,
+            "server.open_world": 6905
+          },
+          "snapshot_status": {"registry": "restored", "behaviour": "restored"},
+          "verbose_png_logged": false
+        }
+      ]
     }
   ],
   "candidate_measurements": [

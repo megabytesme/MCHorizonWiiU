@@ -287,3 +287,28 @@ scaled-output clears or overlap TV submission with prior-flip retirement.
 Both outputs passed the focused Cemu readbacks for each experiment. The
 RC 35 hardware values remain the cadence reference for the next matched
 stationary runs. [Changes, fixture results and candidate identity](rc36-validation.md)
+
+## RC 38 hardware at fixed 75%
+
+The Reopen Fixture produced 20.011 and 20.001 pairs/s at 174 terrain
+sections per display. The 49.973 and 49.998 ms wall intervals leave
+16.640 and 16.665 ms to reach 30 Hz. Direct HUD waits averaged
+26.811 and 26.748 ms, and other explicit waits averaged 11.025 and
+11.547 ms. Sampled TV and GamePad GPU endpoints span a median 33.662
+and 33.585 ms from the start of the TV callback to the end of GamePad.
+That envelope includes submission gaps. The direct HUD wait also
+contains outstanding GPU work.
+[Matched hardware windows](rc38-validation.md#physical-fixed-75-gameplay)
+
+| Priority | Measured opportunity | Change and acceptance |
+| --- | --- | --- |
+| 1. Resolve and reduce GPU work | The per-output median was about 22.5 ms TV and 9.8–9.9 ms GamePad. The TV accounts for approximately 70% of the summed span. | Sample solid, cutout, translucent and composite/HUD boundaries in separate A/B runs. Test an opaque shader without discard, then qualify axis-facing ranges from `mesher/sides.rs` independently. Hold output scale and camera fixed. Compare actual submitted indices, overlap pixels, cutout coverage and wall cadence. |
+| 2. Reduce serialized waits | About 26.8 ms of direct HUD wait and 11.0–11.5 ms of other GX2 waits account for roughly 76% of the wall interval. These wait buckets include GPU work and overlap opportunities. | Measure `4q` with exact flip timestamps. Test publishing shared HUD patches and reclaiming terrain at the prior WHB drain before removing per-output terrain drains. Require safe atlas, target and index lifetime, paired coverage, HOME reacquisition and normal exit. |
+| 3. Reduce CPU work across the frame | Redraw outside native submission averaged 5.454–5.734 ms, submission outside waits 5.269–5.370 ms, and artwork 0.664–0.699 ms. Eliminating all three would save at most about 11.8 ms in a serial model. | Split redraw and native submissions by draw family. Measure shared work once across outputs and reuse retired buffers at proven fences. Use exact geometry and matching scene passes, with pixel checks for hand, transparent models and HUD. |
+
+Measure the individual GPU work intervals before assigning a required
+reduction to any shader or pass. The target is about 0.25–0.33 ms below
+the sampled endpoint envelope even with zero work outside it. Sustained
+30 Hz also requires queue work and fences to fit the refresh interval.
+A two-slot prototype should rotate only CPU-written buffers initially
+and verify memory on each exit.

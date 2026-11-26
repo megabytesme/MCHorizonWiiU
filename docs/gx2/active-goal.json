@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "status": "active",
+  "verified_on": "2026-11-26",
+  "baseline": {
+    "branch": "main",
+    "programme_start_commit": "deb2e4dcb73976abcc432ab6986ebceb647c2619",
+    "candidate": "0.8.0-rc.38",
+    "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
+    "engine_tree": "8ecf49ba0a2c12da512ccc803730d79ece8aeb61",
+    "toolchain": "1.1.0",
+    "rpx_sha256": "2da87b74841f9c570a0efde9b7fd85577e1c5a0bc17c4b4fbc8010deab243553",
+    "wuhb_sha256": "226116e5803c8bffa39f6b57e0336ab5a118ee26f98e0ffb09729936a7934fb6",
+    "rollback_candidate": "0.8.0-rc.35"
+  },
+  "acceptance": {
+    "native_gameplay": {
+      "status": "in_progress",
+      "target_fps": 60,
+      "minimum_window_seconds": 60,
+      "workload": {
+        "preset": "Full Performance",
+        "outputs": [
+          "tv",
+          "gamepad"
+        ],
+        "fixed_scale_percent": 75,
+        "drs": false,
+        "render_distance": 6,
+        "simulation_distance": 5,
+        "visible_sections_per_output": 174
+      },
+      "physical_paired_submissions_per_second": [
+        20.011,
+        20.001
+      ]
+    },
+    "mcp": {
+      "status": "in_progress",
+      "required_scopes": [
+        "launcher.read",
+        "launcher.manage",
+        "game.observe",
+        "game.control"
+      ],
+      "physical_full_workflow": "pending"
+    },
+    "loading": {
+      "status": "in_progress",
+      "target_usable_entry_ms": 60000,
+      "warm_stretch_ms": 30000,
+      "first_game_frame_ms": {
+        "upgrade": 116798,
+        "warm": 106918
+      },
+      "first_paired_terrain_ms": {
+        "upgrade": 124937,
+        "warm": 114999
+      }
+    },
+    "online_mode": {
+      "status": "physical_pending",
+      "emulator_authenticated_reconnect_candidate": "0.8.0-rc.36"
+    },
+    "automatic_drs": {
+      "status": "physical_pending",
+      "target_fps": [
+        30,
+        60
+      ],
+      "observed_physical_transition": "30_fps_increase",
+      "corrected_probe_rpx_sha256": "1c596cf9a5d4fb8fa8f64bc2c549a1bea010e1e0df4be4320911b8e5424016a3",
+      "corrected_probe_wuhb_sha256": "a86766fa02bb505f24873c502d54e672726932324b3d489dd5349343aef91139"
+    },
+    "village": {
+      "status": "in_progress",
+      "target_eligible_percent": 95,
+      "physical_eligible_percent": 62.34
+    },
+    "renderer_and_splitscreen": {
+      "status": "in_progress",
+      "independent_view_qualification": "pending"
+    },
+    "lifecycle": {
+      "status": "in_progress",
+      "physical_warm_pose_restore": true,
+      "physical_gx2_released_free_bytes": 234880920
+    }
+  },
+  "workstreams": [
+    {
+      "owner": "gx2",
+      "task": "Flip cadence and GX2 resource scheduling"
+    },
+    {
+      "owner": "mcp",
+      "task": "Durable full-scope owner-approved trust"
+    },
+    {
+      "owner": "loading",
+      "task": "Reduce warm loading critical path"
+    },
+    {
+      "owner": "integration",
+      "task": "Canonical recipe, supervised physical queue and Cemu diagnostics"
+    }
+  ],
+  "hardware_queue": [
+    "fixed_scale_and_gx2_ab",
+    "corrected_drs60",
+    "online_mode_join_and_reconnect",
+    "loading_and_save_reopen",
+    "persistent_mcp_workflow"
+  ],
+  "dependencies": {
+    "physical": "Supervised console launch. Continue host and emulator work while pending.",
+    "recompiler": "Forced-interpreter fallback. Corrected carry probe passed, but full gameplay remains unqualified."
+  }
+}

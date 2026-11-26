@@ -104,3 +104,25 @@ hostname with an explicit port first. Add the SRV case when the Cafe
 nameserver path is available. Record the
 server version, result and environment without player identifiers, tokens
 or raw request headers. Use a supervised SD transfer for the physical run.
+
+## Cafe resolver and request lifecycle follow-up
+
+WUT 1.9.2 declares `netconf_get_assigned_dns` in
+`nsysnet/netconfig.h` for the Wi-Fi and Ethernet interfaces. A standalone
+diagnostic resolves the export dynamically and reports per-interface
+status and resolver count. It built with Cafe Toolchain 1.1.0. Check
+initialization, byte order and the active interface on hardware before
+passing the configured nameservers to the existing UDP/TCP SRV resolver.
+Stock Cemu 2.6 lacks the export, so the lookup needs an unavailable
+result that still allows explicit host-and-port joins.
+
+The deployed Cafe HTTPS correction uses connect and receive timeouts.
+A single deadline and cancellation need to include synchronous DNS,
+TCP connect, the TLS handshake, writes and reads. ureq installs its
+custom TLS connector after DNS and TCP connect, so that hook alone
+cannot enforce the full operation budget. A scratch connected-socket
+wrapper compiled for Cafe and passed host tests for a trickling
+response, a blocked write and cancellation of a blocked read. The
+remaining work is to carry one deadline and cancellation signal
+through resolution and connection, register the socket before
+authentication, and verify the whole path with native TLS.

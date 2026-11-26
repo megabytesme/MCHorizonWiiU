@@ -34,6 +34,13 @@ submission has a separate failure flag for missing geometry or texture.
 These flags and the displayed scene both matter when qualifying older
 and newer candidates against the same camera.
 
+The settled RC 38 saved-world windows showed textured terrain and HUD
+on the TV with paired TV and GamePad submissions. Their `0x8000` flag
+matches RC 35. The stock archive has no `minecraft:end_of_frame` chain,
+and the renderer currently records that default request as an omission.
+Use actual active effects and output observations when comparing
+renderer coverage. [RC 38 hardware record](rc38-validation.md#physical-fixed-75-gameplay)
+
 The checkpoint and historical matrices below describe their named earlier
 builds. Their missing outline, crumbling, hand and translucent terrain rows
 remain useful as references for those builds.
