@@ -1,0 +1,394 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index a0dc524f6d3d6805834e09a524bbef116216e79b..6af152c6292b5aa09d0d6e7e923f96b925c9dd37 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -80,7 +80,7 @@ static bool marker_enabled;
+ static int marker_mode = EOF, marker_variant = EOF;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+-static bool shared_model_uploads;
++static bool shared_model_uploads, guarded_shared_hud;
+ static uint32_t hud_patch_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
+@@ -135,6 +135,7 @@ static void select_mode(int mode, int variant)
+    hud_patch_mode = variant == 'w' ? HORIZON_HUD_PATCH_MEASURE_FULL :
+       variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
+    skip_scaled_output_clear = variant == 'c';
++   guarded_shared_hud = variant == 'j';
+    defer_flip = variant == 'q';
+    skip_terrain_waits = variant == 't';
+    solid_axis_ranges = variant == 'r';
+@@ -159,6 +160,7 @@ void horizon_gx2_profile_init(void)
+    if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
++   if (guarded_shared_hud) OSReport("Horizon GX2 deferred flip with guarded shared HUD requested\n");
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
+    if (solid_back_culling) OSReport("Horizon GX2 solid terrain back-face culling trial enabled\n");
+@@ -194,6 +196,11 @@ bool horizon_gx2_profile_shared_hud_upload(void)
+    return shared_hud_upload;
+ }
+ 
++bool horizon_gx2_profile_guarded_shared_hud(void)
++{
++   return guarded_shared_hud;
++}
++
+ uint32_t horizon_gx2_profile_hud_patch_mode(void)
+ {
+    return hud_patch_mode;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 2af42527544d5267ca854561e68b93ff561d7da6..196edce40ba1c6d50cf0bccc921119a5c8faf8d0 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -42,6 +42,7 @@ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
+ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_shared_hud_upload(void);
++bool horizon_gx2_profile_guarded_shared_hud(void);
+ bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index c10c23bda6210312a543fa81ed59314543f7f775..41b6352f8be42472923fc313ef44060ceba2394e 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -56,6 +56,8 @@ use world_scale::WorldScale;
+ 
+ // Set HORIZON_WIIU_PROFILE_GX2=1 in the build environment to enable the
+ // five-second aggregate report. The default binary does no profiling work.
++const RETRY_GUARDED_FLIP: i32 = -5;
++
+ const GX2_PROFILE_ENABLED: bool = match option_env!("HORIZON_WIIU_PROFILE_GX2") {
+     Some(value) => {
+         let bytes = value.as_bytes();
+@@ -214,6 +216,16 @@ extern "C" {
+         rgba: *const f32,
+         opaque_viewports: *const u32,
+     ) -> i32;
++    fn horizon_loading_host_guarded_hud_available() -> bool;
++    fn horizon_loading_host_guarded_hud_reuse(retired_pair: u64) -> bool;
++    fn horizon_loading_host_present_guarded_hud(
++        draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
++        context: *mut c_void,
++        rgba: *const f32,
++        defer_flip: bool,
++        retired_pair: *mut u64,
++    ) -> i32;
++    fn horizon_gx2_profile_guarded_shared_hud() -> bool;
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_profile_defer_flip() -> bool;
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
+@@ -678,6 +690,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     solid_draw_plan_enabled: bool,
+     solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
++    retired_pair: u64,
+     world_scale: WorldScale,
+     requested_world_scale: u32,
+     terrain_ranks: Option<std::collections::BTreeMap<terrain_residency::Priority, usize>>,
+@@ -753,6 +766,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
+             solid_draw_plans: Default::default(),
+             frame_work: CafeFrameWork::default(),
++            retired_pair: 0,
+             world_scale: WorldScale::default(),
+             requested_world_scale: 100,
+             terrain_ranks: None,
+@@ -939,6 +953,7 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+         tick: u64,
+         animated_textures: bool,
+     ) -> horizon_client::Result<bool> {
++        self.retired_pair = 0;
+         let trace = !self.trace_first_present;
+         let trace_iteration = self.trace_loading_iteration;
+         let iteration = self.loading_trace_iteration;
+@@ -1707,6 +1722,7 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn clear_native_sections(&mut self) {
++        self.retired_pair = 0;
+         self.block_entity_sections = Arc::default();
+         if let Some(residents) = self.resident_animations.as_mut() {
+             residents.residency_changed();
+@@ -1964,12 +1980,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.layout
+     }
+     fn resize(&mut self, _width: u32, _height: u32) {
++        self.retired_pair = 0;
+         if let Ok(outputs) = output_dimensions() {
+             self.outputs = outputs;
+             self.layout = outputs[1];
+         }
+     }
+     fn release_surface(&mut self) {
++        self.retired_pair = 0;
+         self.world_scale.release();
+         self.clear_native_sections();
+         self.terrain = None;
+@@ -1990,6 +2008,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.cit_generation = None;
+     }
+     fn recreate_surface(&mut self) -> horizon_client::Result<()> {
++        self.retired_pair = 0;
+         self.outputs = output_dimensions()?;
+         self.layout = self.outputs[1];
+         Ok(())
+@@ -2008,6 +2027,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
++        let prior_pair = std::mem::take(&mut self.retired_pair);
++        let guarded_hud = !frame.title && self.terrain.is_some()
++            && unsafe {
++                horizon_gx2_profile_guarded_shared_hud()
++                    && horizon_loading_host_guarded_hud_available()
++            };
++        let use_guarded_upload = guarded_hud && self.screenshot_requested.is_none()
++            && unsafe { horizon_loading_host_guarded_hud_reuse(prior_pair) };
+         self.last_frame_partial = false;
+         self.frame_work.terrain_sections = [0; 2];
+         self.frame_work.terrain_camera = (!frame.title).then(|| frame.camera.to_array());
+@@ -2587,7 +2614,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+         }
+         self.models.begin_frame(unsafe { horizon_gx2_profile_shared_model_uploads() });
+-        let uploaded_hud = if !unsafe { horizon_gx2_profile_shared_hud_upload() } {
++        let uploaded_hud = if !use_guarded_upload
++            && !unsafe { horizon_gx2_profile_shared_hud_upload() }
++        {
+             None
+         } else {
+             // The preceding WHB finish retired both outputs. No world draw
+@@ -2633,17 +2662,21 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared,
+             skip_terrain_waits,
+         };
++        let mut retired_pair = 0;
++        let context = (&mut draw as *mut Draw<'_, '_, '_>).cast();
+         let host = unsafe {
+-            present(
+-                draw_target,
+-                (&mut draw as *mut Draw<'_, '_, '_>).cast(),
+-                clear.as_ptr(),
+-                opaque_viewports,
+-            )
++            if guarded_hud {
++                horizon_loading_host_present_guarded_hud(
++                    draw_target, context, clear.as_ptr(), use_guarded_upload, &mut retired_pair,
++                )
++            } else {
++                present(draw_target, context, clear.as_ptr(), opaque_viewports)
++            }
+         };
+         let profile = draw.profile;
+         let draw_result = draw.result;
+         drop(draw);
++        self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
+         self.frame_work.presented = [outputs & 1 != 0, outputs & 2 != 0];
+@@ -2667,6 +2700,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             self.screenshot_result = None;
+             return Err(error.into());
+         }
++        if host == RETRY_GUARDED_FLIP {
++            // The timeout path retired any TV draws without touching scanout.
++            // Leave the previous frame displayed and reacquire a ticket in stock order.
++            self.screenshot_result = None;
++            return Ok(false);
++        }
+         if host != 0 {
+             self.screenshot_result = None;
+             return Err("WHB did not accept both GX2 game frames".into());
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 2ec6ffb56c0dc419309db0c91b91594c11f2f13e..5f4475e8f80825b6290c2361109e5183669f5106 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -4,8 +4,10 @@
+ 
+ #include <whb/gfx.h>
+ #include <gx2/event.h>
++#include <gx2/state.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/time.h>
++#include <coreinit/thread.h>
+ #include <gx2/surface.h>
+ #include <gx2r/surface.h>
+ #include <proc_ui/procui.h>
+@@ -169,8 +171,70 @@ static OSTime wait_for_previous_flip(void)
+    return elapsed;
+ }
+ 
++bool horizon_loading_host_guarded_hud_available(void)
++{
++   return ProcUIInForeground() && !horizon_swkbd_is_open();
++}
++
++bool horizon_loading_host_guarded_hud_reuse(uint64_t retired_pair)
++{
++   if (!retired_pair || !horizon_loading_host_guarded_hud_available()) return false;
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   return submitted > 0 && (uint64_t)submitted == retired_pair &&
++      GX2GetRetiredTimeStamp() >= submitted;
++}
++
++/* WHB's void begin call may have stopped on its ten-Vsync timeout. Require
++ * agreement of the counters before this trial writes either scan buffer. */
++static bool guarded_scan_buffers_ready(void)
++{
++   uint32_t swaps, flips;
++   OSTime last_flip, last_vsync;
++   GX2GetSwapStatus(&swaps, &flips, &last_flip, &last_vsync);
++   return swaps == flips;
++}
++
++/* Keep ownership in the foreground if the device has not retired our commands.
++ * In particular, returning here could let Rust destroy an in-flight buffer. */
++static OSTime drain_guarded_commands(void)
++{
++   const OSTime start = OSGetTime();
++   const uint64_t stamp = horizon_gx2_profile_stamp();
++   GX2Flush();
++   const OSTime queued = GX2GetLastSubmittedTimeStamp();
++   bool reported = false;
++   for (;;) {
++      const bool done = GX2DrawDone();
++      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (done && submitted >= 0 && submitted >= queued && GX2GetRetiredTimeStamp() >= submitted) {
++         horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++         return OSGetTime() - start;
++      }
++      if (!reported) {
++         OSReport("Horizon GX2 guarded HUD waiting for recovery retirement\n");
++         reported = true;
++      }
++      OSSleepTicks(OSMillisecondsToTicks(16));
++   }
++}
++
++static int discard_guarded_pair(OSTime flip_wait, bool gpu_sample, const uint32_t dimensions[4])
++{
++   static bool reported;
++   if (!reported) {
++      OSReport("Horizon GX2 guarded HUD skipped publication with a pending scan flip\n");
++      reported = true;
++   }
++   last_wait_ns = OSTicksToNanoseconds(flip_wait + drain_guarded_commands());
++   last_outputs = 0;
++   horizon_gx2_profile_outputs(0, dimensions);
++   if (gpu_sample) horizon_gx2_profile_gpu_finish(0);
++   return HORIZON_LOADING_RETRY_FLIP;
++}
++
+ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+-                              const uint32_t opaque_viewports[8], bool defer_flip)
++                              const uint32_t opaque_viewports[8], bool defer_flip,
++                              uint64_t *retired_pair)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+@@ -187,6 +251,8 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+    int result = 0;
+    OSTime flip_wait = defer_flip ? 0 : wait_for_previous_flip();
+    const bool gpu_sample = horizon_gx2_profile_gpu_begin();
++   if (retired_pair && !defer_flip && !guarded_scan_buffers_ready())
++      return discard_guarded_pair(flip_wait, gpu_sample, dimensions);
+ 
+    uint64_t stamp = horizon_gx2_profile_stamp();
+ 
+@@ -210,6 +276,8 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+       // before the first command that can write the next scan buffer.
+       horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
+       flip_wait = wait_for_previous_flip();
++      if (retired_pair && !guarded_scan_buffers_ready())
++         return discard_guarded_pair(flip_wait, gpu_sample, dimensions);
+    }
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+@@ -237,12 +305,26 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
++   const OSTime before_finish = retired_pair ? GX2GetLastSubmittedTimeStamp() : 0;
+    const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   if (retired_pair) {
++      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (submitted <= 0 || submitted <= before_finish || GX2GetRetiredTimeStamp() < submitted) {
++         last_wait_ns += OSTicksToNanoseconds(drain_guarded_commands());
++      } else if (!result) {
++         *retired_pair = (uint64_t)submitted;
++      }
++   }
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
++   static bool reported_guarded_hud;
++   if (retired_pair && *retired_pair && defer_flip && !reported_guarded_hud) {
++      reported_guarded_hud = true;
++      OSReport("Horizon GX2 published a retired deferred-flip pair using one immutable HUD upload\n");
++   }
+    static bool reported_deferred_flip;
+    if (defer_flip && !reported_deferred_flip) {
+       reported_deferred_flip = true;
+@@ -264,11 +346,22 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, false);
++   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL);
+ }
+ 
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, true);
++   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL);
++}
++
++int horizon_loading_host_present_guarded_hud(
++   HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
++   bool defer_flip, uint64_t *retired_pair)
++{
++   if (!retired_pair) return -1;
++   *retired_pair = 0;
++   if (!horizon_loading_host_guarded_hud_available())
++      return present_with_clear(draw, context, rgba, NULL, false, NULL);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair);
+ }
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 9bf9b8528f95cc17ecdba2829b095b09801dac9f..2d176c945770ed49a5be4392a2aa2643801bccd8 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ typedef int (*HorizonLoadingDrawTarget)(void *context, uint32_t target,
+                                        uint32_t width, uint32_t height);
+@@ -22,6 +23,19 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8]);
+ 
++/* Trial-only status. The pair was not published and current GPU consumers
++ * are retired. The next frame may retry without the abandoned ticket. */
++enum { HORIZON_LOADING_RETRY_FLIP = -5 };
++
++bool horizon_loading_host_guarded_hud_available(void);
++bool horizon_loading_host_guarded_hud_reuse(uint64_t retired_pair);
++
++/* A nonzero ticket identifies a successfully published and retired pair.
++ * With defer_flip unset this preserves stock draw order and obtains a ticket. */
++int horizon_loading_host_present_guarded_hud(
++   HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
++   bool defer_flip, uint64_t *retired_pair);
++
+ /* Return actual WHB colour-buffer dimensions as {TV width, TV height,
+  * DRC width, DRC height}. Returns nonzero until both buffers are available. */
+ int horizon_loading_host_dimensions(uint32_t dimensions[4]);

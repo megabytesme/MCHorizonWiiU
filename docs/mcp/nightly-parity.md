@@ -2,7 +2,7 @@
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
 registers 194 tools. The assembled RC 45 tree
-`0865ec25196ea2a96a6a330009a930d9c0ce16ea` registers 62 stock tools through
+`daffe5670e195a4870cff3851d0dde16d744f9eb` registers 62 stock tools through
 Night's authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the
