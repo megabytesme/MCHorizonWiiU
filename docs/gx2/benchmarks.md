@@ -76,6 +76,20 @@ simulation and time of day where needed, using the same viewport resolution
 on the corresponding output. Screenshot capture is its own measured
 stage. Record mode, hash, settings and screenshot pairing for every run.
 
+## Start and retrieve through MCP
+
+With Night idle at Home and an existing paired profile, run the selected
+installation's benchmark through one client session.
+
+    python tools/wiiu_mcp_benchmark_run.py --codex-home PROFILE --ca CA --server NAME --instance INSTANCE --scenario cafe-stationary --profile 4 --output NEW_DIRECTORY
+
+The runner confirms the selected installation, waits for Home, and saves
+the JSON report, HZP3 capture and a receipt in the new directory. The receipt
+keeps the host polling and download times separate from the game's measured
+interval. Reserve the pairing profile and benchmark launcher for this run.
+If the polling deadline expires, the receipt records the last observed
+state and Night keeps running the benchmark.
+
 ## Disposable-world lifecycle
 
 On RC 45 and later, use one existing paired Codex profile throughout a
