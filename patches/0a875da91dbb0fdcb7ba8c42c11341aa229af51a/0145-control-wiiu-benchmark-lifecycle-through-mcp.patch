@@ -1,0 +1,627 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 6262ad96706c39ef79a2d51d2b506abd8e03bdb3..adf9a8c9c28922cdf73488a1ee50cc3c017d589e 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -178,15 +178,26 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+             Ok(launch) => launch,
+             Err(code) => return i32::from(code),
+         },
+-        Err(()) => return FAILED,
++        Err(mcp::LaunchError::Cancelled) => return RETURNED,
++        Err(mcp::LaunchError::Failed) => return FAILED,
+     };
+-    let _registration = launch.benchmark.is_none().then(mcp::prepare_game);
++    let benchmark = launch.benchmark.as_ref().map(|run| run.scenario);
++    if let Some(scenario) = benchmark {
++        mcp::benchmark_loading(scenario);
++    }
++    let _registration = benchmark.is_none().then(mcp::prepare_game);
+     if std::env::set_current_dir(&launch.game).is_err() {
++        if benchmark.is_some() {
++            mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
++        }
+         return RESOURCES;
+     }
+     horizon_client::spans::startup::enable_log_sink();
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+     let result = run(launch);
++    if benchmark.is_some() && result != RETURNED {
++        mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
++    }
+     mcp::withdraw();
+     if let Err(error) = std::env::set_current_dir(CAFE_APP_ROOT) {
+         log::error!("Cafe did not restore the launcher working directory: {error}");
+@@ -269,6 +280,7 @@ fn run(launch: night_menu::Launch) -> i32 {
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+             .benchmark_finished(outcome, report);
++        mcp::benchmark_finished(outcome, report);
+         return RETURNED;
+     }
+     if host.hosted_saved {
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 0b47dcff056380e63140b3f24cec3bf3a1e24c9e..8a1249a5d3f1adeb475669cefb2836b69ea8728c 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -1064,7 +1064,8 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             }
+ 
+             if !focused {
+-                if self.hosted_benchmark {
++                if self.hosted_benchmark && !hosted_fault_close {
++                    hosted::mcp::benchmark_closing();
+                     if let Some(game) = game_session.as_mut() {
+                         game.cancel_benchmark();
+                         hosted_fault_close = true;
+@@ -1237,10 +1238,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 hosted_confirm_held = confirm_held;
+                 hosted_cancel_held = cancel_held;
+             }
+-            if self.hosted_benchmark && fresh_buttons {
+-                let cancel = pad.held(Button::Select);
+-                if cancel && !benchmark_cancel_held {
++            if self.hosted_benchmark && !hosted_fault_close {
++                let remote_cancel = hosted::mcp::take_benchmark_cancel();
++                let physical_cancel = fresh_buttons && pad.held(Button::Select);
++                if remote_cancel || (physical_cancel && !benchmark_cancel_held) {
+                     startup_report!("hosted benchmark cancelled");
++                    hosted::mcp::benchmark_closing();
+                     if let Some(game) = game_session.as_mut() {
+                         game.cancel_benchmark();
+                         hosted_fault_close = true;
+@@ -1248,7 +1251,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                         break;
+                     }
+                 }
+-                benchmark_cancel_held = cancel;
++                if fresh_buttons {
++                    benchmark_cancel_held = physical_cancel;
++                }
+             }
+             if self.hosted && game_session.is_none()
+                 && cancel_startup && session.hosted_can_cancel()
+@@ -1639,6 +1644,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                 match game.frame(&event_loop, self.presenter) {
+                     Ok(_frame_drawn) => {
+                         if let Some(result) = game.benchmark_result() {
++                            hosted::mcp::benchmark_closing();
+                             match result {
+                                 Ok(path) => {
+                                     self.hosted_benchmark_report = Some(path);
+@@ -1655,6 +1661,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                         }
+                         let world_ready = game.world_loading_complete();
+                         if !first_game_frame_returned {
++                            if self.hosted_benchmark {
++                                hosted::mcp::benchmark_started();
++                            }
+                             first_game_frame_returned = true;
+                             startup_report!("first original Game frame returned");
+                             log::info!(
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index cd27d22218b97e90b3bf32c57b16c4e862de94ee..7429714e664bf226bec7616356a1f5dd5dc8cc65 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -1,5 +1,9 @@
+ //! Hosted Cafe wiring. The HTTP workers never hold or access Game.
+-use super::{local_service, local_wire as wire, night_menu::Launch, CAFE_APP_ROOT};
++use super::{
++    local_service, local_wire as wire,
++    night_menu::{BenchmarkOutcome, BenchmarkRequest, Launch, BENCHMARK_SCENES},
++    CAFE_APP_ROOT,
++};
+ use horizon_wiiu_mcp::{
+     oauth::{Principal, Scopes},
+     protocol::{text_result, Fault},
+@@ -24,7 +28,141 @@ static GAME_ALLOWED: AtomicBool = AtomicBool::new(false);
+ static REMOTE_LAUNCH: AtomicBool = AtomicBool::new(false);
+ static NO_AI: AtomicBool = AtomicBool::new(false);
+ static GAME_NO_AI: AtomicBool = AtomicBool::new(false);
+-static LAUNCH: Mutex<Option<(Principal, Value)>> = Mutex::new(None);
++enum LaunchArgs {
++    Game(Value),
++    Benchmark(BenchmarkRequest),
++}
++
++struct PendingLaunch {
++    principal: Principal,
++    args: LaunchArgs,
++    cancelled: bool,
++    dispatched: bool,
++}
++
++pub(super) enum LaunchError {
++    Cancelled,
++    Failed,
++}
++
++struct Benchmark {
++    scenario: Option<&'static str>,
++    phase: &'static str,
++    report: Option<String>,
++    cancel: Option<Principal>,
++}
++
++static LAUNCH: Mutex<Option<PendingLaunch>> = Mutex::new(None);
++static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
++    scenario: None,
++    phase: "idle",
++    report: None,
++    cancel: None,
++});
++static BENCHMARK_CANCEL: AtomicBool = AtomicBool::new(false);
++
++fn benchmark_state() -> Value {
++    let state = BENCHMARK.lock().unwrap();
++    json!({"scenario": state.scenario, "phase": state.phase, "report_id": state.report,
++        "cancel_requested": state.cancel.is_some()})
++}
++
++fn benchmark_queued(scenario: &'static str) {
++    let mut state = BENCHMARK.lock().unwrap();
++    state.scenario = Some(scenario);
++    state.phase = "queued";
++    state.report = None;
++    state.cancel = None;
++    BENCHMARK_CANCEL.store(false, Ordering::Release);
++}
++
++pub(super) fn benchmark_loading(scenario: &'static str) {
++    let mut state = BENCHMARK.lock().unwrap();
++    if state.phase != "loading" || state.scenario != Some(scenario) {
++        state.scenario = Some(scenario);
++        state.phase = "loading";
++        state.report = None;
++        state.cancel = None;
++        BENCHMARK_CANCEL.store(false, Ordering::Release);
++    }
++}
++
++pub(crate) fn benchmark_started() {
++    let mut state = BENCHMARK.lock().unwrap();
++    if state.phase == "loading" {
++        state.phase = "running";
++    }
++}
++
++pub(crate) fn benchmark_closing() {
++    let mut state = BENCHMARK.lock().unwrap();
++    state.phase = "closing";
++    state.cancel = None;
++    BENCHMARK_CANCEL.store(false, Ordering::Release);
++}
++
++pub(super) fn benchmark_finished(outcome: BenchmarkOutcome, report: Option<&str>) {
++    let mut state = BENCHMARK.lock().unwrap();
++    state.phase = match outcome {
++        BenchmarkOutcome::Completed => "completed",
++        BenchmarkOutcome::Cancelled => "cancelled",
++        BenchmarkOutcome::Failed => "failed",
++    };
++    state.report = report.map(str::to_owned);
++    state.cancel = None;
++    BENCHMARK_CANCEL.store(false, Ordering::Release);
++}
++
++fn cancel_benchmark(principal: &Principal) -> bool {
++    let mut pending = LAUNCH.lock().unwrap();
++    if !REMOTE_LAUNCH.load(Ordering::Acquire) || !principal.is_active() {
++        return false;
++    }
++    if let Some(request) = pending.as_mut() {
++        if matches!(&request.args, LaunchArgs::Benchmark(_)) && !request.cancelled {
++            request.cancelled = true;
++            if !request.dispatched {
++                pending.take();
++            }
++            benchmark_finished(BenchmarkOutcome::Cancelled, None);
++            return true;
++        }
++    }
++    let mut state = BENCHMARK.lock().unwrap();
++    if !matches!(state.phase, "loading" | "running") {
++        return false;
++    }
++    state.cancel = Some(principal.clone());
++    BENCHMARK_CANCEL.store(true, Ordering::Release);
++    true
++}
++
++pub(crate) fn take_benchmark_cancel() -> bool {
++    if !BENCHMARK_CANCEL.swap(false, Ordering::AcqRel) {
++        return false;
++    }
++    let mut state = BENCHMARK.lock().unwrap();
++    state
++        .cancel
++        .take()
++        .is_some_and(|principal| REMOTE_LAUNCH.load(Ordering::Acquire) && principal.is_active())
++}
++
++fn discard_launch() {
++    let mut launch = LAUNCH.lock().unwrap();
++    if let Some(request) = launch.as_mut() {
++        if matches!(&request.args, LaunchArgs::Benchmark(_)) {
++            // Keep the cancelled request until Night is definitely Home or the
++            // foreground handoff consumes it. It must not become normal Play.
++            request.cancelled = true;
++            benchmark_finished(BenchmarkOutcome::Cancelled, None);
++            if request.dispatched {
++                return;
++            }
++        }
++    }
++    launch.take();
++}
+ 
+ fn session() -> &'static Session {
+     static SESSION: OnceLock<Session> = OnceLock::new();
+@@ -61,7 +199,7 @@ fn load_policy(policy: Policy) {
+     NO_AI.store(policy.no_ai, Ordering::Release);
+     if policy.no_ai || !policy.enabled {
+         session().withdraw();
+-        LAUNCH.lock().unwrap().take();
++        discard_launch();
+     }
+ }
+ 
+@@ -77,10 +215,17 @@ pub(super) fn local_menu(command: u8, index: u8, base: wire::LocalMenu) -> Optio
+ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+     let changed = HOME.swap(on_home, Ordering::AcqRel) != on_home;
+     if on_home {
+-        return LAUNCH.lock().unwrap().is_some();
++        let mut launch = LAUNCH.lock().unwrap();
++        if launch.as_ref().is_some_and(|request| request.cancelled) {
++            launch.take();
++        }
++        return launch.as_mut().is_some_and(|request| {
++            request.dispatched = true;
++            true
++        });
+     }
+     if changed {
+-        LAUNCH.lock().unwrap().take();
++        discard_launch();
+     }
+     false
+ }
+@@ -88,29 +233,54 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+ #[no_mangle]
+ pub extern "C" fn horizon_night_mcp_shutdown() {
+     HOME.store(false, Ordering::Release);
+-    LAUNCH.lock().unwrap().take();
++    discard_launch();
+     session().withdraw();
+     if let Some(mut menu) = menu().lock().ok() {
+         menu.shutdown();
+     }
+ }
+ 
+-pub(super) fn take_launch() -> Result<Option<Launch>, ()> {
++pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+     HOME.store(false, Ordering::Release);
+-    let request = LAUNCH.lock().unwrap().take();
+-    match request {
+-        Some((principal, args))
+-            if principal.is_active() && REMOTE_LAUNCH.load(Ordering::Acquire) =>
+-        {
++    let mut pending = LAUNCH.lock().unwrap();
++    let Some(request) = pending.take() else {
++        return Ok(None);
++    };
++    let allowed = !request.cancelled
++        && request.principal.is_active()
++        && REMOTE_LAUNCH.load(Ordering::Acquire);
++    match request.args {
++        LaunchArgs::Game(args) if allowed => {
++            drop(pending);
+             local_service()
+                 .lock()
+                 .unwrap()
+                 .tool_launch(&args)
+                 .map(Some)
+-                .map_err(|_| ())
++                .map_err(|_| LaunchError::Failed)
++        }
++        LaunchArgs::Game(_) => Err(LaunchError::Failed),
++        LaunchArgs::Benchmark(benchmark) => {
++            if !request.dispatched {
++                // A local Play handoff won the race before MCP dispatched one.
++                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                return Ok(None);
++            }
++            if !allowed {
++                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                return Err(LaunchError::Cancelled);
++            }
++            benchmark_loading(benchmark.scenario);
++            drop(pending);
++            let launch = local_service()
++                .lock()
++                .unwrap()
++                .launch_requested_benchmark(benchmark);
++            if launch.is_err() {
++                benchmark_finished(BenchmarkOutcome::Failed, None);
++            }
++            launch.map(Some).map_err(|_| LaunchError::Failed)
+         }
+-        Some(_) => Err(()),
+-        None => Ok(None),
+     }
+ }
+ 
+@@ -156,6 +326,7 @@ const READ: &[&str] = &[
+     "multiplayer_list",
+     "wiiu_benchmark_reports",
+     "wiiu_benchmark_report",
++    "wiiu_benchmark_status",
+ ];
+ const MANAGE: &[&str] = &["instance_select", "multiplayer_add"];
+ const OBSERVE: &[&str] = &[
+@@ -227,6 +398,25 @@ fn catalog() -> &'static [Value] {
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_benchmark_start",
++                    "description": "Run a stock Wii U benchmark in the selected installation's isolated benchmark workspace. Starts from the Night home page.",
++                    "inputSchema": {
++                        "type": "object", "properties": {"scenario": {"type": "string", "enum": BENCHMARK_SCENES.map(|(name, _)| name)}},
++                        "required": ["scenario"], "additionalProperties": false,
++                    },
++                }),
++                json!({
++                    "name": "wiiu_benchmark_status",
++                    "description": "Read the Wii U benchmark lifecycle phase and the published report ID when available.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
++                json!({
++                    "name": "wiiu_benchmark_cancel",
++                    "description": "Cancel a queued or active isolated Wii U benchmark and return to Night.",
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
+             ])
+             .filter_map(|mut tool| {
+                 let name = tool["name"].as_str()?;
+@@ -253,7 +443,7 @@ impl Backend for NightTools {
+             .filter(|tool| {
+                 let name = tool["name"].as_str().unwrap_or_default();
+                 (!name.starts_with("game_") || live)
+-                    && (name != "play" || REMOTE_LAUNCH.load(Ordering::Acquire))
++                    && (!requires_launch_policy(name) || REMOTE_LAUNCH.load(Ordering::Acquire))
+                     && self
+                         .required(name)
+                         .is_some_and(|scope| principal.scopes.contains(scope))
+@@ -269,7 +459,7 @@ impl Backend for NightTools {
+         if MANAGE.contains(&name) {
+             return Some(Scopes::LAUNCHER_MANAGE);
+         }
+-        if name == "play" {
++        if requires_launch_policy(name) {
+             return Some(Scopes::LAUNCHER_MANAGE.union(Scopes::GAME_CONTROL));
+         }
+         if OBSERVE.contains(&name) {
+@@ -298,7 +488,19 @@ impl Backend for NightTools {
+                 "AI features are off: turn off No AI in the launcher's settings",
+             ));
+         }
+-        if name == "play" {
++        if matches!(name, "wiiu_benchmark_status" | "wiiu_benchmark_cancel") {
++            if !args.as_object().is_some_and(|args| args.is_empty()) {
++                return Ok(text_result("This tool does not take arguments.", true));
++            }
++            if name == "wiiu_benchmark_cancel" && !cancel_benchmark(principal) {
++                return Ok(text_result(
++                    "No cancellable Wii U benchmark is queued or running.",
++                    true,
++                ));
++            }
++            return Ok(text_result(&benchmark_state().to_string(), false));
++        }
++        if matches!(name, "play" | "wiiu_benchmark_start") {
+             if !REMOTE_LAUNCH.load(Ordering::Acquire) {
+                 return Ok(text_result(
+                     "The player has disabled remote game launches.",
+@@ -321,14 +523,46 @@ impl Backend for NightTools {
+             if request.is_some() {
+                 return Ok(text_result("The game is already starting.", true));
+             }
+-            let start = local_service().lock().unwrap().tool_launch(args);
++            if !REMOTE_LAUNCH.load(Ordering::Acquire) || !principal.is_active() {
++                return Ok(text_result(
++                    "The player has disabled remote game launches.",
++                    true,
++                ));
++            }
++            let service = local_service().lock().unwrap();
++            let start = if name == "wiiu_benchmark_start" {
++                let scenario = args
++                    .as_object()
++                    .filter(|args| args.len() == 1)
++                    .and_then(|args| args.get("scenario"))
++                    .and_then(Value::as_str);
++                let Some(scenario) = scenario else {
++                    return Ok(text_result("A Wii U benchmark scenario is required.", true));
++                };
++                service
++                    .benchmark_request(scenario)
++                    .map(LaunchArgs::Benchmark)
++            } else {
++                service
++                    .tool_launch(args)
++                    .map(|_| LaunchArgs::Game(args.clone()))
++            };
+             return Ok(match start {
+-                Ok(_) => {
+-                    *request = Some((principal.clone(), args.clone()));
+-                    text_result(
+-                        "Horizon is starting. Use game_wait_ready once the game tools appear.",
+-                        false,
+-                    )
++                Ok(args) => {
++                    let message = if let LaunchArgs::Benchmark(benchmark) = &args {
++                        benchmark_queued(benchmark.scenario);
++                        benchmark_state().to_string()
++                    } else {
++                        "Horizon is starting. Use game_wait_ready once the game tools appear."
++                            .to_owned()
++                    };
++                    *request = Some(PendingLaunch {
++                        principal: principal.clone(),
++                        args,
++                        cancelled: false,
++                        dispatched: false,
++                    });
++                    text_result(&message, false)
+                 }
+                 Err(err) => text_result(err, true),
+             });
+@@ -344,6 +578,13 @@ impl Backend for NightTools {
+     }
+ }
+ 
++fn requires_launch_policy(name: &str) -> bool {
++    matches!(
++        name,
++        "play" | "wiiu_benchmark_start" | "wiiu_benchmark_cancel"
++    )
++}
++
+ fn game_call(
+     principal: &Principal,
+     full_name: &str,
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 40fd79f7e820e00ff76c6b6578f6bc1c389951ed..c211033a90f41c1c6b5e42b5646c98201ff4a919 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -16,7 +16,7 @@ const LIST_ROWS: usize = 3;
+ const MICROSOFT_CLIENT_ID: &str = "331e08f8-172d-43b9-835a-3108c2fcdbf3";
+ const ACCOUNT_FIXTURE: bool = option_env!("HORIZON_NIGHT_ACCOUNT_FIXTURE").is_some();
+ 
+-const BENCHMARK_SCENES: [(&str, &str); 7] = [
++pub(super) const BENCHMARK_SCENES: [(&str, &str); 7] = [
+     ("standard", "benchmark_standard"),
+     ("village", "benchmark_village"),
+     ("forest", "benchmark_forest"),
+@@ -41,6 +41,11 @@ pub struct BenchmarkLaunch {
+     pub reports: PathBuf,
+ }
+ 
++pub(super) struct BenchmarkRequest {
++    pub(super) scenario: &'static str,
++    instance: String,
++}
++
+ pub struct ResourcePin<'a> {
+     pub version: &'a str,
+     pub schema: u64,
+@@ -380,39 +385,80 @@ impl<G: GameFiles> LocalService<G> {
+         if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
+             return Err(2);
+         }
+-        let game = self.game_dir(&self.preferences.instance);
+         if let Some(scene) = self.benchmark.take() {
+-            let scratch = game.join(".benchmark-run");
+-            use horizon_client::benchmark::{CAFE_WORKSPACE_MARKER, CAFE_WORKSPACE_OWNER};
+-            let owner = scratch.join(CAFE_WORKSPACE_MARKER);
+-            match fs::create_dir(&scratch) {
+-                Ok(()) => fs::write(&owner, CAFE_WORKSPACE_OWNER).map_err(|_| 5_u8)?,
+-                Err(error)
+-                    if error.kind() == std::io::ErrorKind::AlreadyExists
+-                        && plain(&scratch, true)
+-                        && plain(&owner, false)
+-                        && store::read_limited(&owner, CAFE_WORKSPACE_OWNER.len() as u64)
+-                            .is_ok_and(|value| value == CAFE_WORKSPACE_OWNER) => {}
+-                Err(_) => return Err(5),
+-            }
+-            return Ok(Launch {
+-                resources: self.resource_dir(&game),
+-                game: scratch,
+-                player: "HorizonBench".into(),
+-                world: None,
+-                server: None,
+-                swap_ab: self.preferences.settings.swap_ab,
+-                swap_xy: self.preferences.settings.swap_xy,
+-                identity: None,
+-                benchmark: Some(BenchmarkLaunch {
+-                    scenario: BENCHMARK_SCENES[scene].0,
+-                    reports: game.join("benchmarks"),
+-                }),
+-            });
++            return self.launch_benchmark(BENCHMARK_SCENES[scene].0);
+         }
+         self.launch_game()
+     }
+ 
++    pub(super) fn benchmark_request(
++        &self,
++        scenario: &str,
++    ) -> Result<BenchmarkRequest, &'static str> {
++        let scenario = BENCHMARK_SCENES
++            .iter()
++            .find(|(name, _)| *name == scenario)
++            .map(|&(name, _)| name)
++            .ok_or("Choose a supported Wii U benchmark scenario.")?;
++        if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
++            return Err("The selected installation is missing or incompatible.");
++        }
++        if self.benchmark.is_none()
++            && self.online.selected().is_some()
++            && (self.online.active().is_none() || ACCOUNT_FIXTURE)
++        {
++            return Err("The Night Play action is unavailable for the selected profile.");
++        }
++        Ok(BenchmarkRequest {
++            scenario,
++            instance: self.preferences.instance.clone(),
++        })
++    }
++
++    pub(super) fn launch_requested_benchmark(
++        &mut self,
++        request: BenchmarkRequest,
++    ) -> Result<Launch, u8> {
++        if request.instance != self.preferences.instance {
++            return Err(5);
++        }
++        self.benchmark_request(request.scenario).map_err(|_| 5_u8)?;
++        let launch = self.launch_benchmark(request.scenario)?;
++        self.benchmark = None;
++        Ok(launch)
++    }
++
++    fn launch_benchmark(&self, scenario: &'static str) -> Result<Launch, u8> {
++        let game = self.game_dir(&self.preferences.instance);
++        let scratch = game.join(".benchmark-run");
++        use horizon_client::benchmark::{CAFE_WORKSPACE_MARKER, CAFE_WORKSPACE_OWNER};
++        let owner = scratch.join(CAFE_WORKSPACE_MARKER);
++        match fs::create_dir(&scratch) {
++            Ok(()) => fs::write(&owner, CAFE_WORKSPACE_OWNER).map_err(|_| 5_u8)?,
++            Err(error)
++                if error.kind() == std::io::ErrorKind::AlreadyExists
++                    && plain(&scratch, true)
++                    && plain(&owner, false)
++                    && store::read_limited(&owner, CAFE_WORKSPACE_OWNER.len() as u64)
++                        .is_ok_and(|value| value == CAFE_WORKSPACE_OWNER) => {}
++            Err(_) => return Err(5),
++        }
++        Ok(Launch {
++            resources: self.resource_dir(&game),
++            game: scratch,
++            player: "HorizonBench".into(),
++            world: None,
++            server: None,
++            swap_ab: self.preferences.settings.swap_ab,
++            swap_xy: self.preferences.settings.swap_xy,
++            identity: None,
++            benchmark: Some(BenchmarkLaunch {
++                scenario,
++                reports: game.join("benchmarks"),
++            }),
++        })
++    }
++
+     pub(super) fn launch_game(&self) -> Result<Launch, u8> {
+         if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
+             return Err(2);

@@ -28,7 +28,7 @@ its existing overall timeout.
 | Discovery and public session endpoint resolution | Hosted `horizon-client-render/src/auth.rs` and `client_http.rs` | Genuine public discovery recovered in native Cemu. Hardware retest pending. |
 | Attributes, profile and profile certificates | Same hosted client agent, with in-memory bearer credentials where required | The controlled fixture accepted a synthetic bearer POST. The online-mode replay confirms session joining. Individual authenticated attributes and profile-certificate responses were outside its receipt. |
 | Session joining and multiplayer | `net.rs` receives the encryption request, computes the server hash and calls `auth::join_server`. The resulting TCP session uses protocol 777. | The exact RC 36 RPX joined and rejoined a secure online-mode Java server in Cemu, received chunks and accepted movement. Physical qualification remains open. |
-| Address and SRV resolution | `horizon-protocol/src/resolver.rs`, native address resolution and the project's DNS SRV implementation | Public HTTPS exercised regular DNS in Cemu. Cafe uses the empty system-nameserver fallback for SRV, so use a direct hostname and explicit port until a Cafe resolver is available. |
+| Address and SRV resolution | `horizon-protocol/src/resolver.rs`, native address resolution and the project's DNS SRV implementation | Public HTTPS exercised regular DNS in Cemu. RC 42 reads configured Cafe resolvers when NetConf returns them. The Cemu fixture returned zero. A physical SRV alias and the explicit host-and-port control remain to be tested. |
 | Services signing keys | `horizon-server-files/src/profiles.rs`, independent of the hosted account agent | The RC 38 native probe fetched and parsed both public profile-certificate signing keys. |
 | Incoming Agent Control | `wiiu/mcp/src/tls.rs`, a listener with its own rustls server configuration and pairing | Existing physical authenticated MCP evidence. |
 
@@ -114,8 +114,9 @@ status and resolver count. It built with Cafe Toolchain 1.1.0. Check
 initialization, byte order and the active interface on hardware before
 passing the configured nameservers to the existing UDP/TCP SRV resolver.
 The standalone probe resolves the entry points dynamically. NSS-patched
-Cemu 2.6 returned zero assigned resolvers on each interface. Preserve
-explicit host-and-port joins when the configured resolver is unavailable.
+Cemu 2.6 returned zero assigned resolvers on each interface. RC 42
+integrates the bounded adapter and keeps the explicit host-and-port path
+when NetConf returns zero. [RC 42 qualification](rc42-qualification.md)
 [Probe build and console procedure](../../wiiu/diagnostics/cafe-netconf/README.md)
 
 The deployed Cafe HTTPS correction uses connect and receive timeouts.

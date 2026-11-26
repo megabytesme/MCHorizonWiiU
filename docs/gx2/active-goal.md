@@ -13,7 +13,7 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
 | Outcome | Completion evidence | Latest verified evidence |
 | --- | --- | --- |
 | Sustained native gameplay | Repeated settled physical windows of at least 60 seconds on stock Full Performance, fixed 75%, DRS off, render 6 and simulation 5, with the saved 174-section view on both outputs. Record paired cadence, unique flip evidence where available, frame-time tails, terrain, TPS, visuals and memory. Keep separate heavy and traversal results. | RC 38 delivered 20.011 and 20.001 pairs/s in two shorter windows. The matched scale sweep was about 19.97 pairs/s at 100% and 75%, and 29.92 at 50%. |
-| Persistent authenticated MCP | One owner-approved full-scope grant across Night, games, process and console restarts and compatible updates. Exercise the complete launch, capture, settings, save/reopen, benchmark and multiplayer sequence, plus revocation and rejection of unknown clients. | RC 38 verified HTTPS launch, game calls and return to Night. The existing native tool inventory and separate encrypted LAN control expose different capabilities. |
+| Persistent authenticated MCP | One owner-approved full-scope grant across Night, games, process and console restarts and compatible updates. Exercise the complete launch, capture, settings, save/reopen, benchmark and multiplayer sequence, plus revocation and rejection of unknown clients. | RC 42 reused the RC 26 disposable grant in Cemu and exercised Night, launch, live graphics, save and return, and benchmark status and report reads. Physical restart and the remaining tool flow are still pending. |
 | Usable loading | Below 60 s on physical Wii U. Measure first responsive gameplay, first paired terrain and settled terrain at comparable cache states. Target substantially faster reopening with a 30 s stretch goal. | RC 38 first returned game frame 116.798 s after upgrade and 106.918 s on warm reopen. First paired terrain 124.937 s and 114.999 s. The warm run restored both preparation snapshots. |
 | Online mode | Physical account-backed join, terrain, movement, clean disconnect and rejoin. Qualify profile certificates, SRV and bounded, cancellable requests. | RC 36 passed authenticated join and reconnect in Cemu. RC 38 updated profile lookup and signing keys. Physical session pending. |
 | Automatic DRS | Qualified physical timing and upward/downward transitions at 30 and 60 targets, stable surface allocation and native HUD on both outputs. | Physical upward transitions at 30 FPS. The corrected 60 FPS probe boots in Cemu and reports unavailable GPU endpoints there. |
@@ -52,18 +52,23 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   its inputs, the exact `4b` package rendered terrain and HUD on both
   Cemu displays, moved 4.313 blocks backward and passed PCM, save, heap
   recovery and clean exit. [RC 41 package](rc41-validation.md)
-- RC 42 is on the [qualification branch](https://github.com/megabytesme/MCHorizonWiiU/tree/codex/rc42-qualification).
-  Its exact source includes benchmark control and report access, axis-facing
-  terrain ranges, Village trace sequencing, the Cafe SRV adapter and a
-  scratch Cemu GamePad MCP capture. Review fixes preserve coverage edges
-  until a frame is recorded and keep benchmark reports available for the
-  launch instance across selection and restart. The full build exposed a
-  Cafe-only lint in the DNS wrapper. The corrected exact source is in
-  native rebuild. Integrated replay remains pending.
+- RC 42 includes benchmark control and report access, axis-facing terrain
+  ranges, Village trace sequencing, the Cafe SRV adapter and a scratch
+  Cemu GamePad MCP capture. The corrected package passed the native build
+  and reused the original Codex grant through a saved-world round. The
+  configured and paired scales agreed at 100%, 75%, 50% and 75%.
+  Two fresh Codex processes reused the same grant after the app restarted.
+  [RC 42 qualification](rc42-qualification.md)
 - The next source recipe adds Night profile selection, the CPU handoff and
-  an opt-in solid shader specialization. The standalone Cemu control and
-  shader trial matched both full outputs with fog enabled and disabled.
-  The hosted build and matched cadence remain open. [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
+  an opt-in solid shader specialization, plus authenticated saved-bookmark
+  joins. The standalone Cemu control and shader trial matched both full
+  outputs with fog enabled and disabled. The second native build reached
+  the launcher and exposed a Cafe-only module path in profile refresh.
+  [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
+- A separate source recipe implements same-client cancellation before
+  gameplay handoff. The 13 host tests cover authorization, launch IDs and
+  races against that boundary. Packaged qualification remains open.
+  [Night load cancellation](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/night-load-cancellation/docs/gx2/night-load-cancellation.md)
 
 ## Physical queue
 

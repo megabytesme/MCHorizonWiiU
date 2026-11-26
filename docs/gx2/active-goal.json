@@ -181,9 +181,15 @@
     "engine_tree": "9c843d3b8b82cb4ecc809eab90edd9c01b90287e",
     "validation": [
       "exact_patch_chain",
-      "focused_host_and_cemu_fixtures"
+      "focused_host_and_cemu_fixtures",
+      "native_package_hashes",
+      "cemu_rc26_grant_reused_for_rc42_world_settings_save_and_night",
+      "cemu_rc42_grant_reused_after_application_restart"
     ],
-    "native_build": "retry_started_after_cafe_dns_ffi_compile_fix"
+    "native_build": "passed",
+    "rpx_sha256": "8188bbb334da899e9ecc995ebe1089c3713d8228ff110f4bb52a5d4ad02d98c1",
+    "wuhb_sha256": "acf3132551b9a9b728e63afd1c7c73e19b8c16883a4f07a66b1e898d15734b3d",
+    "stock_mcp_tools": 51
   },
   "loading_experiment": {
     "branch": "codex/loading-cpu-handoff",
@@ -194,10 +200,18 @@
   },
   "next_source_qualification": {
     "branch": "codex/rc43-qualification",
-    "commit": "37b9c0049c9",
-    "engine_tree": "ef439f4326d8a33a220970dd34f4ddd8c59840ea",
-    "stock_mcp_tools": 53,
+    "commit": "d74dd3d14b6",
+    "engine_tree": "d377ac3bbf63753e023fda7c30bcdd632d456d41",
+    "stock_mcp_tools": 54,
     "standalone_opaque_shader_paired_pixels": "matched_fog_and_no_fog",
+    "native_build": "cafe_profile_module_path_fix_pending"
+  },
+  "night_load_cancellation": {
+    "branch": "codex/night-load-cancellation",
+    "commit": "ff2fb12abc9",
+    "engine_tree": "aed79902d1582c03f91129b425591632e3cfc2dd",
+    "stock_mcp_tools": 56,
+    "host_adapter_tests": 13,
     "native_build": "pending"
   }
 }

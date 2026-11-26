@@ -1,0 +1,303 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index adf9a8c9c28922cdf73488a1ee50cc3c017d589e..489a5a1ec19ba202c69716f519c1054600b7cbbd 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -181,13 +181,13 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         Err(mcp::LaunchError::Cancelled) => return RETURNED,
+         Err(mcp::LaunchError::Failed) => return FAILED,
+     };
+-    let benchmark = launch.benchmark.as_ref().map(|run| run.scenario);
+-    if let Some(scenario) = benchmark {
+-        mcp::benchmark_loading(scenario);
++    let benchmarking = launch.benchmark.is_some();
++    if let Some(run) = &launch.benchmark {
++        mcp::benchmark_loading(run.scenario, &run.instance);
+     }
+-    let _registration = benchmark.is_none().then(mcp::prepare_game);
++    let _registration = (!benchmarking).then(mcp::prepare_game);
+     if std::env::set_current_dir(&launch.game).is_err() {
+-        if benchmark.is_some() {
++        if benchmarking {
+             mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
+         }
+         return RESOURCES;
+@@ -195,7 +195,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     horizon_client::spans::startup::enable_log_sink();
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+     let result = run(launch);
+-    if benchmark.is_some() && result != RETURNED {
++    if benchmarking && result != RETURNED {
+         mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
+     }
+     mcp::withdraw();
+@@ -279,7 +279,7 @@ fn run(launch: night_menu::Launch) -> i32 {
+         local_service()
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+-            .benchmark_finished(outcome, report);
++            .benchmark_finished(&benchmark.instance, outcome, report);
+         mcp::benchmark_finished(outcome, report);
+         return RETURNED;
+     }
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 4a59985169ec328e9dd1142d2f852061b35b5cb2..6e9fab8dd26aa78b92ae2d90d6c1c4c37c7d1bd1 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -47,6 +47,7 @@ pub(super) enum LaunchError {
+ 
+ struct Benchmark {
+     scenario: Option<&'static str>,
++    instance: Option<String>,
+     phase: &'static str,
+     report: Option<String>,
+     cancel: Option<Principal>,
+@@ -55,6 +56,7 @@ struct Benchmark {
+ static LAUNCH: Mutex<Option<PendingLaunch>> = Mutex::new(None);
+ static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
+     scenario: None,
++    instance: None,
+     phase: "idle",
+     report: None,
+     cancel: None,
+@@ -63,23 +65,29 @@ static BENCHMARK_CANCEL: AtomicBool = AtomicBool::new(false);
+ 
+ fn benchmark_state() -> Value {
+     let state = BENCHMARK.lock().unwrap();
+-    json!({"scenario": state.scenario, "phase": state.phase, "report_id": state.report,
++    json!({"scenario": state.scenario, "instance": state.instance,
++        "phase": state.phase, "report_id": state.report,
+         "cancel_requested": state.cancel.is_some()})
+ }
+ 
+-fn benchmark_queued(scenario: &'static str) {
++fn benchmark_queued(request: &BenchmarkRequest) {
+     let mut state = BENCHMARK.lock().unwrap();
+-    state.scenario = Some(scenario);
++    state.scenario = Some(request.scenario);
++    state.instance = Some(request.instance.clone());
+     state.phase = "queued";
+     state.report = None;
+     state.cancel = None;
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+ 
+-pub(super) fn benchmark_loading(scenario: &'static str) {
++pub(super) fn benchmark_loading(scenario: &'static str, instance: &str) {
+     let mut state = BENCHMARK.lock().unwrap();
+-    if state.phase != "loading" || state.scenario != Some(scenario) {
++    if state.phase != "loading"
++        || state.scenario != Some(scenario)
++        || state.instance.as_deref() != Some(instance)
++    {
+         state.scenario = Some(scenario);
++        state.instance = Some(instance.to_owned());
+         state.phase = "loading";
+         state.report = None;
+         state.cancel = None;
+@@ -270,12 +278,16 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+                 benchmark_finished(BenchmarkOutcome::Cancelled, None);
+                 return Err(LaunchError::Cancelled);
+             }
+-            benchmark_loading(benchmark.scenario);
++            benchmark_loading(benchmark.scenario, &benchmark.instance);
+             drop(pending);
+-            let launch = local_service()
+-                .lock()
+-                .unwrap()
+-                .launch_requested_benchmark(benchmark);
++            let mut service = local_service().lock().unwrap();
++            if !request.principal.is_active() || !REMOTE_LAUNCH.load(Ordering::Acquire) {
++                drop(service);
++                benchmark_finished(BenchmarkOutcome::Cancelled, None);
++                return Err(LaunchError::Cancelled);
++            }
++            let launch = service.launch_requested_benchmark(benchmark);
++            drop(service);
+             if launch.is_err() {
+                 benchmark_finished(BenchmarkOutcome::Failed, None);
+             }
+@@ -391,16 +403,19 @@ fn catalog() -> &'static [Value] {
+             .chain([
+                 json!({
+                     "name": "wiiu_benchmark_reports",
+-                    "description": "List saved Wii U benchmark report IDs in the selected installation.",
++                    "description": "List saved Wii U benchmark report IDs in the requested installation. Omit instance to use the selected installation.",
+                     "annotations": {"readOnlyHint": true},
+-                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                    "inputSchema": {"type": "object", "properties": {"instance": {"type": "string", "maxLength": 96}}, "additionalProperties": false},
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_report",
+-                    "description": "Read a saved Wii U benchmark report, including frame measurements and conditions. Use an ID returned by wiiu_benchmark_reports.",
++                    "description": "Read a saved Wii U benchmark report, including frame measurements and conditions. Use the instance and ID from benchmark status or the reports listing.",
+                     "annotations": {"readOnlyHint": true},
+                     "inputSchema": {
+-                        "type": "object", "properties": {"id": {"type": "string", "maxLength": 96}},
++                        "type": "object", "properties": {
++                            "instance": {"type": "string", "maxLength": 96},
++                            "id": {"type": "string", "maxLength": 96},
++                        },
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
+@@ -414,7 +429,7 @@ fn catalog() -> &'static [Value] {
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_status",
+-                    "description": "Read the Wii U benchmark lifecycle phase and the published report ID when available.",
++                    "description": "Read the Wii U benchmark lifecycle phase, its installation ID, and the published report ID when available.",
+                     "annotations": {"readOnlyHint": true},
+                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                 }),
+@@ -565,7 +580,7 @@ impl Backend for NightTools {
+             return Ok(match start {
+                 Ok(args) => {
+                     let message = if let LaunchArgs::Benchmark(benchmark) = &args {
+-                        benchmark_queued(benchmark.scenario);
++                        benchmark_queued(benchmark);
+                         benchmark_state().to_string()
+                     } else {
+                         "Horizon is starting. Use game_wait_ready once the game tools appear."
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index c211033a90f41c1c6b5e42b5646c98201ff4a919..1dbe6d2fc0c951ca5edced39bf80c96a8772e17e 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -38,12 +38,13 @@ pub enum BenchmarkOutcome {
+ 
+ pub struct BenchmarkLaunch {
+     pub scenario: &'static str,
++    pub instance: String,
+     pub reports: PathBuf,
+ }
+ 
+ pub(super) struct BenchmarkRequest {
+     pub(super) scenario: &'static str,
+-    instance: String,
++    pub(super) instance: String,
+ }
+ 
+ pub struct ResourcePin<'a> {
+@@ -454,6 +455,7 @@ impl<G: GameFiles> LocalService<G> {
+             identity: None,
+             benchmark: Some(BenchmarkLaunch {
+                 scenario,
++                instance: self.preferences.instance.clone(),
+                 reports: game.join("benchmarks"),
+             }),
+         })
+@@ -499,9 +501,14 @@ impl<G: GameFiles> LocalService<G> {
+         })
+     }
+ 
+-    pub fn benchmark_finished(&mut self, outcome: BenchmarkOutcome, report: Option<&str>) {
++    pub fn benchmark_finished(
++        &mut self,
++        instance: &str,
++        outcome: BenchmarkOutcome,
++        report: Option<&str>,
++    ) {
+         self.show(Page::Items(List::Reports, 0));
+-        if outcome == BenchmarkOutcome::Completed {
++        if outcome == BenchmarkOutcome::Completed && instance == self.preferences.instance {
+             if let Some(index) =
+                 report.and_then(|name| self.items.iter().position(|item| item.key == name))
+             {
+@@ -525,8 +532,7 @@ impl<G: GameFiles> LocalService<G> {
+         true
+     }
+ 
+-    fn benchmark_folder(&self) -> Option<PathBuf> {
+-        let instance = &self.preferences.instance;
++    fn benchmark_folder(&self, instance: &str) -> Option<PathBuf> {
+         if !store::identifier(instance) {
+             return None;
+         }
+@@ -539,12 +545,21 @@ impl<G: GameFiles> LocalService<G> {
+         Some(game.join("benchmarks"))
+     }
+ 
+-    fn report_json(&self, key: &str) -> Option<serde_json::Value> {
+-        benchmark_reports::read(&self.benchmark_folder()?, key)
++    fn benchmark_report_ids(&self, instance: &str) -> Option<Vec<String>> {
++        Some(
++            entries(&self.benchmark_folder(instance)?, false)
++                .into_iter()
++                .filter(|id| id.ends_with(".json"))
++                .collect(),
++        )
++    }
++
++    fn report_json(&self, instance: &str, id: &str) -> Option<serde_json::Value> {
++        benchmark_reports::read(&self.benchmark_folder(instance)?, id)
+     }
+ 
+     fn report(&self, key: &str) -> Option<Vec<(String, String)>> {
+-        let value = self.report_json(key)?;
++        let value = self.report_json(&self.preferences.instance, key)?;
+         let object = value.as_object()?;
+         let mut rows = Vec::new();
+         for (key, segment) in object {
+@@ -653,11 +668,9 @@ impl<G: GameFiles> LocalService<G> {
+                 })
+                 .collect(),
+             List::Reports => self
+-                .benchmark_folder()
+-                .map(|folder| entries(&folder, false))
++                .benchmark_report_ids(&self.preferences.instance)
+                 .unwrap_or_default()
+                 .into_iter()
+-                .filter(|key| key.ends_with(".json"))
+                 .map(|key| Item::plain(&key, &key, "Local benchmark report", ACTIVE))
+                 .collect(),
+         }
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index c07064260521f4df0bf8406c2a62dc5063d6ac4e..868eb006787ea888ac54e52563ed67b5b84b5d89 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -15,6 +15,11 @@ impl<G: GameFiles> LocalService<G> {
+             args.as_object()
+                 .is_some_and(|a| a.keys().all(|k| allowed.contains(&k.as_str())))
+         };
++        let report_instance = || {
++            args.get("instance")
++                .map_or(Some(selected.as_str()), Value::as_str)
++                .ok_or("Use a valid benchmark installation ID.")
++        };
+         match name {
+             "versions" if contains(&["installed"]) => {
+                 if args.get("installed").is_some_and(|v| v != true) {
+@@ -31,23 +36,24 @@ impl<G: GameFiles> LocalService<G> {
+                 "swap_xy": self.preferences.settings.swap_xy,
+                 "touch": self.preferences.settings.touch,
+             })),
+-            "wiiu_benchmark_reports" if contains(&[]) => {
+-                let ids: Vec<_> = self
+-                    .listing(super::List::Reports)
+-                    .into_iter()
+-                    .map(|item| item.key)
+-                    .collect();
+-                Ok(json!({"instance": selected, "reports": ids}))
++            "wiiu_benchmark_reports" if contains(&["instance"]) => {
++                let instance = report_instance()?;
++                let ids = self.benchmark_report_ids(instance);
++                if ids.is_none() && args.get("instance").is_some() {
++                    return Err("This benchmark installation is unavailable.");
++                }
++                Ok(json!({"instance": instance, "reports": ids.unwrap_or_default()}))
+             }
+-            "wiiu_benchmark_report" if contains(&["id"]) => {
++            "wiiu_benchmark_report" if contains(&["instance", "id"]) => {
++                let instance = report_instance()?;
+                 let id = args["id"]
+                     .as_str()
+                     .ok_or("A benchmark report ID is required.")?;
+                 let report = self
+-                    .report_json(id)
++                    .report_json(instance, id)
+                     .ok_or("This benchmark report is unavailable.")?;
+                 Ok(
+-                    json!({"instance": selected, "id": id, "report": benchmark_reports::for_agent(report)}),
++                    json!({"instance": instance, "id": id, "report": benchmark_reports::for_agent(report)}),
+                 )
+             }
+             "instance_list" if contains(&[]) => {

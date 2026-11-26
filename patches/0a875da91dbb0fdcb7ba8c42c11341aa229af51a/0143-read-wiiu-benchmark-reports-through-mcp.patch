@@ -1,0 +1,266 @@
+diff --git a/wiiu/loading_app/src/night_benchmark_reports.rs b/wiiu/loading_app/src/night_benchmark_reports.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0c3165e5287828c67a8479c8e7394db414d3bce
+--- /dev/null
++++ b/wiiu/loading_app/src/night_benchmark_reports.rs
+@@ -0,0 +1,121 @@
++use super::{plain, store};
++use serde_json::Value;
++use std::path::Path;
++
++const MAX_REPORT_BYTES: u64 = 2 * 1024 * 1024;
++
++pub(super) fn read(folder: &Path, id: &str) -> Option<Value> {
++    if !store::identifier(id) || !id.ends_with(".json") || !plain(folder, true) {
++        return None;
++    }
++    let path = folder.join(id);
++    if !plain(&path, false) {
++        return None;
++    }
++    let bytes = store::read_limited(&path, MAX_REPORT_BYTES).ok()?;
++    let value: Value = serde_json::from_slice(&bytes).ok()?;
++    (value["format"].as_str()? == "horizon-benchmark-report" && value["version"].as_u64()? == 1)
++        .then_some(value)
++}
++
++/// Keep the standard measurement data and omit local report annotations and attachments.
++pub(super) fn for_agent(mut report: Value) -> Value {
++    if let Some(fields) = report.as_object_mut() {
++        fields.retain(|key, _| {
++            matches!(
++                key.as_str(),
++                "format"
++                    | "version"
++                    | "kind"
++                    | "created"
++                    | "app"
++                    | "hardware"
++                    | "conditions"
++                    | "metrics"
++                    | "frames"
++                    | "ab"
++            )
++        });
++    }
++    report
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++    use std::fs;
++    use std::path::PathBuf;
++
++    struct Scratch(PathBuf);
++
++    impl Scratch {
++        fn new() -> Self {
++            use std::time::{SystemTime, UNIX_EPOCH};
++            let stamp = SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap()
++                .as_nanos();
++            let path =
++                std::env::temp_dir().join(format!("wiiu-reports-{}-{stamp}", std::process::id()));
++            fs::create_dir(&path).unwrap();
++            Self(path)
++        }
++    }
++
++    impl Drop for Scratch {
++        fn drop(&mut self) {
++            let _ = fs::remove_dir_all(&self.0);
++        }
++    }
++
++    #[test]
++    fn exports_measurements_without_local_attachments_or_labels() {
++        let scratch = Scratch::new();
++        let filename = "game-20261126-village.json";
++        let report = json!({
++            "format": "horizon-benchmark-report",
++            "version": 1,
++            "conditions": {"scenario": "village"},
++            "metrics": {"paired_fps": {"mean": 20.0}},
++            "frames": [{"phase": "game", "p95_ms": 50.0}],
++            "local": ["trace.json"],
++            "label": "personal label",
++        });
++        fs::write(scratch.0.join(filename), report.to_string()).unwrap();
++        let reply = for_agent(read(&scratch.0, filename).unwrap());
++        assert_eq!(
++            reply,
++            json!({
++                "format": "horizon-benchmark-report",
++                "version": 1,
++                "conditions": {"scenario": "village"},
++                "metrics": {"paired_fps": {"mean": 20.0}},
++                "frames": [{"phase": "game", "p95_ms": 50.0}],
++            })
++        );
++    }
++
++    #[test]
++    fn refuses_paths_non_reports_and_excess_size() {
++        let scratch = Scratch::new();
++        let folder = scratch.0.join("benchmarks");
++        fs::create_dir(&folder).unwrap();
++        let report = br#"{"format":"horizon-benchmark-report","version":1}"#;
++        fs::write(scratch.0.join("outer.json"), report).unwrap();
++        assert!(read(&folder, "../outer.json").is_none());
++        fs::write(folder.join("settings.json"), br#"{"version":1}"#).unwrap();
++        assert!(read(&folder, "settings.json").is_none());
++        fs::File::create(folder.join("oversize.json"))
++            .unwrap()
++            .set_len(MAX_REPORT_BYTES + 1)
++            .unwrap();
++        assert!(read(&folder, "oversize.json").is_none());
++        #[cfg(unix)]
++        {
++            std::os::unix::fs::symlink(scratch.0.join("outer.json"), folder.join("link.json"))
++                .unwrap();
++            assert!(read(&folder, "link.json").is_none());
++        }
++    }
++}
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 876db44baabf9a92d6dfbea987f89b1ca8c46476..cd27d22218b97e90b3bf32c57b16c4e862de94ee 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -154,6 +154,8 @@ const READ: &[&str] = &[
+     "instance_list",
+     "worlds_list",
+     "multiplayer_list",
++    "wiiu_benchmark_reports",
++    "wiiu_benchmark_report",
+ ];
+ const MANAGE: &[&str] = &["instance_select", "multiplayer_add"];
+ const OBSERVE: &[&str] = &[
+@@ -209,6 +211,23 @@ fn catalog() -> &'static [Value] {
+             .unwrap()
+             .iter()
+             .flat_map(|row| row.get("tool").cloned())
++            .chain([
++                json!({
++                    "name": "wiiu_benchmark_reports",
++                    "description": "List saved Wii U benchmark report IDs in the selected installation.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
++                json!({
++                    "name": "wiiu_benchmark_report",
++                    "description": "Read a saved Wii U benchmark report, including frame measurements and conditions. Use an ID returned by wiiu_benchmark_reports.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {
++                        "type": "object", "properties": {"id": {"type": "string", "maxLength": 96}},
++                        "required": ["id"], "additionalProperties": false,
++                    },
++                }),
++            ])
+             .filter_map(|mut tool| {
+                 let name = tool["name"].as_str()?;
+                 NightTools.required(name)?;
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index c4faac74d72d0203f3d06baf8c00d6cafbe4984d..40fd79f7e820e00ff76c6b6578f6bc1c389951ed 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -6,6 +6,9 @@ use super::night_online::{self, Online};
+ use super::night_store::{self as store, Preferences, Profile, Server, Store};
+ use horizon_wiiu_microsoft::{Identity, Provider};
+ 
++#[path = "night_benchmark_reports.rs"]
++mod benchmark_reports;
++
+ const MANIFEST: &str = "horizon-resources.json";
+ const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_- .:[]";
+ const LIST_ROWS: usize = 3;
+@@ -476,23 +479,27 @@ impl<G: GameFiles> LocalService<G> {
+         true
+     }
+ 
+-    fn report(&self, key: &str) -> Option<Vec<(String, String)>> {
+-        if !store::identifier(key) || !key.ends_with(".json") {
+-            return None;
+-        }
+-        let folder = self.game_dir(&self.preferences.instance).join("benchmarks");
+-        let path = folder.join(key);
+-        if !plain(&folder, true) || !plain(&path, false) {
++    fn benchmark_folder(&self) -> Option<PathBuf> {
++        let instance = &self.preferences.instance;
++        if !store::identifier(instance) {
+             return None;
+         }
+-        let content = store::read_limited(&path, 2 * 1024 * 1024).ok()?;
+-        let value: serde_json::Value = serde_json::from_slice(&content).ok()?;
+-        let object = value.as_object()?;
+-        if value["format"].as_str()? != "horizon-benchmark-report"
+-            || value["version"].as_u64()? != 1
++        let game = self.game_dir(instance);
++        if instance != "default"
++            && (!plain(&self.base.join("instances"), true) || !plain(&game, true))
+         {
+             return None;
+         }
++        Some(game.join("benchmarks"))
++    }
++
++    fn report_json(&self, key: &str) -> Option<serde_json::Value> {
++        benchmark_reports::read(&self.benchmark_folder()?, key)
++    }
++
++    fn report(&self, key: &str) -> Option<Vec<(String, String)>> {
++        let value = self.report_json(key)?;
++        let object = value.as_object()?;
+         let mut rows = Vec::new();
+         for (key, segment) in object {
+             if !matches!(
+@@ -599,7 +606,10 @@ impl<G: GameFiles> LocalService<G> {
+                     ))
+                 })
+                 .collect(),
+-            List::Reports => entries(&game.join("benchmarks"), false)
++            List::Reports => self
++                .benchmark_folder()
++                .map(|folder| entries(&folder, false))
++                .unwrap_or_default()
+                 .into_iter()
+                 .filter(|key| key.ends_with(".json"))
+                 .map(|key| Item::plain(&key, &key, "Local benchmark report", ACTIVE))
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index 135319b4ae03803938ab934e4e5756e177ee39f9..c07064260521f4df0bf8406c2a62dc5063d6ac4e 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -1,4 +1,4 @@
+-use super::{store, GameFiles, Launch, LocalService, ResourceStatus, Target};
++use super::{benchmark_reports, store, GameFiles, Launch, LocalService, ResourceStatus, Target};
+ use serde_json::{json, Value};
+ 
+ #[cfg(not(test))]
+@@ -31,6 +31,25 @@ impl<G: GameFiles> LocalService<G> {
+                 "swap_xy": self.preferences.settings.swap_xy,
+                 "touch": self.preferences.settings.touch,
+             })),
++            "wiiu_benchmark_reports" if contains(&[]) => {
++                let ids: Vec<_> = self
++                    .listing(super::List::Reports)
++                    .into_iter()
++                    .map(|item| item.key)
++                    .collect();
++                Ok(json!({"instance": selected, "reports": ids}))
++            }
++            "wiiu_benchmark_report" if contains(&["id"]) => {
++                let id = args["id"]
++                    .as_str()
++                    .ok_or("A benchmark report ID is required.")?;
++                let report = self
++                    .report_json(id)
++                    .ok_or("This benchmark report is unavailable.")?;
++                Ok(
++                    json!({"instance": selected, "id": id, "report": benchmark_reports::for_agent(report)}),
++                )
++            }
+             "instance_list" if contains(&[]) => {
+                 let versions = self.listing(super::List::Instances);
+                 let rows: Vec<_> = versions

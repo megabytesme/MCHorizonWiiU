@@ -1,0 +1,96 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index 6b9068bcccbc6328c9cc8d1ae64b717118778a0f..d8d0c77164ae60d2038ac8c70febdbbb90c22c7a 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -97,6 +97,7 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_begin(phase: u32) -> bool;
+     fn horizon_gx2_profile_finish();
+     fn horizon_gx2_profile_phase(phase: u32);
++    fn horizon_gx2_profile_playing_sequence(sequence: *mut u32) -> bool;
+     fn horizon_gx2_profile_stamp() -> u64;
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
+@@ -126,6 +127,12 @@ pub fn phase(phase: Phase) {
+     unsafe { horizon_gx2_profile_phase(phase as u32) }
+ }
+ 
++/// The active gameplay row's sequence on the host thread, even without GPU timing.
++pub fn playing_frame_sequence() -> Option<u32> {
++    let mut sequence = 0;
++    unsafe { horizon_gx2_profile_playing_sequence(&mut sequence) }.then_some(sequence)
++}
++
+ pub fn count(counter: Counter, value: usize) {
+     unsafe { horizon_gx2_profile_count(counter as u32, value as u32) }
+ }
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index b65fd8b3a5624348d9510b64eb3a315af5a0139b..c3b2684fb5b0e4cc00dd04952f84ce455bb4e8cd 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -130,7 +130,7 @@
+         if !flight.raw {
+             return;
+         }
+-        let Some(sample) = work.gpu_sample else {
++        let Some(sequence) = horizon_client_platform::cafe_profile::playing_frame_sequence() else {
+             return;
+         };
+         let elapsed = flight.started.elapsed();
+@@ -157,7 +157,7 @@
+         }
+         log::info!(
+             "Cafe Village streaming seq={} elapsed_ms={} reason={} camera={x:.2},{z:.2} sections={}/{} columns={} client_pending={} uploads={} remote_pending={} forward_resident={resident:x} forward_lit={lit:x}",
+-            sample.sequence(),
++            sequence,
+             elapsed.as_millis(),
+             reason,
+             work.terrain_sections[0],
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index bdc620686eb8c1af8c4d700c23dbd17974faac94..f51e0915c08badf89a22fab9b8cfb725c835d6dc 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -22,13 +22,6 @@ pub struct CafeGpuSample {
+ 
+ const _: () = assert!(std::mem::size_of::<CafeGpuSample>() == 72);
+ 
+-impl CafeGpuSample {
+-    #[cfg(target_os = "cafe")]
+-    pub(crate) fn sequence(&self) -> u32 {
+-        self.sequence
+-    }
+-}
+-
+ struct GpuTimingObservation {
+     sample: CafeGpuSample,
+     at: Instant,
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index e1bb15d56227ee6a6176a021cd8cecc0c75f8e0a..7c17d100801193491a3364b318969a53c894b013 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -305,6 +305,14 @@ bool horizon_gx2_profile_begin(uint32_t phase)
+    return true;
+ }
+ 
++/* Guest serial traces identify the same row finish() will commit. */
++bool horizon_gx2_profile_playing_sequence(uint32_t *sequence)
++{
++   if (!recording || current.phase != PLAYING_PHASE) return false;
++   *sequence = total;
++   return true;
++}
++
+ void horizon_gx2_profile_phase(uint32_t phase)
+ {
+    if (recording) current.phase = phase;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 5266ac38d392defe452fdc17f21fed2b226f5323..145d146a58d21bcb03351c78363c720b98b09332 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -50,6 +50,7 @@ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+ bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample);
+ bool horizon_gx2_profile_begin(uint32_t phase);
++bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);

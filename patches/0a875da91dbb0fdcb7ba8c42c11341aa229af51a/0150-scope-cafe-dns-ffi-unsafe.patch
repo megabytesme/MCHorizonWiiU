@@ -1,0 +1,12 @@
+diff --git a/crates/horizon-protocol/src/resolver/dns.rs b/crates/horizon-protocol/src/resolver/dns.rs
+index a04860af4122d4ce812479c884409700e58cfeeb..8ca59476affaafc81672d610b1dcb6f13e0e9a90 100644
+--- a/crates/horizon-protocol/src/resolver/dns.rs
++++ b/crates/horizon-protocol/src/resolver/dns.rs
+@@ -38,6 +38,7 @@ pub(super) fn system_name_servers() -> Vec<SocketAddr> {
+ }
+ 
+ #[cfg(target_os = "cafe")]
++#[allow(unsafe_code)]
+ pub(super) fn system_name_servers() -> Vec<SocketAddr> {
+     use std::sync::Mutex;
+ 

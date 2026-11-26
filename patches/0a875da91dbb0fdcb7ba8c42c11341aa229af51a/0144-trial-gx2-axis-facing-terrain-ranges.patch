@@ -1,0 +1,389 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index ab8f973cf7940b4d9a873e059a09125d0ccf36cc..3836b49c0bcc6de97dfbcac8ed320e6525a4af2f 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -386,19 +386,25 @@ static void bind_section_uniforms(const HorizonGx2Terrain *t, const float clip_r
+    GX2SetVertexUniformReg(t->section_origin_offset, 4, section_origin);
+ }
+ 
+-int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+-                                  const float clip_rows[16], const float section_origin[4])
++static void bind_section(const HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                         const float clip_rows[16], const float section_origin[4])
+ {
+-   if (!t || !s || !clip_rows || !section_origin) return -1;
+-   if (!s->vertex_count) return 0;
+-   const bool translucent = GX2RBufferExists(&s->sorted_indices);
+-   if (translucent && !s->sorted_indices_ready) return -1;
+    bind_section_uniforms(t, clip_rows, section_origin);
+    GX2RSetAttributeBuffer(&s->buffer, 0, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, position));
+    if (t->legacy_attributes) {
+       GX2RSetAttributeBuffer(&s->buffer, 1, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, color_cutout));
+       GX2RSetAttributeBuffer(&s->buffer, 2, sizeof(HorizonTerrainVertex), offsetof(HorizonTerrainVertex, uv));
+    }
++}
++
++int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                                  const float clip_rows[16], const float section_origin[4])
++{
++   if (!t || !s || !clip_rows || !section_origin) return -1;
++   if (!s->vertex_count) return 0;
++   const bool translucent = GX2RBufferExists(&s->sorted_indices);
++   if (translucent && !s->sorted_indices_ready) return -1;
++   bind_section(t, s, clip_rows, section_origin);
+    if (translucent)
+       GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
+                       s->sorted_indices.elemCount, 0, 0, 1);
+@@ -407,6 +413,28 @@ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSectio
+    return 0;
+ }
+ 
++int horizon_gx2_terrain_draw_bound_solid_ranges(
++   HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++   const float clip_rows[16], const float section_origin[4],
++   const uint32_t (*ranges)[2], uint32_t range_count)
++{
++   if (!t || !s || !clip_rows || !section_origin || (!ranges && range_count) ||
++       GX2RBufferExists(&s->sorted_indices)) return -1;
++   if (!range_count) return 0;
++   const uint32_t total = s->vertex_count / 4;
++   uint32_t end = 0;
++   /* Validate the entire list before binding or queuing any draw. */
++   for (uint32_t i = 0; i < range_count; ++i) {
++      const uint32_t first = ranges[i][0], count = ranges[i][1];
++      if (!count || first < end || first > total || count > total - first) return -1;
++      end = first + count;
++   }
++   bind_section(t, s, clip_rows, section_origin);
++   for (uint32_t i = 0; i < range_count; ++i)
++      terrain_draw_indexed_range(&t->quad_indices, ranges[i][0], ranges[i][1]);
++   return 0;
++}
++
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                             uint32_t target_width, uint32_t target_height,
+                             uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index dfe6b006860ac18a0a95bb0fe53ff6c8027c2333..05d40749f9fda75fde56565f0a801d8357ffabd2 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -66,6 +66,11 @@ void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool
+ void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool enabled);
+ /* Compare stock WGPU back-face state for solid and cutout terrain. */
+ void horizon_gx2_terrain_set_solid_back_culling(HorizonGx2Terrain *terrain, bool enabled);
++/* Each ordered, non-overlapping pair gives the first quad and count. */
++int horizon_gx2_terrain_draw_bound_solid_ranges(
++   HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++   const float clip_rows[16], const float section_origin[4],
++   const uint32_t (*ranges)[2], uint32_t range_count);
+ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ /* Caller has completed every submitted use of this section. */
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index 0821b47a483fa6ad7c86c214f8770724436e317a..2354e88abc70a0ea10f0b87a9bc74a4fa39590b8 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -173,10 +173,10 @@ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section)
+    horizon_gx2_terrain_section_destroy_after_wait(section);
+ }
+ 
+-static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count)
++static void terrain_draw_indexed_range(GX2RBuffer *quad_indices, uint32_t first_quad,
++                                       uint32_t remaining)
+ {
+-   uint32_t remaining = vertex_count / 4;
+-   uint32_t base_vertex = 0;
++   uint32_t base_vertex = first_quad * 4;
+    while (remaining) {
+       uint32_t quads = remaining < TERRAIN_INDEX_QUADS ? remaining : TERRAIN_INDEX_QUADS;
+       GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, quad_indices, GX2_INDEX_TYPE_U16,
+@@ -185,3 +185,8 @@ static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count
+       base_vertex += quads * 4;
+    }
+ }
++
++static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count)
++{
++   terrain_draw_indexed_range(quad_indices, 0, vertex_count / 4);
++}
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index 63a69897e2ed22f047bbfed95eb0737611589d30..d6f20138794b1db3790b9ffdd0352aa469ad3210 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -143,6 +143,10 @@ static void check_index_groups(void)
+    draw_count = 0;
+    terrain_draw_indexed(&indices, (TERRAIN_INDEX_QUADS * 2 + 3) * 4);
+    assert(draw_count == 3 && draws[2].index_count == 18 && draws[2].base_vertex == 131072);
++   draw_count = 0;
++   terrain_draw_indexed_range(&indices, 9, TERRAIN_INDEX_QUADS + 2);
++   assert(draw_count == 2 && draws[0].index_count == 98304 && draws[0].base_vertex == 36);
++   assert(draws[1].index_count == 12 && draws[1].base_vertex == 65572);
+    terrain_buffer_release(&indices);
+    assert(!buffers);
+ 
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 599b4219abcb575100fdbfb0dae1aeb02b9d84f2..f1e262f561847488360ad268e4c4f5a52c7f627c 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -82,6 +82,7 @@ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animatio
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
++static bool solid_axis_ranges;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -128,7 +129,8 @@ void horizon_gx2_profile_init(void)
+    skip_scaled_output_clear = variant == 'c';
+    defer_flip = variant == 'q';
+    skip_terrain_waits = variant == 't';
+-   solid_back_culling = variant == 'b';
++   solid_axis_ranges = variant == 'r';
++   solid_back_culling = variant == 'b' || solid_axis_ranges;
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -140,6 +142,7 @@ void horizon_gx2_profile_init(void)
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
+    if (solid_back_culling) OSReport("Horizon GX2 solid terrain back-face culling trial enabled\n");
++   if (solid_axis_ranges) OSReport("Horizon GX2 solid terrain axis ranges trial enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+ }
+@@ -208,6 +211,11 @@ bool horizon_gx2_profile_solid_back_culling(void)
+    return solid_back_culling;
+ }
+ 
++bool horizon_gx2_profile_solid_axis_ranges(void)
++{
++   return solid_axis_ranges;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index b4a587443a0a408a5fb746f3a6efcf7c87092a2d..842fa43a12bbdf868c70233224016d48efebb509 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -46,6 +46,7 @@ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ bool horizon_gx2_profile_solid_back_culling(void);
++bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 59389883b66b6a774e9a64fff726d422c2ab9a29..3855ba800dc475db20d8299cfdda2f5e09ca1889 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -208,6 +208,7 @@ extern "C" {
+     fn horizon_gx2_profile_defer_flip() -> bool;
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
+     fn horizon_gx2_profile_solid_back_culling() -> bool;
++    fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+@@ -283,6 +284,14 @@ extern "C" {
+         fog_ranges: *const f32,
+         translucent: bool,
+     ) -> i32;
++    fn horizon_gx2_terrain_draw_bound_solid_ranges(
++        terrain: *mut c_void,
++        section: *mut c_void,
++        clip_rows: *const f32,
++        section_origin: *const f32,
++        ranges: *const [u32; 2],
++        range_count: u32,
++    ) -> i32;
+     fn horizon_gx2_terrain_draw_bound(
+         terrain: *mut c_void,
+         section: *mut c_void,
+@@ -1209,6 +1218,7 @@ struct TerrainProjection {
+     camera: [f64; 3],
+     min_y: i32,
+     clip: TerrainClipRows,
++    axis_eye: Option<[f64; 3]>,
+ }
+ 
+ impl TerrainProjection {
+@@ -1217,12 +1227,34 @@ impl TerrainProjection {
+         let far = frame.depth_far.max(near + 1.0);
+         let view =
+             frame.bob * frame.spin * horizon_client::camera::view_matrix(frame.yaw, frame.pitch);
++        let focal = 1.0 / (frame.fov_degrees.to_radians() * 0.5).tan();
++        // Axis tests assume a perspective view with ordinary winding. The
++        // inverse affine view includes bob/spin translation at the actual eye.
++        let axis_eye = if unsafe { horizon_gx2_profile_solid_axis_ranges() }
++            && focal.is_finite()
++            && focal > 0.0
++            && aspect.is_finite()
++            && aspect > 0.0
++            && view.row(3).to_array() == [0.0, 0.0, 0.0, 1.0]
++        {
++            let view = view.as_dmat4();
++            let determinant = view.determinant();
++            if determinant.is_normal() && determinant > 0.0 {
++                let eye = view.inverse().w_axis.truncate().to_array();
++                eye.iter().all(|x| x.is_finite()).then_some(eye)
++            } else {
++                None
++            }
++        } else {
++            None
++        };
+         Self {
+             camera: frame.camera.to_array(),
+             min_y,
++            axis_eye,
+             clip: terrain_view_rows(
+                 view.transpose().to_cols_array_2d(),
+-                1.0 / (frame.fov_degrees.to_radians() * 0.5).tan(),
++                focal,
+                 aspect,
+                 far / (near - far),
+                 far * near / (near - far),
+@@ -2096,8 +2128,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+                 let mut sections_tested = 0usize;
+-                for (&key, section) in &draw.presenter.sections {
+-                    let Some(section) = section.solid.as_ref() else {
++                for (&key, entry) in &draw.presenter.sections {
++                    let Some(section) = entry.solid.as_ref() else {
+                         continue;
+                     };
+                     sections_tested += 1;
+@@ -2114,7 +2146,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     {
+                         continue;
+                     }
+-                    indices += section.vertex_count as usize / 4 * 6;
++                    let ranges = projection
++                        .axis_eye
++                        .zip(entry.solid_sides.as_deref())
++                        .and_then(|(eye, sides)| {
++                            let eye = std::array::from_fn(|i| (eye[i] - origin[i]) as f32);
++                            terrain_translucency::SolidRanges::visible(sides, eye)
++                        });
++                    let submitted_indices = ranges
++                        .as_ref()
++                        .map_or(section.vertex_count / 4, |ranges| ranges.quads)
++                        * 6;
++                    indices += submitted_indices as usize;
+                     sections_drawn += 1;
+                     let [x, y, z] = origin.map(|value| value as f32);
+                     let section_origin = [x, y, z, 0.0];
+@@ -2145,12 +2188,23 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         bound = true;
+                     }
+                     if unsafe {
+-                        horizon_gx2_terrain_draw_bound(
+-                            terrain.as_ptr(),
+-                            section.native.as_ptr(),
+-                            clip_rows.rows.as_ptr().cast(),
+-                            section_origin.as_ptr(),
+-                        )
++                        if let Some(ranges) = ranges {
++                            horizon_gx2_terrain_draw_bound_solid_ranges(
++                                terrain.as_ptr(),
++                                section.native.as_ptr(),
++                                clip_rows.rows.as_ptr().cast(),
++                                section_origin.as_ptr(),
++                                ranges.ranges.as_ptr(),
++                                ranges.len as u32,
++                            )
++                        } else {
++                            horizon_gx2_terrain_draw_bound(
++                                terrain.as_ptr(),
++                                section.native.as_ptr(),
++                                clip_rows.rows.as_ptr().cast(),
++                                section_origin.as_ptr(),
++                            )
++                        }
+                     } != 0
+                     {
+                         draw.result = Err("GX2 terrain draw failed");
+@@ -2167,7 +2221,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.profile.vertex_draws = draw
+                             .profile
+                             .vertex_draws
+-                            .saturating_add(section.vertex_count / 4 * 6);
++                            .saturating_add(submitted_indices);
+                     }
+                 }
+                 cafe_profile::count(Counter::Indices, indices);
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index bff8b85749123a27311925a1ec58c48f1a403fa4..88fff87782bfc141feeb338c9b9496e4179de66a 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -1,5 +1,6 @@
+ use super::*;
+ use horizon_client::gfx::translucency::{SortState, Sorter, quad_center};
++use horizon_client::mesher::Sides;
+ use horizon_wiiu_gx2_terrain::TerrainBounds;
+ 
+ pub(super) struct TerrainBuffer {
+@@ -94,8 +95,40 @@ struct SortedSection {
+     sort: SortState,
+ }
+ 
++pub(super) struct SolidRanges {
++    // At most seven disjoint runs can come from the 14 ordered Sides parts.
++    pub(super) ranges: [[u32; 2]; 7],
++    pub(super) len: usize,
++    pub(super) quads: u32,
++}
++
++impl SolidRanges {
++    pub(super) fn visible(sides: &Sides, eye: [f32; 3]) -> Option<Self> {
++        if !eye.iter().all(|coordinate| coordinate.is_finite()) {
++            return None;
++        }
++        let mut visible = Self {
++            ranges: [[0; 2]; 7],
++            len: 0,
++            quads: 0,
++        };
++        sides.visible(eye, |first, count| {
++            if let Some(range) = visible.ranges.get_mut(visible.len) {
++                *range = [first, count];
++                visible.quads += count;
++            }
++            visible.len += 1;
++        });
++        // Keep coverage accounting comparable with the full-section control.
++        // A wholly back-facing section keeps its existing GPU-only cull path.
++        (visible.len > 0 && visible.len <= visible.ranges.len() && visible.quads < sides.quads())
++            .then_some(visible)
++    }
++}
++
+ pub(super) struct TerrainSection {
+     pub(super) solid: Option<TerrainBuffer>,
++    pub(super) solid_sides: Option<Box<Sides>>,
+     translucent: Option<SortedSection>,
+     pub(super) bounds: Option<TerrainBounds>,
+     pub(super) budget_bytes: usize,
+@@ -159,8 +192,18 @@ impl TerrainSection {
+                     return Err(error);
+                 }
+             };
++        let solid_sides = solid.as_ref().and_then(|buffer| {
++            let sides = mesh.sides;
++            (unsafe { horizon_gx2_profile_solid_axis_ranges() }
++                && buffer.bounds.is_some()
++                && sides.quads() == buffer.vertex_count / 4
++                && (0..13).all(|i| sides.part_end(i) <= sides.part_end(i + 1))
++                && (0..7).all(|i| sides.bucket_plane(i).is_finite()))
++                .then(|| Box::new(sides))
++        });
+         let section = Self {
+             solid,
++            solid_sides,
+             translucent,
+             bounds: info.bounds,
+             budget_bytes: info.bytes,

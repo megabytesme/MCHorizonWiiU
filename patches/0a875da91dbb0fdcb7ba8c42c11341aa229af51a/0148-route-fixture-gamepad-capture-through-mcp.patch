@@ -1,0 +1,114 @@
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 7429714e664bf226bec7616356a1f5dd5dc8cc65..4a59985169ec328e9dd1142d2f852061b35b5cb2 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -329,6 +329,11 @@ const READ: &[&str] = &[
+     "wiiu_benchmark_status",
+ ];
+ const MANAGE: &[&str] = &["instance_select", "multiplayer_add"];
++const GAMEPAD_SCREENSHOT: &str = "game_screenshot_gamepad";
++// The stock build recipe does not enable this scratch Cemu configuration.
++// Physical GamePad readback needs qualification before advertising it.
++#[allow(unexpected_cfgs)]
++const GAMEPAD_CAPTURE_FIXTURE: bool = cfg!(horizon_wiiu_cemu_global_lock);
+ const OBSERVE: &[&str] = &[
+     "game_hello",
+     "game_state",
+@@ -346,6 +351,7 @@ const OBSERVE: &[&str] = &[
+     "game_narration",
+     "game_wait_ready",
+     "game_screenshot",
++    GAMEPAD_SCREENSHOT,
+     "game_options_get",
+ ];
+ const CONTROL: &[&str] = &[
+@@ -417,6 +423,12 @@ fn catalog() -> &'static [Value] {
+                     "description": "Cancel a queued or active isolated Wii U benchmark and return to Night.",
+                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                 }),
++                json!({
++                    "name": GAMEPAD_SCREENSHOT,
++                    "description": "Capture the next GamePad frame as a PNG in the scratch Cemu fixture. Use game_screenshot for the TV.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                }),
+             ])
+             .filter_map(|mut tool| {
+                 let name = tool["name"].as_str()?;
+@@ -453,6 +465,9 @@ impl Backend for NightTools {
+     }
+ 
+     fn required(&self, name: &str) -> Option<Scopes> {
++        if name == GAMEPAD_SCREENSHOT && !GAMEPAD_CAPTURE_FIXTURE {
++            return None;
++        }
+         if READ.contains(&name) {
+             return Some(Scopes::LAUNCHER_READ);
+         }
+@@ -601,6 +616,22 @@ fn game_call(
+         return no_game();
+     }
+     let name = full_name.trim_start_matches("game_");
++    let display = match name {
++        "screenshot" => Some("tv"),
++        "screenshot_gamepad" => {
++            if !GAMEPAD_CAPTURE_FIXTURE {
++                return text_result(
++                    "GamePad capture is available in the scratch Cemu fixture.",
++                    true,
++                );
++            }
++            if !args.as_object().is_some_and(|args| args.is_empty()) {
++                return text_result("This tool does not take arguments.", true);
++            }
++            Some("gamepad")
++        }
++        _ => None,
++    };
+     if name == "options_set"
+         && !matches!(
+             args["key"].as_str(),
+@@ -629,7 +660,7 @@ fn game_call(
+     }
+     let Some(cmd) = commands::COMMANDS
+         .iter()
+-        .find(|cmd| cmd.mcp && commands::tool_name(cmd) == name)
++        .find(|cmd| cmd.mcp && commands::tool_name(cmd) == display.map_or(name, |_| "screenshot"))
+     else {
+         return text_result("This game tool is unavailable on Wii U.", true);
+     };
+@@ -648,12 +679,15 @@ fn game_call(
+     {
+         return text_result("Use one value per game argument.", true);
+     }
+-    if name == "screenshot" {
+-        words.push("capture.png".into());
+-    }
+     if let Some(wire) = cmd.wire {
+         words.splice(0..1, wire.split(' ').map(str::to_owned));
+     }
++    if let Some(output) = display {
++        if output == "gamepad" {
++            words[0] = "screenshot-gamepad".into();
++        }
++        words.push("capture.png".into());
++    }
+     let wire = words.join(" ");
+     let seconds = args
+         .get("seconds")
+@@ -698,13 +732,14 @@ fn game_call(
+     if let Some(error) = reply.get("error") {
+         return text_result(&json!({"error": error}).to_string(), true);
+     }
+-    if name == "screenshot" {
++    if let Some(output) = display {
+         let image = reply
+             .as_object_mut()
+             .and_then(|map| map.remove("png_base64"));
+         if let Some(image) =
+             image.filter(|v| v.as_str().is_some_and(|s| s.len() <= 7 * 1024 * 1024))
+         {
++            reply["display"] = output.into();
+             return json!({
+                 "content": [{"type": "image", "data": image, "mimeType": "image/png"},
+                     {"type": "text", "text": reply.to_string()}],
