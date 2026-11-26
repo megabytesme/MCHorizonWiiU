@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "b793146151bca68c0d7bb7c13f194b0d5257d670",
+  "output_tree": "070df8f4786fadc2af08446ef1cc542f8a3f8d9c",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -992,6 +992,12 @@
       "sha256": "a84920ff8dd83c4a935b6ae462617027b2d64192f4081fb7f977d665e17cae0d",
       "input_tree": "f28a2287528bd706bece40170c85142ba5d7465d",
       "output_tree": "b793146151bca68c0d7bb7c13f194b0d5257d670"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0164-edit-and-remove-night-multiplayer-bookmarks.patch",
+      "sha256": "340eaf35a1771adfc7d091f72a90a622362a9db415098cc5f41662631d8f04ac",
+      "input_tree": "b793146151bca68c0d7bb7c13f194b0d5257d670",
+      "output_tree": "070df8f4786fadc2af08446ef1cc542f8a3f8d9c"
     }
   ],
   "candidate": {
