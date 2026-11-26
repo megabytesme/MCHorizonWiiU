@@ -206,6 +206,11 @@ a queued or active benchmark. For another run, wait for a terminal phase
 and `night_home_ready: true`. Remote runs return to Night Home after
 cleanup. Local runs continue to open their report in Night.
 
+For a matched diagnostic run, pass `profile` as `4`, `4q` or `4r` to
+`wiiu_benchmark_start`. The selector applies to that isolated run and
+keeps the existing SD marker setting for other sessions. Successful
+profiled runs include `capture_id` in status alongside `report_id`.
+
 With `launcher.read`, call `wiiu_benchmark_reports` to list saved report IDs
 in the selected installation or pass `{"instance":"Lab"}` to list an
 explicit installation. To read a completed run after switching
