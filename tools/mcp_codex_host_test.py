@@ -17,6 +17,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+SCOPED_TOOLS = {
+    "launcher.read": "versions",
+    "launcher.manage": "fixture_manage",
+    "game.observe": "fixture_observe",
+    "game.control": "fixture_control",
+}
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_):
         return None
@@ -80,7 +88,7 @@ def scratch_profile():
         yield path
     finally:
         # A Windows helper can briefly hold a directory open after its CLI exits.
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + 30
         while True:
             try:
                 shutil.rmtree(path)
@@ -94,7 +102,8 @@ def scratch_profile():
                 break
 
 
-def exercise_profile(fixture_binary, tmp):
+def exercise_profile(fixture_binary, tmp, scopes):
+    expected_tools = {SCOPED_TOOLS[scope] for scope in scopes}
     profile = tmp / "console"
     profile.mkdir()
     codex_home = tmp / "codex"
@@ -119,7 +128,7 @@ def exercise_profile(fixture_binary, tmp):
         if not codex:
             raise RuntimeError("Codex is unavailable")
         oauth = Process([codex, "mcp", "login", "horizon_fixture", "--no-browser",
-                         "--scopes", "launcher.read", "--oauth-client-registration", "dcr"], env=env)
+                         "--scopes", ",".join(scopes), "--oauth-client-registration", "dcr"], env=env)
         context = ssl.create_default_context(cafile=str(pem))
         browser = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoRedirect())
         def get(url, data=None, headers=None):
@@ -166,7 +175,7 @@ def exercise_profile(fixture_binary, tmp):
                 application.send('{"jsonrpc":"2.0","method":"initialized"}')
                 result = rpc(application, 2, "mcpServerStatus/list", {})
                 status = next(x for x in result["result"]["data"] if x["name"] == "horizon_fixture")
-                assert "versions" in status["tools"], status.get("authStatus")
+                assert set(status["tools"]) == expected_tools, status.get("authStatus")
             finally:
                 application.close()
         codex_list()
@@ -190,11 +199,11 @@ def exercise_profile(fixture_binary, tmp):
             pass
         fixture.close()
 
-def exercise(fixture_binary):
+def exercise(fixture_binary, scopes):
     with scratch_profile() as tmp:
         # Keep profile cleanup outside the process that owns the CLI pipes.
         worker = multiprocessing.get_context("spawn").Process(
-            target=exercise_profile, args=(fixture_binary, tmp),
+            target=exercise_profile, args=(fixture_binary, tmp, scopes),
         )
         worker.start()
         worker.join()
@@ -205,4 +214,8 @@ def exercise(fixture_binary):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("wsl_fixture_binary")
-    raise SystemExit(exercise(parser.parse_args().wsl_fixture_binary))
+    parser.add_argument("--full-scope", action="store_true",
+                        help="verify all four scopes across restart and refresh")
+    args = parser.parse_args()
+    scopes = tuple(SCOPED_TOOLS) if args.full_scope else ("launcher.read",)
+    raise SystemExit(exercise(args.wsl_fixture_binary, scopes))

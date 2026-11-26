@@ -15,15 +15,44 @@ use std::path::Path;
 #[derive(Clone)]
 struct TestTools;
 
+const TOOLS: &[(&str, &str, Scopes)] = &[
+    ("versions", "List fixture versions", Scopes::LAUNCHER_READ),
+    (
+        "fixture_manage",
+        "Call a launcher management fixture",
+        Scopes::LAUNCHER_MANAGE,
+    ),
+    (
+        "fixture_observe",
+        "Call a gameplay observation fixture",
+        Scopes::GAME_OBSERVE,
+    ),
+    (
+        "fixture_control",
+        "Call a gameplay control fixture",
+        Scopes::GAME_CONTROL,
+    ),
+];
+
 impl Backend for TestTools {
-    fn list(&self, _: &Principal) -> Vec<Value> {
-        vec![
-            json!({"name": "versions", "description": "List fixture versions",
-            "inputSchema": {"type":"object", "properties": {}}}),
-        ]
+    fn list(&self, principal: &Principal) -> Vec<Value> {
+        TOOLS
+            .iter()
+            .filter(|(_, _, scope)| principal.scopes.contains(*scope))
+            .map(|(name, description, _)| {
+                json!({
+                    "name": name,
+                    "description": description,
+                    "inputSchema": {"type": "object", "properties": {}},
+                })
+            })
+            .collect()
     }
     fn required(&self, name: &str) -> Option<Scopes> {
-        (name == "versions").then_some(Scopes::LAUNCHER_READ)
+        TOOLS
+            .iter()
+            .find(|(tool, _, _)| *tool == name)
+            .map(|(_, _, scope)| *scope)
     }
     fn call(
         &self,
