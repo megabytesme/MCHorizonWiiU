@@ -291,7 +291,9 @@
       "four_section_gate": "not_reached_in_window",
       "save_barrier": "failed_windows_cemu_path_length"
     },
-    "cemu_short_path_replay": "running"
+    "cemu_short_path_replay": "saved_files_present_graceful_check_interrupted",
+    "cemu_short_path_paired_terrain": [1, 1],
+    "cemu_short_path_interrupted_by": "copied_stale_refresh_credential_revoked_fixture_grant"
   },
   "benchmark_capture_qualification": {
     "candidate": "0.8.0-rc.46",
@@ -304,6 +306,25 @@
     "wuhb_sha256": "16aaacac5b731dda9639041cda52927b00e2289696677d2ca55103136826d9ed",
     "estimated_aroma_headroom_bytes": 12658688,
     "native_drs_transitions": "pending",
-    "completed_benchmark_capture_retrieval": "pending"
+    "completed_benchmark_capture_retrieval": "pending",
+    "cemu_isolated_reopen_first_round": {
+      "first_game_frame_ms": 567817,
+      "sections_tv_gamepad": [1, 1],
+      "independent_output_dimensions": [[1920, 1080], [854, 480]],
+      "save_barrier": "passed",
+      "ordinary_files_byte_identical": 26,
+      "same_session_second_reopen": "running"
+    }
+  },
+  "save_and_revocation_qualification": {
+    "candidate": "0.8.0-rc.47",
+    "commit": "7f0bd61941b6ba39bf2f390c0ae55ac4fd7bb172",
+    "engine_tree": "499ba0705dce6703c521417ba92e2542380e074a",
+    "stock_mcp_tools": 63,
+    "source_assembly": "passed",
+    "persistence_host_tests": 7,
+    "builder_host_tests": 26,
+    "revocation_host_regression": "passed",
+    "native_build": "running"
   }
 }

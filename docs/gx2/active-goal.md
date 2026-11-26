@@ -100,17 +100,29 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   world reached paired terrain below the four-section gate. The save
   barrier then failed because Cemu on Windows could not create the
   temporary player-data directory at that path length. A shorter
-  disposable fixture is repeating create, save and reopen. The writer
-  fix passed seven host tests covering recovery and concurrent saves.
+  fixture reached paired terrain and wrote its level, region and player
+  files. A stale copied credential triggered reuse detection and
+  revoked that disposable grant before the graceful-close checkpoint.
+  The writer fix passed seven host tests covering recovery and concurrent
+  saves.
   [RC 45 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc45-qualification/docs/gx2/rc45-qualification.md)
 - RC 46 extends the stock audit to 63 tools and adds authenticated
   retrieval of completed benchmark captures. The pinned native build
-  passed and both package hashes verified. A separate interpreter trial
-  is preparing to verify report publication and HZP3 transport after a
-  paired Title frame. The stock gameplay workload still needs a complete
-  timed run. The package also exposes automatic resolution decisions for
-  checking physical 30 and 60 FPS transitions.
+  passed and both package hashes verified. The exact package reopened
+  the shorter fixture with the original approved grant from a separate
+  disposable installation. Both displays reached terrain and the durable
+  save barrier completed. All 26 ordinary save files matched by SHA-256.
+  A second reopen is running through the same authenticated session.
+  A separate interpreter package is ready to verify report publication
+  and HZP3 transport after a paired Title frame. The stock gameplay
+  workload still needs a complete timed run.
   [RC 46 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc46-qualification/docs/gx2/rc46-qualification.md)
+
+RC 47 stages shorter Cafe save paths and repeats authorization checks
+after blocked Night operations and game reply delivery. The assembled
+recipe preserves all 63 stock registrations and scopes. The host
+regression rejects a revoked grant after restart and verifies isolation
+of a newly paired read-only grant. The native build is running.
 
 ## Physical queue
 
