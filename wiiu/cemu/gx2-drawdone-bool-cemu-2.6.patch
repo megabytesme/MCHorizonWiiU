@@ -1,0 +1,34 @@
+--- a/src/Cafe/OS/libs/gx2/GX2_Event.cpp
++++ b/src/Cafe/OS/libs/gx2/GX2_Event.cpp
+@@ -249,7 +249,7 @@
+ 		return true;
+ 	}
+ 
+-	void GX2DrawDone()
++	bool GX2DrawDone()
+ 	{
+ 		// optional force full sync (texture readback and occlusion queries)
+ 		bool forceFullSync = false;
+@@ -267,9 +267,10 @@
+ 			_GX2SubmitToTCL();
+ 
+ 		uint64 ts = GX2GetLastSubmittedTimeStamp();
+-		GX2WaitTimeStamp(ts);
++		const bool completed = GX2WaitTimeStamp(ts);
+ 
+ 		GX2::GX2WriteGather_checkAndInsertWrapAroundMark();
++		return completed;
+ 	}
+ 
+ 	void GX2Init_event()
+--- a/src/Cafe/OS/libs/gx2/GX2_Event.h
++++ b/src/Cafe/OS/libs/gx2/GX2_Event.h
+@@ -8,7 +8,7 @@
+ 	void GX2EventInit();
+ 	void GX2WaitForVsync();
+ 	void GX2WaitForFlip();
+-	void GX2DrawDone();
++	bool GX2DrawDone();
+ 
+ 	enum class GX2CallbackEventType
+ 	{
