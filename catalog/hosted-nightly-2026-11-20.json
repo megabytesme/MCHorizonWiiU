@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "8ecf49ba0a2c12da512ccc803730d79ece8aeb61",
+  "output_tree": "182b1d2b10733cd4f17ac50f19e444c853ef749c",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -824,12 +824,18 @@
       "sha256": "566eef431a776eb2189ee084b03d41c44448190a76c7d7dc3bab7dcb6f1c657d",
       "input_tree": "140d6c4e3a28d5cb26fe8e53714823d638b1797e",
       "output_tree": "8ecf49ba0a2c12da512ccc803730d79ece8aeb61"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0136-keep-approved-mcp-trust-durable.patch",
+      "sha256": "05bd97c9cb2c41efbc8c50d12274350fd89aa48d51d46abbbbeeaa7761535126",
+      "input_tree": "8ecf49ba0a2c12da512ccc803730d79ece8aeb61",
+      "output_tree": "182b1d2b10733cd4f17ac50f19e444c853ef749c"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.38",
-    "patch": "0.5.0-rc.38"
+    "client": "0.8.0-rc.39",
+    "patch": "0.5.0-rc.39"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

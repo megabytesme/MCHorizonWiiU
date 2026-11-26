@@ -46,21 +46,22 @@ Cemu 2.6 using a resolvable `.local` hostname and the exported CA.
 [Codex issue 55163](https://github.com/openai/codex/issues/55163)
 
 Configure a [LAN hostname](#lan-identity) before
-pairing. Use the displayed HTTPS URL, including its port and **/mcp**. To request
-a read-only grant initially, start manually with
-**codex mcp login horizon-wiiu --scopes launcher.read** after adding the
-server, or choose scopes during your client's supported login setup.
+pairing. Use the displayed HTTPS URL, including its port and **/mcp**. Keep
+the same **horizon-wiiu** server name and use your regular Codex profile so
+later sessions can reuse the pairing. For an owner-approved automation PC,
+request all four scopes during the initial login.
 
 ~~~powershell
 $env:CODEX_CA_CERTIFICATE = 'C:\path\to\agent-control-ca.pem'
 codex mcp add horizon-wiiu --url https://horizon-wiiu.home.arpa:8443/mcp
+codex mcp login horizon-wiiu --scopes launcher.read,launcher.manage,game.observe,game.control
 ~~~
 
 The launcher scopes are **launcher.read** and **launcher.manage**. Game
 scopes are **game.observe** and **game.control**. A launch needs
 **launcher.manage** and **game.control**. Night asks once for the scopes
-present in the OAuth transaction. The client's credential manager handles
-access-token expiry and refresh. [Codex MCP configuration](https://developers.openai.com/codex/mcp)
+present in the OAuth transaction. To pair a read-only launcher client,
+request just **launcher.read**. [Codex MCP configuration](https://developers.openai.com/codex/mcp)
 
 ### Gemini CLI
 
@@ -123,6 +124,15 @@ access tokens, refresh rotation and replay detection. The vault holds token
 verifiers and the refresh-family authentication key. It contains no
 plaintext OAuth bearer tokens.
 
+In the hosted development recipe, approved clients that support refresh keep
+their trust across restarts and inactivity. Their credential manager
+automatically exchanges the saved refresh credential for a new access token,
+which lasts 15 minutes. The pinned 0.7.0 release issued refresh grants with a
+90-day expiry. An existing grant becomes durable on its first successful
+refresh in the updated build before the old deadline. An already expired grant
+or a client that lost its refresh credential needs local approval. The
+trusted-client menu can revoke the grant at any time.
+
 Use **No AI / Emergency disable** locally to cancel access and game work.
 Credentials and launch permissions cannot be changed using remote tools.
 Night returns a tool error when a compatible live game session is absent.
@@ -133,8 +143,9 @@ change arbitrary security settings, or start dedicated servers.
 
 ## Build and test
 
-Use the canonical builder's development combination for client **0.7.0**,
-patch **0.4.0** and toolchain **1.0.0**. The HTTPS service is part of
+The pinned release combination is client **0.7.0**, patch **0.4.0** and
+toolchain **1.0.0**. For durable trust, build the hosted Nightly recipe
+starting with **0.8.0-rc.39** and Cafe Toolchain **1.1.0**. The HTTPS service is part of
 the normal combined RPX, and the builder verifies its exact source and lock.
 The standalone launcher and game use their original entry points.
 [Builder guide](../builder.md)

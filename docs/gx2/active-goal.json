@@ -43,7 +43,15 @@
         "game.observe",
         "game.control"
       ],
-      "physical_full_workflow": "pending"
+      "physical_full_workflow": "pending",
+      "durable_trust_source": {
+        "candidate": "0.8.0-rc.39",
+        "engine_tree": "182b1d2b10733cd4f17ac50f19e444c853ef749c",
+        "validation": [
+          "exact_assembly",
+          "13_host_tests"
+        ]
+      }
     },
     "loading": {
       "status": "in_progress",
@@ -94,7 +102,7 @@
     },
     {
       "owner": "mcp",
-      "task": "Durable full-scope owner-approved trust"
+      "task": "Audit authenticated automation and add graphics control"
     },
     {
       "owner": "loading",

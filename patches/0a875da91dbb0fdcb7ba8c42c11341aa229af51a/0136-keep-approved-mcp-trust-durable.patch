@@ -1,0 +1,156 @@
+diff --git a/wiiu/mcp/src/oauth.rs b/wiiu/mcp/src/oauth.rs
+index 01b12ebba36..4aac69deda9 100644
+--- a/wiiu/mcp/src/oauth.rs
++++ b/wiiu/mcp/src/oauth.rs
+@@ -24,7 +24,8 @@ const REGISTRATION_LIFE: u64 = 10 * 60;
+ const CONSENT_LIFE: u64 = 3 * 60;
+ const CODE_LIFE: u64 = 90;
+ pub const ACCESS_LIFE: u64 = 15 * 60;
+-const REFRESH_LIFE: u64 = 90 * 86400;
++// Keep the persisted expiry field readable by older builds.
++const DURABLE_REFRESH_EXPIRY: u64 = u64::MAX;
+ const RECORD_LIMIT: usize = 64 * 1024;
+ const RECORD_VERSION: u8 = 1;
+ type Verifier = [u8; 32];
+@@ -629,7 +630,7 @@ impl<P: Persistence> OAuth<P> {
+             family: random()?,
+             generation: 0,
+             current: [0; 32],
+-            expires: now.saturating_add(REFRESH_LIFE),
++            expires: now.saturating_add(ACCESS_LIFE),
+             last_activity: now,
+             refresh_enabled: client.allows_refresh,
+             access: Vec::new(),
+@@ -648,6 +649,9 @@ impl<P: Persistence> OAuth<P> {
+     ) -> Result<Tokens, Error> {
+         let access_token = URL_SAFE_NO_PAD.encode(random::<32>()?);
+         let refresh_token = if grant.refresh_enabled {
++            // A newly approved client or a client proving an unexpired legacy
++            // grant can keep rotating its refresh credential until revoked.
++            grant.expires = DURABLE_REFRESH_EXPIRY;
+             grant.generation = grant.generation.checked_add(1).ok_or(Error::InvalidGrant)?;
+             let mut payload = [0u8; 56];
+             payload[..16].copy_from_slice(&grant.family);
+@@ -862,6 +866,8 @@ mod tests {
+     const REDIRECT: &str = "http://127.0.0.1:55171/oauth/callback";
+     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+     const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
++    const FULL_SCOPE: &str = "launcher.read launcher.manage game.observe game.control";
++    const LEGACY_REFRESH_LIFE: u64 = 90 * 86400;
+ 
+     fn approve<P: Persistence>(
+         oauth: &mut OAuth<P>,
+@@ -965,6 +971,113 @@ mod tests {
+             .is_none());
+     }
+ 
++    #[test]
++    fn full_permission_pairing_survives_long_inactivity_and_can_be_revoked() {
++        let memory = Memory::default();
++        let mut oauth = OAuth::open(memory.clone(), RESOURCE.into()).unwrap();
++        oauth.open_pairing(1);
++        let id = oauth
++            .register(1, "Codex", &[REDIRECT.into()], true)
++            .unwrap();
++        let code = approve(&mut oauth, 2, &id, FULL_SCOPE);
++        let original = oauth
++            .exchange(2, &id, REDIRECT, &code, VERIFIER, None)
++            .unwrap();
++        drop(oauth);
++
++        let later = 2 + 365 * 86400;
++        let mut restarted = OAuth::open(memory.clone(), RESOURCE.into()).unwrap();
++        assert!(restarted
++            .authenticate(later, &original.access_token)
++            .is_none());
++        assert_eq!(
++            restarted.trusted().next().unwrap().scopes.as_text(),
++            FULL_SCOPE
++        );
++        let renewed = restarted
++            .refresh(
++                later,
++                &id,
++                original.refresh_token.as_deref().unwrap(),
++                None,
++                None,
++            )
++            .unwrap();
++        assert_eq!(renewed.scope, FULL_SCOPE);
++        assert_eq!(renewed.expires_in, ACCESS_LIFE);
++        assert!(restarted
++            .authenticate(later, &renewed.access_token)
++            .is_some());
++        restarted.revoke_client(&id).unwrap();
++        drop(restarted);
++
++        let mut restarted = OAuth::open(memory, RESOURCE.into()).unwrap();
++        assert_eq!(restarted.trusted().count(), 0);
++        assert!(restarted
++            .authenticate(later, &renewed.access_token)
++            .is_none());
++        assert!(matches!(
++            restarted.refresh(
++                later,
++                &id,
++                renewed.refresh_token.as_deref().unwrap(),
++                None,
++                None
++            ),
++            Err(Error::InvalidGrant)
++        ));
++    }
++
++    #[test]
++    fn valid_legacy_refresh_migrates_durable_trust_without_reviving_expired_grants() {
++        let memory = Memory::default();
++        let mut oauth = OAuth::open(memory.clone(), RESOURCE.into()).unwrap();
++        oauth.open_pairing(1);
++        let id = oauth
++            .register(1, "Codex", &[REDIRECT.into()], true)
++            .unwrap();
++        let code = approve(&mut oauth, 2, &id, FULL_SCOPE);
++        let tokens = oauth
++            .exchange(2, &id, REDIRECT, &code, VERIFIER, None)
++            .unwrap();
++        let refresh = tokens.refresh_token.as_deref().unwrap();
++
++        let legacy_expiry = 2 + LEGACY_REFRESH_LIFE;
++        let mut legacy = oauth.db.clone();
++        legacy
++            .clients
++            .get_mut(&id)
++            .unwrap()
++            .grant
++            .as_mut()
++            .unwrap()
++            .expires = legacy_expiry;
++        oauth.commit(legacy).unwrap();
++        drop(oauth);
++
++        let mut oauth = OAuth::open(memory.clone(), RESOURCE.into()).unwrap();
++        assert!(matches!(
++            oauth.refresh(legacy_expiry, &id, refresh, None, None),
++            Err(Error::InvalidGrant)
++        ));
++        let migrated = oauth
++            .refresh(legacy_expiry - 1, &id, refresh, None, None)
++            .unwrap();
++        drop(oauth);
++
++        let mut restarted = OAuth::open(memory, RESOURCE.into()).unwrap();
++        let renewed = restarted
++            .refresh(
++                legacy_expiry + 365 * 86400,
++                &id,
++                migrated.refresh_token.as_deref().unwrap(),
++                None,
++                None,
++            )
++            .unwrap();
++        assert_eq!(renewed.scope, FULL_SCOPE);
++    }
++
+     #[test]
+     fn remembered_clients_refresh_across_restarts_and_replay_revokes_the_family() {
+         let memory = Memory::default();

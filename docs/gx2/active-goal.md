@@ -27,8 +27,11 @@ fallback. [Machine-readable status](active-goal.json) · [RC 38 evidence](rc38-v
   shows that the combined GX2 flip timestamp clusters at three refreshes at
   75% and two at 50%. Next, qualify early TV submission and GPU workload cuts
   separately with matching geometry, scale and capture settings.
-- MCP agent is working on durable owner-approved authorization. Follow with
-  the pinned upstream tool audit and authenticated graphics and Night actions.
+- The RC 39 source recipe keeps owner-approved refresh grants durable and
+  migrates active legacy grants on refresh. The 13 host tests passed and
+  the builder reconstructed the exact tree. The full workflow still needs
+  the pinned tool audit, authenticated graphics and Night actions, and
+  packaged Cemu and physical qualification.
 - Loading agent is tracing the warm critical path through client preparation
   and integrated-server construction. Compare identical archives and cache states.
 - Integration owns candidate recipes, evidence and supervised hardware staging.
