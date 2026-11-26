@@ -2,7 +2,7 @@
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
 registers 194 tools. The assembled RC 43 tree
-`ef439f4326d8a33a220970dd34f4ddd8c59840ea` registers 53 stock tools through
+`d5a90d2744d1be4ab590e4626140052d319cb0e4` registers 54 stock tools through
 Night's authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the
@@ -36,8 +36,9 @@ local emergency control remain available with the native HTTPS endpoint.
 - Night can list instances, worlds and multiplayer bookmarks, select an
   instance, add a bookmark and start a compatible game. RC 42 adds scoped
   benchmark start, status, report access and cancellation. RC 43 adds
-  existing profile selection. Disposable world creation, bookmark editing
-  and joining, general load cancellation and clean application exit remain open.
+  existing profile selection and joining saved bookmarks. Disposable world
+  creation, bookmark editing, general load cancellation and clean
+  application exit remain open.
 - Exercise the live tool catalogue and outputs under all four granted
   scopes and after restart or upgrade. The exact-source comparison below
   checks registrations and embedded definitions. Runtime qualification

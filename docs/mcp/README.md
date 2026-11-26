@@ -170,6 +170,15 @@ until the profile is selected and ready before starting a launch. Locked
 profiles use Night's local unlock flow. World listing continues to report
 when a save belongs to a different profile.
 
+### Saved multiplayer joins in the hosted development recipe
+
+Use `multiplayer_list` to get the canonical address of a saved server.
+Pass that address to `wiiu_multiplayer_join` from the Night home page.
+The tool requires `launcher.manage`, `game.control` and Night's remote
+launch policy. It uses the selected profile and the ordinary connection
+path. Add an entry through `multiplayer_add` when the server is missing
+from the list.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from

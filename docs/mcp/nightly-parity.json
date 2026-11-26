@@ -1,6 +1,6 @@
 {
   "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
-  "assembledTree": "ef439f4326d8a33a220970dd34f4ddd8c59840ea",
+  "assembledTree": "d5a90d2744d1be4ab590e4626140052d319cb0e4",
   "embeddedRevision": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
   "tools": {
     "account_list": {
@@ -1339,6 +1339,10 @@
     ],
     "wiiu_benchmark_status": [
       "launcher.read"
+    ],
+    "wiiu_multiplayer_join": [
+      "launcher.manage",
+      "game.control"
     ],
     "wiiu_profile_select": [
       "launcher.manage"

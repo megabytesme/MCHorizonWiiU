@@ -1,0 +1,266 @@
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 01ca4ce74de348e197c8e156a99f34b6e54b2e3f..d2965803343aeb543ca817b5a1b08bcf76fdae63 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -1,7 +1,10 @@
+ //! Hosted Cafe wiring. The HTTP workers never hold or access Game.
+ use super::{
+     local_service, local_wire as wire,
+-    night_menu::{BenchmarkOutcome, BenchmarkRequest, Launch, ProfileSelection, BENCHMARK_SCENES},
++    night_menu::{
++        BenchmarkOutcome, BenchmarkRequest, BookmarkRequest, Launch, ProfileSelection,
++        BENCHMARK_SCENES,
++    },
+     CAFE_APP_ROOT,
+ };
+ use horizon_wiiu_mcp::{
+@@ -32,6 +35,7 @@ static GAME_NO_AI: AtomicBool = AtomicBool::new(false);
+ enum LaunchArgs {
+     Game(Value),
+     Benchmark(BenchmarkRequest),
++    Bookmark(BookmarkRequest),
+ }
+ 
+ struct PendingLaunch {
+@@ -257,13 +261,12 @@ fn discard_launch() {
+     let mut launch = LAUNCH.lock().unwrap();
+     if let Some(request) = launch.as_mut() {
+         if matches!(&request.args, LaunchArgs::Benchmark(_)) {
+-            // Keep the cancelled request until Night is definitely Home or the
+-            // foreground handoff consumes it. It must not become normal Play.
+-            request.cancelled = true;
+             benchmark_finished(BenchmarkOutcome::Cancelled, None);
+-            if request.dispatched {
+-                return;
+-            }
++        }
++        if request.dispatched && !matches!(&request.args, LaunchArgs::Game(_)) {
++            // Preserve the cancelled handoff so it cannot become normal Play.
++            request.cancelled = true;
++            return;
+         }
+     }
+     launch.take();
+@@ -327,7 +330,11 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+     let changed = HOME.swap(on_home, Ordering::AcqRel) != on_home;
+     if on_home {
+         let mut launch = LAUNCH.lock().unwrap();
+-        if launch.as_ref().is_some_and(|request| request.cancelled) {
++        if launch.as_ref().is_some_and(|request| {
++            request.cancelled
++                || (matches!(request.args, LaunchArgs::Bookmark(_))
++                    && !launch_authorized(&request.principal))
++        }) {
+             launch.take();
+         }
+         return launch.as_mut().is_some_and(|request| {
+@@ -360,9 +367,7 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+     let Some(request) = pending.take() else {
+         return Ok(None);
+     };
+-    let allowed = !request.cancelled
+-        && request.principal.is_active()
+-        && REMOTE_LAUNCH.load(Ordering::Acquire);
++    let allowed = !request.cancelled && launch_authorized(&request.principal);
+     match request.args {
+         LaunchArgs::Game(args) if allowed => {
+             drop(pending);
+@@ -374,6 +379,24 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+                 .map_err(|_| LaunchError::Failed)
+         }
+         LaunchArgs::Game(_) => Err(LaunchError::Failed),
++        LaunchArgs::Bookmark(bookmark) => {
++            if !request.dispatched {
++                // Local Play got the foreground before the MCP handoff.
++                return Ok(None);
++            }
++            if !allowed {
++                return Err(LaunchError::Cancelled);
++            }
++            drop(pending);
++            let service = local_service().lock().unwrap();
++            if !launch_authorized(&request.principal) {
++                return Err(LaunchError::Cancelled);
++            }
++            service
++                .launch_bookmark(&bookmark)
++                .map(Some)
++                .map_err(|_| LaunchError::Failed)
++        }
+         LaunchArgs::Benchmark(benchmark) => {
+             if !request.dispatched {
+                 // A local Play handoff won the race before MCP dispatched one.
+@@ -387,7 +410,7 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+             benchmark_loading(benchmark.scenario, &benchmark.instance);
+             drop(pending);
+             let mut service = local_service().lock().unwrap();
+-            if !request.principal.is_active() || !REMOTE_LAUNCH.load(Ordering::Acquire) {
++            if !launch_authorized(&request.principal) {
+                 drop(service);
+                 benchmark_finished(BenchmarkOutcome::Cancelled, None);
+                 return Err(LaunchError::Cancelled);
+@@ -522,6 +545,14 @@ fn catalog() -> &'static [Value] {
+                         "required": ["id"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_multiplayer_join",
++                    "description": "Join an existing Night multiplayer bookmark with the selected profile and installation. Pass the exact address returned by multiplayer_list. Starts from the Night home page.",
++                    "inputSchema": {
++                        "type": "object", "properties": {"address": {"type": "string", "maxLength": 253}},
++                        "required": ["address"], "additionalProperties": false,
++                    },
++                }),
+                 json!({
+                     "name": "wiiu_benchmark_reports",
+                     "description": "List saved Wii U benchmark report IDs in the requested installation. Omit instance to use the selected installation.",
+@@ -611,7 +642,7 @@ impl Backend for NightTools {
+             return Some(Scopes::LAUNCHER_MANAGE);
+         }
+         if requires_launch_policy(name) {
+-            return Some(Scopes::LAUNCHER_MANAGE.union(Scopes::GAME_CONTROL));
++            return Some(LAUNCH_SCOPES);
+         }
+         if OBSERVE.contains(&name) {
+             return Some(Scopes::GAME_OBSERVE);
+@@ -654,7 +685,10 @@ impl Backend for NightTools {
+             }
+             return Ok(text_result(&benchmark_state().to_string(), false));
+         }
+-        if matches!(name, "play" | "wiiu_benchmark_start") {
++        if matches!(
++            name,
++            "play" | "wiiu_benchmark_start" | "wiiu_multiplayer_join"
++        ) {
+             if !REMOTE_LAUNCH.load(Ordering::Acquire) {
+                 return Ok(text_result(
+                     "The player has disabled remote game launches.",
+@@ -683,14 +717,28 @@ impl Backend for NightTools {
+                     true,
+                 ));
+             }
+-            if !REMOTE_LAUNCH.load(Ordering::Acquire) || !principal.is_active() {
++            let service = local_service().lock().unwrap();
++            if disconnected() || !HOME.load(Ordering::Acquire) || !launch_authorized(principal) {
+                 return Ok(text_result(
+-                    "The player has disabled remote game launches.",
++                    "Agent Control cannot start a game from the current Night session.",
+                     true,
+                 ));
+             }
+-            let service = local_service().lock().unwrap();
+-            let start = if name == "wiiu_benchmark_start" {
++            let start = if name == "wiiu_multiplayer_join" {
++                let address = args
++                    .as_object()
++                    .filter(|args| args.len() == 1)
++                    .and_then(|args| args.get("address"))
++                    .and_then(Value::as_str)
++                    .filter(|address| address.len() <= 253);
++                let Some(address) = address else {
++                    return Ok(text_result(
++                        "A saved multiplayer bookmark address is required.",
++                        true,
++                    ));
++                };
++                service.bookmark_request(address).map(LaunchArgs::Bookmark)
++            } else if name == "wiiu_benchmark_start" {
+                 let scenario = args
+                     .as_object()
+                     .filter(|args| args.len() == 1)
+@@ -738,10 +786,18 @@ impl Backend for NightTools {
+     }
+ }
+ 
++const LAUNCH_SCOPES: Scopes = Scopes::LAUNCHER_MANAGE.union(Scopes::GAME_CONTROL);
++
++fn launch_authorized(principal: &Principal) -> bool {
++    REMOTE_LAUNCH.load(Ordering::Acquire)
++        && principal.scopes.contains(LAUNCH_SCOPES)
++        && principal.is_active()
++}
++
+ fn requires_launch_policy(name: &str) -> bool {
+     matches!(
+         name,
+-        "play" | "wiiu_benchmark_start" | "wiiu_benchmark_cancel"
++        "play" | "wiiu_benchmark_start" | "wiiu_benchmark_cancel" | "wiiu_multiplayer_join"
+     )
+ }
+ 
+diff --git a/wiiu/loading_app/src/night_menu.rs b/wiiu/loading_app/src/night_menu.rs
+index 419e596b8d8113f4180319850286fe0529b42ab0..bdd4abe8080194df521588baaccaf72173312f49 100644
+--- a/wiiu/loading_app/src/night_menu.rs
++++ b/wiiu/loading_app/src/night_menu.rs
+@@ -48,6 +48,11 @@ pub(super) struct BenchmarkRequest {
+     pub(super) instance: String,
+ }
+ 
++pub(super) struct BookmarkRequest {
++    address: String,
++    instance: String,
++}
++
+ pub(super) enum ProfileSelection {
+     Offline(String),
+     Online(ProfileId),
+@@ -478,7 +483,37 @@ impl<G: GameFiles> LocalService<G> {
+         })
+     }
+ 
++    pub(super) fn bookmark_request(&self, address: &str) -> Result<BookmarkRequest, &'static str> {
++        let request = BookmarkRequest {
++            address: address.to_owned(),
++            instance: self.preferences.instance.clone(),
++        };
++        self.launch_bookmark(&request)?;
++        Ok(request)
++    }
++
++    pub(super) fn launch_bookmark(
++        &self,
++        request: &BookmarkRequest,
++    ) -> Result<Launch, &'static str> {
++        if !matches!(self.page, Page::Home) || self.preferences.instance != request.instance {
++            return Err("Return to the same installation's Night home page before joining.");
++        }
++        let server = self
++            .preferences
++            .servers
++            .iter()
++            .find(|server| server.address == request.address)
++            .ok_or("Use the exact address of a saved bookmark from multiplayer_list.")?;
++        self.launch_game_for_target(&Target::Server(server.address.clone()))
++            .map_err(|_| "The installation or selected profile is not ready to join.")
++    }
++
+     pub(super) fn launch_game(&self) -> Result<Launch, u8> {
++        self.launch_game_for_target(&self.target)
++    }
++
++    fn launch_game_for_target(&self, target: &Target) -> Result<Launch, u8> {
+         if self.installed(&self.preferences.instance) != ResourceStatus::Ready {
+             return Err(2);
+         }
+@@ -490,7 +525,7 @@ impl<G: GameFiles> LocalService<G> {
+         if self.online.selected().is_some() && (identity.is_none() || ACCOUNT_FIXTURE) {
+             return Err(5);
+         }
+-        let (world, server) = match &self.target {
++        let (world, server) = match target {
+             Target::Menu => (None, None),
+             Target::World(id) if self.world(id).is_some_and(|w| w.unavailable.is_none()) => {
+                 (Some(id.clone()), None)
+diff --git a/wiiu/loading_app/src/night_tools.rs b/wiiu/loading_app/src/night_tools.rs
+index d5486f76af567c4547c1ce1336f816327160d140..d8612712d5318fc722c9c8ef8a5e18024856a8e7 100644
+--- a/wiiu/loading_app/src/night_tools.rs
++++ b/wiiu/loading_app/src/night_tools.rs
+@@ -175,7 +175,7 @@ impl<G: GameFiles> LocalService<G> {
+         let mut launch = self
+             .launch_game()
+             .map_err(|_| "The selected installation or world is unavailable.")?;
+-        // A remote launch never initiates a multiplayer connection on its own.
++        // Multiplayer connections require the explicit Night bookmark tool.
+         launch.server = None;
+         if let Some(world) = args.get("world") {
+             let id = world
