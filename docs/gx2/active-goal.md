@@ -42,11 +42,19 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   prepared server resource reuse. Night passed the independent Cemu
   display checks. The hosted replay is running. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
   texture discovery and exposes authenticated live graphics controls.
-- The RC 38 multi-core Cemu retry captured both Night displays and reached
-  native loading before returning to Night with invalid allocator counters.
-  A small native fixture reproduces the counter error under the recompiler.
-  Forced-interpreter Cemu remains the gameplay fallback.
-  [Cemu record](../../wiiu/cemu/RECOMPILER.md)
+- The Cemu x64 reservation fix passed carry, operand and allocator probes
+  in both JIT modes. Exact RC 38 opened one world, played audio and saved
+  in multi-core JIT. Warm reopen still panicked, and the scratch emulator
+  duplicated the GamePad capture. Use the established forced interpreter
+  for sustained replay and independent pixels. [Cemu record](../../wiiu/cemu/RECOMPILER.md)
+- The next assembled tree includes fixed-scale graphics control through
+  authenticated MCP, narrower villager texture discovery, a stock Fusion
+  discovery shortcut and the opt-in solid back-face trial. Native package
+  verification is in progress. The subsequent benchmark report and
+  axis-facing index range patches passed focused fixtures.
+- Real Codex host sessions verified read-only and all four scopes through
+  pairing, independent restart and token refresh. Hosted graphics,
+  benchmarks and complete restart and revocation evidence remain open.
 
 ## Physical queue
 

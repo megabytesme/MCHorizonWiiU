@@ -24,8 +24,8 @@ RPX and WUHB hashes. An independent byte comparison is pending.
 - The integrated server reuses the matching sound registry and the parsed
   entity-model document prepared for the initial hosted local world.
   The server still owns its silent audio engine and world state. Seven
-  host SoundRegistry tests passed, including generation and copy-on-write
-  isolation in the focused fixture. Compare the new server stage spans to
+  host SoundRegistry tests passed, including copy-on-write isolation in the
+  focused fixture. Compare the new server stage spans to
   the RC 38 saved-world load and warm reopen.
 - Marker `4t` enables the terrain retirement trial. It verifies a
   submitted and retired command watermark before reclaiming or skipping
@@ -45,3 +45,16 @@ captures in the established forced-interpreter Cemu. A saved-world
 fault before gameplay and duplicated the GamePad capture under both
 output names. Use the established emulator for independent display
 evidence. [Recompiler record](../../wiiu/cemu/RECOMPILER.md)
+
+The first established-interpreter replay returned its first Game frame
+after 541.499 s. The initial stationary stills showed HUD and sky while
+terrain was still streaming. A later serial sample recorded paired
+terrain. The retained HZP3 recorded one playing pair with visible sections
+on both outputs and zero explicit terrain wait. This exercises `4t` but
+does not establish settled terrain or a frame-time difference. The first
+session saved the moved player, produced native PCM and recovered
+234,880,920 free GX2 bulk bytes. The same-process reopen is running.
+
+The Cemu runner now supports `--minimum-terrain-sections` to wait for a
+specified visible section count per output before captures or the timed
+dwell. Use `--require-distinct-captures` for independent display evidence.

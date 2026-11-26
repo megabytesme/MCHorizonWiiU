@@ -51,7 +51,8 @@
           "exact_assembly",
           "13_host_tests"
         ]
-      }
+      },
+      "host_scopes_restart_and_refresh": "passed"
     },
     "loading": {
       "status": "in_progress",
@@ -134,8 +135,10 @@
       "cemu_assigned_resolvers": 0
     },
     "recompiler": {
-      "status": "minimal_native_repro",
-      "exact_rc38_world_entry": "startup_failed"
+      "status": "reservation_probe_fix_qualified",
+      "exact_rc38_world_entry": "one_open_and_save_passed",
+      "exact_rc38_warm_reopen": "failed",
+      "independent_display_pixels": "pending"
     }
   },
   "development_candidate": {
@@ -146,8 +149,18 @@
     "validation": [
       "native_build",
       "package_hashes",
-      "cemu_distinct_night_captures"
+      "cemu_distinct_night_captures",
+      "cemu_first_game_frame",
+      "cemu_first_save_pcm_and_heap_recovery"
     ],
-    "hosted_4t_replay": "in_progress"
+    "hosted_4t_replay": "reopen_in_progress"
+  },
+  "next_source": {
+    "candidate": "0.8.0-rc.41",
+    "engine_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
+    "validation": [
+      "exact_assembly"
+    ],
+    "native_build": "in_progress"
   }
 }
