@@ -113,9 +113,10 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   disposable installation. Both displays reached terrain and the durable
   save barrier completed. All 26 ordinary save files matched by SHA-256.
   A second reopen and save passed through the same authenticated session.
-  A separate interpreter package is ready to verify report publication
-  and HZP3 transport after a paired Title frame. The stock gameplay
-  workload still needs a complete timed run.
+  A separate interpreter package completed its Title-only report, and
+  the original grant retrieved all six capture pages after an application
+  restart. The 281,628 reconstructed bytes matched the saved HZP3.
+  The stock gameplay workload still needs a complete timed run.
   [RC 46 qualification](rc46-qualification.md)
 
 RC 47 stages shorter Cafe save paths and repeats authorization checks

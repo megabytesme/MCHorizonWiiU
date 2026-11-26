@@ -45,3 +45,25 @@ The authenticated Night close reached `coreinit.exit(0)`. These are
 disposable-world lifecycle measurements. Full timed benchmark capture
 retrieval, physical loading and automatic 30 and 60 target transitions
 remain open.
+
+## Published Title capture
+
+A separate Cemu-only recipe enabled a short artifact-transport scenario
+that completes after a paired original Title frame. Its source tree was
+`34092c4b1bbe5c53c1533e7384d965706489c18a` and its RPX SHA-256 was
+`efb0ddc0b9d7945350b75d5bbc84668563c960213e65a1a9dc59e485e98460e7`. The pinned build also
+verified WUHB SHA-256
+`db33b7299d0b11f113e3ef1b6d331e1fa4f2555dc307f0948cf6a60bc0677004`.
+
+The authenticated run reached Home with a completed report and a 281,628
+byte HZP3 file. The first PC harness treated the report ID as a filename
+stem. After correcting it to use the JSON filename, a fresh Cemu process
+reused the existing grant and listed and read the persisted report. The
+PC downloader fetched six base64 pages and reconstructed the exact
+installation file with SHA-256
+`f08bf1f492b112a5a5ebfc8dd0fd5ee36845d8481f8da82930957c3c3f38d3e3`. The capture had 800
+rows, including three paired Title frames. All 26 ordinary save files
+retained their input hashes.
+
+The original timed gameplay workload has a separate qualification gate
+for settled terrain and duration.
