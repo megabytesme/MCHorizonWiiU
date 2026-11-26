@@ -1,0 +1,203 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index f66a121b34465c2b7c8b2013949985f48bd771ae..65af6756c052e7bb15f9f9201643bc23cc21e56e 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -79,6 +79,7 @@ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
++static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+ 
+ typedef struct {
+@@ -119,6 +120,7 @@ void horizon_gx2_profile_init(void)
+    const int variant = gpu_cycle_probe ? fgetc(marker) : EOF;
+    legacy_terrain_uniforms = mode == '5' || variant == '5';
+    shared_hud_upload = variant == 'h';
++   shared_model_uploads = variant == 'm';
+    profile_terrain_animation = variant == 'a';
+    hud_patch_mode = variant == 'w' ? HORIZON_HUD_PATCH_MEASURE_FULL :
+       variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
+@@ -130,6 +132,7 @@ void horizon_gx2_profile_init(void)
+    if (gpu_cycle_probe) OSReport("Horizon GX2 capture GPU cycle probe enabled\n");
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
++   if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+ }
+@@ -164,6 +167,11 @@ uint32_t horizon_gx2_profile_hud_patch_mode(void)
+    return hud_patch_mode;
+ }
+ 
++bool horizon_gx2_profile_shared_model_uploads(void)
++{
++   return shared_model_uploads;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 0db542bef7cf9481d9a0c8c641c6ec841c8fce00..e9bb397cb558e0f584287e6e0ab76413580a81dc 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -40,6 +40,7 @@ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
+ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_shared_hud_upload(void);
++bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+diff --git a/wiiu/loading_host/hand.c b/wiiu/loading_host/hand.c
+index d441b4d18c356434d8529c59cc0a56f680a8dec5..234e86057368337a8e8fb30ea45f6964ae90dfb6 100644
+--- a/wiiu/loading_host/hand.c
++++ b/wiiu/loading_host/hand.c
+@@ -36,13 +36,17 @@ enum {
+    PARTICLE_MAX_VERTICES = 2048 * 4,
+    HAND_PASS = 1,
+    PARTICLE_PASS = 2,
+-   BUFFER_COUNT = 2 * (PARTICLE_PASS + 1),
++   PASS_COUNT = PARTICLE_PASS + 1,
++   BUFFER_COUNT = 2 * PASS_COUNT,
+ };
+ 
+ typedef struct HorizonGx2Hand {
+    WHBGfxShaderGroup shader;
+-   /* Each output and pass needs backing until WHB retires all its draws. */
++   /* Each pass retains its backing until WHB retires both outputs. */
+    GX2RBuffer vertices[BUFFER_COUNT];
++   bool share_uploads;
++   const HandVertex *shared_sources[PASS_COUNT];
++   uint32_t shared_counts[PASS_COUNT];
+    GX2Sampler sampler;
+    uint32_t vertex_uniforms[5];
+    uint32_t pixel_uniforms[2];
+@@ -121,6 +125,13 @@ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+    free(hand);
+ }
+ 
++/* Called once per presented frame, after the preceding WHB finish. */
++void horizon_gx2_hand_begin_frame(HorizonGx2Hand *hand, bool share_uploads)
++{
++   hand->share_uploads = share_uploads;
++   if (share_uploads) memset(hand->shared_sources, 0, sizeof(hand->shared_sources));
++}
++
+ static int upload(GX2RBuffer *buffer, const HandVertex *vertices, uint32_t count,
+                   uint32_t first, uint32_t limit)
+ {
+@@ -151,6 +162,27 @@ static int upload(GX2RBuffer *buffer, const HandVertex *vertices, uint32_t count
+    return 0;
+ }
+ 
++static int prepare_vertices(HorizonGx2Hand *hand, uint32_t target, uint32_t pass,
++                            const HandVertex *vertices, uint32_t count, uint32_t first,
++                            uint32_t limit, GX2RBuffer **prepared)
++{
++   GX2RBuffer *buffer = &hand->vertices[pass * 2 + (hand->share_uploads ? 0 : target)];
++   if (hand->share_uploads && hand->shared_sources[pass]) {
++      // The Rust model batches are immutable for both output callbacks.
++      if (hand->shared_sources[pass] != vertices || hand->shared_counts[pass] != count)
++         return -1;
++   } else {
++      const int result = upload(buffer, vertices, count, first, limit);
++      if (result) return result;
++      if (hand->share_uploads) {
++         hand->shared_sources[pass] = vertices;
++         hand->shared_counts[pass] = count;
++      }
++   }
++   *prepared = buffer;
++   return 0;
++}
++
+ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+                              const GX2Texture *atlas, HorizonGx2Terrain *terrain,
+                              const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+@@ -165,8 +197,8 @@ int horizon_gx2_draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_
+        !atlas || !atlas->surface.image || !terrain || !vertices || !count ||
+        count % (first_person ? 6 : 4) || count > limit ||
+        !clip_rows || !fog_color || !fog_ranges) return -1;
+-   GX2RBuffer *buffer = &hand->vertices[target + pass * 2];
+-   int result = upload(buffer, vertices, count, first, limit);
++   GX2RBuffer *buffer;
++   const int result = prepare_vertices(hand, target, pass, vertices, count, first, limit, &buffer);
+    if (result) return result;
+ 
+    WHBGfxShaderGroup *shader = &hand->shader;
+diff --git a/wiiu/loading_host/hand.rs b/wiiu/loading_host/hand.rs
+index cdb9276261897c44cdbdcc614f8eab42abb4d714..85f67a634aec30d04b4b9394b0b8588202c904c5 100644
+--- a/wiiu/loading_host/hand.rs
++++ b/wiiu/loading_host/hand.rs
+@@ -48,6 +48,7 @@ impl From<SharedVertex> for Vertex {
+ unsafe extern "C" {
+     fn horizon_gx2_hand_create(out: *mut *mut c_void) -> i32;
+     fn horizon_gx2_hand_destroy(hand: *mut c_void);
++    fn horizon_gx2_hand_begin_frame(hand: *mut c_void, share_uploads: bool);
+     fn horizon_gx2_draw_models(
+         hand: *mut c_void,
+         target: u32,
+@@ -81,12 +82,22 @@ pub(crate) struct Coverage {
+ #[derive(Default)]
+ pub(crate) struct Models {
+     native: Option<NonNull<c_void>>,
++    share_uploads: bool,
+     hand: Vec<Vertex>,
+     world: Vec<Vertex>,
+     particles: Vec<Vertex>,
+ }
+ 
+ impl Models {
++    /// Called once before the pair. The preceding WHB finish retired both draws.
++    pub(crate) fn begin_frame(&mut self, share_uploads: bool) {
++        let was_shared = self.share_uploads;
++        self.share_uploads = share_uploads;
++        if let Some(native) = self.native.filter(|_| share_uploads || was_shared) {
++            unsafe { horizon_gx2_hand_begin_frame(native.as_ptr(), share_uploads) };
++        }
++    }
++
+     pub(crate) fn is_empty(&self) -> bool {
+         self.hand.is_empty() && self.world.is_empty() && self.particles.is_empty()
+     }
+@@ -269,14 +280,16 @@ impl Models {
+                     return Err("could not create the GX2 model pipeline");
+                 }
+                 let native = NonNull::new(resource).ok_or("missing GX2 model pipeline")?;
++                if self.share_uploads {
++                    unsafe { horizon_gx2_hand_begin_frame(native.as_ptr(), true) };
++                }
+                 self.native = Some(native);
+                 native
+             }
+         };
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+         let result = hud.with_native_atlas(|atlas| {
+-            // The active output has completed its previous frame's uses.
+-            // Copy the scratch vertices and bind the existing textures here.
++            // Either upload path keeps the backing until both outputs retire.
+             // Only the first-person invocation resets the active depth.
+             unsafe {
+                 horizon_gx2_draw_models(
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 5af28e7965537078c188d2e8bdc5339fe8bee9b8..ada3f40f131c93063786aaac7c73050d58e3b916 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -229,6 +229,7 @@ extern "C" {
+     fn horizon_gx2_terrain_set_legacy_uniforms(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_uniforms() -> bool;
+     fn horizon_gx2_profile_shared_hud_upload() -> bool;
++    fn horizon_gx2_profile_shared_model_uploads() -> bool;
+     fn horizon_gx2_profile_hud_patch_mode() -> u32;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+@@ -2381,6 +2382,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             [r, g, b, 1.0]
+         };
+         let present_start = Instant::now();
++        self.models.begin_frame(unsafe { horizon_gx2_profile_shared_model_uploads() });
+         let uploaded_hud = if !unsafe { horizon_gx2_profile_shared_hud_upload() } {
+             None
+         } else {
