@@ -1,0 +1,21 @@
+# RC 45 source qualification
+
+The development recipe extends the verified RC 44 engine tree
+`633a3a9427e98e5d93a45ea2f896753d652aa8aa`. The first two follow-up
+patches reproduce `b793146151bca68c0d7bb7c13f194b0d5257d670`.
+
+| Change | Evidence |
+| --- | --- |
+| Desktop build compatibility | Cargo now resolves one `mod_platform` alias in the Cafe and desktop test unit graphs. Four Cafe-only game and terrain references are guarded. The desktop engine ran prepared-resource tests for first-save owner UUID and existing-only world reopening. |
+| Reuse the solid draw plan at a settled camera | The opt-in `4v` marker caches each output's exact section keys and clip rows. It invalidates on geometry or projection changes. Four host tests verify clip and draw order, native-replacement invalidation and bounded fallback. Strict PowerPC profile compilation and marker restoration tests passed. |
+
+The solid plan retains at most 1,024 entries per output. In the synthetic
+host kernel matching the RC 38 shape, 1,335 tested and 174 visible
+sections, preparation per output took 26.377 µs before reuse and 1.284 µs
+with the warm plan. The physical RC 38 solid callbacks together took
+about 2.34 ms at the median. Measure `4` and `4v` with matched geometry,
+movement, both displays and intact shader coverage to establish any
+console gain.
+
+This recipe remains in source qualification. The integrated native
+package, hosted pixel comparison and physical cadence are pending.

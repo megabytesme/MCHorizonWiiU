@@ -1,0 +1,348 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index da0e57c9d9894babaaaf90e6ce449dd7bc6ea8bd..a0dc524f6d3d6805834e09a524bbef116216e79b 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -83,7 +83,7 @@ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animatio
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+-static bool solid_axis_ranges, opaque_terrain_shader;
++static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -138,6 +138,7 @@ static void select_mode(int mode, int variant)
+    defer_flip = variant == 'q';
+    skip_terrain_waits = variant == 't';
+    solid_axis_ranges = variant == 'r';
++   solid_draw_plan = variant == 'v';
+    opaque_terrain_shader = variant == 'o';
+    solid_back_culling = variant == 'b' || solid_axis_ranges;
+ }
+@@ -161,6 +162,7 @@ void horizon_gx2_profile_init(void)
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
+    if (solid_back_culling) OSReport("Horizon GX2 solid terrain back-face culling trial enabled\n");
++   if (solid_draw_plan) OSReport("Horizon GX2 solid draw plan trial enabled\n");
+    if (solid_axis_ranges) OSReport("Horizon GX2 solid terrain axis ranges trial enabled\n");
+    if (opaque_terrain_shader) OSReport("Horizon GX2 opaque terrain shader trial requested\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+@@ -231,6 +233,11 @@ bool horizon_gx2_profile_solid_back_culling(void)
+    return solid_back_culling;
+ }
+ 
++bool horizon_gx2_profile_solid_draw_plan(void)
++{
++   return solid_draw_plan;
++}
++
+ bool horizon_gx2_profile_solid_axis_ranges(void)
+ {
+    return solid_axis_ranges;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 76f57367b2f2215d11102e79a5c758666232cc27..2af42527544d5267ca854561e68b93ff561d7da6 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -49,6 +49,7 @@ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_solid_axis_ranges(void);
++bool horizon_gx2_profile_solid_draw_plan(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index eb59cb3194c7b9285b8c95514fee2a7f9d822eae..c10c23bda6210312a543fa81ed59314543f7f775 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -73,6 +73,7 @@ struct Gx2ProfileDelta {
+     section_draws: u32,
+     vertex_draws: u32,
+     opaque_shader_indices: u32,
++    solid_plan_reused: [u32; 2],
+     terrain_wait_ns: u64,
+     hud_wait_ns: u64,
+     projection_ns: u64,
+@@ -97,6 +98,8 @@ impl Gx2ProfileWindow {
+             self.delta.target_frames[i] =
+                 self.delta.target_frames[i].saturating_add(delta.target_frames[i]);
+             self.delta.target_ns[i] = self.delta.target_ns[i].saturating_add(delta.target_ns[i]);
++            self.delta.solid_plan_reused[i] = self.delta.solid_plan_reused[i]
++                .saturating_add(delta.solid_plan_reused[i]);
+         }
+         self.delta.section_draws = self.delta.section_draws.saturating_add(delta.section_draws);
+         self.delta.vertex_draws = self.delta.vertex_draws.saturating_add(delta.vertex_draws);
+@@ -135,7 +138,7 @@ impl Gx2ProfileWindow {
+         let ms = |ns: u64| (ns / 1_000_000).min(u64::from(u32::MAX)) as u32;
+         unsafe {
+             OSReport(
+-                "Horizon GX2 profile: window_ms=%u present_calls=%u tv_ok_callbacks=%u tv_ok_ms=%u drc_ok_callbacks=%u drc_ok_ms=%u section_draws=%u vertex_draws=%u wait_ms=%u project_ms=%u update_ms=%u submit_ms=%u hud_create_ms=%u hud_draw_ms=%u successful_target_ms=%u present_call_ms=%u hud_wait_ms=%u opaque_shader_indices=%u\n\0"
++                "Horizon GX2 profile: window_ms=%u present_calls=%u tv_ok_callbacks=%u tv_ok_ms=%u drc_ok_callbacks=%u drc_ok_ms=%u section_draws=%u vertex_draws=%u wait_ms=%u project_ms=%u update_ms=%u submit_ms=%u hud_create_ms=%u hud_draw_ms=%u successful_target_ms=%u present_call_ms=%u hud_wait_ms=%u opaque_shader_indices=%u solid_plan_reused_tv=%u solid_plan_reused_drc=%u\n\0"
+                     .as_ptr().cast(),
+                 elapsed.as_millis().min(u128::from(u32::MAX)) as u32,
+                 self.present_calls,
+@@ -155,6 +158,8 @@ impl Gx2ProfileWindow {
+                 ms(self.present_ns),
+                 ms(d.hud_wait_ns),
+                 d.opaque_shader_indices,
++                d.solid_plan_reused[0],
++                d.solid_plan_reused[1],
+             );
+         }
+         self.start = Some(now);
+@@ -214,6 +219,7 @@ extern "C" {
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
+     fn horizon_gx2_profile_solid_back_culling() -> bool;
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
++    fn horizon_gx2_profile_solid_draw_plan() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+@@ -551,6 +557,7 @@ struct DeferredTerrain {
+     bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+ }
+ 
++mod solid_draw_plan;
+ mod terrain_translucency;
+ use terrain_translucency::{TerrainSection, TranslucentTerrain};
+ 
+@@ -668,6 +675,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     deferred_terrain: HashMap<SectionKey, DeferredTerrain>,
+     terrain_camera: SectionKey,
+     terrain_views: [Option<TerrainProjection>; 2],
++    solid_draw_plan_enabled: bool,
++    solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
+     world_scale: WorldScale,
+     requested_world_scale: u32,
+@@ -741,6 +750,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             deferred_terrain: HashMap::new(),
+             terrain_camera: (0, 0, 0),
+             terrain_views: [None, None],
++            solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
++            solid_draw_plans: Default::default(),
+             frame_work: CafeFrameWork::default(),
+             world_scale: WorldScale::default(),
+             requested_world_scale: 100,
+@@ -1654,6 +1665,11 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        if self.solid_draw_plan_enabled {
++            for plan in &mut self.solid_draw_plans {
++                plan.invalidate();
++            }
++        }
+         if let Some(residents) = self
+             .resident_animations
+             .as_mut()
+@@ -1700,6 +1716,7 @@ impl Gx2LoadingPresenter<'_> {
+         self.terrain_resident_bytes = 0;
+         self.deferred_terrain.clear();
+         self.terrain_views = [None, None];
++        self.solid_draw_plans = Default::default();
+         self.terrain_ranks = None;
+         self.next_terrain_retry = None;
+         self.terrain_allocation_backoff = None;
+@@ -1855,6 +1872,11 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        if self.solid_draw_plan_enabled {
++            for plan in &mut self.solid_draw_plans {
++                plan.invalidate();
++            }
++        }
+         Arc::make_mut(&mut self.block_entity_sections).replace(key, &mesh.block_entities);
+         self.frame_work.uploaded_sections += 1;
+         self.frame_work.uploaded_bytes += gpu_bytes as u64;
+@@ -2154,11 +2176,36 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let projection = draw
+                     .terrain_min_y
+                     .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
+-                if draw.presenter.terrain_views[index] != projection {
++                let same_view = draw.presenter.terrain_views[index] == projection;
++                let plan = &mut draw.presenter.solid_draw_plans[index];
++                if !same_view {
+                     draw.presenter.terrain_views[index] = projection;
+                     draw.presenter.terrain_ranks = None;
++                    plan.invalidate();
+                 }
+                 let projection = draw.presenter.terrain_views[index].as_ref();
++                let sections = &draw.presenter.sections;
++                let plan_enabled = draw.presenter.solid_draw_plan_enabled && same_view;
++                if let Some(projection) = projection.filter(|_| plan_enabled) {
++                    if GX2_PROFILE_ENABLED && plan.ready().is_some() {
++                        draw.profile.solid_plan_reused[index] = 1;
++                    }
++                    plan.prepare(
++                        sections.iter().filter_map(|(&key, entry)| {
++                            entry.solid.as_ref().map(|section| (key, section.bounds))
++                        }),
++                        projection,
++                    );
++                    if let Some((tested, visible)) = plan.first_use() {
++                        unsafe {
++                            OSReport(
++                                c"Horizon GX2 solid draw plan ready target=%u tested=%u visible=%u\n".as_ptr(),
++                                target, tested as u32, visible as u32,
++                            );
++                        }
++                    }
++                }
++                let cached = plan.ready();
+                 let (fog_color, fog_ranges) = horizon_client::gfx::fog_uniform(draw.frame);
+                 if let Some(start) = projection_start {
+                     draw.profile.projection_ns =
+@@ -2168,25 +2215,41 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let mut bound = None;
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+-                let mut sections_tested = 0usize;
+-                for (&key, entry) in &draw.presenter.sections {
++                let mut sections_tested = cached.map_or(0, |(tested, _)| tested);
++                let mut all = sections.iter();
++                let mut prepared = cached.map(|(_, draws)| draws.iter());
++                let candidates = std::iter::from_fn(|| {
++                    if let Some(prepared) = &mut prepared {
++                        let draw = prepared.next()?;
++                        Some((draw.key, &sections[&draw.key], Some(draw)))
++                    } else {
++                        all.next().map(|(&key, entry)| (key, entry, None))
++                    }
++                });
++                for (key, entry, prepared) in candidates {
+                     let Some(section) = entry.solid.as_ref() else {
+                         continue;
+                     };
+-                    sections_tested += 1;
++                    sections_tested += usize::from(prepared.is_none());
+                     let Some(projection) = projection else {
+                         draw.result = Err("GX2 terrain section layout is not prepared");
+                         return -1;
+                     };
+                     let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-                    let origin = projection.section_origin(key);
+-                    let clip_rows = projection.clip_rows(origin);
+-                    if section
+-                        .bounds
+-                        .is_some_and(|bounds| !clip_rows.may_intersect(bounds))
+-                    {
+-                        continue;
+-                    }
++                    let draw_parameters;
++                    let prepared = if let Some(prepared) = prepared {
++                        prepared
++                    } else {
++                        let Some(parameters) =
++                            solid_draw_plan::SolidDraw::project(key, section.bounds, projection)
++                        else {
++                            continue;
++                        };
++                        draw_parameters = parameters;
++                        &draw_parameters
++                    };
++                    let origin = prepared.origin;
++                    let clip_rows = &prepared.clip;
+                     let ranges = projection
+                         .axis_eye
+                         .zip(entry.solid_sides.as_deref())
+diff --git a/wiiu/loading_host/solid_draw_plan.rs b/wiiu/loading_host/solid_draw_plan.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f39b6cb68b8f5b1d8ee091513c99c1c0fc17aefa
+--- /dev/null
++++ b/wiiu/loading_host/solid_draw_plan.rs
+@@ -0,0 +1,93 @@
++//! CPU-only prepared solid draws for an unchanged output projection.
++use super::{SectionKey, TerrainClipRows, TerrainProjection};
++use horizon_wiiu_gx2_terrain::TerrainBounds;
++
++const MAX_DRAWS: usize = 1024;
++
++pub(super) struct SolidDraw {
++    pub(super) key: SectionKey,
++    pub(super) origin: [f64; 3],
++    pub(super) clip: TerrainClipRows,
++}
++
++impl SolidDraw {
++    pub(super) fn project(
++        key: SectionKey,
++        bounds: Option<TerrainBounds>,
++        projection: &TerrainProjection,
++    ) -> Option<Self> {
++        let origin = projection.section_origin(key);
++        let clip = projection.clip_rows(origin);
++        if bounds.is_some_and(|bounds| !clip.may_intersect(bounds)) {
++            return None;
++        }
++        Some(Self { key, origin, clip })
++    }
++}
++
++#[derive(Default)]
++enum PlanState {
++    #[default]
++    Unbuilt,
++    Ready(usize),
++    Unavailable,
++}
++
++#[derive(Default)]
++pub(super) struct SolidDrawPlan {
++    draws: Vec<SolidDraw>,
++    state: PlanState,
++    logged: bool,
++}
++
++impl SolidDrawPlan {
++    pub(super) fn invalidate(&mut self) {
++        self.draws.clear();
++        self.state = PlanState::Unbuilt;
++    }
++
++    pub(super) fn prepare(
++        &mut self,
++        sections: impl Iterator<Item = (SectionKey, Option<TerrainBounds>)>,
++        projection: &TerrainProjection,
++    ) {
++        if !matches!(self.state, PlanState::Unbuilt) {
++            return;
++        }
++        if self.draws.try_reserve_exact(MAX_DRAWS).is_err() {
++            self.state = PlanState::Unavailable;
++            return;
++        }
++        let mut tested = 0;
++        for (key, bounds) in sections {
++            tested += 1;
++            if let Some(draw) = SolidDraw::project(key, bounds, projection) {
++                if self.draws.len() == MAX_DRAWS {
++                    self.draws.clear();
++                    self.state = PlanState::Unavailable;
++                    return;
++                }
++                self.draws.push(draw);
++            }
++        }
++        self.state = PlanState::Ready(tested);
++    }
++
++    pub(super) fn ready(&self) -> Option<(usize, &[SolidDraw])> {
++        match self.state {
++            PlanState::Ready(tested) => Some((tested, &self.draws)),
++            _ => None,
++        }
++    }
++
++    pub(super) fn first_use(&mut self) -> Option<(usize, usize)> {
++        let PlanState::Ready(tested) = self.state else {
++            return None;
++        };
++        if self.logged {
++            return None;
++        }
++        self.logged = true;
++        Some((tested, self.draws.len()))
++    }
++}
