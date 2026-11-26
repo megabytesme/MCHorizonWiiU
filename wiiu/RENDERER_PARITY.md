@@ -2,7 +2,8 @@
 
 The entries below track the hosted Nightly source recipe. The last
 physical checkpoint is RC 35. RC 36 adds experimental submission and
-clear changes. See the current coverage record for fixture and hosted
+clear changes. RC 37 adds stock entity damage overlays.
+See the current coverage record for fixture and hosted
 evidence for each pass. [Hosted coverage](../docs/gx2/coverage.md) ·
 [RC 35 validation](../docs/gx2/rc35-validation.md)
 
@@ -22,7 +23,7 @@ evidence for each pass. [Hosted coverage](../docs/gx2/coverage.md) ·
 | 12 | Solid and cutout terrain | Native indexed section meshes draw solid and cutout faces with per-output visibility and shared projected section data. |
 | 13 | Translucent terrain | The native translucent pass sorts camera-sector indices, tests depth and blends tint and atlas alpha. Live overlapping surfaces need coverage. |
 | 14 | Block-entity extraction and static cache | Retained section metadata supplies bounded ordinary block-entity extraction. Desktop static caches and specialized passes remain partial. |
-| 15 | Block entities, mobs, players, items and opaque particles | Shared ordinary entity and item quads use the GX2 atlas and lightmap. Skinned geometry, several specialized materials and extensive live fixture coverage remain open. |
+| 15 | Block entities, mobs, players, items and opaque particles | Shared ordinary entity and item quads use the GX2 atlas and lightmap. Hurt, TNT and creeper overlays passed the separate dual-output fixture. Skinned geometry and specialized materials remain partial. |
 | 16 | Entity blob shadows | Entity shadow geometry has no GX2 pass. |
 | 17 | Boat water mask | The depth-only entity mask has no GX2 pass. |
 | 18 | Breaking overlays | Solid and translucent cracks use separate multiply passes with shared sprite stage and UV data. The isolated dual-output fixture passed stage, wrap, alpha and blend checks. |

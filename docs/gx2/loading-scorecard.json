@@ -1638,6 +1638,18 @@
       "matched_names": 23148,
       "owned_median_ms": 1.619,
       "borrowed_median_ms": 1.0
+    },
+    {
+      "id": "rc37_reuse_packed_rgba_png_output",
+      "execution": "Ben-Desktop, WSL x86-64, release",
+      "workload": "Decode private stock inventory in memory and compare crop outputs",
+      "iterations": 21,
+      "matched_pngs": 3903,
+      "matched_crops": 21,
+      "rgba_pngs_avoiding_second_allocation": 2510,
+      "bytes_not_copied_per_pass": 29079772,
+      "baseline_median_ms": 49.918,
+      "reused_median_ms": 38.098
     }
   ]
 }
