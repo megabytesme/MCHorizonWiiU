@@ -145,14 +145,29 @@ def observed_mode(trace):
 
 def verified_pid(lab):
     pid = int((lab / "process.txt").read_text(encoding="ascii"))
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", f"(Get-Process -Id {pid} -ErrorAction Stop).Path"],
-        check=True, capture_output=True, text=True, timeout=10,
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
     )
-    if Path(result.stdout.strip()) != lab / "Cemu.exe":
-        raise ValueError("process does not belong to the lab")
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    query_limited_information = 0x1000
+    process = kernel.OpenProcess(query_limited_information, False, pid)
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        image = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(image))
+        if not kernel.QueryFullProcessImageNameW(process, 0, image, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if Path(image.value) != lab / "Cemu.exe":
+            raise ValueError("process does not belong to the lab")
+    finally:
+        kernel.CloseHandle(process)
     return pid
-
 
 def input_window(pid, prefix):
     user = ctypes.windll.user32
