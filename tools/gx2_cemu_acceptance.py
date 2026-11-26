@@ -26,6 +26,7 @@ GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
 DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
 HEALTH_TAG = b"\x05\x00\x06Health"
 GROUND_TAG = b"\x01\x00\x08OnGround"
+MOVEMENT_KEYS = {"forward": 87, "backward": 83, "left": 65, "right": 68}
 CAFE_MENU_PHASE = r'Horizon Cafe cadence: .*\bphase=menu\b'
 MENU_PHASE = r'"phase":"menu"|' + CAFE_MENU_PHASE
 GAMEPLAY_PHASE = r'"phase":"gameplay"|Horizon Cafe cadence: .*\bphase=gameplay\b'
@@ -282,6 +283,7 @@ def exercise(args):
                    "spawn_xz": args.spawn_xz,
                    "sessions": args.sessions, "save_at": args.save_at,
                    "gameplay_dwell": args.gameplay_dwell,
+                   "movement_direction": args.movement_direction,
                    "minimum_terrain_sections": args.minimum_terrain_sections}, receipt, indent=2)
     lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id),
               args.require_distinct_captures)
@@ -333,7 +335,8 @@ def exercise(args):
                 lab.show("stationary-gameplay")
 
             if index == 1:
-                lab.send("key", key=87, hold=max(2, game_hold))
+                key = MOVEMENT_KEYS[args.movement_direction]
+                lab.send("key", key=key, hold=max(2, game_hold))
                 time.sleep(16 if elevated_y is not None else 4)
             lab.phase = f"session-{index}-audio"
             try:
@@ -430,6 +433,8 @@ def main():
     parser.add_argument("--audio-timeout", type=float, default=180)
     parser.add_argument("--gameplay-dwell", type=float, default=0,
                         help="seconds to keep the first gameplay view stationary")
+    parser.add_argument("--movement-direction", choices=MOVEMENT_KEYS, default="forward",
+                        help="direction to move from the saved fixture pose")
     parser.add_argument("--minimum-terrain-sections", type=int, default=0,
                         help="wait for at least this many visible sections per output before gameplay captures")
     parser.add_argument("--require-distinct-captures", action="store_true",

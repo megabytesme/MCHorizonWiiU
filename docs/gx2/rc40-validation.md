@@ -51,7 +51,7 @@ terrain was still streaming. A later serial sample recorded paired
 terrain. The retained HZP3 recorded one playing pair with visible sections
 on both outputs and zero explicit terrain wait. This exercises `4t` but
 does not establish settled terrain or a frame-time difference. The first
-session saved the moved player, produced native PCM and recovered
+session saved the player, produced native PCM and recovered
 234,880,920 free GX2 bulk bytes. The same-process reopen returned the
 first Game frame in 514.247 s and saved again with the same heap recovery
 and native PCM. The default marker `4` control returned the first Game
@@ -62,3 +62,11 @@ timings describe separate emulator runs with other work on the host.
 The Cemu runner now supports `--minimum-terrain-sections` to wait for a
 specified visible section count per output before captures or the timed
 dwell. Use `--require-distinct-captures` for independent display evidence.
+
+The terrain-gated rerun reached ten visible sections per output before
+the stationary dwell. The TV and GamePad stills show terrain and HUD.
+It again saved and recovered the bulk heap, but forward input did not
+change the horizontal position recorded in the save. The saved Z is 0.3 blocks from the
+next block boundary, consistent with an obstructed forward path. A replay can now choose its movement
+direction with `--movement-direction` and retain the same stationary
+camera and settings for the measured interval.
