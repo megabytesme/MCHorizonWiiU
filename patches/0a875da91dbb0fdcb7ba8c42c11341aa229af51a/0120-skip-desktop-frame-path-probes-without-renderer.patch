@@ -1,0 +1,31 @@
+diff --git a/crates/horizon-client/src/game/interface/render_settings.rs b/crates/horizon-client/src/game/interface/render_settings.rs
+index b6bfb7c..8d520a7 100644
+--- a/crates/horizon-client/src/game/interface/render_settings.rs
++++ b/crates/horizon-client/src/game/interface/render_settings.rs
+@@ -56,11 +56,13 @@ impl Game<'_> {
+     /// renderer's, it is made again before this frame draws.
+     pub(super) fn follow_frame(&mut self) {
+         let split = self.options.paced_by_split || self.options.split_guest;
++        // Hosted Cafe frames come from the native presenter and never rebuild a desktop frame.
++        let Some(renderer) = self.renderer.as_mut() else {
++            return;
++        };
+         // Split-screen's renderer isn't made again here, so the Anti-aliasing button offers
+         // 4x MSAA there only where the renderer already has its pipelines.
+-        if let Some(r) = self.renderer.as_mut() {
+-            r.set_msaa_rebuildable(!split);
+-        }
++        renderer.set_msaa_rebuildable(!split);
+         if split {
+             return;
+         }
+@@ -82,7 +84,8 @@ impl Game<'_> {
+             picked,
+             shader_packs::dev_pack().is_some(),
+         );
+-        let available = path.exists()
++        let available = !picked.is_empty()
++            && path.exists()
+             && path.file_name().is_none_or(|f| {
+                 !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
+             });

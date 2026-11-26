@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "4ec674a31808f90ea843ee747536d941f4c6e4ae",
+  "output_tree": "ea2616b8da95bd4c08f0ea51b5f33e36b38d40e7",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -728,6 +728,12 @@
       "sha256": "b17004c4f8788811d47604c8a238baa93cff3c1b8daee7f8ee4115e01338cc3f",
       "input_tree": "640125e0a2595c8dfcd8df83aa67a5ca06651ac6",
       "output_tree": "4ec674a31808f90ea843ee747536d941f4c6e4ae"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0120-skip-desktop-frame-path-probes-without-renderer.patch",
+      "sha256": "cede1a79a4340df1c629a9eb41030f55f26150922d2a6bc3a54f4949612bca8e",
+      "input_tree": "4ec674a31808f90ea843ee747536d941f4c6e4ae",
+      "output_tree": "ea2616b8da95bd4c08f0ea51b5f33e36b38d40e7"
     }
   ],
   "candidate": {
