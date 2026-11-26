@@ -179,6 +179,16 @@ launch policy. It uses the selected profile and the ordinary connection
 path. Add an entry through `multiplayer_add` when the server is missing
 from the list.
 
+### Cancelling a remote Night load
+
+Ordinary remote `play` and `wiiu_multiplayer_join` responses include a
+`launch_id`. The same paired client can pass that ID to
+`wiiu_loading_status` with `launcher.read`. Use `wiiu_loading_cancel`
+with `launcher.manage`, `game.control` and remote launch enabled.
+The status reports completion after Night has drained the cancelled
+session's work. Once gameplay handoff begins, use the game's ordinary
+save-and-return action.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from
