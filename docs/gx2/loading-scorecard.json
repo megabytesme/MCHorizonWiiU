@@ -1842,6 +1842,51 @@
           "verbose_png_lines": 0
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.41",
+      "revision": "saved-world terrain gate with opt-in solid and cutout back-face culling",
+      "source_commit": "6e66d173806f56dcc3afaedfcd3722e9474084b4",
+      "engine_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
+      "toolchain": "1.1.0",
+      "rpx_sha256": "a1195b54d75715224c7827cf762fb491094282d4ef9454a3724d167409c7694f",
+      "environment": "Ben-Desktop, established NSS-patched Cemu forced interpreter",
+      "archive_sha256": "8b26733d3b75d099ea412679034e4659524b400c9f0cc29e29d002a845c0e866",
+      "prepared_schema": 7,
+      "same_process": false,
+      "cases": [
+        {
+          "id": "existing_world_cold_prepared",
+          "profile_marker": "4b",
+          "render_distance": 12,
+          "simulation_distance": 12,
+          "gameplay_ready_ms": 509317,
+          "terrain_gate_sections_per_display": 10,
+          "terrain_gate_runner_elapsed_ms": 738875,
+          "startup_trace_durations_ms": {
+            "core": 168072.804,
+            "core.block_models_sprites": 119411.096,
+            "core.connected_texture_rules": 22.782,
+            "handoff.game_cpu": 18685.561,
+            "rest": 82747.61,
+            "rest.mobs": 25859.967,
+            "rest.behaviours": 82739.003,
+            "world.preload": 204178.903,
+            "world.preload.generator": 154338.33,
+            "server.silent_audio": 0.053,
+            "game.new_cpu_resources": 8018.165,
+            "server.game_new": 13802.725,
+            "server.open_world": 36377.889
+          },
+          "after_save": {
+            "rust_live": 50537438,
+            "rust_peak": 339252179,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          }
+        }
+      ]
     }
   ],
   "host_microbenchmarks": [

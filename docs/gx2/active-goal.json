@@ -191,5 +191,13 @@
     "engine_tree": "377d9d00b5de87912f6568d59c7f8b8a72b17aac",
     "rc41_interpreter_duplicate_server_cpu_ms": 8018,
     "native_build_and_peak_memory": "pending"
+  },
+  "next_source_qualification": {
+    "branch": "codex/rc43-qualification",
+    "commit": "37b9c0049c9",
+    "engine_tree": "ef439f4326d8a33a220970dd34f4ddd8c59840ea",
+    "stock_mcp_tools": 53,
+    "standalone_opaque_shader_paired_pixels": "matched_fog_and_no_fog",
+    "native_build": "pending"
   }
 }

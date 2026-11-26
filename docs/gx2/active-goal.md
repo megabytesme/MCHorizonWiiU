@@ -60,6 +60,10 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   launch instance across selection and restart. The full build exposed a
   Cafe-only lint in the DNS wrapper. The corrected exact source is in
   native rebuild. Integrated replay remains pending.
+- The next source recipe adds Night profile selection, the CPU handoff and
+  an opt-in solid shader specialization. The standalone Cemu control and
+  shader trial matched both full outputs with fog enabled and disabled.
+  The hosted build and matched cadence remain open. [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
 
 ## Physical queue
 
