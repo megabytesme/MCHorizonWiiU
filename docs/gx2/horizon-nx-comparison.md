@@ -23,3 +23,36 @@ KoHaku's build pins the reviewed `bevy-horizon` revision. The Bevy port supplies
 - **DNS and worker scheduling.** NX reads configured resolver addresses once through Switch `nifm` and adds a deadline around SRV requests. Cafe Toolchain 1.1.0 sets neither `unix` nor `windows`, so the RC 35 protocol resolver gives SRV an empty nameserver list. Normal hostname resolution is a separate `ToSocketAddrs` call. A Cafe system resolver adapter and direct fixtures are needed for SRV. NX also raised idle helpers to the chunk workers' priority after stronghold ring searches starved during teleports. Wii U worker priorities need an Espresso-side queue and scheduling trace to establish whether the same dependency stalls Village streaming. [NX SRV deadline](https://github.com/KoHaku743/horizon-nx/commit/4f81bbbb682d674d413aa290bed8e40e01be76a1) · [NX worker priority change](https://github.com/KoHaku743/horizon-nx/commit/9db0ff25a649492ce336f27c26d19cc0c1d145c0)
 
 For physical qualification, compare LAN worker CPU time and packet service under a quiet local world and a two-player LAN session. Compare cold and warm archive-backed startup in the same saved world and keep first visible terrain and the world-ready marker separate.
+
+## Splitscreen boundaries
+
+The pinned Switch branch still uses Horizon's shared player and controller
+routing. Each guest has its own client state, profile settings, controller
+and HUD. Local guests join the existing integrated server over a memory
+connection. NX's platform-specific addition raises the GPU clock while
+guests are present. Its shared windowed renderer is built around wgpu and
+is not a GX2 scheduling interface. [Player joins and profiles](https://github.com/KoHaku743/horizon-nx/blob/de477953c3958551a60f011fa447a99229f9fc43/crates/horizon-client/src/game/runtime/split/players.rs) · [Routing and Switch clock selection](https://github.com/KoHaku743/horizon-nx/blob/de477953c3958551a60f011fa447a99229f9fc43/crates/horizon-client/src/game/runtime/split/mod.rs)
+
+The pinned Wii U engine already contains the integrated-server guest path
+and split-profile semantics. Its native Cafe presenter receives one game
+frame and projects it to both TV and GamePad. The two output viewports and
+native HUD draws do not have separate local player state or input ownership.
+Use the assembled `game/runtime/split/{players,pads}.rs` as the reference
+for the guest lifetime and input routing, and `wiiu/loading_host/lib.rs`
+for GX2 target ownership.
+
+Start with one independently controlled view per display. Keep one server,
+shared prepared packs and immutable texture backing. Give every client a
+separate camera, viewport, HUD and input slot. A shared terrain entry must
+identify its dimension, section, resource generation and mesh revision.
+Test two visibility sets against independent frustums before joining their
+upload priorities. Keep view-specific sorted translucent indices and
+mutable upload storage alive through the appropriate retirement fence.
+
+A native two-player fixture should join a second offline profile into
+the same test world and move it with its own controller while the first
+player stays stationary. Capture both poses and HUDs, save both records
+and reopen. Record independent visible sections, presented cadence, server
+TPS and memory recovery. Use 30 FPS-equivalent as the initial measured
+target once this fixture runs. Add two TV viewports as a separate workload
+with simultaneous GamePad output.

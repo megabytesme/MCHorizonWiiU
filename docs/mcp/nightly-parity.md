@@ -1,8 +1,8 @@
 # Nightly MCP comparison
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
-registers 194 tools. The assembled RC 40 tree
-`7d98701b0bae6958962993487ff5ef66851a5bc4` registers 44 through Night's
+registers 194 tools. The assembled RC 41 tree
+`598a9678ea46d7f13463a7dcb8cfcf209944a7aa` registers 46 through Night's
 authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the
@@ -31,8 +31,8 @@ local emergency control remain available with the native HTTPS endpoint.
   updating the advertised contracts.
 - The HTTPS adapter exposes ordinary state, navigation, inventory,
   interaction, pause, save, quit and TV capture. Expose GamePad and paired
-  captures, generic controller and touchscreen actions, and settings via
-  the same HTTPS principal. Keep screenshot readback on demand.
+  captures and generic controller and touchscreen actions via the same
+  HTTPS principal. RC 41 adds scoped graphics reads and writes. Keep screenshot readback on demand.
 - Night can list instances, worlds and multiplayer bookmarks, select an
   instance, add a bookmark and start a compatible game. Add semantic
   profile selection, disposable world creation, bookmark editing and joining,
@@ -51,5 +51,5 @@ source directory produced by the builder.
 ~~~sh
 python -B tools/mcp_inventory.py --revision 0a875da91dbb0fdcb7ba8c42c11341aa229af51a \
   --output docs/mcp/nightly-tools.json --check
-python -B tools/mcp_parity.py --nightly-source "$assembled_rc40_source" --check
+python -B tools/mcp_parity.py --nightly-source "$assembled_rc41_source" --check
 ~~~
