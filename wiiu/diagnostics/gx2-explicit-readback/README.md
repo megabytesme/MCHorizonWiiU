@@ -48,7 +48,18 @@ The rebuilt RPXs matched the tested hashes. `stage-only.rpx` is
 | 1 | TV 1920×1080 | 8,294,400 | `84bb9c2dd9f75865` |
 | 1 | GamePad 854×480 | 1,639,680 | `331a0f72ad0e4ffd` |
 
-Physical qualification requires a separate stage-only build with serial
-checkpoints before and after copy, invalidation and release, plus a tested
-ProcUI handoff. Cover both outputs at 720p and 1080p TV settings. This work
-does not change the hosted readback implementation.
+## Supervised hardware qualification
+
+Two independent builds reproduced the stage-only `HorizonGX2Readback.wuhb`
+with SHA-256 `199d7d7852b524754373d22e6f1a3bc5f6f19fb59792192917fd59254a744b02`.
+Its embedded RPX begins at byte 512 and has SHA-256
+`f8bc12f00fd0dd451f6308ddce6dcb575ed112393a03bf4f04642037a63e581f`.
+The package passed import, relocation and code-heap checks. A Cemu run of
+the same executable code verified four readbacks, both presentation
+fences and staging release. Cemu stopped at the Menu request without a
+ProcUI acknowledgement.
+
+Run the supervised package at 720p and then 1080p with GamePad enabled.
+Retain the copy submission and retirement timestamps, cache invalidation
+and row lengths, presentation fence, staging release and ProcUI exit.
+Confirm return to the Wii U Menu and a clean relaunch after each run.
