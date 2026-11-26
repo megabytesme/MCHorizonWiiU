@@ -114,7 +114,10 @@ bash tools/build_cafe_game_isolated.sh --hosted-nightly "$candidate_output" \
 ```
 
 Run both builds from the same pinned toolchain. Use separate output
-directories and independent inputs for candidate reproducibility.
+directories and independent inputs for candidate reproducibility. For
+development on a crowded drive, pass `--move-cache` to transfer the
+Cargo target between idle outputs on the same filesystem. The previous
+RPX, WUHB, build receipt and staged assembly stay in place.
 
 Inspect an RPX against the measured Aroma loader budget before hardware use.
 The command verifies the mapped code span against the RPL file info. It

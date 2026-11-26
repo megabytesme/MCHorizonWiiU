@@ -8,6 +8,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wiiu" / "builder"))
+from native import build_lock
 
 
 def staged_files(root):
@@ -36,14 +40,23 @@ def stamp(previous, staged):
     os.utime(staged, ns=(new.st_atime_ns, old.st_mtime_ns))
 
 
-def seed(previous, staged):
+def seed(previous, staged, move_cache=False):
     previous, staged = previous.resolve(strict=True), staged.resolve(strict=True)
     if previous == staged or previous in staged.parents or staged in previous.parents:
         raise ValueError("the previous and staged outputs must be separate build directories")
+    first, second = sorted((previous, staged))
+    with build_lock(first), build_lock(second):
+        return seed_locked(previous, staged, move_cache)
+
+
+def seed_locked(previous, staged, move_cache):
     old_target = previous / "cargo-target"
     new_target = staged / "cargo-target"
-    if not old_target.is_dir() or new_target.exists():
+    if (not old_target.is_dir() or old_target.is_symlink()
+            or new_target.exists() or new_target.is_symlink()):
         raise ValueError("the previous output needs a Cargo target and the staged output must have none")
+    if move_cache and old_target.stat().st_dev != staged.stat().st_dev:
+        raise ValueError("moving the Cargo cache requires both outputs on one filesystem")
 
     old_files, new_files = staged_files(previous), staged_files(staged)
     count = 0
@@ -59,7 +72,10 @@ def seed(previous, staged):
             stamp(old, new)
             count += 1
 
-    shutil.copytree(old_target, new_target, symlinks=True)
+    if move_cache:
+        old_target.rename(new_target)
+    else:
+        shutil.copytree(old_target, new_target, symlinks=True)
     return count
 
 
@@ -67,12 +83,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("previous", type=Path, help="earlier fixed-path hosted Nightly build")
     parser.add_argument("staged", type=Path, help="fresh assemble-hosted-nightly output")
+    parser.add_argument("--move-cache", action="store_true",
+                        help="transfer the Cargo target on the same filesystem without copying")
     args = parser.parse_args()
     try:
-        count = seed(args.previous, args.staged)
+        count = seed(args.previous, args.staged, args.move_cache)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Could not seed Cafe build cache. {error}\n")
-    print(f"Seeded Cargo cache and restored mtimes for {count} unchanged files.")
+    action = "Moved" if args.move_cache else "Copied"
+    print(f"{action} Cargo cache and restored mtimes for {count} unchanged files.")
 
 
 if __name__ == "__main__":
