@@ -1596,7 +1596,7 @@
     {
       "version": "0.8.0-rc.36",
       "revision": "stock saved-world cold entry and warm reopen",
-      "source_commit": "aa49dd1b4a6",
+      "source_commit": "aa49dd1b4a6fccf967ae9ff24161b1fd4083968e",
       "engine_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e",
       "toolchain": "1.1.0",
       "rpx_sha256": "9943740b5a437af03aa7a712750409c792eddecb730a99e35c34dc68549ba78b",
@@ -1708,7 +1708,7 @@
     {
       "version": "0.8.0-rc.37",
       "revision": "stock saved-world cold entry with shared model uploads",
-      "source_commit": "a91c6787333",
+      "source_commit": "a91c67873336d6760e989988793f4f3c42409154",
       "engine_tree": "140d6c4e3a28d5cb26fe8e53714823d638b1797e",
       "toolchain": "1.1.0",
       "rpx_sha256": "e916d7c10c5ab3ce5f55e26e0193d06c5dd520566d5fd3f902ffc0655f38e18b",

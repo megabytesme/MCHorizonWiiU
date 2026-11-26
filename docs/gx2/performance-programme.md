@@ -1,5 +1,11 @@
 # Wii U renderer performance programme
 
+The current development package is RC 38. RC 36 passed the saved-world
+reopen and online-mode reconnect in Cemu. RC 37 validated the newer
+loading and model paths. The matched physical comparisons are in the
+hardware queue. [RC 38 package](rc38-validation.md) ·
+[Hardware qualification queue](post-rc35-queue.md)
+
 The [gameplay scorecard](gameplay-scorecard.md) records the aligned RC 29
 physical frame budgets, per-output timings and the display-list comparison.
 The [loading performance record](loading-performance.md) tracks the separate
