@@ -146,6 +146,55 @@ split pending client mesh work, pending uploads and integrated-server
 messages and relate them to the forward route and terrain loss. The
 stock route and score remain unchanged.
 
+## Fixed-scale GX2 A/B
+
+Use one candidate WUHB, one prepared archive, the stock stationary scene, and
+unchanged distances and graphics settings. Record package and archive hashes,
+the configured profile marker, effective output sizes and the serial interval
+for each fresh launch. Use the existing 5-second warmup and 30-second measurement.
+Save the stationary report and the matching HZP3 checkpoint before starting
+another arm. Take pictures outside the timed window.
+
+- Compare `4` and `4q` at fixed 100%. The trial serial must show
+  `queued TV rendering before the previous flip`. Check paired output,
+  WHB flip and finish waits, the direct HUD fence and the full interval.
+  Exercise keyboard opening and Home/foreground return in a separate normal
+  local world under `4q`. The stock stationary benchmark cancels on focus loss.
+- Compare `4` and `4c` at fixed 75%. Record the per-output omission mask.
+  The physical stationary fixture reported a 1920×1079 TV viewport inside its
+  1920×1080 backing surface and an exact 854×480 GamePad fit. The same TV inset
+  at 75% leaves its clear active, so the expected GamePad-only mask is 2.
+  Keep a mask-3 result in its own output-size cohort. At fixed 100% production
+  uses the direct target, so `4c` uses ordinary clears on both displays.
+  The interval from the TV start marker to the GamePad end marker excludes
+  commands ahead of the TV marker. Use paired wall cadence to measure changes
+  to output setup.
+
+Compare the reports on the host.
+
+```powershell
+python tools/gx2_benchmark_report.py $controlReport --against $trialReport
+```
+
+The comparison checks the stationary coverage gate, fixed scales and sizes,
+camera, stable terrain counts on both displays, matching reported application
+and hardware, and matching workload settings. Package hashes, split-stage
+waits, submitted draw/index counts, the actual marker and physical lifecycle
+remain in the separate receipts and HZP3 and serial evidence.
+
+The candidate reads its marker once at process startup. The stock benchmark
+launch also withdraws normal game MCP registration. A future selector that
+supports it can attach an ephemeral trial choice to the benchmark's launch
+request and record the effective mode at the measured boundary. Preserve
+benchmark isolation and change modes between runs after teardown.
+
+Run A/B/B/A blocks. Compute trial minus control for the first adjacent pair
+and the second adjacent pair in each block. Report the median and range of
+these matched deltas across the blocks, alongside each run's paired cadence,
+eligible wall duration and p50/p95/p99. An apparent win in a wait bucket needs
+an accompanying improvement in the complete interval. Use the 30 Hz gap to
+state the remaining frame budget.
+
 ## Capture format and interpretation
 
 On a hosted candidate, create an empty `gx2-profile.enable` at the SD app

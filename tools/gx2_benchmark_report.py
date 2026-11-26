@@ -147,13 +147,104 @@ def summarize(report):
     return result
 
 
+def stationary_pacing(summary):
+    coverage = summary["coverage"]
+    elapsed = coverage["elapsed_ms"]
+    paired_interval = elapsed / coverage["paired_frames"]
+    frame_series = summary["frame_series"]
+    return {
+        "wall_ms": elapsed,
+        "paired_submissions": coverage["paired_frames"],
+        "paired_submissions_per_s": 1000 / paired_interval,
+        "elapsed_per_pair_ms": paired_interval,
+        "eligible_wall_percent": 100 * coverage["eligible_wall_fraction"],
+        "eligible_intervals": coverage["eligible_intervals"],
+        "eligible_intervals_per_s": (
+            1000 * coverage["eligible_intervals"] / coverage["eligible_interval_ms"]
+        ),
+        "p50_ms": frame_series["p50_ms"],
+        "p95_ms": frame_series["p95_ms"],
+        "p99_ms": frame_series["p99_ms"],
+        "gap_to_30_hz_ms": paired_interval - 1000 / 30,
+    }
+
+
+def settled_sections(summary):
+    sections = summary.get("terrain_sections", {})
+    return (
+        len(sections) == 4
+        and all(value is not None and value > 0 and int(value) == value for value in sections.values())
+        and all(sections[f"{output}_before"] == sections[f"{output}_after"] for output in ("tv", "gamepad"))
+    )
+
+
+def compare_stationary(control, trial):
+    """Compare two stationaries with equal settings and settled workload."""
+    first, second = map(summarize, (control, trial))
+    if first["scenario"] != "cafe-stationary" or second["scenario"] != first["scenario"]:
+        raise ValueError("comparison requires two stationary GX2 reports")
+    if control == trial:
+        raise ValueError("comparison requires two distinct captures")
+    for name, summary in (("control", first), ("trial", second)):
+        if not summary["coverage"].get("meets_stationary_coverage"):
+            raise ValueError(f"{name} did not meet the stationary coverage gate")
+        targets = summary["targets"]
+        if (
+            any(value is None or int(value) != value for value in targets.values())
+            or any(not value for key, value in targets.items() if key != "world_surface_bytes")
+            or targets["configured_scale"] != targets["effective_scale"]
+        ):
+            raise ValueError(f"{name} requires complete fixed-scale target evidence")
+        if not settled_sections(summary):
+            raise ValueError(f"{name} needs stable nonzero section counts on both displays")
+        if "camera" not in summary:
+            raise ValueError(f"{name} requires recorded camera evidence")
+        if not all(key in summary["frame_series"] for key in ("p50_ms", "p95_ms", "p99_ms")):
+            raise ValueError(f"{name} requires the frame pacing percentiles")
+    for key in ("app", "hardware", "conditions"):
+        if not isinstance(control.get(key), dict) or not control[key] or control[key] != trial.get(key):
+            raise ValueError(f"mismatched or missing {key}")
+    for key in ("targets", "camera", "terrain_sections"):
+        if first[key] != second[key]:
+            raise ValueError(f"mismatched {key}")
+    for key in ("cafe.entity_distance_percent", "cafe.omitted_pass_mask"):
+        a, b = (metric(report["metrics"], key) for report in (control, trial))
+        if a is None or a != b:
+            raise ValueError(f"mismatched or missing {key}")
+
+    control_pacing, trial_pacing = map(stationary_pacing, (first, second))
+    return {
+        "conditions": first["conditions"],
+        "targets": first["targets"],
+        "camera": first["camera"],
+        "terrain_sections": first["terrain_sections"],
+        "control": {name: round(value, 3) for name, value in control_pacing.items()},
+        "trial": {name: round(value, 3) for name, value in trial_pacing.items()},
+        "trial_minus_control": {
+            name: round(trial_pacing[name] - value, 3)
+            for name, value in control_pacing.items()
+        },
+    }
+
+
+def load_report(path):
+    with path.open(encoding="utf-8-sig") as file:
+        return json.load(file)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="a saved Village or stationary benchmark JSON")
+    parser.add_argument("--against", type=Path, metavar="TRIAL",
+                        help="compare a control stationary report with a separate trial")
     args = parser.parse_args()
     try:
-        with args.report.open(encoding="utf-8-sig") as file:
-            print(json.dumps(summarize(json.load(file)), indent=2, allow_nan=False))
+        report = load_report(args.report)
+        if args.against:
+            result = compare_stationary(report, load_report(args.against))
+        else:
+            result = summarize(report)
+        print(json.dumps(result, indent=2, allow_nan=False))
     except (OSError, ValueError) as error:
         parser.exit(2, f"{error}\n")
 

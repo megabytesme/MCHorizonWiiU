@@ -101,3 +101,91 @@ class BenchmarkReportTests(unittest.TestCase):
         report = benchmark(eligible_intervals=78)
         with self.assertRaisesRegex(ValueError, "inconsistent"):
             audit.summarize(report)
+
+
+def stationary(paired=301, p50=90.0, p95=103.0, p99=130.0):
+    report = benchmark(
+        "cafe-stationary", host_frames=paired, paired_frames=paired, terrain_paired_frames=paired,
+        eligible_intervals=paired - 1, paired_terrain_intervals=paired - 1,
+        elapsed_ms=30_000, eligible_interval_ms=29_900,
+    )
+    report["app"] = {"version": "0.8.0-rc.38"}
+    report["hardware"] = {"arch": "powerpc"}
+    report["conditions"].update({"seed": "1234", "render_distance": 6, "simulation_distance": 5})
+    targets = {
+        "configured_scale": 100,
+        "effective_scale": 100,
+        "tv_width": 1920,
+        "tv_height": 1080,
+        "gamepad_width": 854,
+        "gamepad_height": 480,
+        "tv_world_width": 1920,
+        "tv_world_height": 1079,
+        "gamepad_world_width": 854,
+        "gamepad_world_height": 480,
+        "world_surface_bytes": 0,
+    }
+    camera = {"x": -960.0, "y": 126.62, "z": 80.0, "yaw": 0.0, "pitch": 35.0}
+    report["metrics"].update({f"cafe.{key}": metric(value) for key, value in targets.items()})
+    report["metrics"]["cafe.entity_distance_percent"] = metric(50)
+    report["metrics"]["cafe.omitted_pass_mask"] = metric(33280)
+    report["metrics"].update({f"cafe.stationary.camera.{key}": metric(value) for key, value in camera.items()})
+    for output in ("tv", "gamepad"):
+        for boundary in ("before", "after"):
+            report["metrics"][f"cafe.stationary.{output}_sections_{boundary}"] = metric(562)
+    report["frames"][0].update({"p50_ms": p50, "p95_ms": p95, "p99_ms": p99})
+    return report
+
+
+class StationaryComparisonTests(unittest.TestCase):
+    def test_same_workload_reports_wall_cadence_and_tail_deltas(self):
+        control = stationary(paired=300)
+        trial = stationary(paired=375, p50=81.0, p95=95.0, p99=140.0)
+        comparison = audit.compare_stationary(control, trial)
+        self.assertEqual(comparison["control"]["paired_submissions_per_s"], 10)
+        self.assertEqual(comparison["trial"]["paired_submissions_per_s"], 12.5)
+        self.assertEqual(comparison["trial_minus_control"]["elapsed_per_pair_ms"], -20)
+        self.assertEqual(comparison["trial_minus_control"]["p95_ms"], -8)
+        self.assertEqual(comparison["trial_minus_control"]["p99_ms"], 10)
+        self.assertEqual(comparison["trial"]["gap_to_30_hz_ms"], 46.667)
+
+    def test_rejects_different_camera_and_inconsistent_terrain(self):
+        control = stationary()
+        trial = stationary(paired=315)
+        trial["metrics"]["cafe.stationary.camera.yaw"] = metric(1)
+        with self.assertRaisesRegex(ValueError, "mismatched camera"):
+            audit.compare_stationary(control, trial)
+        trial = stationary(paired=315)
+        trial["metrics"]["cafe.stationary.tv_sections_after"] = metric(563)
+        with self.assertRaisesRegex(ValueError, "stable nonzero section counts"):
+            audit.compare_stationary(control, trial)
+        trial["metrics"]["cafe.stationary.tv_sections_before"] = metric(563)
+        with self.assertRaisesRegex(ValueError, "mismatched terrain_sections"):
+            audit.compare_stationary(control, trial)
+
+    def test_rejects_scale_fallback_and_undercovered_runs(self):
+        control = stationary()
+        trial = stationary(paired=315)
+        trial["metrics"]["cafe.configured_scale"] = metric(75)
+        with self.assertRaisesRegex(ValueError, "fixed-scale target evidence"):
+            audit.compare_stationary(control, trial)
+        trial = stationary(paired=315)
+        trial["metrics"]["cafe.cafe-stationary.eligible_interval_ms"] = metric(23_999)
+        with self.assertRaisesRegex(ValueError, "stationary coverage gate"):
+            audit.compare_stationary(control, trial)
+
+    def test_rejects_mismatched_settings_and_a_repeated_capture(self):
+        control = stationary()
+        trial = stationary(paired=315)
+        trial["conditions"]["render_distance"] = 8
+        with self.assertRaisesRegex(ValueError, "mismatched or missing conditions"):
+            audit.compare_stationary(control, trial)
+        with self.assertRaisesRegex(ValueError, "distinct captures"):
+            audit.compare_stationary(control, control)
+
+    def test_rejects_changed_render_work(self):
+        control = stationary()
+        trial = stationary(paired=315)
+        trial["metrics"]["cafe.omitted_pass_mask"] = metric(0)
+        with self.assertRaisesRegex(ValueError, "mismatched or missing cafe.omitted_pass_mask"):
+            audit.compare_stationary(control, trial)
