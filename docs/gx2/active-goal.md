@@ -59,20 +59,26 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   configured and paired scales agreed at 100%, 75%, 50% and 75%.
   Two fresh Codex processes reused the same grant after the app restarted.
   The same grant started and cancelled a benchmark with the normal save
-  unchanged. The local reports page blocked the next remote launch.
+  unchanged. The local reports page blocked the next remote launch. A
+  fresh interpreter process started the rerun and reached 26 of the
+  90 required columns before the harness cancelled. Teardown restored
+  the GX2 bulk heap and exited normally. A timed result is still open.
   [RC 42 qualification](rc42-qualification.md)
 - The next source recipe adds Night profile selection, the CPU handoff and
   an opt-in solid shader specialization, plus authenticated saved-bookmark
   joins. The standalone Cemu control and shader trial matched both full
   outputs with fog enabled and disabled. The profile-refresh path now
-  passes the host fixture using the native module layout, and the exact
-  native rebuild is running.
+  passes the host fixture using the native module layout. The pinned
+  native build and both package hashes passed. A two-round Cemu replay
+  of the exact package is measuring loading and save recovery.
   [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
-- RC 44 stages same-client load cancellation and idle Night close. It also
+- RC 44 stages same-client load cancellation, remote return to Home,
+  idle Night close and per-run authenticated GX2 profile captures. It also
   drops queued mesh snapshots once a newer revision supersedes them on
   Cafe. The deterministic host fixture reduced stale work from 157 jobs
-  to zero and kept the final revisions identical. The original Village
-  route still needs a native comparison.
+  to zero and kept the final revisions identical. The pinned source
+  assembly passed and the native build started. The original Village
+  route still needs a physical comparison.
   [RC 44 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc44-qualification/docs/gx2/rc44-qualification.md)
 
 ## Physical queue

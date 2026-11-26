@@ -62,13 +62,20 @@ The same grant started and cancelled `cafe-stationary` during loading.
 The launcher reported `cancelled`, the normal save remained byte-identical,
 and the selected installation's report list was unchanged. The app then
 opened Night's local reports page. The next remote start received the
-Home-page requirement. A fresh Cemu process can start the next run while
-the remote return-to-Home fix is qualified.
+Home-page requirement. A fresh Cemu process started the next run with the
+same grant. It built an initial Game frame, but the interpreter reached
+only 26 of 90 required resident columns and 10 visible sections on each
+output before the 24-minute fixture budget expired. The stationary
+measurement window never opened. The harness requested cancellation,
+and the application reported `cancelled`, recovered 234,880,920 free GX2
+bulk bytes and exited through `coreinit.exit(0)`. All 26 ordinary save
+files predated this run. Report retrieval from a completed run remains
+pending.
 
 The replay used distances 12/12 and the emulator's own dual-display
 capture path. A distant plant differed from the RC 41 stills with a
 different terrain section count. Matched control pixels and throughput,
-actual benchmark execution and physical console restart remain open.
+completed benchmark report retrieval and physical console restart remain open.
 
 ## Integrated tests
 

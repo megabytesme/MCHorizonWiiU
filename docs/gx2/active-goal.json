@@ -191,7 +191,15 @@
     "rpx_sha256": "8188bbb334da899e9ecc995ebe1089c3713d8228ff110f4bb52a5d4ad02d98c1",
     "wuhb_sha256": "acf3132551b9a9b728e63afd1c7c73e19b8c16883a4f07a66b1e898d15734b3d",
     "stock_mcp_tools": 51,
-    "remote_benchmark_relaunch": "blocked_by_local_reports_page"
+    "remote_benchmark_relaunch": "blocked_by_local_reports_page",
+    "cemu_stationary_rerun": {
+      "result": "cancelled_by_fixture_before_stationary_window",
+      "resident_columns": 26,
+      "minimum_columns": 90,
+      "terrain_sections_per_display": 10,
+      "gx2_bulk_free_after_game_bytes": 234880920,
+      "clean_exit": true
+    }
   },
   "loading_experiment": {
     "branch": "codex/loading-cpu-handoff",
@@ -206,7 +214,11 @@
     "engine_tree": "e05bfda937b14a024f2ee3b34ffec95496a04c99",
     "stock_mcp_tools": 54,
     "standalone_opaque_shader_paired_pixels": "matched_fog_and_no_fog",
-    "native_build": "retry_started_after_cafe_profile_module_path_fix"
+    "native_build": "passed",
+    "rpx_sha256": "356f9cf09d578b701b61aeb8044947d1e9fc6479dc5a49119938599ef0cf638a",
+    "wuhb_sha256": "a717bebe1ff39d72376f1ae69c45fd801b63b56e7d3377d0d123e42b2e438561",
+    "estimated_aroma_headroom_bytes": 12728576,
+    "cemu_saved_world_replay": "running"
   },
   "night_load_cancellation": {
     "branch": "codex/night-load-cancellation",
@@ -218,10 +230,11 @@
   },
   "lifecycle_and_streaming_qualification": {
     "branch": "codex/rc44-qualification",
-    "commit": "15fae0213c8",
-    "engine_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
+    "commit": "6d631164373",
+    "engine_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
     "stock_mcp_tools": 57,
     "synthetic_stale_mesh_jobs": [157, 0],
-    "native_build": "pending"
+    "native_build": "running",
+    "authenticated_benchmark_profile_modes": ["4", "4q", "4r"]
   }
 }
