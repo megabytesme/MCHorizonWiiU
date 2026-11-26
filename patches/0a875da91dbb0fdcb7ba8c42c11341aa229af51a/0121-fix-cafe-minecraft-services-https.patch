@@ -1,0 +1,221 @@
+diff --git a/crates/horizon-client-render/src/auth.rs b/crates/horizon-client-render/src/auth.rs
+index 17d9708..ec3ab40 100644
+--- a/crates/horizon-client-render/src/auth.rs
++++ b/crates/horizon-client-render/src/auth.rs
+@@ -9,6 +9,8 @@ use std::{
+     time::{Duration, SystemTime},
+ };
+ 
++use crate::client_http::{is_success, services_agent_builder, services_body};
++
+ /// MinecraftServicesEnvironment.PROD.
+ pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
+ /// A session file older than this is refused: it can't be replayed later.
+@@ -229,8 +231,7 @@ pub fn discovery_url() -> String {
+ }
+ 
+ pub(crate) fn agent() -> ureq::Agent {
+-    ureq::AgentBuilder::new()
+-        .timeout(Duration::from_secs(15))
++    services_agent_builder()
+         .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+         .build()
+ }
+@@ -251,7 +252,8 @@ pub(crate) fn discovery() -> Result<Arc<serde_json::Value>, JoinError> {
+         .call()
+         .inspect_err(|e| log::warn!("The services discovery document: {e}"))
+         .ok()
+-        .and_then(|r| r.into_string().ok())
++        .filter(is_success)
++        .and_then(services_body)
+         .and_then(|t| serde_json::from_str(&t).ok())
+         .ok_or(JoinError::Unavailable)?;
+     let doc = Arc::new(doc);
+@@ -278,25 +280,25 @@ pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::Account
+     };
+     let properties = endpoint(&doc, "player", "getAttributes")
+         .and_then(|url| {
+-            agent()
++            let response = agent()
+                 .get(&url)
+                 .set("Authorization", &format!("Bearer {}", session.access_token))
+                 .call()
+-                .ok()?
+-                .into_string()
+                 .ok()
++                .filter(is_success)?;
++            services_body(response)
+         })
+         .and_then(|body| parse_properties(&body))
+         .unwrap_or_default();
+     let actions = endpoint(&doc, "session", "getProfileById")
+         .and_then(|url| {
+             let url = url.replace("{profileId}", &format!("{:032x}", session.uuid));
+-            agent()
++            let response = agent()
+                 .get(&format!("{url}?unsigned=true"))
+                 .call()
+-                .ok()?
+-                .into_string()
+                 .ok()
++                .filter(is_success)?;
++            services_body(response)
+         })
+         .map(|body| parse_profile_actions(&body))
+         .unwrap_or_default();
+@@ -350,14 +352,15 @@ fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), Join
+         .set("Content-Type", "application/json; charset=utf-8")
+         .send_string(&join_request(session, server_hash))
+     {
+-        Ok(_) => Ok(()),
++        Ok(response) if is_success(&response) => Ok(()),
++        Ok(_) => Err(JoinError::Unavailable),
+         Err(ureq::Error::Status(status, response)) => {
+             if status >= 500 {
+                 log::warn!("The session service's join answered {status}");
+             }
+             Err(JoinError::from_response(
+                 status,
+-                &response.into_string().unwrap_or_default(),
++                &services_body(response).unwrap_or_default(),
+             ))
+         }
+         Err(ureq::Error::Transport(e)) => {
+@@ -473,11 +476,14 @@ pub fn fetch_chat_keys(session: &AuthSession) -> Result<ChatKeyPair, JoinError>
+         .set("Content-Type", "application/json; charset=utf-8")
+         .send_string("")
+     {
+-        Ok(response) => response.into_string().unwrap_or_default(),
++        Ok(response) if is_success(&response) => {
++            services_body(response).ok_or(JoinError::Unavailable)?
++        }
++        Ok(_) => return Err(JoinError::Unavailable),
+         Err(ureq::Error::Status(status, response)) => {
+             return Err(JoinError::from_response(
+                 status,
+-                &response.into_string().unwrap_or_default(),
++                &services_body(response).unwrap_or_default(),
+             ));
+         }
+         Err(ureq::Error::Transport(_)) => return Err(JoinError::Unavailable),
+@@ -584,7 +590,7 @@ pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+     if response.status() != 200 {
+         return None;
+     }
+-    let body = response.into_string().ok()?;
++    let body = services_body(response)?;
+     let profile: serde_json::Value = serde_json::from_str(&body).ok()?;
+     Some(crate::skins::services_profile_textures(&profile))
+ }
+@@ -633,10 +639,13 @@ pub fn has_joined(
+     }
+     let separator = if url.contains('?') { '&' } else { '?' };
+     let body = match agent().get(&format!("{url}{separator}{query}")).call() {
+-        Ok(response) => response.into_string().unwrap_or_default(),
++        Ok(response) if is_success(&response) => {
++            services_body(response).ok_or(JoinError::Unavailable)?
++        }
++        Ok(_) => return Err(JoinError::Unavailable),
+         Err(ureq::Error::Status(status, response)) => {
+             let error =
+-                JoinError::from_response(status, &response.into_string().unwrap_or_default());
++                JoinError::from_response(status, &services_body(response).unwrap_or_default());
+             return match error {
+                 JoinError::Unavailable => Err(error),
+                 _ => Ok(None),
+diff --git a/crates/horizon-client-render/src/client_http.rs b/crates/horizon-client-render/src/client_http.rs
+new file mode 100644
+index 0000000..f1b705d
+--- /dev/null
++++ b/crates/horizon-client-render/src/client_http.rs
+@@ -0,0 +1,64 @@
++//! HTTP configuration for the desktop and hosted clients.
++use std::io::Read;
++use std::time::Duration;
++
++pub(crate) fn agent_builder() -> ureq::AgentBuilder {
++    let timeout = Duration::from_secs(15);
++    let builder = ureq::AgentBuilder::new();
++    #[cfg(not(target_os = "cafe"))]
++    let builder = builder.timeout(timeout);
++    #[cfg(target_os = "cafe")]
++    // ureq's overall deadline sets a socket send timeout before TLS.
++    // Cafe std supports TCP connect deadlines and emulates receive timeouts.
++    let builder = builder.timeout_connect(timeout).timeout_read(timeout);
++    builder
++}
++
++pub(crate) fn services_agent_builder() -> ureq::AgentBuilder {
++    let builder = agent_builder();
++    #[cfg(target_os = "cafe")]
++    let builder = builder.https_only(true).redirects(0);
++    builder
++}
++
++pub(crate) fn is_success(response: &ureq::Response) -> bool {
++    (200..300).contains(&response.status())
++}
++
++/// Limit JSON responses before allocating memory proportional to their size.
++pub(crate) fn services_body(response: ureq::Response) -> Option<String> {
++    read_services_body(response.into_reader())
++}
++
++fn read_services_body(reader: impl Read) -> Option<String> {
++    const LIMIT: u64 = 1024 * 1024;
++    let mut body = Vec::new();
++    reader.take(LIMIT + 1).read_to_end(&mut body).ok()?;
++    if body.len() as u64 > LIMIT {
++        return None;
++    }
++    String::from_utf8(body).ok()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::io::Cursor;
++
++    #[test]
++    fn services_json_requires_utf8_and_has_a_hard_size_limit() {
++        let read = |bytes: &[u8]| read_services_body(Cursor::new(bytes));
++        assert_eq!(read(br#"{"ok":true}"#).as_deref(), Some(r#"{"ok":true}"#));
++        assert_eq!(read(&vec![b'a'; 1024 * 1024]).unwrap().len(), 1024 * 1024);
++        assert!(read(&vec![b'a'; 1024 * 1024 + 1]).is_none());
++        assert!(read(&[0xff]).is_none());
++    }
++
++    #[test]
++    fn a_redirect_is_never_a_successful_service_response() {
++        assert!(is_success(
++            &ureq::Response::new(204, "No Content", "").unwrap()
++        ));
++        assert!(!is_success(&ureq::Response::new(302, "Found", "").unwrap()));
++    }
++}
+diff --git a/crates/horizon-client-render/src/lib.rs b/crates/horizon-client-render/src/lib.rs
+index 718afc6..8d8b049 100644
+--- a/crates/horizon-client-render/src/lib.rs
++++ b/crates/horizon-client-render/src/lib.rs
+@@ -42,6 +42,7 @@ pub mod cit;
+ pub mod cit_armor;
+ pub mod cit_assets;
+ pub mod cit_glint;
++mod client_http;
+ pub mod client_resources;
+ pub mod clouds;
+ pub mod collisions;
+diff --git a/crates/horizon-client-render/src/skins.rs b/crates/horizon-client-render/src/skins.rs
+index 0a86692..5d8bad2 100644
+--- a/crates/horizon-client-render/src/skins.rs
++++ b/crates/horizon-client-render/src/skins.rs
+@@ -1418,8 +1418,7 @@ impl SkinSlots {
+ /// uses https): the body of a 2xx answer, 16 MiB at most, after redirects.
+ fn http_get(url: &str) -> Option<Vec<u8>> {
+     use std::io::Read;
+-    let response = ureq::AgentBuilder::new()
+-        .timeout(std::time::Duration::from_secs(15))
++    let response = crate::client_http::agent_builder()
+         .user_agent("Java")
+         .build()
+         .get(url)
