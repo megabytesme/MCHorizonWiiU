@@ -1,0 +1,371 @@
+diff --git a/crates/horizon-client-render/src/audio.rs b/crates/horizon-client-render/src/audio.rs
+index c8af41a1ab7d54c0b13b9d1eef40d7a919cc6bf1..ed986ecb2ba66f20f35a5cce8fd4f24aaba248c2 100644
+--- a/crates/horizon-client-render/src/audio.rs
++++ b/crates/horizon-client-render/src/audio.rs
+@@ -1795,11 +1795,22 @@ impl Audio {
+         Self::with_device(root, "")
+     }
+     pub fn with_device(root: &ResourceSource, device_name: &str) -> Self {
+-        Self::with_output(root, true, device_name)
++        Self::with_registry(root, SoundRegistry::load(root), true, device_name)
+     }
+     /// No output device: the dedicated server.
+     pub fn silent(root: &ResourceSource) -> Self {
+-        Self::with_output(root, false, "")
++        Self::silent_with_registry(root, SoundRegistry::load(root))
++    }
++    /// A separate silent engine using events already prepared for this resource generation.
++    pub fn silent_with_registry(root: &ResourceSource, registry: SoundRegistry) -> Self {
++        Self::with_registry(root, registry, false, "")
++    }
++    /// Snapshot the events only when the requested pack matches this audio engine.
++    pub fn registry_for(&self, root: &ResourceSource) -> Option<SoundRegistry> {
++        self.backend
++            .root
++            .same_generation(root)
++            .then(|| self.engine.registry.clone())
+     }
+     /// The output device asked for (`soundDevice`), empty for the system's default; the
+     /// default plays when that one can't be opened, as in vanilla.
+@@ -1816,8 +1827,12 @@ impl Audio {
+         self.engine.set_loop_context(context);
+         self.engine.notify_loaded();
+     }
+-    fn with_output(root: &ResourceSource, output: bool, target_device: &str) -> Self {
+-        let registry = SoundRegistry::load(root);
++    fn with_registry(
++        root: &ResourceSource,
++        registry: SoundRegistry,
++        output: bool,
++        target_device: &str,
++    ) -> Self {
+         if output && registry.is_empty() {
+             // The game then plays nothing on a working output (#1035, #1076).
+             log::warn!(
+@@ -2740,6 +2755,46 @@ impl Sounds for Audio {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn silent_registry_snapshot_matches_only_the_loaded_pack_generation() {
++        use horizon_assets::resource_source::Resource;
++        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
++            (
++                "assets/example/sounds.json".into(),
++                Resource::bytes(br#"{"tone":{"sounds":["example:tone"]}}"#.to_vec()),
++            ),
++            (
++                "assets/example/sounds/tone.ogg".into(),
++                Resource::bytes(Vec::new()),
++            ),
++        ]));
++        let mut client = Audio::silent(&source);
++        let mut registry = client.registry_for(&source.clone()).unwrap();
++        registry.add_file(
++            "example",
++            br#"{"extra":{"sounds":["example:tone"]}}"#,
++            &|_, _| true,
++        );
++        assert!(
++            client
++                .registry_for(&source)
++                .unwrap()
++                .get("example:extra")
++                .is_none()
++        );
++
++        let server = Audio::silent_with_registry(&source, registry);
++        let replacement = ResourceSource::indexed(Default::default());
++        client.reload(&replacement);
++        assert!(client.registry_for(&source).is_none());
++        assert!(server.registry_for(&replacement).is_none());
++        assert!(client.registry_for(&replacement).unwrap().is_empty());
++        let server_registry = server.registry_for(&source).unwrap();
++        assert!(server_registry.get("example:tone").is_some());
++        assert!(server_registry.get("example:extra").is_some());
++        assert!(!server.backend.live);
++    }
++
+     /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
+     /// are hiccups.
+     #[test]
+diff --git a/crates/horizon-client-render/src/sound_events.rs b/crates/horizon-client-render/src/sound_events.rs
+index 21b68476415314f9d5892644c25a8cc2c763a1a6..100b6cb37d1f5f4a04de6921aba45e926144a97e 100644
+--- a/crates/horizon-client-render/src/sound_events.rs
++++ b/crates/horizon-client-render/src/sound_events.rs
+@@ -7,7 +7,10 @@
+ use horizon_assets::resource_source::ResourceSource;
+ use horizon_core::random::RandomSource;
+ use serde_json::Value;
+-use std::collections::{HashMap, HashSet};
++use std::{
++    collections::{HashMap, HashSet},
++    sync::Arc,
++};
+ 
+ /// `SoundManager.EMPTY_SOUND_LOCATION`.
+ pub const EMPTY: &str = "minecraft:empty";
+@@ -146,7 +149,7 @@ pub fn is_valid_file(text: &[u8]) -> bool {
+ /// The sound event registry (`SoundManager.registry`).
+ #[derive(Clone, Debug, Default)]
+ pub struct SoundRegistry {
+-    events: HashMap<String, WeighedSoundEvents>,
++    events: Arc<HashMap<String, WeighedSoundEvents>>,
+ }
+ /// `Identifier.parse` with the default namespace.
+ fn split(id: &str) -> (&str, &str) {
+@@ -262,18 +265,19 @@ impl SoundRegistry {
+         let Some(parsed) = parse_file(namespace, text) else {
+             return;
+         };
++        let events = Arc::make_mut(&mut self.events);
+         for (location, replace, subtitle, sounds) in parsed {
+-            let entry = match self.events.get_mut(&location) {
++            let entry = match events.get_mut(&location) {
+                 Some(entry) if !replace => entry,
+                 _ => {
+-                    self.events.insert(
++                    events.insert(
+                         location.clone(),
+                         WeighedSoundEvents {
+                             sounds: Vec::new(),
+                             subtitle,
+                         },
+                     );
+-                    self.events.get_mut(&location).expect("inserted")
++                    events.get_mut(&location).expect("inserted")
+                 }
+             };
+             for sound in sounds {
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index c1c86cb3dd5a1e71390581222a1d5f6feb47b5c2..abdd3123f5910e17cedb2ee297fd69409ec22778 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -1574,6 +1574,9 @@ struct Game<'a> {
+     cushion_model: Option<horizon_client::mobs::Part>,
+     /// Models drawn only once such an entity shows up (lead knots, wind charges...).
+     entity_models: EntityModels,
++    /// A hosted local-world handoff consumes the parsed document once on the server thread.
++    #[cfg(target_os = "cafe")]
++    server_entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
+     carts: horizon_client::join_seq::JoinList<minecarts::Minecart, false>,
+     /// The boats and minecarts `native_vehicle_moved` follows (lan_vehicles.rs).
+     watched_vehicles: Vec<lan_vehicles::WatchedVehicle>,
+@@ -10630,6 +10633,20 @@ impl<'a> Game<'a> {
+         settings: Settings,
+         audio: Audio,
+         prepared: Option<GameCpuResources>,
++    ) -> Result<Self> {
++        Self::new_with_entity_models(res, pack, gui, options, settings, audio, prepared, None)
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn new_with_entity_models(
++        res: &'a Arc<Resources>,
++        pack: PackResources,
++        gui: UiResources,
++        options: Options,
++        settings: Settings,
++        audio: Audio,
++        prepared: Option<GameCpuResources>,
++        entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
+     ) -> Result<Self> {
+         #[cfg(target_os = "cafe")]
+         let cafe_viewport = options.window_size;
+@@ -10663,15 +10680,18 @@ impl<'a> Game<'a> {
+             horizon_client::save::LevelShape::OVERWORLD,
+         ));
+         let prepared = prepared.map(Ok).unwrap_or_else(|| {
+-            GameCpuResources::load(
+-                &horizon_assets::resource_source::ResourceRoot::new(
+-                    root.clone(),
+-                    packs::cache_dir(),
+-                    pack.source.clone(),
+-                ),
+-                None,
+-            )
++            startup::time("game.new_cpu_resources", || {
++                GameCpuResources::load(
++                    &horizon_assets::resource_source::ResourceRoot::new(
++                        root.clone(),
++                        packs::cache_dir(),
++                        pack.source.clone(),
++                    ),
++                    entity_models.as_deref(),
++                )
++            })
+         })?;
++        drop(entity_models);
+         let world = Game::world_for_mods(res.facts().air, 0);
+         let tutorial = tutorial::Tutorial::new(tutorial::Step::from_option(
+             settings.file.int("tutorialStep"),
+@@ -11050,6 +11070,8 @@ impl<'a> Game<'a> {
+             crystal_model: prepared.crystal_model,
+             cushion_model: prepared.cushion_model,
+             entity_models: prepared.entity_models,
++            #[cfg(target_os = "cafe")]
++            server_entity_models: None,
+             carts: Default::default(),
+             watched_vehicles: Vec::new(),
+             jukebox_sounds: HashMap::new(),
+diff --git a/crates/horizon-client/src/game/runtime/resource_loader.rs b/crates/horizon-client/src/game/runtime/resource_loader.rs
+index b6b7c49b86c016d40cc30e0cd6187aec802d60cc..582563ac9473e6df12e055c6d00b140b5683fb55 100644
+--- a/crates/horizon-client/src/game/runtime/resource_loader.rs
++++ b/crates/horizon-client/src/game/runtime/resource_loader.rs
+@@ -69,7 +69,9 @@ impl GameCpuResources {
+         let owned_document;
+         let document = match document {
+             Some(document) => Some(document),
+-            None => match horizon_client::mobs::EntityModelDocument::load(root) {
++            None => match startup::time("game_cpu.entity_models_parse", || {
++                horizon_client::mobs::EntityModelDocument::load(root)
++            }) {
+                 Ok(document) => {
+                     owned_document = document;
+                     Some(&owned_document)
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index b68f32a9d89056583646bb64ccd1dc73a5000faf..ef98beaafabb3395decbe70bdac292772f63e561 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -562,6 +562,13 @@ impl Game<'_> {
+         let (ready_tx, ready) = channel();
+         let (tasks, server_tasks) = channel();
+         let server_flags = flags.clone();
++        let startup_resources = ServerStartupResources {
++            sound_registry: self.audio.registry_for(&pack.source),
++            #[cfg(target_os = "cafe")]
++            entity_models: self.server_entity_models.take(),
++            #[cfg(not(target_os = "cafe"))]
++            entity_models: None,
++        };
+         let run_server = move |_: &()| {
+             let _finished = Finished(server_flags.clone());
+             // MinecraftServer.spin's Thread.setPriority(8).
+@@ -572,6 +579,7 @@ impl Game<'_> {
+                 options,
+                 settings,
+                 launch,
++                startup_resources,
+                 server_flags.clone(),
+                 server_tasks,
+                 &ready_tx,
+@@ -1417,6 +1425,13 @@ impl Game<'_> {
+     }
+ }
+ 
++/// Assets prepared by the client for this integrated server's pack.
++#[derive(Default)]
++struct ServerStartupResources {
++    sound_registry: Option<horizon_client::sound_events::SoundRegistry>,
++    entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
++}
++
+ /// The server thread: a game of its own over the shared resources.
+ #[allow(clippy::too_many_arguments)]
+ fn serve(
+@@ -1425,6 +1440,7 @@ fn serve(
+     options: Options,
+     settings: Settings,
+     launch: Launch,
++    startup_resources: ServerStartupResources,
+     flags: Arc<Flags>,
+     tasks: Receiver<Task>,
+     ready: &Sender<Ready>,
+@@ -1458,7 +1474,7 @@ fn serve(
+         sync: preload_sync_data(&res.core.item_data),
+     };
+     let mut server = match startup::time("server.game_new", || {
+-        server_game(res, pack, options, settings)
++        server_game(res, pack, options, settings, startup_resources)
+     }) {
+         Ok(server) => server,
+         Err(e) => {
+@@ -1498,7 +1514,13 @@ impl Game<'_> {
+             .stack_size(server_thread_stack())
+             .spawn(move || {
+                 let run = || -> Result<()> {
+-                    let mut server = server_game(&res, pack, options, settings)?;
++                    let mut server = server_game(
++                        &res,
++                        pack,
++                        options,
++                        settings,
++                        ServerStartupResources::default(),
++                    )?;
+                     // The oracle supplies an already-open synthetic world rather
+                     // than running the normal config and startup lifecycle.
+                     server
+@@ -1526,10 +1548,27 @@ fn server_game(
+     pack: PackResources,
+     options: Options,
+     settings: Settings,
++    startup_resources: ServerStartupResources,
+ ) -> Result<Game<'_>> {
+-    let gui = UiResources::server(&pack.source)?;
+-    let audio = Audio::silent(&pack.source);
+-    Game::new(res, pack, gui, options, settings, audio, None)
++    let gui = startup::time("server.font_metrics", || UiResources::server(&pack.source))?;
++    let audio = startup::time("server.silent_audio", || {
++        match startup_resources.sound_registry {
++            Some(registry) => Audio::silent_with_registry(&pack.source, registry),
++            None => Audio::silent(&pack.source),
++        }
++    });
++    startup::time("server.game_state", || {
++        Game::new_with_entity_models(
++            res,
++            pack,
++            gui,
++            options,
++            settings,
++            audio,
++            None,
++            startup_resources.entity_models,
++        )
++    })
+ }
+ 
+ /// Who the integrated server turns away: anyone but the owner until it is opened to the LAN.
+diff --git a/crates/horizon-client/src/game/world/packs/mod.rs b/crates/horizon-client/src/game/world/packs/mod.rs
+index 40549e0005feb7a33caa64385b3716aa5d5ce171..c76489feda9f256244806ca73b0e418f2469ede1 100644
+--- a/crates/horizon-client/src/game/world/packs/mod.rs
++++ b/crates/horizon-client/src/game/world/packs/mod.rs
+@@ -550,6 +550,10 @@ impl Game<'_> {
+         self.options.resources = root.clone();
+         self.falling_vertices.get_mut().clear();
+         self.pack = pack;
++        #[cfg(target_os = "cafe")]
++        {
++            self.server_entity_models = None;
++        }
+         let skip = self
+             .settings
+             .extras
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 0e703a331bc87ade2d4888d5c25781fed0e14a6e..925e9745fd28935d1d60ac445ea1ab3f61fe3c41 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -470,6 +470,12 @@ impl<'resources> CafeLoadingSession<'resources> {
+         ));
+         self.resources.set(resources).map_err(|_| "Cafe session already received resources")?;
+         let res = self.resources.get().expect("Cafe session resources assigned");
++        #[cfg(target_os = "cafe")]
++        let server_entity_models = if entry_kind == CafeGameEntryKind::LocalWorld {
++            entity_models.clone()
++        } else {
++            None
++        };
+         let Some(mut game) = start_game(
+             res,
+             pack,
+@@ -488,6 +494,10 @@ impl<'resources> CafeLoadingSession<'resources> {
+         else {
+             return Err("Cafe game handoff did not create Game".into());
+         };
++        #[cfg(target_os = "cafe")]
++        {
++            game.server_entity_models = server_entity_models;
++        }
+         let shell_pending = self.loading.menu.pending.clone();
+         self.loading.menu.handoff(&mut game);
+         self.loading.menu.pending = shell_pending;

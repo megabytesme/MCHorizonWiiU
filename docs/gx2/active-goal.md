@@ -6,7 +6,7 @@ Status active. Baseline verified on 26 November 2026. Canonical development is o
 RC 38, assembled tree `8ecf49ba0a2c12da512ccc803730d79ece8aeb61`, Horizon
 `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`, Cafe Toolchain 1.1.0.
 Both local package hashes match the build receipt. RC 35 is the physical
-fallback. [Machine-readable status](active-goal.json) · [RC 38 evidence](rc38-validation.md)
+fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38-validation.md)
 
 ## Acceptance and current evidence
 
@@ -38,8 +38,9 @@ fallback. [Machine-readable status](active-goal.json) · [RC 38 evidence](rc38-v
   in forced-interpreter Cemu. Qualify an opt-in solid terrain back-face
   path in a hosted world before moving on to axis-facing index ranges.
   [Winding fixture](../../wiiu/diagnostics/gx2-terrain-winding/README.md)
-- The integration build tests an opt-in terrain retirement path and reuses
-  prepared server resources. A subsequent source iteration scopes villager
+- The RC 40 package builds with the opt-in terrain retirement path and
+  prepared server resource reuse. Night passed the independent Cemu
+  display checks. The hosted replay is running. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
   texture discovery and exposes authenticated live graphics controls.
 - The RC 38 multi-core Cemu retry captured both Night displays and reached
   native loading before returning to Night with invalid allocator counters.

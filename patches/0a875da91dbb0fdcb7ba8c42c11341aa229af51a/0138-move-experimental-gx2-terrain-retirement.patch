@@ -1,0 +1,156 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 71125e0554c01c8ef90d92f999feb33c0c95eb67..e1bb15d56227ee6a6176a021cd8cecc0c75f8e0a 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -81,7 +81,7 @@ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_at
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+-static bool skip_scaled_output_clear, defer_flip;
++static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -127,6 +127,7 @@ void horizon_gx2_profile_init(void)
+       variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
+    skip_scaled_output_clear = variant == 'c';
+    defer_flip = variant == 'q';
++   skip_terrain_waits = variant == 't';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -136,6 +137,7 @@ void horizon_gx2_profile_init(void)
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
++   if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+ }
+@@ -185,6 +187,20 @@ bool horizon_gx2_profile_defer_flip(void)
+    return defer_flip;
+ }
+ 
++bool horizon_gx2_profile_skip_terrain_waits(void)
++{
++   if (!skip_terrain_waits) return false;
++   // WHB calls GX2DrawDone but does not expose its success status.
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   if (submitted > 0 && GX2GetRetiredTimeStamp() >= submitted) return true;
++   static bool reported_unverified_retirement;
++   if (!reported_unverified_retirement) {
++      reported_unverified_retirement = true;
++      OSReport("Horizon GX2 frame-boundary terrain retirement unverified; using per-output waits\n");
++   }
++   return false;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 382a5bace6759093beb4f2f862661dd67f4f2a8f..5266ac38d392defe452fdc17f21fed2b226f5323 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -44,6 +44,7 @@ bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
++bool horizon_gx2_profile_skip_terrain_waits(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 201c95d8d9913f871460c044a3afd755c7c1d998..0c40514306139656ccd1a7a8a3829dea065cdbc6 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -206,6 +206,7 @@ extern "C" {
+     ) -> i32;
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_profile_defer_flip() -> bool;
++    fn horizon_gx2_profile_skip_terrain_waits() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+@@ -1972,6 +1973,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             profile: Gx2ProfileDelta,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             atlas_patches_prepared: bool,
++            skip_terrain_waits: bool,
+         }
+         unsafe extern "C" fn draw_target(
+             context: *mut c_void,
+@@ -1987,7 +1989,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let index = target as usize;
+             let rect = draw.targets[index];
+             let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-            if draw.uploaded_hud.is_none() && !draw.frame.title && draw.presenter.terrain.is_some() {
++            if !draw.skip_terrain_waits
++                && draw.uploaded_hud.is_none()
++                && !draw.frame.title
++                && draw.presenter.terrain.is_some()
++            {
+                 // The comparison path retains the original per-output waits.
+                 let wait_start = Instant::now();
+                 {
+@@ -2043,7 +2049,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 .as_ref()
+                 .map(|terrain| terrain.native)
+             {
+-                if draw.uploaded_hud.is_none()
++                if !draw.skip_terrain_waits
++                    && draw.uploaded_hud.is_none()
+                     && index == 0
+                     && !draw.presenter.models.is_empty()
+                     && !draw.frame.hud.patches.is_empty()
+@@ -2391,6 +2398,24 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             [r, g, b, 1.0]
+         };
+         let present_start = Instant::now();
++        let skip_terrain_waits = !frame.title
++            && self.terrain.is_some()
++            && unsafe { horizon_gx2_profile_skip_terrain_waits() };
++        let mut atlas_patches_prepared = false;
++        if skip_terrain_waits {
++            // The previous WHB finish drained both outputs. Reclaim terrain and
++            // update the shared atlas before any current-frame draw can read it.
++            // Per-output uploads target distinct storage, and the direct HUD
++            // still waits before changing its shared buffer and atlas.
++            self.finish_retired_after_wait();
++            if !self.models.is_empty() && !frame.hud.patches.is_empty() {
++                let hud = self.hud.as_mut().ok_or("GX2 HUD atlas is not prepared")?;
++                let _upload = Span::new(Stage::TextureUpload);
++                unsafe { hud.apply_atlas_patches_after_wait(frame.hud) }
++                    .map_err(hud_error_message)?;
++                atlas_patches_prepared = true;
++            }
++        }
+         self.models.begin_frame(unsafe { horizon_gx2_profile_shared_model_uploads() });
+         let uploaded_hud = if !unsafe { horizon_gx2_profile_shared_hud_upload() } {
+             None
+@@ -2435,7 +2460,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
+             uploaded_hud,
+-            atlas_patches_prepared: false,
++            atlas_patches_prepared,
++            skip_terrain_waits,
+         };
+         let host = unsafe {
+             present(
+diff --git a/wiiu/loading_host/outline.rs b/wiiu/loading_host/outline.rs
+index 5de211dc85038e13def60bd30285ce8cae7f7921..6095123079c63f97123fb4ad6f3a756777c6c192 100644
+--- a/wiiu/loading_host/outline.rs
++++ b/wiiu/loading_host/outline.rs
+@@ -95,9 +95,8 @@ impl Outline {
+             }
+         };
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+-        // The callback owns the active output and the pre-terrain wait has
+-        // retired the last use of this output's backing. The upload copies
+-        // the CPU scratch before the synchronous call returns.
++        // WHB retired this output's backing at the end of the previous
++        // frame. The upload copies the CPU scratch before it returns.
+         if unsafe {
+             horizon_gx2_outline_draw(
+                 native.as_ptr(),
