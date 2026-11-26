@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
+  "output_tree": "f28a2287528bd706bece40170c85142ba5d7465d",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -980,12 +980,18 @@
       "sha256": "3502a300699d99523b64038a90eb148321c07d8f97d96a5695dd9612d7e1d464",
       "input_tree": "f992e986276f7a2a5ea2306ee650d4c0d60c18c8",
       "output_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0162-guard-cafe-only-game-references.patch",
+      "sha256": "721c8b4d8bca726c750ecdbb2e445478a257566bff050618b8015ce4311d0d9d",
+      "input_tree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
+      "output_tree": "f28a2287528bd706bece40170c85142ba5d7465d"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.44",
-    "patch": "0.5.0-rc.44"
+    "client": "0.8.0-rc.45",
+    "patch": "0.5.0-rc.45"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
