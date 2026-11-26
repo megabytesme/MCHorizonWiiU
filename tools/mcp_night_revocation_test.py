@@ -94,8 +94,17 @@ mod night_store;
 """
 
 
-def run(source):
-    fixture_test = ROOT / "tools/fixtures/night_mcp_revocation.rs"
+CASES = {
+    "revocation": ("revocation_fixture", "night_mcp_revocation.rs",
+                   "copied_grant_revocation_closes_queued_write_and_reply"),
+    "benchmark-run-id": ("benchmark_run_id_fixture", "night_mcp_benchmark_run_id.rs",
+                         "benchmark_run_id_survives_foreground_handoff_and_scopes_cancel"),
+}
+
+
+def run(source, case="revocation"):
+    module, filename, test = CASES[case]
+    fixture_test = ROOT / "tools/fixtures" / filename
     with tempfile.TemporaryDirectory(prefix="horizon-night-revocation-") as name:
         scratch = Path(name)
         shutil.copytree(source / NIGHT, scratch / NIGHT)
@@ -103,9 +112,9 @@ def run(source):
             (scratch / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source / path, scratch / path)
         bridge = scratch / NIGHT / "night_mcp.rs"
-        shutil.copy2(fixture_test, bridge.with_name("revocation_fixture.rs"))
+        shutil.copy2(fixture_test, bridge.with_name(filename))
         with bridge.open("a", encoding="utf-8") as file:
-            file.write('\n#[cfg(test)]\n#[path = "revocation_fixture.rs"]\nmod revocation_fixture;\n')
+            file.write(f'\n#[cfg(test)]\n#[path = "{filename}"]\nmod {module};\n')
         # A path module beside Night preserves its native hosted::mcp alias.
         (scratch / NIGHT / "host_fixture.rs").write_text(HOST, encoding="utf-8")
         (scratch / NIGHT / "hosted.rs").write_text(HOSTED, encoding="utf-8")
@@ -131,7 +140,7 @@ def run(source):
         )
         subprocess.run(
             ["cargo", "test", "--offline", "--manifest-path", str(manifest), "--lib",
-             "hosted::mcp::revocation_fixture::copied_grant_revocation_closes_queued_write_and_reply",
+             f"hosted::mcp::{module}::{test}",
              "--", "--exact", "--test-threads=1"],
             env=env, cwd=runtime, check=True,
         )
@@ -140,4 +149,6 @@ def run(source):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path, help="assembled Nightly source directory")
-    run(parser.parse_args().source.resolve())
+    parser.add_argument("--case", choices=CASES, default="revocation")
+    args = parser.parse_args()
+    run(args.source.resolve(), args.case)

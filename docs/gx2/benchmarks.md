@@ -91,6 +91,14 @@ If the polling deadline expires, the receipt records the last observed
 state. When Night supplied an owned run ID, the runner requests cancellation
 for that ID and records the reply. On RC 47, the benchmark continues in Night.
 
+Night returns `run_id` at benchmark start and repeats it in status through
+loading, gameplay and completion. The authenticated client can supply that
+ID to `wiiu_benchmark_cancel`. Night checks both the run and the registered
+client before cancelling. A successful reply describes that same run if a
+replacement is queued before the reply arrives. An on-console run has a
+null ID. The existing empty-argument cancellation remains available to
+clients that use the foreground cancellation tool directly.
+
 ## Disposable-world lifecycle
 
 On RC 45 and later, use one existing paired Codex profile throughout a

@@ -1,8 +1,8 @@
 # Nightly MCP comparison
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
-registers 194 tools. The assembled RC 47 tree
-`499ba0705dce6703c521417ba92e2542380e074a` registers 63 stock tools through
+registers 194 tools. The assembled RC 48 tree
+`2d25556f525e17ecec1c26abb84a279776cfa22d` registers 63 stock tools through
 Night's authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the

@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "499ba0705dce6703c521417ba92e2542380e074a",
+  "output_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1034,12 +1034,18 @@
       "sha256": "c90ef938634f63949fb1c4931a8ba711dec2530af17d73363f43943a1354a3f0",
       "input_tree": "dea7b5ec95b9c552d45ae1b739d3a30501135fb3",
       "output_tree": "499ba0705dce6703c521417ba92e2542380e074a"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0171-bind-automated-cancellation-to-benchmark-run.patch",
+      "sha256": "bceed3151166ee1bdb912dd717501543f63e2247b6df493a13fa465c80783785",
+      "input_tree": "499ba0705dce6703c521417ba92e2542380e074a",
+      "output_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.47",
-    "patch": "0.5.0-rc.47"
+    "client": "0.8.0-rc.48",
+    "patch": "0.5.0-rc.48"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

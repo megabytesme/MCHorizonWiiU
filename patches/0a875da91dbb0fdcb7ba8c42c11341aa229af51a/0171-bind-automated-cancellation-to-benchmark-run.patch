@@ -1,0 +1,225 @@
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index afb8d17f43eff31eac80ab2e7f82054d14389502..c5b776a3e1e3ae94d8e8d48f8ba9739e372635e9 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -8,7 +8,7 @@ use super::{
+     CAFE_APP_ROOT,
+ };
+ use horizon_wiiu_mcp::{
+-    oauth::{Principal, Scopes},
++    oauth::{self, Principal, Scopes},
+     protocol::{text_result, Fault},
+     router::Backend,
+     service::{Policy, Service},
+@@ -60,7 +60,26 @@ pub(super) enum LaunchError {
+     Failed,
+ }
+ 
++struct BenchmarkRun {
++    id: String,
++    owner: String,
++}
++
++impl BenchmarkRun {
++    fn new(principal: &Principal) -> Result<Self, oauth::Error> {
++        Ok(Self {
++            id: format!("{:032x}", u128::from_be_bytes(oauth::random_bytes()?)),
++            owner: principal.client_id.clone(),
++        })
++    }
++
++    fn matches(&self, expected: &str, owner: &str) -> bool {
++        self.id == expected && self.owner == owner
++    }
++}
++
+ struct Benchmark {
++    run: Option<BenchmarkRun>,
+     scenario: Option<&'static str>,
+     instance: Option<String>,
+     phase: &'static str,
+@@ -73,6 +92,7 @@ struct Benchmark {
+ static LAUNCH: Mutex<Option<PendingLaunch>> = Mutex::new(None);
+ static STARTUP: Mutex<Option<Arc<Startup>>> = Mutex::new(None);
+ static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
++    run: None,
+     scenario: None,
+     instance: None,
+     phase: "idle",
+@@ -240,16 +260,21 @@ pub(super) fn take_close() -> bool {
+ }
+ 
+ fn benchmark_state() -> Value {
+-    let state = BENCHMARK.lock().unwrap();
++    benchmark_value(&BENCHMARK.lock().unwrap())
++}
++
++fn benchmark_value(state: &Benchmark) -> Value {
+     json!({"scenario": state.scenario, "instance": state.instance,
+         "phase": state.phase, "report_id": state.report,
++        "run_id": state.run.as_ref().map(|run| &run.id),
+         "profile": state.profile.map(BenchmarkProfile::label), "capture_id": state.capture,
+         "cancel_requested": state.cancel.is_some(),
+         "night_home_ready": HOME.load(Ordering::Acquire)})
+ }
+ 
+-fn benchmark_queued(request: &BenchmarkRequest) {
++fn benchmark_queued(request: &BenchmarkRequest, run: BenchmarkRun) {
+     let mut state = BENCHMARK.lock().unwrap();
++    state.run = Some(run);
+     state.scenario = Some(request.scenario);
+     state.instance = Some(request.instance.clone());
+     state.phase = "queued";
+@@ -260,6 +285,20 @@ fn benchmark_queued(request: &BenchmarkRequest) {
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+ 
++fn start_queued_benchmark(request: &BenchmarkRequest, owner: &Principal) -> bool {
++    let mut state = BENCHMARK.lock().unwrap();
++    if state.phase != "queued"
++        || state.run.as_ref().is_none_or(|run| run.owner != owner.client_id)
++        || state.scenario != Some(request.scenario)
++        || state.instance.as_deref() != Some(&request.instance)
++        || state.profile != request.profile
++    {
++        return false;
++    }
++    state.phase = "loading";
++    true
++}
++
+ pub(super) fn benchmark_loading(
+     scenario: &'static str,
+     instance: &str,
+@@ -271,6 +310,7 @@ pub(super) fn benchmark_loading(
+         || state.instance.as_deref() != Some(instance)
+         || state.profile != profile
+     {
++        state.run = None;
+         state.scenario = Some(scenario);
+         state.instance = Some(instance.to_owned());
+         state.phase = "loading";
+@@ -313,10 +353,16 @@ pub(super) fn benchmark_finished(
+     BENCHMARK_CANCEL.store(false, Ordering::Release);
+ }
+ 
+-fn cancel_benchmark(principal: &Principal) -> bool {
++fn cancel_benchmark(principal: &Principal, expected: Option<&str>) -> Option<Value> {
+     let mut pending = LAUNCH.lock().unwrap();
+     if !REMOTE_LAUNCH.load(Ordering::Acquire) || !principal.is_active() {
+-        return false;
++        return None;
++    }
++    let mut state = BENCHMARK.lock().unwrap();
++    if expected.is_some_and(|id| {
++        !state.run.as_ref().is_some_and(|run| run.matches(id, &principal.client_id))
++    }) {
++        return None;
+     }
+     if let Some(request) = pending.as_mut() {
+         if matches!(&request.args, LaunchArgs::Benchmark(_)) && !request.cancelled {
+@@ -324,17 +370,20 @@ fn cancel_benchmark(principal: &Principal) -> bool {
+             if !request.dispatched {
+                 pending.take();
+             }
+-            benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+-            return true;
++            state.phase = "cancelled";
++            state.report = None;
++            state.capture = None;
++            state.cancel = None;
++            BENCHMARK_CANCEL.store(false, Ordering::Release);
++            return Some(benchmark_value(&state));
+         }
+     }
+-    let mut state = BENCHMARK.lock().unwrap();
+     if !matches!(state.phase, "loading" | "running") {
+-        return false;
++        return None;
+     }
+     state.cancel = Some(principal.clone());
+     BENCHMARK_CANCEL.store(true, Ordering::Release);
+-    true
++    Some(benchmark_value(&state))
+ }
+ 
+ pub(crate) fn take_benchmark_cancel() -> bool {
+@@ -482,7 +531,9 @@ pub(super) fn take_launch() -> Result<Option<RemoteLaunch>, LaunchError> {
+                 benchmark_finished(BenchmarkOutcome::Cancelled, None, None);
+                 return Err(LaunchError::Cancelled);
+             }
+-            benchmark_loading(benchmark.scenario, &benchmark.instance, benchmark.profile);
++            if !start_queued_benchmark(&benchmark, &request.principal) {
++                return Err(LaunchError::Cancelled);
++            }
+             drop(pending);
+             let mut service = local_service().lock().unwrap();
+             if !launch_authorized(&request.principal) {
+@@ -792,8 +843,10 @@ fn catalog() -> &'static [Value] {
+                 }),
+                 json!({
+                     "name": "wiiu_benchmark_cancel",
+-                    "description": "Cancel a queued or active isolated Wii U benchmark and return to Night.",
+-                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
++                    "description": "Cancel a queued or active isolated Wii U benchmark and return to Night. Automated callers should supply the run ID returned by start to cancel only their own matching run.",
++                    "inputSchema": {"type": "object", "properties": {
++                        "run_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
++                    }, "additionalProperties": false},
+                 }),
+                 json!({
+                     "name": GAMEPAD_SCREENSHOT,
+@@ -901,17 +954,37 @@ impl Backend for NightTools {
+         if name == "wiiu_profile_select" {
+             return Ok(select_profile(principal, args, disconnected));
+         }
+-        if matches!(name, "wiiu_benchmark_status" | "wiiu_benchmark_cancel") {
++        if name == "wiiu_benchmark_status" {
+             if !args.as_object().is_some_and(|args| args.is_empty()) {
+                 return Ok(text_result("This tool does not take arguments.", true));
+             }
+-            if name == "wiiu_benchmark_cancel" && !cancel_benchmark(principal) {
++            return Ok(text_result(&benchmark_state().to_string(), false));
++        }
++        if name == "wiiu_benchmark_cancel" {
++            let expected = match args.as_object() {
++                Some(fields) if fields.is_empty() => None,
++                Some(fields) if fields.len() == 1 => fields.get("run_id").and_then(Value::as_str),
++                _ => None,
++            };
++            if !args.as_object().is_some_and(|fields| fields.is_empty())
++                && !expected.is_some_and(|id| {
++                    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
++                })
++            {
++                return Ok(text_result("Use the benchmark run ID returned by Night.", true));
++            }
++            let cancelled = if disconnected() {
++                None
++            } else {
++                cancel_benchmark(principal, expected)
++            };
++            let Some(cancelled) = cancelled else {
+                 return Ok(text_result(
+-                    "No cancellable Wii U benchmark is queued or running.",
++                    "No matching cancellable Wii U benchmark is queued or running.",
+                     true,
+                 ));
+-            }
+-            return Ok(text_result(&benchmark_state().to_string(), false));
++            };
++            return Ok(text_result(&cancelled.to_string(), false));
+         }
+         if matches!(
+             name,
+@@ -1015,7 +1088,10 @@ impl Backend for NightTools {
+             return Ok(match start {
+                 Ok(args) => {
+                     let (startup, result) = if let LaunchArgs::Benchmark(benchmark) = &args {
+-                        benchmark_queued(benchmark);
++                        let Ok(run) = BenchmarkRun::new(principal) else {
++                            return Ok(text_result("Night could not identify this benchmark.", true));
++                        };
++                        benchmark_queued(benchmark, run);
+                         (None, text_result(&benchmark_state().to_string(), false))
+                     } else {
+                         let Ok(startup) = Startup::new(principal).map(Arc::new) else {
