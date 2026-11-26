@@ -1866,6 +1866,8 @@
           "startup_trace_durations_ms": {
             "core": 168072.804,
             "core.block_models_sprites": 119411.096,
+            "core.models_bake": 97456.133,
+            "core.bake_states": 79936.401,
             "core.connected_texture_rules": 22.782,
             "handoff.game_cpu": 18685.561,
             "rest": 82747.61,

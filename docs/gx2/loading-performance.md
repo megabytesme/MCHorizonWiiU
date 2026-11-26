@@ -340,3 +340,25 @@ Game and 6.905 s opening the save.
    if it again gates first entry. The root and worldgen stock collision
    registries are byte-identical in this preparation, making shared raw
    shape data a candidate with an alternate-input fallback.
+
+## Stock model bake boundary
+
+In the exact RC 41 interpreter run, `core.models_bake` took 97.456 s
+and its `core.bake_states` span took 79.936 s. The latter includes sprite
+binding. The RC 40 warm interpreter recorded 100.672 and 81.544 s with
+28,639 sprite-cache hits and two misses. These traces isolate work that
+survives a warm sprite cache. [RC 41 fixture](rc41-validation.md)
+
+The proposed host preparation seam is `StateModels::from_facts_with_models`.
+Prepare stock state choices and transformed geometry while keeping live
+sprite insertion, layer assignment and alpha classification on Cafe.
+All 9,662 relevant archived model, blockstate and texture files matched
+their loose host inputs byte-for-byte. Approximately 80,099 stock faces
+account for at least 6.4 MB of position and UV data before metadata.
+
+Use a private, versioned sidecar beside the existing prepared archive.
+Verify the selected pack inputs, archive identity, registry order and
+model-state facts. Stream validated records into the final catalog and
+discard the trial catalog and sprite builder if validation fails. Compare
+native and host geometry, state choices, sprite layers and terrain meshes.
+Measure decoding, sprite replay and peak heap at equivalent cache states.
