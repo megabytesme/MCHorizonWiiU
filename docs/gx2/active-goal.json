@@ -276,6 +276,26 @@
     "rpx_sha256": "2fd4a7d0829d38a10bb4b3e3876973318a6b31b81cacf3c29af1511b5ba20404",
     "wuhb_sha256": "cb986837f8fd72898bcec5fe621d987d12de8a33717d1d128c3cb1734b267ee3",
     "estimated_aroma_headroom_bytes": 12672768,
-    "cemu_isolated_world_replay": "running"
+    "cemu_prior_four_scope_grant_reused": true,
+    "cemu_bookmark_create_edit_remove": "passed",
+    "cemu_first_isolated_world_replay": {
+      "paired_terrain_reached": true,
+      "four_section_gate": "not_reached_in_window",
+      "save_barrier": "failed_windows_cemu_path_length"
+    },
+    "cemu_short_path_replay": "running"
+  },
+  "benchmark_capture_qualification": {
+    "candidate": "0.8.0-rc.46",
+    "branch": "codex/rc46-qualification",
+    "commit": "6ac2badc5df50e120c2b97f058159352776bce0e",
+    "engine_tree": "037bcf9dc59e000d0de76509f3f8304f63a9c5f6",
+    "stock_mcp_tools": 63,
+    "native_build": "passed",
+    "rpx_sha256": "c6f4e304a719aed9f610e8487061878c38d4247ac506de83eb3e0d0f119d4419",
+    "wuhb_sha256": "16aaacac5b731dda9639041cda52927b00e2289696677d2ca55103136826d9ed",
+    "estimated_aroma_headroom_bytes": 12658688,
+    "native_drs_transitions": "pending",
+    "completed_benchmark_capture_retrieval": "pending"
   }
 }

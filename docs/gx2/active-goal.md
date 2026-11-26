@@ -94,9 +94,23 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
 - RC 45 extends the stock audit to 62 tools, including bookmark changes
   and isolated owner test worlds. The candidate adds the opt-in `4v`
   solid draw plan and `4j` guarded shared HUD submission. The pinned
-  native build and package hashes passed. The exact-package replay is
-  exercising the new tools and isolated save path.
+  native build and package hashes passed. The exact Cemu package reused
+  the original four-scope grant, repeated the RC 44 cancellation flow
+  and added, edited and removed a test bookmark. The first disposable
+  world reached paired terrain below the four-section gate. The save
+  barrier then failed because Cemu on Windows could not create the
+  temporary player-data directory at that path length. A shorter
+  disposable fixture is repeating create, save and reopen. The writer
+  fix passed seven host tests covering recovery and concurrent saves.
   [RC 45 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc45-qualification/docs/gx2/rc45-qualification.md)
+- RC 46 extends the stock audit to 63 tools and adds authenticated
+  retrieval of completed benchmark captures. The pinned native build
+  passed and both package hashes verified. A separate interpreter trial
+  is preparing to verify report publication and HZP3 transport after a
+  paired Title frame. The stock gameplay workload still needs a complete
+  timed run. The package also exposes automatic resolution decisions for
+  checking physical 30 and 60 FPS transitions.
+  [RC 46 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc46-qualification/docs/gx2/rc46-qualification.md)
 
 ## Physical queue
 
