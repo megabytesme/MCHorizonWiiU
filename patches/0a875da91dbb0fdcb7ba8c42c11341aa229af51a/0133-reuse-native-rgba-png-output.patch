@@ -1,0 +1,47 @@
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index c09ac71ddb32cec2b684567ba167004c7a379c46..dce056d0be46a8da4877230033e0c29bce2e6c00 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -297,6 +297,11 @@ pub fn decode_image_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+ pub fn decode_bytes(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+     let (mut reader, mut bytes) = read_png(data)?;
+     let info = reader.next_frame(&mut bytes)?;
++    // The decoder has already written RGBA8. Only reuse exactly sized buffers
++    // so a smaller frame does not retain the full image's allocation.
++    if info.color_type == png::ColorType::Rgba && info.buffer_size() == bytes.len() {
++        return Ok((info.width, info.height, bytes));
++    }
+     let channels = info.color_type.samples();
+     let mut rgba = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+     for p in bytes[..info.buffer_size()].chunks_exact(channels) {
+@@ -466,6 +471,14 @@ type PackedImage = (String, u32, u32, Vec<u8>);
+ fn strip_frame(pixels: &[u8], stride: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+     let side = w.max(h);
+     let mut out = Vec::with_capacity(side as usize * side as usize * 4);
++    // Stock square frames need only the row copy.
++    if w == h {
++        for row in y..y + h {
++            let start = ((row * stride + x) * 4) as usize;
++            out.extend_from_slice(&pixels[start..start + (w * 4) as usize]);
++        }
++        return out;
++    }
+     for row in 0..side {
+         let source_row = y + row * h / side;
+         for column in 0..side {
+diff --git a/crates/horizon-client-render/src/sprites.rs b/crates/horizon-client-render/src/sprites.rs
+index e72516e5214da180810ab4db3b5e9860807cd5d7..60deb12412beafb2de0c53efedc8e2664fa05ec7 100644
+--- a/crates/horizon-client-render/src/sprites.rs
++++ b/crates/horizon-client-render/src/sprites.rs
+@@ -1198,6 +1198,11 @@ fn read_rgba(source: &ResourceSource, path: &str) -> Result<(u32, u32, Vec<u8>)>
+ pub(crate) fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+     let (mut reader, mut bytes) = crate::hud::read_png(bytes)?;
+     let info = reader.next_frame(&mut bytes)?;
++    // The decoder has already written RGBA8. Only reuse exactly sized buffers
++    // so a smaller frame does not retain the full image's allocation.
++    if info.color_type == png::ColorType::Rgba && info.buffer_size() == bytes.len() {
++        return Ok((info.width, info.height, bytes));
++    }
+     let channels = info.color_type.samples();
+     let mut pixels = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+     for pixel in bytes[..info.buffer_size()].chunks_exact(channels) {

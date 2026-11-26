@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e",
+  "output_tree": "336a7bb1bd378ccb809117a76f7e6faa78abe620",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -800,12 +800,24 @@
       "sha256": "1d29317b7d983c56628cf545d51997600a4d2acbd70ca861c65002145c15c95f",
       "input_tree": "383ca77db8f628ea092d51fe6322a0412340ed1b",
       "output_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0132-reuse-loading-snapshot-source-digests.patch",
+      "input_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e",
+      "sha256": "0370a8e615d7378c3a26c88b3b0c9479cc3d678c9013c5f4a96739df365815d3",
+      "output_tree": "3d1f02ad1b1d426a3e80e27566def87599cbb12f"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0133-reuse-native-rgba-png-output.patch",
+      "input_tree": "3d1f02ad1b1d426a3e80e27566def87599cbb12f",
+      "sha256": "4ec0d07de5e052aa802bb7f6f961d33b1d9a40b8025884b0d24ee9775efafc12",
+      "output_tree": "336a7bb1bd378ccb809117a76f7e6faa78abe620"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.36",
-    "patch": "0.5.0-rc.36"
+    "client": "0.8.0-rc.37",
+    "patch": "0.5.0-rc.37"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
