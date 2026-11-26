@@ -1,0 +1,167 @@
+diff --git a/crates/horizon-server-files/src/profiles.rs b/crates/horizon-server-files/src/profiles.rs
+index b3d7593..93837d4 100644
+--- a/crates/horizon-server-files/src/profiles.rs
++++ b/crates/horizon-server-files/src/profiles.rs
+@@ -39,36 +39,50 @@ pub fn resolve(name: &str, online: bool) -> Option<NameAndId> {
+     }
+ }
+ 
++fn services_agent() -> ureq::Agent {
++    let timeout = Duration::from_secs(15);
++    let builder = ureq::AgentBuilder::new();
++    #[cfg(not(target_os = "cafe"))]
++    let builder = builder.timeout(timeout);
++    // ureq's overall timeout sets a socket send timeout before TLS. Cafe
++    // supports connect deadlines and emulates timeouts for individual reads.
++    #[cfg(target_os = "cafe")]
++    let builder = builder
++        .timeout_connect(timeout)
++        .timeout_read(timeout)
++        .https_only(true)
++        .redirects(0);
++    builder
++        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
++        .build()
++}
++
++fn get_service(agent: &ureq::Agent, url: &str) -> Option<String> {
++    let response = agent.get(url).call().ok()?;
++    (200..300).contains(&response.status()).then_some(())?;
++    // ureq's string reader already caps the response body at 10 MiB.
++    response.into_string().ok()
++}
++
+ /// The profile repository's find-by-name: the account named
+ /// `name` (any case), or None when there is none or the services don't
+ /// answer (vanilla logs both as "Couldn't find profile with name").
+ pub fn find_by_name(discovery: &str, name: &str) -> Option<NameAndId> {
+-    let agent = ureq::AgentBuilder::new()
+-        .timeout(Duration::from_secs(15))
+-        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+-        .build();
+-    let doc = json::parse(&agent.get(discovery).call().ok()?.into_string().ok()?, true).ok()?;
++    let agent = services_agent();
++    let doc = json::parse(&get_service(&agent, discovery)?, true).ok()?;
+     let url = endpoint(&doc, "profiles", "getByName")?.replace("{name}", &name.to_lowercase());
+-    found(&agent.get(&url).call().ok()?.into_string().ok()?, name)
++    found(&get_service(&agent, &url)?, name)
+ }
+ 
+ /// Finding a player by id on the session service, as the management protocol does for a player given by
+ /// id that the user cache doesn't know: the `session` / `getProfileById` endpoint, or None.
+ pub fn find_by_id(discovery: &str, id: u128) -> Option<NameAndId> {
+-    let agent = ureq::AgentBuilder::new()
+-        .timeout(Duration::from_secs(15))
+-        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+-        .build();
+-    let doc = json::parse(&agent.get(discovery).call().ok()?.into_string().ok()?, true).ok()?;
++    let agent = services_agent();
++    let doc = json::parse(&get_service(&agent, discovery)?, true).ok()?;
+     let url =
+         endpoint(&doc, "session", "getProfileById")?.replace("{profileId}", &format!("{id:032x}"));
+     let separator = if url.contains('?') { '&' } else { '?' };
+-    let answer = agent
+-        .get(&format!("{url}{separator}unsigned=false"))
+-        .call()
+-        .ok()?
+-        .into_string()
+-        .ok()?;
++    let answer = get_service(&agent, &format!("{url}{separator}unsigned=false"))?;
+     let name = json::parse(&answer, true).ok()?.get("name")?.as_string()?;
+     found(&answer, &name).filter(|user| user.id == id)
+ }
+@@ -80,16 +94,12 @@ pub fn find_by_id(discovery: &str, id: u128) -> Option<NameAndId> {
+ /// line vanilla logs, after which it has no keys.
+ pub fn fetch_profile_key_keys(discovery: &str) -> Result<Vec<RsaPublicKey>, &'static str> {
+     const FAILED: &str = "Failed to request Minecraft Services public key";
+-    let agent = ureq::AgentBuilder::new()
+-        .timeout(Duration::from_secs(15))
+-        .user_agent(&format!("Horizon/{}", horizon_core::release::VERSION))
+-        .build();
+-    let get = |url: &str| agent.get(url).call().ok()?.into_string().ok();
+-    let doc = get(discovery)
++    let agent = services_agent();
++    let doc = get_service(&agent, discovery)
+         .and_then(|d| json::parse(&d, true).ok())
+         .ok_or(FAILED)?;
+     let url = endpoint(&doc, "authentication", "getPublicKeys").ok_or(FAILED)?;
+-    profile_key_keys(&get(&url).ok_or(FAILED)?)
++    profile_key_keys(&get_service(&agent, &url).ok_or(FAILED)?)
+ }
+ 
+ /// The key set answer: `{"profilePropertyKeys": [...], "playerCertificateKeys":
+@@ -150,6 +160,74 @@ pub fn found(answer: &str, name: &str) -> Option<NameAndId> {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(not(target_os = "cafe"))]
++    #[test]
++    fn service_requests_follow_discovery_and_reject_a_redirect_body() {
++        use std::io::{BufRead, BufReader, Write};
++        use std::net::TcpListener;
++
++        const ID: u128 = 0x069a79f444e94726a5befca90e38aaf5;
++        const PROFILE: &str = r#"{"id":"069a79f444e94726a5befca90e38aaf5","name":"Notch"}"#;
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let base = format!("http://{}", listener.local_addr().unwrap());
++        let discovery = format!(
++            r#"{{
++                "discovery": {{
++                    "profiles": {{"endpoints": {{"getByName": {{"uri": "{base}/name/{{name}}"}}}}}},
++                    "session": {{"endpoints": {{"getProfileById": {{"uri": "{base}/id/{{profileId}}?fixture=1"}}}}}},
++                    "authentication": {{"endpoints": {{"getPublicKeys": {{"uri": "{base}/keys"}}}}}}
++                }}
++            }}"#
++        );
++        let server = std::thread::spawn(move || {
++            for (path, status, body) in [
++                ("/discovery", "200 OK", discovery.as_str()),
++                ("/name/notch", "200 OK", PROFILE),
++                ("/discovery", "200 OK", discovery.as_str()),
++                (
++                    "/id/069a79f444e94726a5befca90e38aaf5?fixture=1&unsigned=false",
++                    "200 OK",
++                    PROFILE,
++                ),
++                ("/discovery", "200 OK", discovery.as_str()),
++                ("/keys", "200 OK", "{}"),
++                ("/discovery", "302 Found", discovery.as_str()),
++            ] {
++                let (mut stream, _) = listener.accept().unwrap();
++                stream
++                    .set_read_timeout(Some(Duration::from_secs(3)))
++                    .unwrap();
++                let mut reader = BufReader::new(&mut stream);
++                let mut line = String::new();
++                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
++                assert_eq!(line, format!("GET {path} HTTP/1.1\r\n"));
++                loop {
++                    line.clear();
++                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
++                    if line == "\r\n" {
++                        break;
++                    }
++                }
++                write!(
++                    stream,
++                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
++                    body.len()
++                )
++                .unwrap();
++            }
++        });
++        let url = format!("{base}/discovery");
++        let profile = Some(NameAndId {
++            id: ID,
++            name: "Notch".into(),
++        });
++        assert_eq!(find_by_name(&url, "Notch"), profile);
++        assert_eq!(find_by_id(&url, ID), profile);
++        assert!(fetch_profile_key_keys(&url).unwrap().is_empty());
++        assert!(fetch_profile_key_keys(&url).is_err());
++        server.join().unwrap();
++    }
++
+     #[test]
+     fn names_and_answers() {
+         assert!(valid_player_name("Alex_123"));
