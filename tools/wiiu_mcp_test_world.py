@@ -191,14 +191,27 @@ def qualify(call, installation, instance, seed, limits, evidence=None, *,
         try:
             status = tool("game_wait_ready", {"seconds": 0})
         except RuntimeError as error:
-            if str(error).startswith((
+            failure = str(error)
+            if failure.endswith("Auth=notLoggedIn"):
+                raise
+            if failure.startswith((
                 "Codex did not list game_wait_ready from ",
                 "Tool call game_wait_ready failed. The world is still loading.",
                 "Tool call game_wait_ready failed. No Horizon game is running under Agent Control.",
+                "Tool call game_wait_ready failed. The game did not accept the request in time.",
             )):
                 return None
             raise
         return status if game_ready(status) else None
+
+    def paired(previous):
+        try:
+            status = tool("game_status")
+        except RuntimeError as error:
+            if str(error) == "Tool call game_status failed. The game did not accept the request in time.":
+                return None
+            raise
+        return terrain_sample(status, previous, limits.sections)
 
     evidence.update(stage="preflight", instance=instance, seed=seed, limits=asdict(limits))
     if not home():
@@ -235,9 +248,8 @@ def qualify(call, installation, instance, seed, limits, evidence=None, *,
         earlier = (status.get("cafe_performance") or {}).get("sample_at_session_ms") or 0
         evidence["stage"] = f"{operation}_paired_terrain"
         started = clock()
-        step["paired_terrain"] = until("Paired terrain", started, limits.terrain, lambda: (
-            terrain_sample(tool("game_status"), earlier, limits.sections)
-        ))
+        step["paired_terrain"] = until("Paired terrain", started, limits.terrain,
+                                       lambda: paired(earlier))
         step["terrain_seconds"] = clock() - started
 
         evidence["stage"] = f"{operation}_durable_save"

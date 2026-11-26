@@ -145,6 +145,33 @@ class DisposableWorldTests(unittest.TestCase):
             ("wiiu_test_world_open", {"id": WORLD}), ("game_quit", None),
         ])
 
+    def test_missing_game_tool_with_no_grant_fails_immediately(self):
+        def revoked(name, args=None):
+            if name == "game_wait_ready":
+                raise RuntimeError("Codex did not list game_wait_ready from fixture. Auth=notLoggedIn")
+            return self.device.call(name, args)
+
+        with self.assertRaisesRegex(RuntimeError, "Auth=notLoggedIn"):
+            qualify(revoked, self.root, INSTANCE, 1234, Limits(6, 3, 3, 4, 2),
+                    self.evidence, clock=self.clock.now, sleep=self.clock.wait)
+        self.assertEqual(self.clock.seconds, 0)
+        self.assertEqual(self.evidence["stage"], "create_game_ready")
+
+    def test_retry_one_delayed_cafe_reply_within_each_gate(self):
+        delayed = {"game_wait_ready", "game_status"}
+
+        def slow(name, args=None):
+            if name in delayed:
+                delayed.remove(name)
+                raise RuntimeError(f"Tool call {name} failed. The game did not accept the request in time.")
+            return self.device.call(name, args)
+
+        evidence = qualify(slow, self.root, INSTANCE, 1234, Limits(6, 3, 3, 4, 2),
+                           self.evidence, clock=self.clock.now, sleep=self.clock.wait)
+        self.assertEqual(evidence["stage"], "complete")
+        self.assertEqual(evidence["create"]["ready_seconds"], 1.5)
+        self.assertEqual(evidence["create"]["terrain_seconds"], 2.25)
+
     def test_game_readiness_has_its_own_deadline(self):
         with self.assertRaisesRegex(TimeoutError, "Game readiness"):
             qualify(self.device.call, self.root, INSTANCE, 1234, Limits(0.5, 3, 3, 4, 2),
