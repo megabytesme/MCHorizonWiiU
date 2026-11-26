@@ -169,16 +169,20 @@ must be enabled. Each scenario uses the same isolated workspace, settings
 and route as when started locally.
 
 Call `wiiu_benchmark_status` with `launcher.read` to follow the queued,
-loading, running and closing phases. A completed run returns its `report_id`.
+loading, running and closing phases. A completed run returns its `instance` and `report_id`.
 Call `wiiu_benchmark_cancel` with the same permissions as start to cancel
 a queued or active benchmark. Wait for the `cancelled` phase before starting
 another run.
 
 With `launcher.read`, call `wiiu_benchmark_reports` to list saved report IDs
-in the selected installation. Pass an ID such as
-`{"id":"game-20261126142051-village.json"}` to `wiiu_benchmark_report`. Its
-JSON includes the benchmark conditions, metrics and frame distributions.
-Local labels and attachment paths stay on the console.
+in the selected installation or pass `{"instance":"Lab"}` to list an
+explicit installation. To read a completed run after switching
+installations, pass its instance and ID to `wiiu_benchmark_report`, for
+example `{"instance":"Lab","id":"game-20261126142051-village.json"}`.
+The JSON includes the benchmark conditions, metrics and frame
+distributions. Saved reports remain available after restarting Night.
+The live status starts in `idle` after a restart. Local labels and
+attachment paths stay on the console.
 
 ### Gameplay captures
 

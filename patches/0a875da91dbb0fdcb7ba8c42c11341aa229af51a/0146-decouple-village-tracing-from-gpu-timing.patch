@@ -24,28 +24,19 @@ index 6b9068bcccbc6328c9cc8d1ae64b717118778a0f..d8d0c77164ae60d2038ac8c70febdbbb
      unsafe { horizon_gx2_profile_count(counter as u32, value as u32) }
  }
 diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
-index b65fd8b3a5624348d9510b64eb3a315af5a0139b..2879bb8212a205c17e2e09e1a44ee1db41f9370b 100644
+index b65fd8b3a5624348d9510b64eb3a315af5a0139b..c3b2684fb5b0e4cc00dd04952f84ce455bb4e8cd 100644
 --- a/crates/horizon-client/src/game/runtime/control.rs
 +++ b/crates/horizon-client/src/game/runtime/control.rs
-@@ -130,14 +130,14 @@ impl Game<'_> {
+@@ -130,7 +130,7 @@
          if !flight.raw {
              return;
          }
 -        let Some(sample) = work.gpu_sample else {
--            return;
--        };
-         let elapsed = flight.started.elapsed();
-         let present = work.presented == [true; 2] && !work.terrain_sections.contains(&0);
-         let Some(reason) = flight.village_trace.sample(elapsed, present) else {
++        let Some(sequence) = horizon_client_platform::cafe_profile::playing_frame_sequence() else {
              return;
          };
-+        let Some(sequence) = horizon_client_platform::cafe_profile::playing_frame_sequence() else {
-+            return;
-+        };
-         let [x, _, z] = camera;
-         let dx = flight.to.x - flight.from.x;
-         let dz = flight.to.z - flight.from.z;
-@@ -157,7 +157,7 @@ impl Game<'_> {
+         let elapsed = flight.started.elapsed();
+@@ -157,7 +157,7 @@
          }
          log::info!(
              "Cafe Village streaming seq={} elapsed_ms={} reason={} camera={x:.2},{z:.2} sections={}/{} columns={} client_pending={} uploads={} remote_pending={} forward_resident={resident:x} forward_lit={lit:x}",
