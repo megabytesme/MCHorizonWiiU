@@ -71,3 +71,20 @@ atlas. The unoptimized host median was 235.4 ms to encode, 870.0 ms to
 decode and check the full oracle, and 177.9 ms to compute input identity.
 The fixture still bakes a live catalog for comparison. Native loading,
 selectors, particles, sprite replay and peak heap remain to be qualified.
+
+## Resolve each model name once
+
+Apply [the resolution reuse patch](reuse-resolved-models.patch) in a
+disposable assembled source tree, then run the direct digest probe above.
+The native catalog resolves each model's parent chain once per name and
+bakes its rotations and UV-lock variants in the original order. Sprite
+layer insertion, material classification and weighted model selection
+retain the same inputs and order.
+
+The edited catalog file was byte-identical in the RC 42 host fixture and
+exact RC 46 source before applying the patch. The RC 46 patch result is
+`208180b87f7913885285e10cf7277cce20bbb75d`. Four warmed runs per arm,
+alternated across the same prepared inputs and sprite cache, agreed on
+the geometry, weighted model choices, sprite layers and atlas digests.
+Median host state bake moved from 1.131 s to 1.092 s, with overlapping
+timing ranges. This prototype needs a matched native timing comparison.

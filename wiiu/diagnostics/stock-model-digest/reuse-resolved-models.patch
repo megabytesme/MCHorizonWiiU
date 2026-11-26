@@ -1,0 +1,48 @@
+diff --git a/crates/horizon-client-render/src/models/catalog.rs b/crates/horizon-client-render/src/models/catalog.rs
+index 2976f5c1147bb6c5a375b2f674aea53f867f0d4b..67e5f00abe7989b5707d38d0c0f9baacdd7a3466 100644
+--- a/crates/horizon-client-render/src/models/catalog.rs
++++ b/crates/horizon-client-render/src/models/catalog.rs
+@@ -451,18 +451,18 @@ impl StateModels {
+                 choices.push(CompiledChoices::new(&definition)?);
+             }
+         }
+-        let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
++        // Variant keys are sorted by model name. Resolve each parent chain once
++        // and retain bake order for deterministic sprite layer assignment.
++        let mut names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
++        names.dedup();
+         let library = match models.block_library(root, names.clone()) {
+             Ok(library) => library,
+             Err(e) => {
+                 log::warn!("Horizon: block models incomplete ({e}); using the missing model");
+-                models.block_library_or_missing(root, names)?
++                models.block_library_or_missing(root, names.clone())?
+             }
+         };
+-        let resolved: Vec<_> = variants
+-            .iter()
+-            .map(|(name, ..)| library.resolve(name))
+-            .collect();
++        let resolved: Vec<_> = names.iter().map(|name| library.resolve(name)).collect();
+         // Every texture the models name, decoded side by side before the bake adds them one
+         // by one in its own order, as many as the renderer's arrays hold.
+         let named: Vec<&str> = resolved
+@@ -475,8 +475,16 @@ impl StateModels {
+         sprites.prefetch(named);
+         let mut baked = Vec::with_capacity(variants.len());
+         let mut index = BTreeMap::new();
+-        for ((name, turns, lock), model) in variants.into_iter().zip(resolved) {
+-            let model = bake_resolved(sprites, &model?, turns, lock)?;
++        let mut resolved = names.into_iter().zip(resolved);
++        let mut current = None;
++        for (name, turns, lock) in variants {
++            if current.as_ref().is_none_or(|(model_name, _)| model_name != &name) {
++                let (model_name, model) = resolved.next().expect("a resolved model for each name");
++                debug_assert_eq!(model_name, name);
++                current = Some((model_name, model?));
++            }
++            let (_, resolved) = current.as_ref().expect("the current variant's resolved model");
++            let model = bake_resolved(sprites, resolved, turns, lock)?;
+             index.insert((name.clone(), turns, lock), baked.len() as u32);
+             let variant = Variant {
+                 model: name,
