@@ -1,0 +1,291 @@
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index 644c4de..968d7df 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -1,8 +1,10 @@
+ #include "hud_data.h"
+ #include "cit_glint.h"
+ #include <stddef.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
+ #include <coreinit/time.h>
+@@ -10,6 +12,7 @@
+ #include <gx2/context.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
++#include <gx2/mem.h>
+ #include <gx2/registers.h>
+ #include <gx2/sampler.h>
+ #include <gx2/shaders.h>
+@@ -53,6 +56,12 @@ _Static_assert(offsetof(HorizonHudFrame, viewport_height) == 28, "HUD frame view
+ _Static_assert(offsetof(HorizonHudFrame, scale) == 32, "HUD frame scale offset changed");
+ _Static_assert(offsetof(HorizonHudFrame, pack_text_shader) == 36, "HUD frame shader offset changed");
+ 
++typedef struct HudPatchWindow {
++   OSTime begin, work;
++   uint64_t payload_bytes, writeback_span_bytes;
++   uint32_t calls, mapped_calls, invalidations;
++} HudPatchWindow;
++
+ struct HorizonGx2Hud {
+    uint8_t *atlas_storage;
+    WHBGfxShaderGroup shader;
+@@ -68,6 +77,8 @@ struct HorizonGx2Hud {
+    int portal_ready;
+    int shader_loaded;
+    uint64_t last_draw_wait_ns;
++   uint32_t patch_mode;
++   HudPatchWindow patch_window;
+ };
+ 
+ static const GX2RResourceFlags texture_flags = GX2R_RESOURCE_BIND_TEXTURE |
+@@ -83,10 +94,34 @@ const void *horizon_gx2_hud_atlas(const HorizonGx2Hud *hud)
+    return hud ? &hud->atlas : NULL;
+ }
+ 
++static void report_patch_window(HorizonGx2Hud *hud)
++{
++   const HudPatchWindow *window = &hud->patch_window;
++   if (!window->calls) return;
++   char line[256];
++   snprintf(line, sizeof(line),
++            "Horizon GX2 HUD atlas patch mode=%u calls=%u mapped_calls=%u invalidations=%u "
++            "elapsed_us=%llu payload_bytes=%llu writeback_span_bytes=%llu atlas_bytes=%u",
++            hud->patch_mode, window->calls, window->mapped_calls, window->invalidations,
++            (unsigned long long)OSTicksToMicroseconds(window->work),
++            (unsigned long long)window->payload_bytes,
++            (unsigned long long)window->writeback_span_bytes, hud->atlas.surface.imageSize);
++   OSReport("%s\n", line);
++   hud->patch_window = (HudPatchWindow){0};
++}
++
++void horizon_gx2_hud_set_patch_mode(HorizonGx2Hud *hud, uint32_t mode)
++{
++   if (!hud || mode > HORIZON_HUD_PATCH_MEASURE_DIRTY || mode == hud->patch_mode) return;
++   report_patch_window(hud);
++   hud->patch_mode = mode;
++}
++
+ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud)
+ {
+    if (!hud) return;
+    GX2DrawDone();
++   report_patch_window(hud);
+    if (GX2RBufferExists(&hud->buffer)) GX2RDestroyBufferEx(&hud->buffer, 0);
+    horizon_hud_cit_destroy(hud->cit);
+    horizon_hud_texture_destroy(&hud->glint);
+@@ -356,15 +391,62 @@ typedef struct HudOutput {
+ static HorizonHudResult apply_patches(HorizonGx2Hud *hud, const HorizonHudFrame *frame)
+ {
+    if (!frame->patch_count) return HORIZON_HUD_OK;
+-   uint8_t *pixels = GX2RLockSurfaceEx(&hud->atlas.surface, 0, texture_flags);
++   GX2Surface *surface = &hud->atlas.surface;
++   const uintptr_t cache_mask = 31;
++   // Only the generation-owned, linear CPU allocation can bypass GX2R's
++   // map/unmap. Both callers have already retired earlier GPU consumers.
++   const bool dirty = hud->patch_mode == HORIZON_HUD_PATCH_MEASURE_DIRTY &&
++      hud->atlas_storage && surface->image == hud->atlas_storage &&
++      surface->tileMode == GX2_TILE_MODE_LINEAR_ALIGNED &&
++      surface->pitch >= surface->width && !(surface->imageSize & cache_mask) &&
++      !((uintptr_t)hud->atlas_storage & cache_mask) &&
++      (uint64_t)surface->pitch * surface->height * 4 <= surface->imageSize;
++   const bool measured = hud->patch_mode != HORIZON_HUD_PATCH_DEFAULT;
++   const OSTime start = measured ? OSGetSystemTime() : 0;
++   uint8_t *pixels = dirty ? hud->atlas_storage : GX2RLockSurfaceEx(surface, 0, texture_flags);
+    if (!pixels) return HORIZON_HUD_ALLOCATION_FAILED;
++   uint64_t payload = 0, writeback = 0;
+    for (uint32_t i = 0; i < frame->patch_count; ++i) {
+       const HorizonHudPatch *patch = &frame->patches[i];
+-      for (uint32_t y = 0; y < patch->height; ++y)
+-         memcpy(pixels + ((size_t)(patch->y + y) * hud->atlas.surface.pitch + patch->x) * 4,
+-                patch->rgba + (size_t)y * patch->width * 4, (size_t)patch->width * 4);
++      const uint32_t bytes = patch->width * 4;
++      if (measured) payload += (uint64_t)bytes * patch->height;
++      for (uint32_t y = 0; y < patch->height; ++y) {
++         uint8_t *dest = pixels + ((size_t)(patch->y + y) * surface->pitch + patch->x) * 4;
++         const uint8_t *src = patch->rgba + (size_t)y * bytes;
++         if (dirty && !memcmp(dest, src, bytes)) continue;
++         memcpy(dest, src, bytes);
++         if (dirty) {
++            const uintptr_t start = (uintptr_t)dest & ~cache_mask;
++            // Calculate from the aligned base without rounding a pointer past
++            // the backing allocation or wrapping the guest address.
++            const uint32_t span = (((uintptr_t)dest & cache_mask) + bytes + cache_mask) & ~cache_mask;
++            DCStoreRangeNoSync((void *)start, span);
++            writeback += span;
++         }
++      }
++   }
++   if (dirty) {
++      if (writeback) {
++         OSMemoryBarrier();
++         GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, pixels, surface->imageSize);
++      }
++   } else {
++      GX2RUnlockSurfaceEx(surface, 0, texture_flags);
++      if (measured) writeback = surface->imageSize;
++   }
++   if (measured) {
++      HudPatchWindow *window = &hud->patch_window;
++      const OSTime end = OSGetSystemTime();
++      if (!window->calls) window->begin = start;
++      ++window->calls;
++      window->mapped_calls += dirty;
++      window->invalidations += !dirty || writeback != 0;
++      window->work += end - start;
++      window->payload_bytes += payload;
++      window->writeback_span_bytes += writeback;
++      if (window->calls >= 128 || end - window->begin >= (OSTime)OSSecondsToTicks(5))
++         report_patch_window(hud);
+    }
+-   GX2RUnlockSurfaceEx(&hud->atlas.surface, 0, texture_flags);
+    return HORIZON_HUD_OK;
+ }
+ 
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index 9b3a4ba..4c10d80 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -109,4 +109,11 @@ const void *horizon_gx2_hud_atlas(const HorizonGx2Hud *hud);
+ /* The caller has completed previous sampling. A patch-only frame has no draw runs. */
+ HorizonHudResult horizon_gx2_hud_apply_patches_after_wait(HorizonGx2Hud *hud,
+                                                           const HorizonHudFrame *frame);
++/* Disposable native A/B settings for atlas patch uploads. */
++enum {
++   HORIZON_HUD_PATCH_DEFAULT = 0,
++   HORIZON_HUD_PATCH_MEASURE_FULL = 1,
++   HORIZON_HUD_PATCH_MEASURE_DIRTY = 2,
++};
++void horizon_gx2_hud_set_patch_mode(HorizonGx2Hud *hud, uint32_t mode);
+ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud);
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index fc8a456..f66a121 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,4 +1,5 @@
+ #include "gx2_profile.h"
++#include "../gx2_hud/hud.h"
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/filesystem_fsa.h>
+@@ -78,6 +79,7 @@ static uint64_t epoch, started, previous;
+ static uint32_t previous_phase;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
++static uint32_t hud_patch_mode;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -118,6 +120,8 @@ void horizon_gx2_profile_init(void)
+    legacy_terrain_uniforms = mode == '5' || variant == '5';
+    shared_hud_upload = variant == 'h';
+    profile_terrain_animation = variant == 'a';
++   hud_patch_mode = variant == 'w' ? HORIZON_HUD_PATCH_MEASURE_FULL :
++      variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -127,6 +131,7 @@ void horizon_gx2_profile_init(void)
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
++   if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -154,6 +159,11 @@ bool horizon_gx2_profile_shared_hud_upload(void)
+    return shared_hud_upload;
+ }
+ 
++uint32_t horizon_gx2_profile_hud_patch_mode(void)
++{
++   return hud_patch_mode;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 611f62d..0db542b 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -40,6 +40,7 @@ bool horizon_gx2_profile_legacy_terrain_bindings(void);
+ bool horizon_gx2_profile_legacy_terrain_attributes(void);
+ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_shared_hud_upload(void);
++uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 09c6c73..4ea0583 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -229,6 +229,7 @@ extern "C" {
+     fn horizon_gx2_terrain_set_legacy_uniforms(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_uniforms() -> bool;
+     fn horizon_gx2_profile_shared_hud_upload() -> bool;
++    fn horizon_gx2_profile_hud_patch_mode() -> u32;
+     fn horizon_gx2_terrain_destroy(terrain: *mut c_void);
+     fn horizon_gx2_terrain_index_allocation_bytes(terrain: *const c_void) -> u32;
+     fn horizon_gx2_terrain_section_create(
+@@ -792,10 +793,10 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             self.cit_generation = None;
+             let _upload = Span::new(Stage::TextureUpload);
+             let profile_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-            self.hud = Some(
+-                unsafe { HorizonPresenter::new(self.hud_shader, atlas, self.capacity) }
+-                    .map_err(|_| "GX2 HUD presenter creation failed")?,
+-            );
++            let mut hud = unsafe { HorizonPresenter::new(self.hud_shader, atlas, self.capacity) }
++                .map_err(|_| "GX2 HUD presenter creation failed")?;
++            hud.set_patch_mode(unsafe { horizon_gx2_profile_hud_patch_mode() });
++            self.hud = Some(hud);
+             if let Some(start) = profile_start {
+                 self.profile.hud_create_ns =
+                     self.profile.hud_create_ns.saturating_add(elapsed_ns(start));
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index d506f4d..e66cddc 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -275,6 +275,8 @@ mod cafe {
+         ) -> i32;
+         #[cfg(feature = "horizon-hud")]
+         fn horizon_gx2_hud_last_draw_wait_ns(hud: *const c_void) -> u64;
++        #[cfg(feature = "horizon-hud")]
++        fn horizon_gx2_hud_set_patch_mode(hud: *mut c_void, mode: u32);
+         fn horizon_gx2_hud_destroy(hud: *mut c_void);
+         #[cfg(feature = "horizon-hud")]
+         fn horizon_gx2_hud_atlas(hud: *const c_void) -> *const c_void;
+@@ -325,6 +327,11 @@ mod cafe {
+     }
+ 
+     impl<'shader> Presenter<'shader> {
++        #[cfg(feature = "horizon-hud")]
++        pub(super) fn set_patch_mode(&mut self, mode: u32) {
++            unsafe { horizon_gx2_hud_set_patch_mode(self.hud.as_ptr(), mode) };
++        }
++
+         #[cfg(feature = "horizon-hud")]
+         pub(super) fn last_draw_wait_ns(&self) -> u64 {
+             unsafe { horizon_gx2_hud_last_draw_wait_ns(self.hud.as_ptr()) }
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index ad9c8ae..5a371f6 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -200,6 +200,11 @@ pub struct HorizonPresenter<'shader> {
+ 
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ impl<'shader> HorizonPresenter<'shader> {
++    /// Select the native atlas-patch comparison mode for this presenter.
++    pub fn set_patch_mode(&mut self, mode: u32) {
++        self.presenter.set_patch_mode(mode);
++    }
++
+     /// Time spent waiting for GX2 in the last direct draw.
+     pub fn last_draw_wait_ns(&self) -> u64 {
+         self.presenter.last_draw_wait_ns()

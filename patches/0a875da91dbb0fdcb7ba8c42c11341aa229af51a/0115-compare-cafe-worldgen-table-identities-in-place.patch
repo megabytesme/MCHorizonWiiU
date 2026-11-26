@@ -1,0 +1,102 @@
+diff --git a/crates/horizon-world/src/registry.rs b/crates/horizon-world/src/registry.rs
+index 8f921ac..e05c681 100644
+--- a/crates/horizon-world/src/registry.rs
++++ b/crates/horizon-world/src/registry.rs
+@@ -345,9 +345,7 @@ impl<'t, 'r> BlockTable<'t, 'r> {
+                 return Err(invalid(format!("{what} registry size mismatch")));
+             }
+             for (id, state) in states.iter().enumerate() {
+-                if self.registry.state(BlockStateId(id as u32))
+-                    != Some(&BlockState::from_nbt(state)?)
+-                {
++                if !matches_table_state(self.registry.state(BlockStateId(id as u32)), state)? {
+                     return Err(invalid(format!("{what} state identities differ")));
+                 }
+             }
+@@ -378,6 +376,48 @@ impl<'t, 'r> BlockTable<'t, 'r> {
+     }
+ }
+ 
++/// Compare ordinary exported rows in place. Decode nonmatching rows to
++/// preserve the NBT reader's handling of malformed strings and the different
++/// key order of UTF-16 and UTF-8 for some non-ASCII property names.
++fn matches_table_state(expected: Option<&BlockState>, row: &Tag) -> io::Result<bool> {
++    fn equals(text: &str, units: &horizon_core::nbt::JavaString) -> bool {
++        let bytes = text.as_bytes();
++        bytes.len() == units.0.len()
++            && bytes
++                .iter()
++                .zip(&units.0)
++                .all(|(&byte, &unit)| byte.is_ascii() && u16::from(byte) == unit)
++    }
++
++    fn matches(expected: &BlockState, row: &Tag) -> bool {
++        if let Tag::String(id) = row {
++            return expected.properties.is_empty() && equals(&expected.name, id);
++        }
++        let Some(Tag::String(id)) = row.get("id") else {
++            return false;
++        };
++        equals(&expected.name, id)
++            && match row.get("properties") {
++                None => expected.properties.is_empty(),
++                Some(Tag::Compound(properties)) => {
++                    properties.len() == expected.properties.len()
++                        && expected.properties.iter().zip(properties).all(
++                            |((name, value), (key, tag))| {
++                                equals(name, key)
++                                    && matches!(tag, Tag::String(text) if equals(value, text))
++                            },
++                        )
++                }
++                Some(_) => false,
++            }
++    }
++
++    if expected.is_some_and(|state| matches(state, row)) {
++        return Ok(true);
++    }
++    Ok(expected == Some(&BlockState::from_nbt(row)?))
++}
++
+ /// A per-state table read from its file with its state identities checked
+ /// while reading, so they never exist as a tree: for 190,000 states (a big
+ /// modpack) that tree took 300-600 MB per table.
+@@ -400,9 +440,9 @@ impl<'r> BlockTableFile<'r> {
+             }
+             let mut id = 0u32;
+             while let Some(tag) = states.next_element()? {
+-                let state =
+-                    BlockState::from_nbt(&tag).map_err(|_| states.error("invalid table state"))?;
+-                if registry.state(BlockStateId(id)) != Some(&state) {
++                let matches = matches_table_state(registry.state(BlockStateId(id)), &tag)
++                    .map_err(|_| states.error("invalid table state"))?;
++                if !matches {
+                     return Err(states.error("table state identities differ"));
+                 }
+                 id += 1;
+@@ -450,6 +490,24 @@ mod tests {
+         Tag::Compound(map)
+     }
+ 
++    #[test]
++    fn table_identity_check_keeps_valid_nbt_forms_and_rejects_invalid_rows() {
++        let air = BlockState::from_nbt(&state("minecraft:air", &[])).unwrap();
++        assert!(matches_table_state(Some(&air), &Tag::String("minecraft:air".into())).unwrap());
++        assert!(!matches_table_state(Some(&air), &Tag::String("minecraft:water".into())).unwrap());
++        assert!(matches_table_state(Some(&air), &Tag::String(JavaString(vec![0xd800]))).is_err());
++
++        let door = state("test:door", &[("facing", "east"), ("open", "false")]);
++        let expected = BlockState::from_nbt(&door).unwrap();
++        assert!(matches_table_state(Some(&expected), &door).unwrap());
++        let west = state("test:door", &[("facing", "west"), ("open", "false")]);
++        assert!(!matches_table_state(Some(&expected), &west).unwrap());
++
++        let unicode = state("test:unicode", &[("\u{10000}", "a"), ("\u{e000}", "b")]);
++        let expected = BlockState::from_nbt(&unicode).unwrap();
++        assert!(matches_table_state(Some(&expected), &unicode).unwrap());
++    }
++
+     /// A registry with a defaulted block, a block with one property and one
+     /// with two.
+     fn registry() -> BlockRegistry {

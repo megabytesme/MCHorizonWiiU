@@ -1,0 +1,370 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 7d5b6eed23909b6f4dbd4ad6a932ad531ea2ceb7..3eefb026d6dcb41a607076432ed1384e69c080db 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -966,7 +966,11 @@ impl CafeGameSession<'_> {
+                 start,
+                 after,
+                 self.game.cafe_frame_built,
+-                performance::StepSpans { idle, artwork, redraw },
++                performance::StepSpans {
++                    idle,
++                    artwork: artwork + work.terrain_animation_work,
++                    redraw: redraw.saturating_sub(work.terrain_animation_work),
++                },
+                 work,
+             )
+             && let Some(sample) = &self.game.cafe_performance.latest
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index 93a07122407fdf009d172f9195afa9b080ae8252..f51e0915c08badf89a22fab9b8cfb725c835d6dc 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -77,6 +77,8 @@ impl GpuTimingObservation {
+ pub struct CafeFrameWork {
+     pub presented: [bool; 2],
+     pub submission: Duration,
++    /// Terrain artwork that must run after this frame's section publication.
++    pub terrain_animation_work: Duration,
+     pub gpu_wait: Duration,
+     /// The direct HUD fence, already included in `gpu_wait`.
+     pub hud_wait: Duration,
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 09c6c73ede4b191520ce79f596be200544e1226a..91014a0a26057eb2792aa75eb18285ea050c1ea7 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -613,6 +613,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_atlas: Option<TerrainAtlasLayout>,
+     terrain_generation: Option<u64>,
+     terrain_animation: terrain_animation::TerrainAnimation,
++    resident_animations: Option<terrain_animation::ResidentAnimations>,
+     terrain_min_y: Option<i32>,
+     sections: HashMap<SectionKey, TerrainSection>,
+     block_entity_sections: Arc<CafeBlockEntitySections>,
+@@ -685,6 +686,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_atlas: None,
+             terrain_generation: None,
+             terrain_animation: terrain_animation::TerrainAnimation::default(),
++            resident_animations: None,
+             terrain_min_y: None,
+             sections: HashMap::new(),
+             block_entity_sections: Arc::default(),
+@@ -1470,15 +1472,25 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 );
+             }
+             self.terrain = Some(terrain);
++            self.resident_animations =
++                terrain_animation::ResidentAnimations::new(&layout, artwork.terrain_animations);
+             self.terrain_atlas = Some(layout);
+             self.terrain_generation = Some(artwork.terrain_generation);
+             self.terrain_animation.reset();
+             self.clear_native_sections();
+         }
+-        if let Some(tick) = artwork.terrain_animation_tick {
++        if let Some(residents) = self.resident_animations.as_mut() {
++            residents.artwork_tick(artwork.terrain_animation_tick);
++        } else if let Some(tick) = artwork.terrain_animation_tick {
+             let terrain = self.terrain.as_ref().ok_or("GX2 terrain is not prepared")?;
+             let layout = self.terrain_atlas.as_ref().ok_or("GX2 terrain atlas is not prepared")?;
+-            self.terrain_animation.update(terrain.native, layout, artwork.terrain_animations, tick)?;
++            self.terrain_animation.update(
++                terrain.native,
++                layout,
++                artwork.terrain_animations,
++                tick,
++                None,
++            )?;
+         }
+         Ok(())
+     }
+@@ -1501,6 +1513,26 @@ fn cit_factor(factor: Factor) -> u32 {
+ }
+ 
+ impl Gx2LoadingPresenter<'_> {
++    fn update_resident_animations(&mut self) -> horizon_client::Result<()> {
++        let Some(residents) = self.resident_animations.as_mut() else {
++            return Ok(());
++        };
++        let started = Instant::now();
++        let _artwork = Span::new(Stage::StageArtwork);
++        if let Some((tick, layers)) =
++            residents.selection(self.sections.values().map(|section| section.animated_layers))
++        {
++            let terrain = self.terrain.as_ref().ok_or("GX2 terrain is not prepared")?;
++            let layout = self.terrain_atlas.as_ref().ok_or("GX2 terrain atlas is not prepared")?;
++            // World update has already published new sections. Refresh their
++            // clips before either display can sample the atlas this frame.
++            self.terrain_animation
++                .update(terrain.native, layout, &residents.clips, tick, layers)?;
++        }
++        self.frame_work.terrain_animation_work = started.elapsed();
++        Ok(())
++    }
++
+     fn section_rank(
+         &self,
+         key: SectionKey,
+@@ -1532,6 +1564,13 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        if let Some(residents) = self
++            .resident_animations
++            .as_mut()
++            .filter(|_| section.animated_layers != 0)
++        {
++            residents.residency_changed();
++        }
+         if self.terrain_ranks.is_some() {
+             let rank = self.section_rank(key, section.bounds);
+             self.terrain_ranks.as_mut().unwrap().remove(&rank);
+@@ -1563,6 +1602,9 @@ impl Gx2LoadingPresenter<'_> {
+ 
+     fn clear_native_sections(&mut self) {
+         self.block_entity_sections = Arc::default();
++        if let Some(residents) = self.resident_animations.as_mut() {
++            residents.residency_changed();
++        }
+         self.retired_terrain
+             .extend(self.sections.drain().map(|(_, section)| section));
+         self.terrain_resident_bytes = 0;
+@@ -1678,7 +1720,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .as_ref()
+             .ok_or("GX2 terrain atlas is not prepared")?;
+         let _upload = Span::new(Stage::TerrainUpload);
+-        let section = match TerrainSection::upload(atlas, mesh, info, bounds) {
++        let mut section = match TerrainSection::upload(atlas, mesh, info, bounds) {
+             Ok(section) => section,
+             Err(error)
+                 if error
+@@ -1698,6 +1740,12 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             }
+             Err(error) => return Err(error),
+         };
++        if let Some(residents) = self.resident_animations.as_mut() {
++            section.animated_layers = residents.layers(mesh.sprite_layers.iter().copied());
++            if section.animated_layers != 0 {
++                residents.residency_changed();
++            }
++        }
+         let budget_bytes = section.budget_bytes;
+         let gpu_bytes = section.gpu_bytes();
+         cafe_profile::count(
+@@ -1813,6 +1861,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.clear_native_sections();
+         self.terrain = None;
+         self.terrain_animation = terrain_animation::TerrainAnimation::default();
++        self.resident_animations = None;
+         self.outline = outline::Outline::default();
+         self.crumbling = crumbling::Crumbling::default();
+         self.models = hand::Models::default();
+@@ -1850,6 +1899,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.frame_work.terrain_sections = [0; 2];
+         self.frame_work.terrain_camera = (!frame.title).then(|| frame.camera.to_array());
+         self.frame_work.omitted_pass_mask = 0;
++        self.update_resident_animations()?;
+         let crumbling_overflow = !frame.title && self.crumbling.prepare(frame.entities);
+         let hand_partial = !frame.title && self.models.prepare_hand(frame);
+         let models = if frame.title {
+diff --git a/wiiu/loading_host/terrain_animation.rs b/wiiu/loading_host/terrain_animation.rs
+index 5c0b5675af0786aae7f3c9494dd0f5e201e7bd7f..931873cc49b4b26d0aed56c280f93d005abcd02a 100644
+--- a/wiiu/loading_host/terrain_animation.rs
++++ b/wiiu/loading_host/terrain_animation.rs
+@@ -7,6 +7,86 @@ use std::{ffi::c_void, ptr::NonNull};
+ 
+ const ATLAS_BYTES_PER_UPDATE: usize = 1024 * 1024;
+ 
++fn atlas_update_limit(layout: &TerrainAtlasLayout) -> usize {
++    let cell_bytes = (layout.cell_size as usize).pow(2) * 4;
++    (ATLAS_BYTES_PER_UPDATE / cell_bytes).max(1)
++}
++
++/// The atlas is sampled only by native terrain. Keep clips current whenever any
++/// published section uses them, including sections outside either view.
++pub(super) struct ResidentAnimations {
++    pub(super) clips: Box<[SpriteAnimation]>,
++    layer_bits: Vec<u64>,
++    active_layers: Option<u64>,
++    tick: Option<u64>,
++    playing: bool,
++}
++
++impl ResidentAnimations {
++    pub(super) fn new(layout: &TerrainAtlasLayout, clips: &[SpriteAnimation]) -> Option<Self> {
++        // Only select layers when the ordinary path can finish every changed
++        // clip this tick. Larger packs retain their budgeted update order.
++        if clips.is_empty()
++            || clips.len() > u64::BITS as usize
++            || clips.len() > atlas_update_limit(layout)
++        {
++            return None;
++        }
++        let mut layer_bits = vec![0; layout.layers as usize];
++        for (index, clip) in clips.iter().enumerate() {
++            let slot = layer_bits.get_mut(clip.layer as usize)?;
++            if *slot != 0 {
++                return None; // Two clips sharing a layer depend on write order.
++            }
++            *slot = 1_u64 << index;
++        }
++        Some(Self {
++            clips: clips.into(),
++            layer_bits,
++            active_layers: None,
++            tick: None,
++            playing: false,
++        })
++    }
++
++    pub(super) fn layers(&self, sprites: impl Iterator<Item = u16>) -> u64 {
++        sprites.fold(0, |used, layer| {
++            let bit = self
++                .layer_bits
++                .get(usize::from(layer))
++                .copied()
++                .unwrap_or(0);
++            used | bit
++        })
++    }
++
++    pub(super) fn residency_changed(&mut self) {
++        self.active_layers = None;
++    }
++
++    pub(super) fn artwork_tick(&mut self, tick: Option<u64>) {
++        self.playing = tick.is_some();
++        if tick.is_some() {
++            self.tick = tick;
++        }
++    }
++
++    pub(super) fn selection(
++        &mut self,
++        sections: impl Iterator<Item = u64>,
++    ) -> Option<(u64, Option<u64>)> {
++        let tick = self.tick?;
++        // Disabling animation freezes all clips at the most recent tick, even
++        // those a later section might start using while animation stays off.
++        let layers = self.playing.then(|| {
++            *self
++                .active_layers
++                .get_or_insert_with(|| sections.fold(0, |a, b| a | b))
++        });
++        Some((tick, layers))
++    }
++}
++
+ unsafe extern "C" {
+     fn horizon_gx2_terrain_patch_atlas_profiled(
+         terrain: *mut c_void,
+@@ -34,7 +114,7 @@ struct Job {
+ #[derive(Default)]
+ pub(super) struct TerrainAnimation {
+     shown: Vec<Option<FrameBlend>>,
+-    settled_tick: Option<u64>,
++    settled: Option<(u64, Option<u64>)>,
+     cursor: usize,
+     jobs: Vec<Job>,
+     rects: Vec<[u32; 4]>,
+@@ -45,7 +125,7 @@ pub(super) struct TerrainAnimation {
+ impl TerrainAnimation {
+     pub(super) fn reset(&mut self) {
+         self.shown.clear();
+-        self.settled_tick = None;
++        self.settled = None;
+         self.cursor = 0;
+     }
+ 
+@@ -55,26 +135,30 @@ impl TerrainAnimation {
+         layout: &TerrainAtlasLayout,
+         animations: &[SpriteAnimation],
+         tick: u64,
++        active_layers: Option<u64>,
+     ) -> horizon_client::Result<()> {
+-        if animations.is_empty() || self.settled_tick == Some(tick) {
++        let selection = (tick, active_layers);
++        if animations.is_empty() || self.settled == Some(selection) {
+             return Ok(());
+         }
+         self.shown.resize(animations.len(), None);
+         self.jobs.clear();
+         self.rects.clear();
+         let cell_bytes = (layout.cell_size as usize).pow(2) * 4;
+-        let limit = (ATLAS_BYTES_PER_UPDATE / cell_bytes).max(1);
++        let limit = atlas_update_limit(layout);
+         let mut remaining = animations.len();
+         let mut cursor = self.cursor % animations.len();
+         while remaining > 0 && self.jobs.len() < limit {
+-            let animation = &animations[cursor];
+-            let blend = animation.blend(tick);
+-            if self.shown[cursor] != Some(blend) {
+-                self.rects.push(layout.layer_rect(animation.layer)?);
+-                self.jobs.push(Job {
+-                    animation: cursor,
+-                    blend,
+-                });
++            if active_layers.is_none_or(|bits| bits & (1_u64 << cursor) != 0) {
++                let animation = &animations[cursor];
++                let blend = animation.blend(tick);
++                if self.shown[cursor] != Some(blend) {
++                    self.rects.push(layout.layer_rect(animation.layer)?);
++                    self.jobs.push(Job {
++                        animation: cursor,
++                        blend,
++                    });
++                }
+             }
+             cursor = (cursor + 1) % animations.len();
+             remaining -= 1;
+@@ -100,7 +184,11 @@ impl TerrainAnimation {
+                     std::ptr::from_mut(&mut update).cast(),
+                     self.rects.as_ptr(),
+                     self.rects.len(),
+-                    if trace { &mut phases } else { std::ptr::null_mut() },
++                    if trace {
++                        &mut phases
++                    } else {
++                        std::ptr::null_mut()
++                    },
+                 )
+             };
+             if result != 0 {
+@@ -126,7 +214,7 @@ impl TerrainAnimation {
+         }
+         self.cursor = cursor;
+         if remaining == 0 {
+-            self.settled_tick = Some(tick);
++            self.settled = Some(selection);
+         }
+         Ok(())
+     }
+@@ -158,7 +246,9 @@ unsafe extern "C" fn write_atlas_patch(context: *mut c_void, pixels: *mut u8, pi
+                 .write_upsampled_layer(animation.layer, frame, source_side, pixels, pitch)
+         } else {
+             let frame = animation.blend_at_reusing(job.blend, side, patch.current, patch.next);
+-            patch.layout.write_layer(animation.layer, frame, pixels, pitch)
++            patch
++                .layout
++                .write_layer(animation.layer, frame, pixels, pitch)
+         };
+         if let Err(error) = result {
+             patch.error = Some(error);
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index ae720b6f28e16786fb7768cc2db9cc802232231d..bff8b85749123a27311925a1ec58c48f1a403fa4 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -99,6 +99,7 @@ pub(super) struct TerrainSection {
+     translucent: Option<SortedSection>,
+     pub(super) bounds: Option<TerrainBounds>,
+     pub(super) budget_bytes: usize,
++    pub(super) animated_layers: u64,
+ }
+ 
+ impl TerrainSection {
+@@ -163,6 +164,7 @@ impl TerrainSection {
+             translucent,
+             bounds: info.bounds,
+             budget_bytes: info.bytes,
++            animated_layers: 0,
+         };
+         if section.gpu_bytes() + section.center_bytes() != info.bytes {
+             section.destroy_after_wait();

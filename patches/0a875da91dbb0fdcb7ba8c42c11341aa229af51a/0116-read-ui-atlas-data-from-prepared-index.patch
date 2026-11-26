@@ -1,0 +1,127 @@
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index 5a0d0f8..c09ac71 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -442,10 +442,15 @@ pub(crate) fn grey_png(width: u32, height: u32) -> Vec<u8> {
+ fn png_size(source: &ResourceSource, path: &str) -> Option<(u32, u32)> {
+     png_bytes_size(&source.read_head(path, 24).ok()?)
+ }
++/// The prepared archive owns texture and font-definition files in its directories.
++fn atlas_asset_files(source: &ResourceSource, directory: &str) -> Vec<String> {
++    source
++        .list_prepared_assets(directory)
++        .unwrap_or_else(|| source.list(&format!("{directory}/")))
++}
+ fn walk(source: &ResourceSource, directory: &str, out: &mut Vec<String>) {
+     out.extend(
+-        source
+-            .list(&format!("{directory}/"))
++        atlas_asset_files(source, directory)
+             .into_iter()
+             .filter(|name| name.ends_with(".png")),
+     );
+@@ -645,7 +650,7 @@ fn bitmap_font_textures(root: &ResourceSource) -> Vec<String> {
+     let defs = root
+         .namespaces("assets")
+         .into_iter()
+-        .flat_map(|ns| root.list(&format!("assets/{ns}/font/")))
++        .flat_map(|ns| atlas_asset_files(root, &format!("assets/{ns}/font")))
+         .filter(|path| path.ends_with(".json"));
+     let mut out = Vec::new();
+     let mut seen = HashSet::new();
+@@ -1407,6 +1412,10 @@ impl HudAtlas {
+             bool,
+             Option<Box<Maps>>,
+         );
++        let decode_with_header = |source: &ResourceSource, path: &str| {
++            let bytes = source.read(path)?;
++            decode_bytes(&bytes).map(|image| (image, png_bytes_size(&bytes)))
++        };
+         let decode_one = |path: &String| -> Option<Decoded> {
+             let name = if let Some(name) = named.get(path) {
+                 name.clone()
+@@ -1439,14 +1448,14 @@ impl HudAtlas {
+             } else {
+                 Some(defaults)
+             };
+-            let (source, path, image, defaulted) = match decode_resource(root, path) {
+-                Ok(image) => (root, path.clone(), image, false),
++            let default_path = crate::atlas_sources::texture_resource(&name, "textures");
++            let (source, path, (image, header), defaulted) = match decode_with_header(root, path) {
++                Ok(decoded) => (root, path.clone(), decoded, false),
+                 Err(e) => {
+-                    let shadowed = crate::atlas_sources::texture_resource(&name, "textures");
+-                    match shadow.map(|shadow| (shadow, decode_resource(shadow, &shadowed))) {
+-                        Some((shadow, Ok(image))) => {
++                    match shadow.map(|shadow| (shadow, decode_with_header(shadow, &default_path))) {
++                        Some((shadow, Ok(decoded))) => {
+                             log::warn!("GUI texture {path}: {e}; used the default's {name}");
+-                            (shadow, shadowed, image, true)
++                            (shadow, default_path.clone(), decoded, true)
+                         }
+                         _ => {
+                             log::warn!("skipped GUI texture {path}: {e}");
+@@ -1468,15 +1477,18 @@ impl HudAtlas {
+             // The default texture's size, when a pack's differs from it. A sprite
+             // that fell back to the default is at that size already: the broken
+             // file's header must not give it another one.
+-            let gui_size = png_size(
+-                if defaulted { source } else { defaults },
+-                &crate::atlas_sources::texture_resource(&name, "textures"),
+-            )
+-            .map(|(dw, dh)| {
+-                let side = dw.min(dh);
+-                if frames { (side, side) } else { (dw, dh) }
+-            })
+-            .filter(|&size| size != (w, h));
++            let default_source = if defaulted { source } else { defaults };
++            let default_size = if source.same_generation(default_source) && path == default_path {
++                header
++            } else {
++                png_size(default_source, &default_path)
++            };
++            let gui_size = default_size
++                .map(|(dw, dh)| {
++                    let side = dw.min(dh);
++                    if frames { (side, side) } else { (dw, dh) }
++                })
++                .filter(|&size| size != (w, h));
+             let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
+             let animated = frames && animation.is_some();
+             // Vanilla particle atlases accept sprites of any size.
+@@ -4843,6 +4855,35 @@ texture=wide",
+         assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 8));
+     }
+ 
++    #[test]
++    fn the_atlas_discovers_prepared_textures_and_font_sheets() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
++        write_png(root, "gui/container/inventory", 32, 16);
++        write_png(root, "hud/sheet", 16, 8);
++        let definition = root.join("assets/minecraft/font/default.json");
++        fs::create_dir_all(definition.parent().unwrap()).unwrap();
++        fs::write(
++            &definition,
++            r#"{"providers":[{"type":"bitmap","file":"minecraft:hud/sheet.png","ascent":7,"chars":["ab"]}]}"#,
++        )
++        .unwrap();
++        fs::write(root.join("horizon-resources.json"), b"{}").unwrap();
++        horizon_core::prepared_files::write(root).unwrap();
++        fs::remove_file(root.join("assets/minecraft/textures/gui/container/inventory.png"))
++            .unwrap();
++        fs::remove_file(root.join("assets/minecraft/textures/hud/sheet.png")).unwrap();
++        fs::remove_file(definition).unwrap();
++        let source = ResourceSource::directory(root.to_path_buf());
++        let atlas = HudAtlas::build(&source).unwrap();
++        let size = (atlas.width, atlas.height);
++        assert_eq!(
++            atlas.sprites["gui/container/inventory"].texels(size),
++            (32, 16)
++        );
++        assert_eq!(atlas.sprites["hud/sheet"].texels(size), (16, 8));
++    }
++
+     /// A content mod's GUI textures join the atlas under its namespace;
+     /// its other textures and vanilla's names stay as they were.
+     #[test]
