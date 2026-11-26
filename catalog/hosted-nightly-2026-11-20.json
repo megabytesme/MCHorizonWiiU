@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "f82ca5a303fb2d77354a62f2335f550eff96a38f",
+  "output_tree": "9c843d3b8b82cb4ecc809eab90edd9c01b90287e",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -908,6 +908,12 @@
       "sha256": "4a533b090559081f92a00990463259eac1ff2f75b0ce569e0604147ed2517e82",
       "input_tree": "a3b4a2d82e701df56a9a4e07c139ceee00834d8a",
       "output_tree": "f82ca5a303fb2d77354a62f2335f550eff96a38f"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0150-scope-cafe-dns-ffi-unsafe.patch",
+      "sha256": "ad2fee13136ec0cc6b326e6071f94afc3766d2451aadc8d9e55c0169e5b8c188",
+      "input_tree": "f82ca5a303fb2d77354a62f2335f550eff96a38f",
+      "output_tree": "9c843d3b8b82cb4ecc809eab90edd9c01b90287e"
     }
   ],
   "candidate": {

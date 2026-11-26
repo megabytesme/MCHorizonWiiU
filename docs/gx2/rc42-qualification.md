@@ -1,8 +1,8 @@
 # RC 42 source qualification
 
-The staged recipe applies patches 0136 through 0149 after the RC 38 source.
-The last seven patches apply in order after RC 41 and produce engine tree
-`f82ca5a303fb2d77354a62f2335f550eff96a38f`.
+The staged recipe applies patches 0136 through 0150 after the RC 38 source.
+The last eight patches apply in order after RC 41 and produce engine tree
+`9c843d3b8b82cb4ecc809eab90edd9c01b90287e`.
 The package and exact Cemu gameplay run are pending.
 
 | Increment | Verified so far |
@@ -12,6 +12,11 @@ The package and exact Cemu gameplay run are pending.
 | Village frame correlation | HZP3 sequence transport passed targeted native syntax and C/Rust checks without GX2 timing. A focused event-ordering test confirms that unrecorded rows cannot consume a coverage transition. The host analyzer checks coverage and timing against the capture and preserves the historical RC 33 results. |
 | Cafe Minecraft SRV resolver | Native bridge compiled without static NetConf getter imports. Four host cases cover dynamic export failure, initialization failure, filtering and interface fallback. The exact bridge fixture reached zero assigned resolvers and exited in Cemu. |
 | Cemu GamePad MCP capture | Eleven adapter tests pass with the scratch guard both off and on. GamePad observation reuses the existing capture path. Physical GamePad capture awaits a separate safe staging implementation and qualification. |
+
+The first full Cafe build caught the protocol crate's `deny(unsafe_code)`
+when the target-only DNS adapter was compiled. Patch 0150 scopes the
+exception to the bounded FFI wrapper. Host and standalone Cemu fixtures
+did not exercise that crate-level check. The corrected package is pending.
 
 ## Integrated tests
 
