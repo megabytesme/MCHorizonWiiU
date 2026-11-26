@@ -39,6 +39,17 @@ def paths(lab):
     return portable, portable / "sdcard/wiiu/apps/HorizonWiiU"
 
 
+def filesystem_path(path):
+    if os.name != "nt":
+        return path
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\"):
+        return path
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
 def require_fixture_space(destination, sources):
     parent = next(part for part in destination.absolute().parents if part.is_dir())
     unit = 4096
@@ -55,8 +66,10 @@ def require_fixture_space(destination, sources):
         size = file.stat().st_size
         return (size + unit - 1) // unit * unit
 
+    # Robocopy stages long names, including prepared resource and region paths.
+    # Count those names even when the scratch root makes them exceed MAX_PATH.
     needed = sum(sum(allocated(file) for file in path.rglob("*") if file.is_file())
-                 if path.is_dir() else allocated(path) for path in sources)
+                 if path.is_dir() else allocated(path) for path in map(filesystem_path, sources))
     available = shutil.disk_usage(parent).free
     if needed > available:
         mib = 1024 ** 2

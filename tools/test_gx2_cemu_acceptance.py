@@ -1,5 +1,11 @@
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+from gx2_cemu import filesystem_path, require_fixture_space
 from gx2_cemu_acceptance import MIN_MOVEMENT_BLOCKS, movement_along_input
 
 
@@ -22,6 +28,24 @@ class MovementEvidenceTests(unittest.TestCase):
                     (0.0, 68.0, 96.0 - 1e-6)):
             with self.subTest(end=end):
                 self.assertLess(movement_along_input(start, end, 0.0, "backward"), MIN_MOVEMENT_BLOCKS)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows long-path handling")
+class FixtureSpaceTests(unittest.TestCase):
+    def test_counts_resources_beyond_max_path(self):
+        temp_root = filesystem_path(Path(tempfile.gettempdir()))
+        with tempfile.TemporaryDirectory(dir=temp_root) as folder:
+            lab = Path(folder)
+            plain_root = Path(tempfile.gettempdir()) / lab.name
+            resources = lab / "resources"
+            nested = resources
+            for name in ("a", "b", "c"):
+                nested /= name * 90
+            nested.mkdir(parents=True)
+            (nested / "terrain.json").write_bytes(b"fixture")
+            with patch("gx2_cemu.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+                with self.assertRaisesRegex(ValueError, "fixture copy needs"):
+                    require_fixture_space(plain_root / "new-lab", [plain_root / "resources"])
 
 
 if __name__ == "__main__":
