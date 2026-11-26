@@ -1,0 +1,227 @@
+diff --git a/crates/horizon-world/src/worldgen/biome.rs b/crates/horizon-world/src/worldgen/biome.rs
+index 7847d679ba15de8d304d08213fc3a15fa8414598..f875b29fc046623515518366c2da82c89aa0b425 100644
+--- a/crates/horizon-world/src/worldgen/biome.rs
++++ b/crates/horizon-world/src/worldgen/biome.rs
+@@ -9,6 +9,7 @@ use super::{
+     density::identifier,
+ };
+ use horizon_core::density::{SampleError, SamplerContext};
++use std::sync::Arc;
+ 
+ /// Identity within an immutable biome registry snapshot.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+@@ -48,9 +49,9 @@ impl From<SampleError> for BiomeError {
+     }
+ }
+ 
+-#[derive(Debug)]
++#[derive(Clone, Debug)]
+ pub struct MultiNoiseBiomeSource {
+-    parameters: ClimateIndex<String>,
++    parameters: Arc<ClimateIndex<String>>,
+ }
+ impl MultiNoiseBiomeSource {
+     pub fn new(entries: Vec<(ParameterPoint, String)>) -> Result<Self, BiomeError> {
+@@ -59,7 +60,7 @@ impl MultiNoiseBiomeSource {
+             .map(|(point, name)| Ok((point, identifier(&name)?)))
+             .collect::<Result<_, DecodeError>>()?;
+         Ok(Self {
+-            parameters: ClimateIndex::new(entries)?,
++            parameters: Arc::new(ClimateIndex::new(entries)?),
+         })
+     }
+     /// Horizon's quantized import format, not the vanilla biome definition
+diff --git a/crates/horizon-world/src/worldgen/biome_source/runtime.rs b/crates/horizon-world/src/worldgen/biome_source/runtime.rs
+index a759b6bb755df2737802d12e42461d0baf917c89..65df360cd0efe75dcea849c0a2851ba80af67175 100644
+--- a/crates/horizon-world/src/worldgen/biome_source/runtime.rs
++++ b/crates/horizon-world/src/worldgen/biome_source/runtime.rs
+@@ -79,6 +79,18 @@ impl BiomeSourceDefinition {
+         &self,
+         presets: &BTreeMap<String, String>,
+         seed: i64,
++    ) -> Result<ResolvedBiomeSource, BiomeSourceError> {
++        self.resolve_with(seed, |name| {
++            Ok(MultiNoiseBiomeSource::from_quantized_json(
++                presets.get(name).ok_or(BiomeSourceError::MissingPreset)?,
++            )?)
++        })
++    }
++
++    pub(in crate::worldgen) fn resolve_with(
++        &self,
++        seed: i64,
++        preset: impl FnOnce(&str) -> Result<MultiNoiseBiomeSource, BiomeSourceError>,
+     ) -> Result<ResolvedBiomeSource, BiomeSourceError> {
+         Ok(match self {
+             Self::Fixed(biome) => ResolvedBiomeSource::Fixed(FixedBiomeSource {
+@@ -97,11 +109,7 @@ impl BiomeSourceDefinition {
+             Self::MultiNoise(entries) => {
+                 ResolvedBiomeSource::MultiNoise(MultiNoiseBiomeSource::new(entries.clone())?)
+             }
+-            Self::Preset { name, .. } => {
+-                ResolvedBiomeSource::MultiNoise(MultiNoiseBiomeSource::from_quantized_json(
+-                    presets.get(name).ok_or(BiomeSourceError::MissingPreset)?,
+-                )?)
+-            }
++            Self::Preset { name, .. } => ResolvedBiomeSource::MultiNoise(preset(name)?),
+             Self::Registered(id) => ResolvedBiomeSource::Registered(
+                 LevelBiomeSource::resolve(id, mod_biome_sources(), seed, |name| {
+                     Some(name.to_owned())
+diff --git a/crates/horizon-world/src/worldgen/generator.rs b/crates/horizon-world/src/worldgen/generator.rs
+index e0ae5ae2d67dedf7f121c28ca6a967870c6bce7e..0b865398ef3e99c0f3649a7d758c7444111238f2 100644
+--- a/crates/horizon-world/src/worldgen/generator.rs
++++ b/crates/horizon-world/src/worldgen/generator.rs
+@@ -474,9 +474,7 @@ where
+         let preliminary = router.get(RouterField::ChunkSurfaceLevel).clone();
+         let mut source_json = generator["biome_source"].to_string();
+         let definition = data.source_catalog.decode(&source_json)?;
+-        let source = definition
+-            .resolve(&data.presets, seed)
+-            .map_err(|e| resource(format!("biome source: {e}")))?;
++        let source = data.resolve_biome_source(&definition, seed)?;
+         // Only the multi-noise presets (Overworld, Nether) take regions, not inline point lists.
+         let source = if matches!(definition, BiomeSourceDefinition::Preset { .. }) {
+             source
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index 8df303e0912292bc2636338cbf389563d79a9848..90250395c4dc1cbd3fd72ba2b808eaa2ca6bdaa9 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -1,5 +1,6 @@
+ //! Seed-independent registry resources and their load boundary.
+ use super::*;
++use crate::worldgen::{biome::MultiNoiseBiomeSource, biome_source::BiomeSourceError};
+ /// Feature resources for the FEATURES status, keyed by resource identifier.
+ pub(in crate::worldgen) struct FeatureResources {
+     pub(in crate::worldgen) features: BTreeMap<String, String>,
+@@ -32,7 +33,7 @@ pub struct GeneratorData {
+     pub(super) densities: BTreeMap<String, String>,
+     pub(super) rules: BTreeMap<String, String>,
+     pub(super) settings: BTreeMap<String, String>,
+-    pub(super) presets: BTreeMap<String, String>,
++    presets: BTreeMap<String, Mutex<BiomePreset>>,
+     pub(super) world_presets: BTreeMap<String, String>,
+     /// Data packs' level stems (`dimension/<id>.json`), by dimension id:
+     /// they replace the world preset's.
+@@ -90,6 +91,24 @@ type DecorationSlot =
+ /// Biome sources whose decoration is kept: the three dimensions and a spare.
+ const DECORATION_CACHE_LIMIT: usize = 4;
+ type Bundle = BTreeMap<String, String>;
++
++enum BiomePreset {
++    Json(String),
++    Resolved(MultiNoiseBiomeSource),
++}
++
++impl BiomePreset {
++    fn resolve(&mut self) -> Result<MultiNoiseBiomeSource, BiomeSourceError> {
++        match self {
++            Self::Resolved(source) => Ok(source.clone()),
++            Self::Json(json) => {
++                let source = MultiNoiseBiomeSource::from_quantized_json(json)?;
++                *self = Self::Resolved(source.clone());
++                Ok(source)
++            }
++        }
++    }
++}
+ /// The bundle `name` with the data packs' entries over it.
+ fn read_bundle(
+     dir: &Path,
+@@ -380,7 +399,10 @@ impl GeneratorData {
+             dimensions: ov.apply(overrides::DIMENSIONS, BTreeMap::new()),
+             dimension_types: ov.apply(overrides::DIMENSION_TYPES, BTreeMap::new()),
+             warnings,
+-            presets,
++            presets: presets
++                .into_iter()
++                .map(|(name, json)| (name, Mutex::new(BiomePreset::Json(json))))
++                .collect(),
+             conditions,
+             source_catalog,
+             biome_names,
+@@ -468,13 +490,28 @@ impl GeneratorData {
+         )?;
+         let source_json =
+             preset_json["dimensions"][dimension]["generator"]["biome_source"].to_string();
+-        let source = self
+-            .source_catalog
+-            .decode(&source_json)?
+-            .resolve(&self.presets, 0)
+-            .map_err(|e| resource(format!("biome source: {e}")))?;
++        let source = self.resolve_biome_source(&self.source_catalog.decode(&source_json)?, 0)?;
+         self.decoration_for(&source_json, &source).map(drop)
+     }
++
++    /// Share a preset's immutable climate index across preload and world
++    /// generators. Each resolver still owns its previous-leaf search state.
++    pub(super) fn resolve_biome_source(
++        &self,
++        definition: &BiomeSourceDefinition,
++        seed: i64,
++    ) -> Result<ResolvedBiomeSource, GeneratorError> {
++        definition
++            .resolve_with(seed, |name| {
++                self.presets
++                    .get(name)
++                    .ok_or(BiomeSourceError::MissingPreset)?
++                    .lock()
++                    .unwrap_or_else(|e| e.into_inner())
++                    .resolve()
++            })
++            .map_err(|e| resource(format!("biome source: {e}")))
++    }
+     pub fn registry(&self) -> &'static BlockRegistry {
+         self.registry
+     }
+@@ -704,13 +741,12 @@ impl GeneratorData {
+     fn decode_preset_names(&self) -> Option<RegistryNames> {
+         Some(
+             self.presets
+-                .keys()
+-                .filter_map(|name| {
+-                    let source = BiomeSourceDefinition::Preset {
+-                        name: name.clone(),
+-                        inline: false,
+-                    };
+-                    source.resolve(&self.presets, 0).ok()?;
++                .iter()
++                .filter_map(|(name, preset)| {
++                    let preset = preset.lock().unwrap_or_else(|e| e.into_inner());
++                    if let BiomePreset::Json(json) = &*preset {
++                        MultiNoiseBiomeSource::from_quantized_json(json).ok()?;
++                    }
+                     super::super::density::identifier(name).ok()
+                 })
+                 .collect(),
+@@ -830,3 +866,31 @@ impl GeneratorData {
+         )
+     }
+ }
++
++#[cfg(test)]
++mod preset_tests {
++    use super::*;
++    use crate::worldgen::climate::TargetPoint;
++
++    #[test]
++    fn preset_shares_the_index_and_searchers_keep_their_own_tie_history() {
++        let mut preset = BiomePreset::Json(
++            r#"[
++                {"coordinates":[[-10000,-10000],[0,0],[0,0],[0,0],[0,0],[0,0]],"offset":0,"biome":"minecraft:plains"},
++                {"coordinates":[[10000,10000],[0,0],[0,0],[0,0],[0,0],[0,0]],"offset":0,"biome":"minecraft:forest"}
++            ]"#
++            .to_owned(),
++        );
++        let preload = preset.resolve().unwrap();
++        let generator = preset.resolve().unwrap();
++        assert!(std::ptr::eq(preload.parameters(), generator.parameters()));
++
++        let point = |temperature| TargetPoint::from_values([temperature, 0.0, 0.0, 0.0, 0.0, 0.0]);
++        let mut first = preload.parameters().searcher();
++        let mut second = generator.parameters().searcher();
++        assert_eq!(first.find(point(-1.0)).unwrap(), "minecraft:plains");
++        assert_eq!(second.find(point(1.0)).unwrap(), "minecraft:forest");
++        assert_eq!(first.find(point(0.0)).unwrap(), "minecraft:plains");
++        assert_eq!(second.find(point(0.0)).unwrap(), "minecraft:forest");
++    }
++}

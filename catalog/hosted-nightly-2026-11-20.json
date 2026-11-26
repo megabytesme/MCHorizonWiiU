@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "1a853e532f4875ea022977433902a6a042928dfe",
+  "output_tree": "f47bf29e8b97f68d145a57165627ae86f3d64c93",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -782,6 +782,12 @@
       "sha256": "b216837d0b1711bd10405e9bf0857a6a4483c2b8e09d4f7a912618c29d213e04",
       "input_tree": "44353dbcf8f97c858bf641044f4f444c9d0ad933",
       "output_tree": "1a853e532f4875ea022977433902a6a042928dfe"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0129-share-resolved-worldgen-biome-presets.patch",
+      "sha256": "05a5392e882bf7fd584d33ece2802b83976f11d72e7c9d600627b0c81ded58ff",
+      "input_tree": "1a853e532f4875ea022977433902a6a042928dfe",
+      "output_tree": "f47bf29e8b97f68d145a57165627ae86f3d64c93"
     }
   ],
   "candidate": {
