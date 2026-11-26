@@ -1,0 +1,48 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 0e314d9..2a95bf3 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -808,6 +808,9 @@ pub use resource_tables::UiResources;
+ #[derive(Clone)]
+ pub struct PackResources {
+     source: horizon_assets::resource_source::ResourceSource,
++    /// The pack-defined default post chain, resolved with this resource generation.
++    #[cfg(target_os = "cafe")]
++    end_of_frame_post: bool,
+     data_source: horizon_assets::resource_source::ResourceSource,
+     data_changes: horizon_assets::resource_source::ResourceSource,
+     additional_data: Arc<[Arc<horizon_client::datapack::DataPack>]>,
+diff --git a/crates/horizon-client/src/game/interface/screen_backgrounds.rs b/crates/horizon-client/src/game/interface/screen_backgrounds.rs
+index 8428878..cf23eb1 100644
+--- a/crates/horizon-client/src/game/interface/screen_backgrounds.rs
++++ b/crates/horizon-client/src/game/interface/screen_backgrounds.rs
+@@ -81,7 +81,13 @@ impl Game<'_> {
+         if self.title.is_some() || self.player.is_none() {
+             return Vec::new();
+         }
+-        std::iter::once("minecraft:end_of_frame".to_owned())
++        #[cfg(target_os = "cafe")]
++        let use_end_of_frame = self.pack.end_of_frame_post;
++        #[cfg(not(target_os = "cafe"))]
++        let use_end_of_frame = true;
++        use_end_of_frame
++            .then(|| "minecraft:end_of_frame".to_owned())
++            .into_iter()
+             .chain(self.post_effects.iter().cloned())
+             .chain(self.spectated_post_effect.map(str::to_owned))
+             .collect()
+diff --git a/crates/horizon-client/src/game/runtime/resource_tables.rs b/crates/horizon-client/src/game/runtime/resource_tables.rs
+index 14f85a5..ba0e591 100644
+--- a/crates/horizon-client/src/game/runtime/resource_tables.rs
++++ b/crates/horizon-client/src/game/runtime/resource_tables.rs
+@@ -341,6 +341,10 @@ impl PackResources {
+             render,
+             item_renderer: Arc::new(item_renderer),
+             source: root.source().clone(),
++            #[cfg(target_os = "cafe")]
++            end_of_frame_post: root
++                .source()
++                .contains("assets/minecraft/post_effect/end_of_frame.json"),
+             data_source: root.data().clone(),
+             data_changes: root.data_changes().clone(),
+             additional_data: Arc::from([]),

@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d",
+  "output_tree": "aa48e239eae36c73252b345468e4fbff7bed9520",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1040,6 +1040,12 @@
       "sha256": "bceed3151166ee1bdb912dd717501543f63e2247b6df493a13fa465c80783785",
       "input_tree": "499ba0705dce6703c521417ba92e2542380e074a",
       "output_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0172-resolve-the-cafe-default-post-chain-per-pack.patch",
+      "sha256": "3549c2b007254c7b292964b14d82ac6d84af55082762610b89368ad0b0fdbce6",
+      "input_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d",
+      "output_tree": "aa48e239eae36c73252b345468e4fbff7bed9520"
     }
   ],
   "candidate": {
