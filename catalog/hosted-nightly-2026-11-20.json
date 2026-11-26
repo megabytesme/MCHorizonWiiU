@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "8977f932ca96cae2f7b637c1c143c89f4c1c654b",
+  "output_tree": "1a853e532f4875ea022977433902a6a042928dfe",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -770,6 +770,18 @@
       "sha256": "cadcd508c9dd342f4d19827ec01cd0ea42bebb52f863838093e60c651afa1ba6",
       "input_tree": "90198bbcd8785af9e733b43efc87c990c04ea0cf",
       "output_tree": "8977f932ca96cae2f7b637c1c143c89f4c1c654b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0127-omit-overwritten-scaled-gx2-output-clears.patch",
+      "sha256": "079464d9fc621945fc997f33bfe21da4c5862357ca599b2ecb01ad7e1dc79db7",
+      "input_tree": "8977f932ca96cae2f7b637c1c143c89f4c1c654b",
+      "output_tree": "44353dbcf8f97c858bf641044f4f444c9d0ad933"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0128-trial-gx2-tv-submit-before-prior-flip.patch",
+      "sha256": "b216837d0b1711bd10405e9bf0857a6a4483c2b8e09d4f7a912618c29d213e04",
+      "input_tree": "44353dbcf8f97c858bf641044f4f444c9d0ad933",
+      "output_tree": "1a853e532f4875ea022977433902a6a042928dfe"
     }
   ],
   "candidate": {

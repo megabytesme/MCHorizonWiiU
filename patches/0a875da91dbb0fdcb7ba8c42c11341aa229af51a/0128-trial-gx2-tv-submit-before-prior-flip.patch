@@ -1,0 +1,210 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index fa714c5..71125e0 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -81,7 +81,7 @@ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_at
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+-static bool skip_scaled_output_clear;
++static bool skip_scaled_output_clear, defer_flip;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -126,6 +126,7 @@ void horizon_gx2_profile_init(void)
+    hud_patch_mode = variant == 'w' ? HORIZON_HUD_PATCH_MEASURE_FULL :
+       variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
+    skip_scaled_output_clear = variant == 'c';
++   defer_flip = variant == 'q';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -179,6 +180,11 @@ bool horizon_gx2_profile_skip_scaled_output_clear(void)
+    return skip_scaled_output_clear;
+ }
+ 
++bool horizon_gx2_profile_defer_flip(void)
++{
++   return defer_flip;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index feb60ce..382a5ba 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -43,6 +43,7 @@ bool horizon_gx2_profile_shared_hud_upload(void);
+ bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
++bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 6d211e0..201c95d 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -198,7 +198,14 @@ extern "C" {
+         rgba: *const f32,
+         opaque_viewports: *const u32,
+     ) -> i32;
++    fn horizon_loading_host_present_deferred_flip(
++        draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
++        context: *mut c_void,
++        rgba: *const f32,
++        opaque_viewports: *const u32,
++    ) -> i32;
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
++    fn horizon_gx2_profile_defer_flip() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+@@ -2411,6 +2418,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             std::ptr::null()
+         };
++        let present = if !frame.title && self.terrain.is_some()
++            && unsafe { horizon_gx2_profile_defer_flip() }
++        {
++            horizon_loading_host_present_deferred_flip
++        } else {
++            horizon_loading_host_present_with_clear
++        };
+         let terrain_min_y = self.terrain_min_y;
+         let mut draw = Draw {
+             presenter: self,
+@@ -2424,7 +2438,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared: false,
+         };
+         let host = unsafe {
+-            horizon_loading_host_present_with_clear(
++            present(
+                 draw_target,
+                 (&mut draw as *mut Draw<'_, '_, '_>).cast(),
+                 clear.as_ptr(),
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 27df43e..860f063 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -8,6 +8,7 @@
+ #include <coreinit/time.h>
+ #include <gx2/surface.h>
+ #include <gx2r/surface.h>
++#include <proc_ui/procui.h>
+ #include <string.h>
+ 
+ extern const uint8_t _binary_hud_gsh_start[];
+@@ -152,28 +153,36 @@ static bool output_is_overwritten(const uint32_t viewport[4], const uint32_t siz
+       viewport[2] == size[0] && viewport[3] == size[1];
+ }
+ 
+-int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+-                                            const float rgba[4], const uint32_t opaque_viewports[8])
++static OSTime wait_for_previous_flip(void)
++{
++   const uint64_t stamp = horizon_gx2_profile_stamp();
++   const OSTime start = OSGetTime();
++   WHBGfxBeginRender();
++   const OSTime elapsed = OSGetTime() - start;
++   horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
++   return elapsed;
++}
++
++static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
++                              const uint32_t opaque_viewports[8], bool defer_flip)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+    if (!draw || !rgba) return -1;
+    uint32_t dimensions[4];
+    if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
+-   // The SDK keyboard may use the output depth/stencil, unlike the composite
+-   // and HUD (which clears depth before depth-tested runs).
+-   const bool may_omit_clear = opaque_viewports && !horizon_swkbd_is_open();
++   // The SDK keyboard owns a separate overlay pipeline. Keep its established
++   // presentation ordering and depth/stencil setup while it is open.
++   const bool keyboard_open = (opaque_viewports || defer_flip) && horizon_swkbd_is_open();
++   defer_flip = defer_flip && !keyboard_open && ProcUIInForeground();
++   const bool may_omit_clear = opaque_viewports && !keyboard_open;
+    const bool omit_tv = may_omit_clear && output_is_overwritten(opaque_viewports, dimensions);
+    const bool omit_drc = may_omit_clear && output_is_overwritten(opaque_viewports + 4, dimensions + 2);
+    int result = 0;
+-   uint64_t stamp = horizon_gx2_profile_stamp();
+-   const OSTime wait_start = OSGetTime();
+-   WHBGfxBeginRender();
+-   const OSTime flip_wait = OSGetTime() - wait_start;
+-   horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
++   OSTime flip_wait = defer_flip ? 0 : wait_for_previous_flip();
+    const bool gpu_sample = horizon_gx2_profile_gpu_begin();
+ 
+-   stamp = horizon_gx2_profile_stamp();
++   uint64_t stamp = horizon_gx2_profile_stamp();
+ 
+    uint64_t stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderTV();
+@@ -188,10 +197,18 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+       last_outputs |= 1u;
+    }
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(0, true);
++   if (defer_flip) {
++      // WHB's color/depth render targets are separate from the scan buffers.
++      // The previous frame retired before this callback, so draw into its
++      // render target while the preceding scan flip is still pending. Wait
++      // before the first command that can write the next scan buffer.
++      horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
++      flip_wait = wait_for_previous_flip();
++   }
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stage_stamp);
+-   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
++   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, defer_flip ? stage_stamp : stamp);
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
+@@ -220,6 +237,11 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
++   static bool reported_deferred_flip;
++   if (defer_flip && !reported_deferred_flip) {
++      reported_deferred_flip = true;
++      OSReport("Horizon GX2 queued TV rendering before the previous flip\n");
++   }
+    static uint32_t previous_omitted_outputs;
+    const uint32_t omitted_outputs = (uint32_t)omit_tv | ((uint32_t)omit_drc << 1);
+    if (omitted_outputs != previous_omitted_outputs) {
+@@ -232,3 +254,15 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    }
+    return result;
+ }
++
++int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
++                                            const float rgba[4], const uint32_t opaque_viewports[8])
++{
++   return present_with_clear(draw, context, rgba, opaque_viewports, false);
++}
++
++int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
++                                               const float rgba[4], const uint32_t opaque_viewports[8])
++{
++   return present_with_clear(draw, context, rgba, opaque_viewports, true);
++}
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 98dd16c..ad1595d 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -17,6 +17,10 @@ uint32_t horizon_loading_host_flip_count(void);
+  * callback must report failure if it cannot complete the composite. */
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4], const uint32_t opaque_viewports[8]);
++/* Queues TV rendering before the prior flip. The callback may write the
++ * render target and attachments, and the host owns all scanout copies. */
++int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
++                                               const float rgba[4], const uint32_t opaque_viewports[8]);
+ 
+ /* Return actual WHB colour-buffer dimensions as {TV width, TV height,
+  * DRC width, DRC height}. Returns nonzero until both buffers are available. */

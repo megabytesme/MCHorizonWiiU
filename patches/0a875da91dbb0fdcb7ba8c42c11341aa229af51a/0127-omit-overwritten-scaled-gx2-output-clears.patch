@@ -1,0 +1,200 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 65af675..fa714c5 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -81,6 +81,7 @@ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_at
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
++static bool skip_scaled_output_clear;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -124,6 +125,7 @@ void horizon_gx2_profile_init(void)
+    profile_terrain_animation = variant == 'a';
+    hud_patch_mode = variant == 'w' ? HORIZON_HUD_PATCH_MEASURE_FULL :
+       variant == 'u' ? HORIZON_HUD_PATCH_MEASURE_DIRTY : HORIZON_HUD_PATCH_DEFAULT;
++   skip_scaled_output_clear = variant == 'c';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -172,6 +174,11 @@ bool horizon_gx2_profile_shared_model_uploads(void)
+    return shared_model_uploads;
+ }
+ 
++bool horizon_gx2_profile_skip_scaled_output_clear(void)
++{
++   return skip_scaled_output_clear;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index e9bb397..feb60ce 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -42,6 +42,7 @@ bool horizon_gx2_profile_legacy_terrain_uniforms(void);
+ bool horizon_gx2_profile_shared_hud_upload(void);
+ bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
++bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index ada3f40..6d211e0 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -196,7 +196,9 @@ extern "C" {
+         draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
+         context: *mut c_void,
+         rgba: *const f32,
++        opaque_viewports: *const u32,
+     ) -> i32;
++    fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+@@ -2396,6 +2398,19 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     .map_err(hud_error_message)?,
+             )
+         };
++        // A scaled composite fully writes its rectangle before the HUD. Only
++        // the actual native allocation, rather than the requested scale, can
++        // promise that overwrite. The host validates it against each output.
++        let opaque_viewports = if unsafe { horizon_gx2_profile_skip_scaled_output_clear() }
++            && self
++                .world_scale
++                .resolution()
++                .is_some_and(|resolution| resolution.effective_scale < 100)
++        {
++            targets.as_flattened().as_ptr()
++        } else {
++            std::ptr::null()
++        };
+         let terrain_min_y = self.terrain_min_y;
+         let mut draw = Draw {
+             presenter: self,
+@@ -2413,6 +2428,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 draw_target,
+                 (&mut draw as *mut Draw<'_, '_, '_>).cast(),
+                 clear.as_ptr(),
++                opaque_viewports,
+             )
+         };
+         let profile = draw.profile;
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ea921a5..27df43e 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -4,6 +4,7 @@
+ 
+ #include <whb/gfx.h>
+ #include <gx2/event.h>
++#include <coreinit/debug.h>
+ #include <coreinit/time.h>
+ #include <gx2/surface.h>
+ #include <gx2r/surface.h>
+@@ -142,17 +143,28 @@ uint32_t horizon_loading_host_completed_presents(void)
+ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context)
+ {
+    const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+-   return horizon_loading_host_present_with_clear(draw, context, clear);
++   return horizon_loading_host_present_with_clear(draw, context, clear, NULL);
++}
++
++static bool output_is_overwritten(const uint32_t viewport[4], const uint32_t size[2])
++{
++   return viewport[0] == 0 && viewport[1] == 0 &&
++      viewport[2] == size[0] && viewport[3] == size[1];
+ }
+ 
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+-                                            const float rgba[4])
++                                            const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+    if (!draw || !rgba) return -1;
+    uint32_t dimensions[4];
+    if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
++   // The SDK keyboard may use the output depth/stencil, unlike the composite
++   // and HUD (which clears depth before depth-tested runs).
++   const bool may_omit_clear = opaque_viewports && !horizon_swkbd_is_open();
++   const bool omit_tv = may_omit_clear && output_is_overwritten(opaque_viewports, dimensions);
++   const bool omit_drc = may_omit_clear && output_is_overwritten(opaque_viewports + 4, dimensions + 2);
+    int result = 0;
+    uint64_t stamp = horizon_gx2_profile_stamp();
+    const OSTime wait_start = OSGetTime();
+@@ -165,12 +177,16 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ 
+    uint64_t stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderTV();
+-   WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   if (!omit_tv) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_TV, stage_stamp);
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(0, false);
+-   if (draw(context, 0, dimensions[0], dimensions[1]) != 0 ||
+-       horizon_swkbd_draw(0) != 0) result = -2;
+-   else last_outputs |= 1u;
++   if (draw(context, 0, dimensions[0], dimensions[1]) != 0 || horizon_swkbd_draw(0) != 0) {
++      // A failed callback may leave the output only partly overwritten.
++      if (omit_tv) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      result = -2;
++   } else {
++      last_outputs |= 1u;
++   }
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(0, true);
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+@@ -181,12 +197,15 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ 
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderDRC();
+-   WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   if (!omit_drc) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_DRC, stage_stamp);
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(1, false);
+-   if (draw(context, 1, dimensions[2], dimensions[3]) != 0 ||
+-       horizon_swkbd_draw(1) != 0) result = -3;
+-   else last_outputs |= 2u;
++   if (draw(context, 1, dimensions[2], dimensions[3]) != 0 || horizon_swkbd_draw(1) != 0) {
++      if (omit_drc) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      result = -3;
++   } else {
++      last_outputs |= 2u;
++   }
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(1, true);
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderDRC();
+@@ -201,6 +220,12 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
++   static uint32_t previous_omitted_outputs;
++   const uint32_t omitted_outputs = (uint32_t)omit_tv | ((uint32_t)omit_drc << 1);
++   if (omitted_outputs != previous_omitted_outputs) {
++      previous_omitted_outputs = omitted_outputs;
++      OSReport("Horizon GX2 scaled output clear omission mask=%u\n", omitted_outputs);
++   }
+    if (result == 0) {
+       ++completed_presents;
+       horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index b48ac07..98dd16c 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -12,8 +12,11 @@ uint32_t horizon_loading_host_completed_presents(void);
+ uint32_t horizon_loading_host_last_outputs(void);
+ uint64_t horizon_loading_host_last_wait_ns(void);
+ uint32_t horizon_loading_host_flip_count(void);
++/* When supplied, opaque_viewports gives the overwrite rectangle of each
++ * offscreen composite. A clear can be omitted only for a full output. The
++ * callback must report failure if it cannot complete the composite. */
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+-                                            const float rgba[4]);
++                                            const float rgba[4], const uint32_t opaque_viewports[8]);
+ 
+ /* Return actual WHB colour-buffer dimensions as {TV width, TV height,
+  * DRC width, DRC height}. Returns nonzero until both buffers are available. */
