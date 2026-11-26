@@ -1,0 +1,61 @@
+diff --git a/crates/horizon-world/src/cafe_persistence.rs b/crates/horizon-world/src/cafe_persistence.rs
+index 74affdb190dd282fffe873a361033b6d08fcc451..bfcb24799028d89e378a675bd464f2232a8566e2 100644
+--- a/crates/horizon-world/src/cafe_persistence.rs
++++ b/crates/horizon-world/src/cafe_persistence.rs
+@@ -42,7 +42,9 @@ impl Stage {
+     fn reserve(path: &Path) -> io::Result<Self> {
+         loop {
+             let id = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+-            let dir = sibling(path, &format!(".horizon-stage-{id}"));
++            // Keep staging adjacent for rename without extending the destination
++            // basename. Long player and dimension paths have little room left.
++            let dir = path.with_file_name(format!(".horizon-stage-{id:x}"));
+             match fs::create_dir(&dir) {
+                 Ok(()) => return Ok(Self(dir)),
+                 Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+@@ -198,6 +200,28 @@ mod tests {
+         assert_eq!(fs::read_dir(&root.0).unwrap().count(), 2);
+     }
+ 
++    #[test]
++    fn staging_cost_is_bounded_beside_a_long_save_name() {
++        let root = Scratch::new();
++        let path = root.0.join("00000000-0000-4000-8000-000000000001.json");
++        let backup = sibling(&path, ".horizon-prev");
++        fs::write(&path, b"previous").unwrap();
++
++        replace_with(&path, &backup, b"latest", true, |from, to| {
++            if from.ends_with("payload") {
++                let stage = from.parent().unwrap();
++                assert_eq!(stage.parent(), path.parent());
++                assert!(stage.file_name().unwrap().len() <= ".horizon-stage-ffffffff".len());
++            }
++            no_replace(from, to)
++        })
++        .unwrap();
++
++        assert_eq!(read(&path, &backup).unwrap(), b"latest");
++        assert_eq!(fs::read(&backup).unwrap(), b"previous");
++        assert_eq!(fs::read_dir(&root.0).unwrap().count(), 2);
++    }
++
+     #[test]
+     fn interrupted_replacement_loads_only_the_previous_complete_record() {
+         let root = Scratch::new();
+@@ -221,14 +245,14 @@ mod tests {
+         let backup = sibling(&path, "_old");
+         // Reserve the next consecutive IDs, including ones used by other tests.
+         for n in 0..256 {
+-            let dir = sibling(&path, &format!(".horizon-stage-{n}"));
++            let dir = path.with_file_name(format!(".horizon-stage-{n:x}"));
+             fs::create_dir(&dir).unwrap();
+             fs::write(dir.join("payload"), b"foreign").unwrap();
+         }
+         replace_with(&path, &backup, b"weather", true, no_replace).unwrap();
+         assert_eq!(fs::read(&path).unwrap(), b"weather");
+         for n in 0..256 {
+-            let dir = sibling(&path, &format!(".horizon-stage-{n}"));
++            let dir = path.with_file_name(format!(".horizon-stage-{n:x}"));
+             assert_eq!(fs::read(dir.join("payload")).unwrap(), b"foreign");
+         }
+     }
