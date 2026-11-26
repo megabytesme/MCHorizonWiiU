@@ -71,8 +71,10 @@ prepared inputs in both entries. [Loading scorecard](loading-scorecard.json) ·
 
 The hosted client now uses separate Cafe connect and receive timeouts.
 The fixed transport fetched the public Minecraft Services document from
-Cemu and passed a controlled HTTPS fixture. Night authentication and
-end-to-end online-mode acceptance have their own record.
+Cemu and passed a controlled HTTPS fixture. The exact RC 36 package also joined and rejoined a controlled online-mode
+Java 26.3 server from Night. Both displays rendered received terrain.
+GamePad movement persisted on the server, both disconnects returned to
+Night, and the guest reached the Wii U Menu exit.
 [Online-mode qualification](online-mode.md)
 
 ## Hardware acceptance
