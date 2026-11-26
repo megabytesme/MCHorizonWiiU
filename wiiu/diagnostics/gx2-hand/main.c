@@ -27,6 +27,15 @@ int horizon_gx2_hand_draw(HorizonGx2Hand *hand, uint32_t target, const uint32_t 
                           const HandVertex *vertices, uint32_t count, const float clip_rows[16],
                           const float fog_color[4], const float fog_ranges[4], uint32_t nether);
 
+#ifdef HORIZON_TEST_MODEL_OVERLAYS
+void horizon_gx2_hand_begin_frame(HorizonGx2Hand *hand, bool share_uploads);
+int horizon_gx2_draw_models_overlay(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+                                     const GX2Texture *atlas, HorizonGx2Terrain *terrain,
+                                     const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+                                     const float fog_color[4], const float fog_ranges[4], uint32_t nether,
+                                     const float hurt_overlay[4]);
+#endif
+
 typedef struct HorizonGx2Outline HorizonGx2Outline;
 typedef struct OutlineVertex {
    float clip[4], fog_distance[2];
@@ -38,38 +47,110 @@ int horizon_gx2_outline_draw(HorizonGx2Outline *outline, uint32_t target, const 
                              const OutlineVertex *vertices, uint32_t count, uint32_t secondary_count,
                              const float fog_color[4], const float fog_ranges[4]);
 
-static bool samples(const GX2ColorBuffer *color, uint32_t output)
+enum { MAX_READBACKS = 6 };
+static GX2Surface readbacks[MAX_READBACKS];
+static unsigned readback_count;
+static const GX2RResourceFlags readback_flags = GX2R_RESOURCE_BIND_TEXTURE |
+   GX2R_RESOURCE_USAGE_CPU_READ | GX2R_RESOURCE_USAGE_GPU_WRITE;
+
+static bool samples(const GX2ColorBuffer *color, const char *scene, uint32_t output,
+                    unsigned count, const uint8_t expected[][3])
 {
    const GX2Surface *src = &color->surface;
-   GX2Surface copied = {
+   if (readback_count == MAX_READBACKS) return false;
+   GX2Surface *copied = &readbacks[readback_count];
+   *copied = (GX2Surface){
       .dim = GX2_SURFACE_DIM_TEXTURE_2D, .width = src->width, .height = src->height,
       .depth = 1, .mipLevels = 1, .format = src->format,
       .aa = GX2_AA_MODE1X, .tileMode = GX2_TILE_MODE_LINEAR_SPECIAL,
    };
-   const GX2RResourceFlags flags = GX2R_RESOURCE_BIND_TEXTURE |
-      GX2R_RESOURCE_USAGE_CPU_READ | GX2R_RESOURCE_USAGE_GPU_WRITE;
-   if (!GX2RCreateSurface(&copied, flags)) return false;
+   if (!GX2RCreateSurface(copied, readback_flags)) return false;
+   ++readback_count;
    GX2DrawDone();
-   GX2CopySurface(src, 0, 0, &copied, 0, 0);
+   GX2CopySurface(src, 0, 0, copied, 0, 0);
    GX2DrawDone();
-   const uint8_t *pixels = GX2RLockSurfaceEx(&copied, 0, flags);
+   const uint8_t *pixels = GX2RLockSurfaceEx(copied, 0, readback_flags);
    bool ok = pixels != NULL;
    if (pixels) {
-      const size_t row = (size_t)(src->height / 2) * copied.pitch;
-      const uint32_t offsets[] = {src->width / 4, src->width * 3 / 4};
-      const uint8_t expected[2][3] = {{0, 128, 0}, {255, 0, 0}};
-      for (unsigned i = 0; i < 2; ++i) {
-         const uint8_t *rgb = pixels + (row + offsets[i]) * 4;
+      const size_t row = (size_t)(src->height / 2) * copied->pitch;
+      for (unsigned i = 0; i < count; ++i) {
+         const uint32_t x = src->width * (2 * i + 1) / (2 * count);
+         const uint8_t *rgb = pixels + (row + x) * 4;
          const bool match = memcmp(rgb, expected[i], 3) == 0;
-         OSReport("GX2 hand fixture output=%u sample=%u rgb=%u,%u,%u pass=%u\n",
-                  output, i, rgb[0], rgb[1], rgb[2], match);
+         OSReport("GX2 hand fixture scene=%s output=%u sample=%u rgb=%u,%u,%u pass=%u\n",
+                  scene, output, i, rgb[0], rgb[1], rgb[2], match);
          ok &= match;
       }
-      GX2RUnlockSurfaceEx(&copied, 0, flags);
+      GX2RUnlockSurfaceEx(copied, 0, readback_flags);
    }
-   GX2RDestroySurfaceEx(&copied, flags);
    return ok;
 }
+
+#ifdef HORIZON_TEST_MODEL_OVERLAYS
+static bool check_overlays(HorizonGx2Hand *hand, HorizonGx2Terrain *terrain, HorizonGx2Hud *hud,
+                           HorizonGx2Outline *world,
+                           const float identity[16], const float fog[4], const float ranges[4])
+{
+   const unsigned cases = 6;
+   const uint8_t keys[] = {0, 255, 63, 165, 255, 255};
+   HandVertex models[6 * 4];
+   for (unsigned i = 0; i < cases; ++i) {
+      const float left = -1.0f + (2.0f * i) / cases;
+      const float right = -1.0f + (2.0f * (i + 1)) / cases;
+      const float corners[4][2] = {{left, -1}, {right, -1}, {right, 1}, {left, 1}};
+      for (unsigned j = 0; j < 4; ++j) {
+         models[4 * i + j] = (HandVertex){
+            // The lightmap is uniform, but the packed light uses both coordinates.
+            .position_light = {corners[j][0], corners[j][1], 0.5f, keys[i] * 65536.0f + 0xa080},
+            .uv = {i == 5 ? 0.75f : 0.25f, 0.5f},
+            .color = {255, 255, 255, 255},
+            // A down normal has exactly 0.4 cardinal light in the Overworld.
+            .normal = {0, i == 4 ? -127 : 0, 0, i == 4 ? 127 : 0},
+         };
+      }
+   }
+   // Write a backdrop so the transparent sample does not depend on Cemu
+   // materializing an untouched region of a deferred clear.
+   const OutlineVertex backdrop[6] = {
+      {.clip = {-1, -1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+      {.clip = { 1, -1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+      {.clip = { 1,  1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+      {.clip = {-1, -1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+      {.clip = { 1,  1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+      {.clip = {-1,  1, 0.75f, 1}, .rgba = {0, 0, 255, 255}},
+   };
+   const float hurt[4] = {1.0f, 0, 0, 178.0f / 255.0f};
+   const float custom[4] = {0, 0, 1.0f, 178.0f / 255.0f};
+   const uint8_t expected[2][6][3] = {
+      {{0, 128, 0}, {39, 89, 0}, {96, 128, 96}, {45, 128, 45}, {39, 36, 0}, {0, 0, 255}},
+      {{0, 128, 0}, {0, 89, 39}, {96, 128, 96}, {45, 128, 45}, {0, 36, 39}, {0, 0, 255}},
+   };
+   bool ok = true;
+   for (unsigned arm = 0; arm < 2; ++arm) {
+      horizon_gx2_hand_begin_frame(hand, arm != 0);
+      WHBGfxBeginRender();
+      for (uint32_t i = 0; i < 2; ++i) {
+         if (i == 0) WHBGfxBeginRenderTV();
+         else WHBGfxBeginRenderDRC();
+         WHBGfxClearColor(0, 0, 1, 1);
+         const GX2ColorBuffer *color = i == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer();
+         const uint32_t rect[4] = {0, 0, color->surface.width, color->surface.height};
+         ok &= horizon_gx2_outline_draw(world, i, rect, backdrop, 6, 0, fog, ranges) == 0;
+         const int drawn = horizon_gx2_draw_models_overlay(hand, i, rect, horizon_gx2_hud_atlas(hud), terrain,
+                                                          models, cases * 4, identity, fog, ranges,
+                                                          0, arm == 0 ? hurt : custom);
+         OSReport("GX2 hand overlay dispatch arm=%u output=%u result=%d\n", arm, i, drawn);
+         ok &= drawn == 0;
+         ok &= samples(color, arm == 0 ? "stock-overlay" : "custom-overlay-shared", i, cases,
+                       expected[arm]);
+         if (i == 0) WHBGfxFinishRenderTV();
+         else WHBGfxFinishRenderDRC();
+      }
+      WHBGfxFinishRender();
+   }
+   return ok;
+}
+#endif
 
 int main(void)
 {
@@ -101,6 +182,7 @@ int main(void)
       const float fog[4] = {0, 0, 0, 0}, ranges[4] = {1, 2, 1, 2};
       const float corners[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
       const unsigned indices[6] = {0, 1, 2, 0, 2, 3};
+      const uint8_t expected[2][3] = {{0, 128, 0}, {255, 0, 0}};
       OutlineVertex wall[6];
       HandVertex item[6];
       for (unsigned j = 0; j < 6; ++j) {
@@ -120,17 +202,22 @@ int main(void)
          ok &= horizon_gx2_outline_draw(world, i, rect, wall, 6, 0, fog, ranges) == 0;
          ok &= horizon_gx2_hand_draw(hand, i, rect, horizon_gx2_hud_atlas(hud), terrain,
                                      item, 6, identity, fog, ranges, 0) == 0;
-         ok &= samples(color, i);
+         ok &= samples(color, "hand-depth", i, 2, expected);
          if (i == 0) WHBGfxFinishRenderTV();
          else WHBGfxFinishRenderDRC();
       }
       WHBGfxFinishRender();
+#ifdef HORIZON_TEST_MODEL_OVERLAYS
+      ok &= check_overlays(hand, terrain, hud, world, identity, fog, ranges);
+#endif
    }
    OSReport("GX2 hand fixture %s\n", ok ? "passed" : "failed");
    horizon_gx2_hand_destroy(hand);
    horizon_gx2_outline_destroy(world);
    horizon_gx2_hud_destroy(hud);
    horizon_gx2_terrain_destroy(terrain);
+   for (unsigned i = 0; i < readback_count; ++i)
+      GX2RDestroySurfaceEx(&readbacks[i], readback_flags);
    WHBGfxShutdown();
    WHBProcShutdown();
    return ok ? 0 : 1;
