@@ -29,3 +29,24 @@ and embeds RPX SHA-256
 Capture its light, heavy and light transitions. The original package
 (`512ecdfb30a52c29d5164e23547426ce9331532fc52b1205f70be9b2f3d480e2`)
 failed with error 160-2203 before entry and is retired. [Build and hardware procedure](../../wiiu/diagnostics/gx2-drs60/README.md)
+
+## Next supervised application run
+
+Use the verified RC 47 package for the authenticated lifecycle and save
+checks. Keep the RC 38 saved-camera reference for the fixed 75% workload.
+The RC 47 build record gives the RPX, WUHB and pinned source identities.
+[RC 47 qualification](rc47-qualification.md)
+
+- Record at least two separate 60-second-or-longer settled HZP3 windows
+  from the same 174-section pose at fixed 75%, DRS off, render 6 and
+  simulation 5. Confirm the two display surfaces and compare the saved-view
+  summary with the 98.593-second RC 38 reference. [Window procedure](benchmarks.md#physical-fixed-75-saved-view)
+- Reuse the approved four-scope grant through Night, live settings, an
+  isolated save and reopen, and a console restart. Use the same client
+  profile through paired transitions. [Disposable-world runner](benchmarks.md#disposable-world-lifecycle)
+- Run the checked standalone readback on both 720p and 1080p TV setups
+  before enabling physical staged MCP screenshots. Confirm the readback
+  fence and clean menu return on the serial capture. [Readback fixture](../../wiiu/diagnostics/gx2-explicit-readback/README.md)
+- Keep the original Village and heavy stationary runs separate. Use the
+  hosted DRS decision report alongside the 30/60 physical timing probes.
+  [Benchmark definitions](benchmarks.md#stationary-render-diagnostic)
