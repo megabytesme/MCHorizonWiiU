@@ -1,8 +1,8 @@
 # Nightly MCP comparison
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
-registers 194 tools. The assembled RC 44 tree
-`633a3a9427e98e5d93a45ea2f896753d652aa8aa` registers 57 stock tools through
+registers 194 tools. The assembled RC 45 tree
+`0865ec25196ea2a96a6a330009a930d9c0ce16ea` registers 62 stock tools through
 Night's authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the
@@ -38,8 +38,8 @@ local emergency control remain available with the native HTTPS endpoint.
   benchmark start, status, report access and cancellation. RC 43 adds
   existing profile selection and joining saved bookmarks. RC 44 adds
   cancellation before ordinary remote gameplay handoff and the idle
-  Night close action. Disposable world creation and bookmark editing
-  remain open.
+  Night close action. RC 45 adds bookmark edits and removal, plus
+  owner-scoped disposable world creation, listing and reopening.
 - Exercise the live tool catalogue and outputs under all four granted
   scopes and after restart or upgrade. The exact-source comparison below
   checks registrations and embedded definitions. Runtime qualification

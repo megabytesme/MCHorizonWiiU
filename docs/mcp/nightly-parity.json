@@ -1,6 +1,6 @@
 {
   "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
-  "assembledTree": "633a3a9427e98e5d93a45ea2f896753d652aa8aa",
+  "assembledTree": "0865ec25196ea2a96a6a330009a930d9c0ce16ea",
   "embeddedRevision": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
   "tools": {
     "account_list": {
@@ -1077,9 +1077,12 @@
     },
     "multiplayer_remove": {
       "availability": "app-wide",
-      "scopes": null,
+      "scopes": [
+        "launcher.manage"
+      ],
       "upstreamOutputContract": "Text containing --json output or CLI stdout/stderr. A failed command sets isError.",
-      "disposition": "Night has no reviewed MCP dispatch for this command."
+      "disposition": "Direct dispatch through the original gameplay control handler.",
+      "embeddedDefinitionDifferences": []
     },
     "native_lock": {
       "availability": "app-wide",
@@ -1350,6 +1353,9 @@
     "wiiu_loading_status": [
       "launcher.read"
     ],
+    "wiiu_multiplayer_edit": [
+      "launcher.manage"
+    ],
     "wiiu_multiplayer_join": [
       "launcher.manage",
       "game.control"
@@ -1358,6 +1364,17 @@
       "launcher.manage"
     ],
     "wiiu_profiles_list": [
+      "launcher.read"
+    ],
+    "wiiu_test_world_create": [
+      "launcher.manage",
+      "game.control"
+    ],
+    "wiiu_test_world_open": [
+      "launcher.manage",
+      "game.control"
+    ],
+    "wiiu_test_worlds_list": [
       "launcher.read"
     ]
   }
