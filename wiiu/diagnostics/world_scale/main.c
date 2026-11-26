@@ -157,7 +157,7 @@ static bool present_scale_frame(HorizonGx2WorldScale *state, HorizonGx2Hud *hud,
    return passed;
 }
 
-#ifdef HORIZON_SCALE_CLEAR_COMPARISON
+#if defined(HORIZON_SCALE_CLEAR_COMPARISON) || defined(HORIZON_SCALE_FLIP_COMPARISON)
 typedef struct {
    HorizonGx2WorldScale *state;
    HorizonGx2Hud *hud;
@@ -167,11 +167,12 @@ typedef struct {
    uint8_t *reference[2];
    uint8_t *candidate[2];
    bool compare;
-} ClearComparison;
+   bool defer_flip;
+} PresentComparison;
 
 static int draw_clear_comparison(void *opaque, uint32_t target, uint32_t width, uint32_t height)
 {
-   ClearComparison *test = opaque;
+   PresentComparison *test = opaque;
    horizon_gx2_world_scale_begin(test->state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
    draw_pattern(test->state, test->pattern, 0, 0, test->scaled[target * 2],
                 test->scaled[target * 2 + 1]);
@@ -184,7 +185,8 @@ static int draw_clear_comparison(void *opaque, uint32_t target, uint32_t width, 
    if (hud[0] != 0 || hud[1] != 255 || hud[2] != 0) return -1;
    if (!test->compare) return 0;
    const bool matches = memcmp(pixels, test->reference[target], bytes) == 0;
-   OSReport("GX2 scaled clear comparison target=%u viewport=%s bytes=%u result=%s\n",
+   OSReport("GX2 %s comparison target=%u viewport=%s bytes=%u result=%s\n",
+            test->defer_flip ? "deferred flip" : "scaled clear",
             target, test->viewports[target][0] ? "inset" : "full",
             (uint32_t)bytes, matches ? "PASS" : "FAIL");
    return matches ? 0 : -1;
@@ -199,10 +201,10 @@ static int accept_clear_only(void *opaque, uint32_t target, uint32_t width, uint
    return 0;
 }
 
-static bool compare_scaled_output_clears(HorizonGx2Hud *hud, const GX2Texture *pattern,
-                                         GX2Surface *const outputs[2])
+static bool compare_presentation(HorizonGx2Hud *hud, const GX2Texture *pattern,
+                                  GX2Surface *const outputs[2], bool defer_flip)
 {
-   ClearComparison test = {.hud = hud, .pattern = pattern};
+   PresentComparison test = {.hud = hud, .pattern = pattern, .defer_flip = defer_flip};
    for (unsigned target = 0; target < 2; ++target) {
       const uint32_t w = outputs[target]->width, h = outputs[target]->height;
       const size_t bytes = (size_t)w * h * 4;
@@ -218,7 +220,7 @@ static bool compare_scaled_output_clears(HorizonGx2Hud *hud, const GX2Texture *p
    const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
    const float magenta[4] = {1.0f, 0.0f, 1.0f, 1.0f};
    const float cyan[4] = {0.0f, 1.0f, 1.0f, 1.0f};
-   for (unsigned trial = 0; passed && trial < 2; ++trial) {
+   for (unsigned trial = 0; passed && trial < (defer_flip ? 1u : 2u); ++trial) {
       for (unsigned target = 0; target < 2; ++target) {
          const uint32_t inset = trial && target == 0 ? 8 : 0;
          const uint32_t w = outputs[target]->width, h = outputs[target]->height;
@@ -234,6 +236,13 @@ static bool compare_scaled_output_clears(HorizonGx2Hud *hud, const GX2Texture *p
       test.compare = true;
       uint32_t viewports[8];
       memcpy(viewports, test.viewports, sizeof(viewports));
+#ifdef HORIZON_SCALE_FLIP_COMPARISON
+      if (defer_flip) {
+         passed = passed && horizon_loading_host_present_deferred_flip(
+            draw_clear_comparison, &test, black, NULL) == 0;
+         continue;
+      }
+#endif
       passed = passed && horizon_loading_host_present_with_clear(
          draw_clear_comparison, &test, black, viewports) == 0;
    }
@@ -323,7 +332,10 @@ static int run_scale_diagnostic(void)
 #endif
    }
 #ifdef HORIZON_SCALE_CLEAR_COMPARISON
-   if (passed) passed = compare_scaled_output_clears(hud, &pattern, outputs);
+   if (passed) passed = compare_presentation(hud, &pattern, outputs, false);
+#endif
+#ifdef HORIZON_SCALE_FLIP_COMPARISON
+   if (passed) passed = WHBProcIsRunning() && compare_presentation(hud, &pattern, outputs, true);
 #endif
    horizon_gx2_hud_destroy(hud);
    GX2RDestroySurfaceEx(&pattern.surface, 0);

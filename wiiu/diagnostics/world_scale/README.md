@@ -64,6 +64,31 @@ and both display outputs. The existing GPU endpoint bracket begins
 after each output setup, so it misses any reduction before the TV start
 marker.
 
+For an assembled source with deferred flip waiting, use
+`-DHORIZON_SCALE_FLIP_COMPARISON=ON`. This arm compares both full
+scaled outputs against the ordinary presentation order and requires the
+`queued TV rendering before the previous flip` log marker. With both
+comparison flags enabled, the RC 35-based diagnostic RPX
+`c1f8d670f8217fa5b7ded7d167c885aeff93d30863de605ffb4627c8f8a12251`
+passed every comparison in NSS-patched Cemu 2.6 forced interpreter.
+
+The hosted trial uses `4q` at either direct or scaled resolution. It
+queues the TV render target before waiting for the preceding scanout
+flip, then copies TV and GamePad to their scan buffers in the normal
+order. The installed WUT library allocates its render targets from
+MEM1 and its scan buffers from the foreground heap. Its ProcUI release
+callback fences before freeing either. The host checks foreground
+state, and an open system keyboard uses ordinary presentation order.
+The direct HUD and terrain waits and the final WHB draw drain still
+protect CPU-written resources.
+
+Measure `4` against `4q` on the fixed-100% stationary route. Check
+paired pacing, TV and GamePad output, flip wait, direct HUD wait, and
+the complete frame interval. Exercise the software keyboard, return
+from the Wii U Menu, save and return to Night in the same candidate.
+The Cemu fixture checks rendering and path selection. It cannot
+establish useful overlap or the physical scanout timing.
+
 For physical testing, configure a separate build with
 `-DHORIZON_SCALE_VISUAL=ON`. It uses the same depth-tested world draw and
 native HUD geometry and presents each scale for seven seconds. This mode
