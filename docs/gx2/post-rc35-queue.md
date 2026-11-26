@@ -39,8 +39,9 @@ The RC 47 build record gives the RPX, WUHB and pinned source identities.
 
 - Record at least two separate 60-second-or-longer settled HZP3 windows
   from the same 174-section pose at fixed 75%, DRS off, render 6 and
-  simulation 5. Confirm the two display surfaces and compare the saved-view
-  summary with the 98.593-second RC 38 reference. [Window procedure](benchmarks.md#physical-fixed-75-saved-view)
+  simulation 5. Verify independent TV and GamePad terrain draws and depth
+  work. Compare with the 98.593-second RC 38 reference.
+  [Window procedure](benchmarks.md#physical-fixed-75-saved-view)
 - Reuse the approved four-scope grant through Night, live settings, an
   isolated save and reopen, and a console restart. Use the same client
   profile through paired transitions. [Disposable-world runner](benchmarks.md#disposable-world-lifecycle)

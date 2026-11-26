@@ -18,6 +18,7 @@
       "status": "in_progress",
       "target_fps": 60,
       "minimum_window_seconds": 60,
+      "shared_final_world_color_eligible": false,
       "workload": {
         "preset": "Full Performance",
         "outputs": [
@@ -25,6 +26,7 @@
           "gamepad"
         ],
         "fixed_scale_percent": 75,
+        "independent_world_rendering_per_output": true,
         "drs": false,
         "render_distance": 6,
         "simulation_distance": 5,
@@ -40,6 +42,8 @@
         "paired_submissions_per_second": 19.971,
         "complete_submissions": 0,
         "partial_submissions": 1970,
+        "timed_combined_flips": 1920,
+        "missed_combined_refresh_intervals": 3843,
         "pacing_ms": {"p50": 50.119, "p95": 50.932, "p99": 54.391, "max": 73.484}
       }
     },
@@ -102,7 +106,22 @@
     },
     "renderer_and_splitscreen": {
       "status": "in_progress",
-      "independent_view_qualification": "pending"
+      "independent_view_qualification": "pending",
+      "local_players_target": 5,
+      "tv_players_target": 4,
+      "gamepad_players_target": 1,
+      "independent_cameras_target": 5,
+      "target_fps": 60,
+      "intermediate_fps": 30,
+      "milestones": [
+        "single_player_independent_tv_and_gamepad_60_fps",
+        "two_independent_local_player_views",
+        "two_player_tv_splitscreen",
+        "four_player_tv_splitscreen",
+        "four_tv_players_plus_independent_gamepad_player"
+      ],
+      "fixture_workloads": ["nearby_shared_terrain", "distant_disjoint_terrain"],
+      "roadmap": "independent-views.md"
     },
     "lifecycle": {
       "status": "in_progress",
@@ -113,7 +132,7 @@
   "workstreams": [
     {
       "owner": "gx2",
-      "task": "Flip cadence and GX2 resource scheduling"
+      "task": "Independent-view GX2 scheduling, bounded in-flight storage, and retirement"
     },
     {
       "owner": "mcp",
@@ -125,7 +144,7 @@
     },
     {
       "owner": "integration",
-      "task": "Canonical recipe, supervised physical queue and Cemu diagnostics"
+      "task": "Independent-view acceptance, five-seat fixture, canonical recipe, supervised physical queue and Cemu diagnostics"
     }
   ],
   "hardware_queue": [

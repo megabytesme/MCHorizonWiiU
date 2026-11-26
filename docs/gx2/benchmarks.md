@@ -109,10 +109,12 @@ an older rotating credential.
 ## Physical fixed 75% saved view
 
 Use the original 174-section archived pose with stock Full Performance,
-render distance 6, simulation distance 5 and DRS disabled. Start a separate
-HZP3 capture for each settled window and retain at least 60 seconds per
-window. The 4,096-row ring retains about 68 seconds at 60 rows per second.
-Confirm the capture boundaries before starting the next window.
+render distance 6, simulation distance 5 and DRS disabled. Record a
+submission path with independently drawn world geometry and depth on
+both displays. Keep shared final-color experiments separate. Start a
+separate HZP3 capture for each settled window and retain at least 60
+seconds per window. The 4,096-row ring retains about 68 seconds at 60
+rows per second. Confirm the capture boundaries before the next window.
 
 Run the summary on the retained in-world interval with the measured
 refresh rate. Add the matching serial recording for GPU endpoint correlation.
