@@ -191,6 +191,20 @@ From idle Night Home, use `wiiu_close_to_menu` with `launcher.manage`.
 The ordinary Close Horizon action requires any previous launch, profile
 selection or save-to-Night transition to have finished.
 
+Use the existing-grant lifecycle fixture from idle Night with a disposable
+saved world selected in the requested installation.
+
+```powershell
+python -B tools/wiiu_mcp_lifecycle_test.py --codex-home $pairedProfile --ca $pairedCa `
+    --server $serverName --world 'Reopen Fixture' --output $newReceipt --close
+```
+
+The runner checks ordinary load cancellation, two consecutive isolated
+benchmark cancellations with `4q` and `4r`, and the report list before and
+after each run. It uses one Codex app-server session. Omit `--close` to
+leave Night at Home. With `--close`, use the native serial exit marker to
+confirm the close request reached the Wii U Menu.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from

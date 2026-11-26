@@ -34,33 +34,62 @@ def press(window, key):
         time.sleep(0.20)
 
 
-def call(codex, env, workspace, tool, arguments=None):
-    """Use the installed Codex app server without making a model request."""
-    client = Process([codex, "app-server", "--listen", "stdio://"], env)
-    def rpc(ident, method, params):
-        client.send(json.dumps({"jsonrpc": "2.0", "id": ident, "method": method, "params": params}))
+class CodexSession:
+    """Run multiple tool calls through the same authenticated app-server session."""
+
+    def __init__(self, codex, env, workspace, server_name="horizon_cemu"):
+        self.codex = codex
+        self.env = env
+        self.workspace = workspace
+        self.server_name = server_name
+        self.request_id = 0
+        self.thread = None
+
+    def rpc(self, method, params):
+        self.request_id += 1
+        request_id = self.request_id
+        self.client.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
+
         def response(line):
             if line.startswith("{"):
                 data = json.loads(line)
-                return data if data.get("id") == ident else None
+                return data if data.get("id") == request_id else None
             return None
-        reply = client.until(response, 90)
+
+        reply = self.client.until(response, 90)
         if "error" in reply:
             raise RuntimeError(f"Codex {method} failed: {reply['error'].get('message')}")
         return reply["result"]
-    try:
-        rpc(1, "initialize", {
-            "clientInfo": {"name": "horizon-cemu-test", "version": "1.0"},
-            "capabilities": {"experimentalApi": True},
-        })
-        client.send('{"jsonrpc":"2.0","method":"initialized"}')
-        status = rpc(2, "mcpServerStatus/list", {})
-        server = next(server for server in status["data"] if server["name"] == "horizon_cemu")
+
+    def __enter__(self):
+        self.client = Process([self.codex, "app-server", "--listen", "stdio://"], self.env)
+        try:
+            self.rpc("initialize", {
+                "clientInfo": {"name": "horizon-wiiu-qualification", "version": "1.0"},
+                "capabilities": {"experimentalApi": True},
+            })
+            self.client.send('{"jsonrpc":"2.0","method":"initialized"}')
+        except BaseException:
+            self.client.close()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        self.client.close()
+
+    def call(self, tool, arguments=None):
+        status = self.rpc("mcpServerStatus/list", {})
+        server = next((item for item in status["data"] if item["name"] == self.server_name), None)
+        if server is None:
+            raise RuntimeError(f"Codex did not list the configured MCP server {self.server_name}.")
         if tool not in server["tools"]:
-            raise RuntimeError(f"Codex did not list {tool} from the emulated Wii U. Auth={server.get('authStatus')}")
-        thread = rpc(3, "thread/start", {"cwd": str(workspace), "ephemeral": True})["thread"]["id"]
-        reply = rpc(4, "mcpServer/tool/call", {
-            "threadId": thread, "server": "horizon_cemu", "tool": tool, "arguments": arguments or {},
+            raise RuntimeError(f"Codex did not list {tool} from {self.server_name}. Auth={server.get('authStatus')}")
+        if self.thread is None:
+            self.thread = self.rpc("thread/start", {
+                "cwd": str(self.workspace), "ephemeral": True,
+            })["thread"]["id"]
+        reply = self.rpc("mcpServer/tool/call", {
+            "threadId": self.thread, "server": self.server_name, "tool": tool, "arguments": arguments or {},
         })
         if reply.get("isError"):
             detail = next((block["text"] for block in reply.get("content", [])
@@ -69,8 +98,26 @@ def call(codex, env, workspace, tool, arguments=None):
         if not reply.get("content"):
             raise RuntimeError(f"Tool call {tool} returned an empty result")
         return reply
-    finally:
-        client.close()
+
+
+def call(codex, env, workspace, tool, arguments=None):
+    """Use the installed Codex app server without making a model request."""
+    with CodexSession(codex, env, workspace) as session:
+        return session.call(tool, arguments)
+
+
+def paired_session(profile, ca, server_name):
+    codex = shutil.which("codex")
+    if not codex or not ca.is_file():
+        raise ValueError("Provide the Codex executable on PATH and the paired CA file")
+    profile = profile.resolve()
+    with (profile / "config.toml").open("rb") as config:
+        server = tomllib.load(config).get("mcp_servers", {}).get(server_name, {})
+    endpoint = urllib.parse.urlsplit(server.get("url", ""))
+    if endpoint.scheme != "https" or not endpoint.hostname:
+        raise ValueError("The selected profile must already configure the named HTTPS server")
+    env = os.environ | {"CODEX_HOME": str(profile), "CODEX_CA_CERTIFICATE": str(ca.resolve())}
+    return CodexSession(codex, env, profile, server_name)
 
 
 def exercise(origin, ca, window, state, resume=False, game=False):

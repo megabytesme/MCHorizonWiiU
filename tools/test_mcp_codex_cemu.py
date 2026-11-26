@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -7,6 +8,43 @@ import mcp_codex_cemu_test as fixture
 
 
 class ReusedAuthorizationTests(unittest.TestCase):
+    def test_multiple_calls_reuse_one_ephemeral_codex_thread(self):
+        class Transport:
+            replies = {
+                "initialize": {},
+                "thread/start": {"thread": {"id": "selected-thread"}},
+                "mcpServerStatus/list": {"data": [{"name": "wiiu", "tools": {"versions": {}, "worlds_list": {}}}]},
+                "mcpServer/tool/call": {"content": [{"type": "text", "text": "[]"}]},
+            }
+
+            def __init__(self, *_):
+                self.requests = []
+                self.closed = False
+
+            def send(self, line):
+                self.requests.append(json.loads(line))
+
+            def until(self, match, _):
+                request = self.requests[-1]
+                return match(json.dumps({"id": request["id"], "result": self.replies[request["method"]]}))
+
+            def close(self):
+                self.closed = True
+
+        transport = Transport()
+        with patch.object(fixture, "Process", return_value=transport) as process:
+            with fixture.CodexSession("codex", {}, Path("."), "wiiu") as session:
+                session.call("versions")
+                session.call("worlds_list", {"instance": "default"})
+        process.assert_called_once()
+        self.assertTrue(transport.closed)
+        starts = [item for item in transport.requests if item["method"] == "thread/start"]
+        self.assertEqual(len(starts), 1)
+        self.assertTrue(starts[0]["params"]["ephemeral"])
+        calls = [item["params"] for item in transport.requests if item["method"] == "mcpServer/tool/call"]
+        self.assertEqual([(item["server"], item["threadId"], item["tool"]) for item in calls],
+                         [("wiiu", "selected-thread", "versions"), ("wiiu", "selected-thread", "worlds_list")])
+
     def test_resumed_game_uses_the_same_authorization_without_touching_night_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
