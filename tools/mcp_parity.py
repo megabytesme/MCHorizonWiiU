@@ -66,16 +66,35 @@ SCOPE_CONSTANTS = {
     "READ": "launcher.read", "MANAGE": "launcher.manage",
     "OBSERVE": "game.observe", "CONTROL": "game.control",
 }
+TOOL_NAME = r"[a-z_][a-z0-9_]*"
+STRING_CONSTANT = r"[A-Z][A-Z0-9_]*"
+
+
+def tool_aliases(source):
+    return dict(re.findall(rf'^const ({STRING_CONSTANT}): &str = "({TOOL_NAME})";', source, re.M))
+
+
+def tool_name(token, aliases):
+    if literal := re.fullmatch(rf'"({TOOL_NAME})"', token):
+        return literal[1]
+    if token not in aliases:
+        raise ValueError(f"Unresolved Wii U tool name {token}")
+    return aliases[token]
 
 
 def implemented(source_path=ROOT / "wiiu/game-bridge/night_mcp.rs"):
     source = source_path.read_text(encoding="utf-8")
+    aliases = tool_aliases(source)
     launch_policy = re.search(r"^fn requires_launch_policy\([^)]*\)[^{]*\{(.*?)^\}", source, re.M | re.S)
-    launch_names = re.findall(r'"([a-z_]+)"', launch_policy[1]) if launch_policy else ["play"]
+    launch_names = re.findall(rf'"({TOOL_NAME})"', launch_policy[1]) if launch_policy else ["play"]
     result = {name: ["launcher.manage", "game.control"] for name in launch_names}
     for const, scope in SCOPE_CONSTANTS.items():
         declaration = re.search(rf"const {const}: &\[&str\] = &\[(.*?)\];", source, re.S)[1]
-        for name in re.findall(r'"([a-z_]+)"', declaration):
+        for token in filter(None, map(str.strip, declaration.split(","))):
+            # The stock recipe compiles this diagnostic capture gate disabled.
+            if token == "GAMEPAD_SCREENSHOT" and "cfg!(horizon_wiiu_cemu_global_lock)" in source:
+                continue
+            name = tool_name(token, aliases)
             if name in result:
                 raise ValueError(f"Duplicate Wii U tool {name}")
             result[name] = [scope]
@@ -186,7 +205,9 @@ def nightly_audit(assembled, check):
     embedded = {row["tool"]["name"]: row["tool"] for row in port["tools"]}
     official = {row["tool"]["name"]: row for row in upstream["tools"]}
     catalog = re.search(r"^fn catalog\([^)]*\)[^{]*\{(.*?)^\}", registration_source, re.M | re.S)
-    extensions = set(re.findall(r'"name":\s*"([a-z_]+)"', catalog[1])) if catalog else set()
+    tokens = re.findall(rf'"name":\s*("{TOOL_NAME}"|{STRING_CONSTANT})', catalog[1]) if catalog else []
+    aliases = tool_aliases(registration_source)
+    extensions = {tool_name(token, aliases) for token in tokens}
     if extra := runtime.keys() - embedded.keys() - extensions:
         raise ValueError(f"Nightly registers tools with no catalog definition: {extra}")
 
