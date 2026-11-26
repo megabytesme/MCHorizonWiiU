@@ -1618,6 +1618,26 @@
       "max_ms": 299.857,
       "stock_recipe_files": 2042,
       "stock_files_using_block_tag_ingredients": 0
+    },
+    {
+      "id": "rc36_reuse_overworld_climate_index",
+      "execution": "Ben-Desktop, WSL x86-64, release",
+      "workload": "Two stock Overworld climate resolves, excluding I/O and report quantization",
+      "iterations": 31,
+      "input_bytes": 1028771,
+      "table_entries": 7594,
+      "matched_queries": 4096,
+      "independent_median_ms": 61.382,
+      "shared_median_ms": 29.876
+    },
+    {
+      "id": "rc36_borrow_prepared_index_lookup_names",
+      "execution": "Ben-Desktop, WSL x86-64, release",
+      "workload": "Normalize the private stock archive index keys",
+      "iterations": 31,
+      "matched_names": 23148,
+      "owned_median_ms": 1.619,
+      "borrowed_median_ms": 1.0
     }
   ]
 }

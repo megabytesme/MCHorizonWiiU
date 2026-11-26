@@ -279,3 +279,11 @@ The corrected candidate passed the RC 34 freeze retest and sustained
 The frame took 51.918 and 53.018 ms, including roughly 36 ms of explicit
 GX2 waits and 1 ms of artwork preparation. The older stock-view
 reference drew more terrain. [Full frame accounting](rc35-validation.md#physical-freeze-retest)
+
+## RC 36 focused GX2 checks
+
+The opt-in modes reduce duplicate native upload work, omit overwritten
+scaled-output clears or overlap TV submission with prior-flip retirement.
+Both outputs passed the focused Cemu readbacks for each experiment. The
+RC 35 hardware values remain the cadence reference for the next matched
+stationary runs. [Changes, fixture results and candidate identity](rc36-validation.md)

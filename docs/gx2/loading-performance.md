@@ -290,3 +290,14 @@ atlas discovery was 0.475 seconds. The prior RC 34 entry recorded
 5.238 seconds. The test published both loading snapshots on the card and
 passed save and release of GX2 bulk memory. Warm restore was confirmed
 in the exact Cemu package. [Hardware and interpreter results](rc35-validation.md)
+
+## RC 36 preparation changes
+
+RC 36 suppresses the hosted render logger's verbose PNG messages unless
+requested. It reduces mob decoder allocation, shares the immutable stock
+Overworld climate index within one resource generation, and borrows
+normalized archive lookup keys. The scorecard records source-bound host
+benchmarks separately from world-entry timings. The climate-index patch
+changes the engine identity used by registry and behaviour snapshots, so
+measure first publication and same-candidate restore separately.
+[Candidate record](rc36-validation.md) · [Loading scorecard](loading-scorecard.json)
