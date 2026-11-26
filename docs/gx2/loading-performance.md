@@ -281,3 +281,12 @@ after the behaviour and mob lanes. Initial terrain streaming then
 stalled after Cafe rejected an empty filesystem path. The
 [physical record](rc34-validation.md#first-hardware-entry) covers that
 failure and its correction. [Machine-readable scorecard](loading-scorecard.json)
+
+## RC 35 physical retest
+
+The first saved-world entry reached world-ready in 120.790 seconds and
+first paired terrain at 128.873 seconds. With the same prepared archive,
+atlas discovery was 0.475 seconds. The prior RC 34 entry recorded
+5.238 seconds. The test published both loading snapshots on the card and
+passed save and release of GX2 bulk memory. Warm restore was confirmed
+in the exact Cemu package. [Hardware and interpreter results](rc35-validation.md)

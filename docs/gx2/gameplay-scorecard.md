@@ -271,3 +271,11 @@ production path. [Full hardware comparison](rc33-shared-validation.md)
 
 The first corrected RC 34 hardware entry froze during initial terrain
 streaming. [RC 34 physical record](rc34-validation.md#first-hardware-entry)
+
+## RC 35 hardware at fixed 75%
+
+The corrected candidate passed the RC 34 freeze retest and sustained
+19.261 and 18.861 paired submissions/s with 174 sections per display.
+The frame took 51.918 and 53.018 ms, including roughly 36 ms of explicit
+GX2 waits and 1 ms of artwork preparation. The older stock-view
+reference drew more terrain. [Full frame accounting](rc35-validation.md#physical-freeze-retest)

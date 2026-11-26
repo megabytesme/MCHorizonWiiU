@@ -937,6 +937,242 @@
           }
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.35",
+      "source_commit": "8fd16da2052385e6b6c45ba941556ffc029fa1aa",
+      "engine_tree": "ea2616b8da95bd4c08f0ea51b5f33e36b38d40e7",
+      "toolchain": "1.1.0",
+      "candidate_wuhb_sha256": "962f49fff257db87194ecb146e4916ccdeb2f3da76dc35bd707e25cd37dedad3",
+      "minecraft": "26.3",
+      "prepared_schema": 7,
+      "archive_version": 2,
+      "archive_entries": 23148,
+      "manifest_sha256": "635320e23eae6285e515b22a9d426be4d7a0a47f39a71da5a516967cace6c95d",
+      "archive_sha256": "ed03f05069fe4702c748b24cbe4fc8d91ed9cd62328d9cdf52243889ed44801a",
+      "archive_content_sha256": "48f175d7d0a613267191f8c7f478fabf7859daefe5b7cff95c4e79844afeaca8",
+      "profile_mode": "4a",
+      "observed_on": "2026-11-26",
+      "cases": [
+        {
+          "id": "existing_world_rc35_hardware_retest",
+          "workload": "First hosted launch after boot, Reopen Fixture and existing sprite cache",
+          "effective_scale_percent": 75,
+          "serial_event_bounds": [
+            3597,
+            3984
+          ],
+          "guest_milestone_ms": {
+            "loading first draw returned": 629,
+            "Cafe Game handoff begin": 66664,
+            "original Game initialized; pending entry starts": 96858,
+            "first original Game frame returned": 120790,
+            "Game world-entry pending state cleared": 120791,
+            "hosted save barrier completed": 289181,
+            "hosted game and loading workers released": 289629,
+            "Night returned": 298929,
+            "Night last observed": -309,
+            "Night loading frame": -144,
+            "first paired nonzero sampled terrain": 128873,
+            "first sampled 75 sections per display": 138994
+          },
+          "startup_trace_spans": {
+            "mods.overlay": [
+              {
+                "trace_start_ms": 523.681,
+                "duration_ms": 13644.763
+              }
+            ],
+            "ui.atlas_discovery": [
+              {
+                "trace_start_ms": 15071.395,
+                "duration_ms": 474.874
+              }
+            ],
+            "ui.panorama": [
+              {
+                "trace_start_ms": 15071.441,
+                "duration_ms": 2276.465
+              }
+            ],
+            "ui.atlas_decode": [
+              {
+                "trace_start_ms": 15546.358,
+                "duration_ms": 4272.147
+              }
+            ],
+            "ui.atlas_assemble": [
+              {
+                "trace_start_ms": 19818.637,
+                "duration_ms": 6642.988
+              }
+            ],
+            "ui.atlas": [
+              {
+                "trace_start_ms": 15071.389,
+                "duration_ms": 11564.524
+              }
+            ],
+            "ui.load": [
+              {
+                "trace_start_ms": 15071.341,
+                "duration_ms": 11592.147
+              }
+            ],
+            "core.sprite_cache_open": [
+              {
+                "trace_start_ms": 33728.485,
+                "duration_ms": 4972.022
+              }
+            ],
+            "core.block_facts": [
+              {
+                "trace_start_ms": 33728.511,
+                "duration_ms": 11263.379
+              }
+            ],
+            "core.block_models_sprites": [
+              {
+                "trace_start_ms": 33728.481,
+                "duration_ms": 21886.632
+              }
+            ],
+            "core": [
+              {
+                "trace_start_ms": 26664.124,
+                "duration_ms": 30728.317
+              }
+            ],
+            "pack.assemble": [
+              {
+                "trace_start_ms": 60703.258,
+                "duration_ms": 1269.885
+              }
+            ],
+            "handoff.renderer_textures": [
+              {
+                "trace_start_ms": 63573.674,
+                "duration_ms": 1688.732
+              }
+            ],
+            "handoff.game_cpu": [
+              {
+                "trace_start_ms": 63571.954,
+                "duration_ms": 3065.636
+              }
+            ],
+            "rest.mobs": [
+              {
+                "trace_start_ms": 63595.012,
+                "duration_ms": 24222.825
+              }
+            ],
+            "rest.behaviours": [
+              {
+                "trace_start_ms": 63587.938,
+                "duration_ms": 31089.993
+              }
+            ],
+            "rest": [
+              {
+                "trace_start_ms": 63573.145,
+                "duration_ms": 31105.48
+              }
+            ],
+            "world.preload.generator": [
+              {
+                "trace_start_ms": 57723.462,
+                "duration_ms": 37396.04
+              }
+            ],
+            "world.preload": [
+              {
+                "trace_start_ms": 57614.683,
+                "duration_ms": 43460.065
+              }
+            ],
+            "world.make_streaming": [
+              {
+                "trace_start_ms": 100020.893,
+                "duration_ms": 2236.851
+              }
+            ],
+            "sync.network_recipes": [
+              {
+                "trace_start_ms": 103237.887,
+                "duration_ms": 3028.143
+              }
+            ],
+            "server.open_world": [
+              {
+                "trace_start_ms": 112625.076,
+                "duration_ms": 6637.639
+              }
+            ],
+            "server.sync_adopt": [
+              {
+                "trace_start_ms": 119262.815,
+                "duration_ms": 0.03
+              }
+            ]
+          },
+          "original_game_cycle_elapsed_ms": 120248,
+          "generator_data_construction_ms": 37048.743,
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311,
+            "dirty": false
+          },
+          "read_totals": {
+            "ui_atlas": {
+              "archive_opens": 1,
+              "disk_fallbacks": 0,
+              "entry_hits": 4509,
+              "entry_misses": 3722,
+              "reads": 1233,
+              "small_reads": 938,
+              "read_bytes": 14915925,
+              "read_requests": 4502,
+              "request_bytes": 8598902,
+              "read_ahead_hits": 3269,
+              "seeks": 1233
+            },
+            "block_models_sprites": {
+              "archive_opens": 1,
+              "disk_fallbacks": 1,
+              "entry_hits": 10483,
+              "entry_misses": 5001,
+              "reads": 1953,
+              "small_reads": 1046,
+              "read_bytes": 27955361,
+              "read_requests": 15922,
+              "request_bytes": 18847741,
+              "read_ahead_hits": 13969,
+              "seeks": 1953
+            }
+          },
+          "published_snapshots": [
+            {
+              "name": "behaviours-v3.bin",
+              "bytes": 177999,
+              "sha256": "d0dc29f45b954b42d98a37f874fb11548a3d101017bca76c2cf65ac6abf3c3cc"
+            },
+            {
+              "name": "registry-v1.bin",
+              "bytes": 653775,
+              "sha256": "2f89818aa10732671ab400d0d1628ae556424edd57bf7cfb2e01ca681ee0f764"
+            }
+          ],
+          "memory_after_game_drop": {
+            "rust_live": 51382053,
+            "rust_peak": 370710029,
+            "rust_blocks": 507904,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896
+          }
+        }
+      ]
     }
   ],
   "candidate_measurements": [

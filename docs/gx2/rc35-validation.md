@@ -98,3 +98,71 @@ spans and a median of three dirty animation cells per pair. The frames
 had at most four terrain sections per display, so this is a sparse-scene
 correctness check. A settled hardware comparison is still needed.
 [Loading scorecard](loading-scorecard.json)
+
+## Physical freeze retest
+
+The verified WUHB ran the same Reopen Fixture using marker `4a`, fixed 75%,
+render distance 6 and simulation distance 5. Authenticated MCP confirmed
+RC 35 and the exact saved camera from the RC 33 Dynamic Resolution run.
+The GamePad and TV submitted at each measured frame. The TV still shows
+settled terrain, the arm and the HUD. The run passed the previous fatal
+point, saved durably, returned to Night and closed normally. After drop,
+GX2 bulk memory was 234,880,920 bytes free with a 234,880,896-byte largest
+block. Serial scope was UWP 3597–3984.
+
+| Physical loading measurement | RC 35, ms |
+| --- | ---: |
+| First loading draw | 629 |
+| Original game world-ready marker | 120,790 |
+| First paired terrain | 128,873 |
+| First sample with at least 75 sections on each display | 138,994 |
+| UI atlas discovery / decode / assembly | 474.874 / 4,272.147 / 6,642.988 |
+| Core | 30,728.317 |
+| Mob preparation | 24,222.825 |
+| Block behaviours | 31,089.993 |
+| Nested generator work | 37,396.040 |
+| Parallel world preload | 43,460.065 |
+
+The RC 34 run reached the world-ready marker at 136,641 ms and its atlas
+discovery took 5,237.691 ms. RC 35 used the same archive and an existing
+sprite cache. The first RC 35 entry published both snapshots, and the
+SD contained the 653,775-byte registry and the 177,999-byte behaviour
+snapshot after shutdown. The exact Cemu run above separately verified
+restoration during a same-process reopen.
+
+| Fixed 75% physical window | First | Repeat |
+| --- | ---: | ---: |
+| Paired frames / sections per output | 584 / 174 | 572 / 174 |
+| Paired submissions/s | 19.261 | 18.861 |
+| Elapsed per pair, ms | 51.918 | 53.018 |
+| Pooled pacing p50 / p95 / p99, ms | 50.361 / 66.006 / 71.155 | 50.350 / 68.870 / 79.012 |
+| Game step, ms | 51.653 | 52.725 |
+| Idle / artwork preparation, ms | 0.100 / 0.924 | 0.117 / 1.021 |
+| Redraw outside native submission, ms | 7.391 | 8.263 |
+| Submission outside explicit waits, ms | 6.669 | 7.081 |
+| Direct HUD wait, ms | 27.173 | 27.185 |
+| Other GX2 waits, ms | 9.386 | 9.049 |
+| Other game step / outside step, ms | 0.010 / 0.266 | 0.010 / 0.293 |
+| GPU TV / GamePad median spans, ms | 23.012 / 10.180 | 22.870 / 10.142 |
+| Median inter-display gap / bracket, ms | 1.335 / 34.186 | 1.303 / 34.221 |
+| Draws / indices across both outputs | 510 / 1,053,108 | 510 / 1,053,156 |
+
+Redraw includes mean world update of 0.395 / 0.494 ms, with streaming at
+about 0.036 ms inside it, and client tick of 4.766 / 5.224 ms. Mean HUD
+construction was 0.772 / 0.878 ms. The other GX2 waits include WHB begin
+at 6.152 / 5.794 ms, terrain wait at 2.836 / 2.861 ms and WHB finish at
+0.385 / 0.406 ms. Each window had 15 complete, ordered hardware endpoint
+samples at 27 MHz. The minimum sampled free GX2 bulk memory was
+69,565,612 bytes across the session.
+
+Each window joined 14 complete `4a` animation records. Mean animation
+work was 5.295 / 5.351 dirty cells, 92,254 / 93,233 bytes and 349 / 353
+cache-row stores per pair. Fill took 0.831 / 0.877 ms, writeback 0.061 /
+0.073 ms and invalidation 0.002 / 0.005 ms. The physical run used the
+instrumented mode, and the separate instrumentation overhead is open.
+
+This view had 174 sections on each output, compared with 224–228 in the
+previous 75% stock reference. The exact saved-pose RC 33 DRS window drew
+174 sections, at 80% and a different time of day. The RC 35 view still
+needs about 19 ms per pair to reach 30 Hz. Explicit waits accounted for
+about 36 ms, with the direct HUD fence taking about 27 ms.

@@ -655,3 +655,8 @@ shared behaviour construction, prepared UI listings and resident terrain
 animation updates. Two native builds produced byte-identical packages.
 The exact interpreter replay passed save, reopen, audio and GX2 recovery.
 [RC 35 validation](rc35-validation.md)
+
+Corrected RC 35 passed the physical freeze retest and completed two
+fixed-75% windows around 19 paired submissions/s. Direct HUD remains the
+production path. The new view identifies the direct fence, client tick,
+and exact animation writeback work. [Physical RC 35 record](rc35-validation.md#physical-freeze-retest)
