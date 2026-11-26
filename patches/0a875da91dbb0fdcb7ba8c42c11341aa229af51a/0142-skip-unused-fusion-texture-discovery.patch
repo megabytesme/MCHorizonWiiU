@@ -1,0 +1,186 @@
+diff --git a/crates/horizon-client-render/src/assets.rs b/crates/horizon-client-render/src/assets.rs
+index 8fe4e46a357085d17b412ae314707ed1183641f7..9b99fee71272690ff107216f7635ea04e661d850 100644
+--- a/crates/horizon-client-render/src/assets.rs
++++ b/crates/horizon-client-render/src/assets.rs
+@@ -443,6 +443,10 @@ impl RenderAssets {
+         } else {
+             crate::models::PreparedModels::default()
+         };
++        let fusion_needed = draws
++            && startup::time("core.fusion_preflight", || {
++                parsed.may_use_fusion(root.source(), models.catalog.model_ids())
++            });
+         let model_library = {
+             let _step = crate::spans::startup::step("core.item_library");
+             parsed.into_item_library()
+@@ -474,7 +478,7 @@ impl RenderAssets {
+             sprites.insert(&format!("minecraft:block/destroy_stage_{stage}"))?;
+             sprites.insert(&format!("minecraft:block/destroy_oit_stage_{stage}"))?;
+         }
+-        let fusion = if draws {
++        let fusion = if fusion_needed {
+             let _step = crate::spans::startup::step("core.fusion");
+             crate::fusion::FusionTextures::load(
+                 root.source(),
+diff --git a/crates/horizon-client-render/src/fusion.rs b/crates/horizon-client-render/src/fusion.rs
+index 7ad30dfb22387ec9539e7911a9e2fb43e10fc300..e3d4fa47b1f48a1aacc24a77c5403e248f66ae63 100644
+--- a/crates/horizon-client-render/src/fusion.rs
++++ b/crates/horizon-client-render/src/fusion.rs
+@@ -59,6 +59,14 @@ fn read_model(root: &crate::resource_source::ResourceSource, name: &str) -> Opti
+     Json::parse(&text).ok()
+ }
+ 
++/// Uses the same JSON reader as connecting_model, including escaped loader names.
++pub(crate) fn defines_connecting_model(text: &str) -> bool {
++    (text.contains("fusion:model") || text.contains('\\'))
++        && Json::parse(text)
++            .ok()
++            .is_some_and(|model| ModelType::of(&model) == Some(ModelType::Connecting))
++}
++
+ /// What a model's face draws and joins by: its sprite, its side in the model, and its
+ /// predicates (`None`: the texture's own).
+ type ModelFace = (String, Face, Option<Connection>);
+diff --git a/crates/horizon-client-render/src/model_library.rs b/crates/horizon-client-render/src/model_library.rs
+index 918573a47e27703f29fcded0ea66075e4527365b..45da00e07baf9469172eca120eb47656bbeedf50 100644
+--- a/crates/horizon-client-render/src/model_library.rs
++++ b/crates/horizon-client-render/src/model_library.rs
+@@ -4,12 +4,13 @@ use horizon_assets::{
+     model::CuboidModel,
+     resolve::{AssetReader, ModelLibrary},
+ };
+-use std::{collections::BTreeMap, sync::Arc};
++use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+ 
+ #[derive(Default)]
+ pub struct ParsedModels {
+     models: BTreeMap<String, Arc<CuboidModel>>,
+     source: ResourceSource,
++    has_connecting_models: bool,
+ }
+ /// Asset files under a content root, for models that name a file (obj).
+ struct RootAssets(ResourceSource);
+@@ -45,20 +46,50 @@ impl ParsedModels {
+             })
+             .collect();
+         let parsed = crate::par::par_map(&files, |(_, path)| {
+-            let text = source.read_to_string(path).ok()?;
+-            CuboidModel::from_json(&text).ok().map(Arc::new)
++            let Ok(text) = source.read_to_string(path) else {
++                return (None, false);
++            };
++            (
++                CuboidModel::from_json(&text).ok().map(Arc::new),
++                crate::fusion::defines_connecting_model(&text),
++            )
+         });
++        let mut has_connecting_models = false;
+         let models = files
+             .into_iter()
+             .zip(parsed)
+-            .filter_map(|((id, _), model)| Some((id, model?)))
++            .filter_map(|((id, _), (model, connecting))| {
++                has_connecting_models |= connecting;
++                Some((id, model?))
++            })
+             .collect();
+         Self {
+             models,
+             source: source.clone(),
++            has_connecting_models,
+         }
+     }
+ 
++    pub(crate) fn may_use_fusion<'a>(
++        &self,
++        source: &ResourceSource,
++        mut model_ids: impl Iterator<Item = &'a str>,
++    ) -> bool {
++        if !self.source.same_generation(source) || self.has_connecting_models {
++            return true;
++        }
++        model_ids.any(|id| {
++            let name = if id.contains(':') && !id.bytes().any(|c| c.is_ascii_uppercase()) {
++                Cow::Borrowed(id)
++            } else {
++                Cow::Owned(horizon_optifine::matchers::namespaced(id))
++            };
++            // A direct lookup can still find an unlisted model or a model
++            // that only Fusion's lenient reader accepts.
++            !self.models.contains_key(name.as_ref())
++        })
++    }
++
+     /// Blocks require every referenced resource, including parents. Items instead
+     /// skip broken resources and use the resolver's missing-model fallback.
+     pub fn block_library(
+@@ -195,6 +226,46 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn fusion_discovery_handles_effective_models_and_unlisted_references() {
++        let fixture = Fixture(
++            std::env::temp_dir().join(format!("horizon-fusion-discovery-{}", std::process::id())),
++        );
++        fixture.write("demo:block/vanilla", r#"{"elements":[]}"#);
++        fixture.write("demo:block/malformed", r#"{"loader":"fusion:model""#);
++        let source = ResourceSource::directory(fixture.0.clone());
++        let parsed = ParsedModels::load(&source);
++        assert!(!parsed.may_use_fusion(&source, ["demo:block/vanilla"].into_iter()));
++        assert!(parsed.may_use_fusion(&source, ["minecraft:builtin/missing"].into_iter()));
++        assert!(parsed.may_use_fusion(&source, ["demo:block/malformed"].into_iter()));
++
++        // A model obtained through a direct lookup absent from the initial listing.
++        fixture.write(
++            "minecraft:block/late",
++            r#"{"loader":"fusion:model","type":"connecting"}"#,
++        );
++        assert!(parsed.may_use_fusion(&source, ["BLOCK/LATE"].into_iter()));
++
++        let replacement = ResourceSource::indexed(Default::default());
++        assert!(parsed.may_use_fusion(&replacement, ["demo:block/vanilla"].into_iter()));
++    }
++
++    #[test]
++    fn fusion_discovery_uses_fusion_json_even_when_typed_bake_cannot_decode() {
++        use horizon_assets::resource_source::Resource;
++        let text =
++            br#"{"loa\u0064er":"fusi\u006fn:model","type":"connecting","gui_light":"invalid"}"#;
++        let json = std::str::from_utf8(text).unwrap();
++        assert!(CuboidModel::from_json(json).is_err());
++        assert!(crate::fusion::defines_connecting_model(json));
++        let source = ResourceSource::indexed(BTreeMap::from([(
++            "assets/demo/models/block/fusion.json".into(),
++            Resource::bytes(text.to_vec()),
++        )]));
++        let parsed = ParsedModels::load(&source);
++        assert!(parsed.may_use_fusion(&source, ["demo:block/fusion"].into_iter()));
++    }
++
+     #[test]
+     fn shared_views_preserve_resolution_errors_builtins_and_reload() -> Result<()> {
+         let fixture = Fixture(
+diff --git a/crates/horizon-client-render/src/models/catalog.rs b/crates/horizon-client-render/src/models/catalog.rs
+index f6af7aeeadc593326e11b9b1b012ef9aa111d8d1..2976f5c1147bb6c5a375b2f674aea53f867f0d4b 100644
+--- a/crates/horizon-client-render/src/models/catalog.rs
++++ b/crates/horizon-client-render/src/models/catalog.rs
+@@ -581,6 +581,9 @@ impl StateModels {
+             }
+         }
+     }
++    pub(crate) fn model_ids(&self) -> impl Iterator<Item = &str> {
++        self.baked.iter().map(|(variant, _)| variant.model.as_str())
++    }
+     /// Every baked model with the variant it was baked from, to change its faces.
+     pub fn models_mut(&mut self) -> impl Iterator<Item = (&Variant, &mut BakedModel)> {
+         self.bounds.take();
+@@ -860,6 +863,8 @@ mod tests {
+             sprites.try_insert_limited("demo:block/stone", png.len() as u64)?,
+             base
+         );
++        let parsed = crate::model_library::ParsedModels::load(root.source());
++        assert!(parsed.may_use_fusion(root.source(), catalog.model_ids()));
+         let _fusion = crate::fusion::FusionTextures::load(
+             root.source(),
+             &registry,

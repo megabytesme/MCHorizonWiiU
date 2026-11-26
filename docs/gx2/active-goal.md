@@ -40,7 +40,8 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   [Winding fixture](../../wiiu/diagnostics/gx2-terrain-winding/README.md)
 - The RC 40 package builds with the opt-in terrain retirement path and
   prepared server resource reuse. Night passed the independent Cemu
-  display checks. The hosted replay is running. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
+  display checks. Both saves and the reopen completed. The movement check
+  failed before terrain settled. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
   texture discovery and exposes authenticated live graphics controls.
 - The Cemu x64 reservation fix passed carry, operand and allocator probes
   in both JIT modes. Exact RC 38 opened one world, played audio and saved
@@ -49,8 +50,9 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   for sustained replay and independent pixels. [Cemu record](../../wiiu/cemu/RECOMPILER.md)
 - The next assembled tree includes fixed-scale graphics control through
   authenticated MCP, narrower villager texture discovery, a stock Fusion
-  discovery shortcut and the opt-in solid back-face trial. Native package
-  verification is in progress. The subsequent benchmark report and
+  discovery shortcut and the opt-in solid back-face trial. The exact package
+  passed native verification and the Cemu Night smoke. [RC 41 package](rc41-validation.md)
+  The subsequent benchmark report and
   axis-facing index range patches passed focused fixtures.
 - Real Codex host sessions verified read-only and all four scopes through
   pairing, independent restart and token refresh. Hosted graphics,

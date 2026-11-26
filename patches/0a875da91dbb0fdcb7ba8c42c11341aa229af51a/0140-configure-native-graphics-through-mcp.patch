@@ -1,0 +1,382 @@
+diff --git a/crates/horizon-client/src/game/interface/options.rs b/crates/horizon-client/src/game/interface/options.rs
+index 3ad4047fc551b505ab602daf36adad2edcc5e723..dae2eb68a2458af88c7d277a35860c29fa87ed54 100644
+--- a/crates/horizon-client/src/game/interface/options.rs
++++ b/crates/horizon-client/src/game/interface/options.rs
+@@ -19,6 +19,10 @@ pub(super) const CONTROL_HELP: &[&str] = &[
+     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
+ ];
+ 
++#[cfg(any(target_os = "cafe", test))]
++#[path = "options/cafe_graphics_control.rs"]
++mod cafe_graphics_control;
++
+ impl Game<'_> {
+     pub(super) fn save_title_options(&mut self) {
+         if let Some(title) = &self.title
+@@ -47,8 +51,19 @@ impl Game<'_> {
+                 } else {
+                     horizon_client::options_file::keys()
+                 };
++                #[cfg(target_os = "cafe")]
++                let mut wanted = wanted;
++                #[cfg(target_os = "cafe")]
++                if words.len() == 1 {
++                    wanted.extend(cafe_graphics_control::KEYS);
++                }
+                 let mut options = serde_json::Map::new();
+                 for key in wanted {
++                    #[cfg(target_os = "cafe")]
++                    if let Some(value) = self.describe_cafe_graphics(key) {
++                        options.insert(key.to_owned(), value);
++                        continue;
++                    }
+                     let described = file.describe(key).ok_or_else(|| {
+                         format!("unknown option {key}; options-get lists them all")
+                     })?;
+@@ -66,9 +81,33 @@ impl Game<'_> {
+                     .map(str::trim)
+                     .filter(|v| !v.is_empty())
+                     .ok_or("options-set KEY VALUE: missing the value")?;
++                #[cfg(target_os = "cafe")]
++                if self.options.benchmark.is_some()
++                    && (cafe_graphics_control::KEYS.contains(key)
++                        || cafe_graphics_control::is_preset_option(key)
++                        || *key == "gamma")
++                {
++                    return Err("Graphics options are fixed while a benchmark is running.".into());
++                }
++                #[cfg(target_os = "cafe")]
++                if self.set_cafe_graphics(key, value)? {
++                    return Ok(Some(json!({
++                        "ok": true,
++                        "key": key,
++                        "option": self.describe_cafe_graphics(key),
++                    })));
++                }
+                 let narrator = self.settings.narrator();
+                 let reduced = self.settings.reduced_debug_info;
++                #[cfg(target_os = "cafe")]
++                let previous = self.settings.to_file().describe(key);
+                 self.settings = self.settings.with_option(key, value)?;
++                #[cfg(target_os = "cafe")]
++                if cafe_graphics_control::is_preset_option(key)
++                    && previous != self.settings.to_file().describe(key)
++                {
++                    self.settings.horizon.preset = horizon_client::graphics::Preset::Custom;
++                }
+                 if self.settings.reduced_debug_info != reduced {
+                     self.debug_entries.invalidate();
+                 }
+diff --git a/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs b/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1362b07416de94dcb01ada4d2c8363966d047c90
+--- /dev/null
++++ b/crates/horizon-client/src/game/interface/options/cafe_graphics_control.rs
+@@ -0,0 +1,193 @@
++//! Wii U native graphics options for the existing options-get/set interface.
++
++use horizon_client::{
++    graphics::{Preset, RESOLUTION_SCALE_MAX, apply_preset},
++    settings::Settings,
++};
++
++const PRESET: &str = "horizonGraphicsPreset";
++const SCALE: &str = "resolutionScale";
++const DYNAMIC: &str = "dynamicResolution";
++const TARGET: &str = "targetFps";
++const SCALE_MIN: u32 = 50;
++const TARGET_MIN: u32 = 30;
++const TARGET_MAX: u32 = 240;
++const SLIDER_STEP: u32 = 5;
++
++#[cfg(target_os = "cafe")]
++pub(super) const KEYS: &[&str] = &[PRESET, SCALE, DYNAMIC, TARGET];
++
++#[cfg(target_os = "cafe")]
++pub(super) fn is_preset_option(key: &str) -> bool {
++    matches!(
++        key,
++        "renderDistance"
++            | "simulationDistance"
++            | "entityDistanceScaling"
++            | "renderClouds"
++            | "particles"
++            | "entityShadows"
++            | "mipmapLevels"
++            | "biomeBlendRadius"
++            | "weatherRadius"
++    )
++}
++
++fn slider_value(key: &str, value: &str, min: u32, max: u32) -> Result<u32, String> {
++    value
++        .parse::<u32>()
++        .ok()
++        .filter(|v| (min..=max).contains(v) && (v - min).is_multiple_of(SLIDER_STEP))
++        .ok_or_else(|| {
++            format!("{key} accepts integers from {min} to {max} in steps of {SLIDER_STEP}")
++        })
++}
++
++fn set(s: &mut Settings, key: &str, value: &str, drs_offered: bool) -> Result<bool, String> {
++    let graphics = &mut s.horizon;
++    let changed = match key {
++        PRESET => {
++            let preset = Preset::ALL
++                .into_iter()
++                .find(|preset| preset.name() == value)
++                .ok_or("Unknown Horizon graphics preset")?;
++            apply_preset(preset, s);
++            s.horizon.preset = preset;
++            return Ok(true);
++        }
++        DYNAMIC | TARGET if !drs_offered => {
++            return Err(
++                "Automatic resolution is awaiting Wii U gameplay timing validation.".into(),
++            );
++        }
++        SCALE => {
++            let scale = slider_value(key, value, SCALE_MIN, RESOLUTION_SCALE_MAX)?;
++            std::mem::replace(&mut graphics.resolution_scale, scale) != scale
++        }
++        DYNAMIC => {
++            let enabled = value
++                .parse::<bool>()
++                .map_err(|_| "dynamicResolution accepts true or false")?;
++            std::mem::replace(&mut graphics.dynamic_resolution, enabled) != enabled
++        }
++        TARGET => {
++            let fps = slider_value(key, value, TARGET_MIN, TARGET_MAX)?;
++            std::mem::replace(&mut graphics.target_fps, fps) != fps
++        }
++        _ => return Ok(false),
++    };
++    if changed {
++        graphics.preset = Preset::Custom;
++    }
++    Ok(true)
++}
++
++#[cfg(target_os = "cafe")]
++impl super::Game<'_> {
++    pub(super) fn set_cafe_graphics(&mut self, key: &str, value: &str) -> super::Result<bool> {
++        let previous = &self.settings.horizon;
++        let previous = (
++            previous.resolution_scale,
++            previous.dynamic_resolution,
++            previous.target_fps,
++        );
++        let trial = horizon_client::graphics::cafe_dynamic_resolution_trial();
++        if !set(&mut self.settings, key, value, trial)? {
++            return Ok(false);
++        }
++        let graphics = &self.settings.horizon;
++        if previous
++            != (
++                graphics.resolution_scale,
++                graphics.dynamic_resolution,
++                graphics.target_fps,
++            )
++        {
++            self.dynamic_resolution.reset();
++        }
++        self.handle_option_events(vec![super::Event::Changed])?;
++        self.ui_wait.clicked();
++        Ok(true)
++    }
++
++    pub(super) fn describe_cafe_graphics(&self, key: &str) -> Option<super::Value> {
++        use super::json;
++        let graphics = &self.settings.horizon;
++        let trial = horizon_client::graphics::cafe_dynamic_resolution_trial();
++        let dynamic = self.cafe_drs_trial_active();
++        let writable = self.options.benchmark.is_none();
++        Some(match key {
++            PRESET => json!({
++                "value": graphics.preset.name(), "type": "enum", "writable": writable,
++                "choices": Preset::ALL.map(Preset::name),
++            }),
++            SCALE => {
++                let requested = if dynamic {
++                    self.dynamic_resolution.scale(graphics.resolution_scale)
++                } else {
++                    graphics.resolution_scale
++                };
++                let last_pair = self.cafe_performance.paired_resolution.map(|(r, at)| {
++                    json!({
++                        "requested": r.requested_scale,
++                        "effective": r.effective_scale,
++                        "age_ms": at.elapsed().as_secs_f64() * 1000.0,
++                    })
++                });
++                json!({
++                    "value": graphics.resolution_scale, "type": "integer", "writable": writable,
++                    "min": SCALE_MIN, "max": RESOLUTION_SCALE_MAX, "step": SLIDER_STEP,
++                    "requested": requested, "last_paired_submission": last_pair,
++                })
++            }
++            DYNAMIC => json!({
++                "value": graphics.dynamic_resolution, "type": "boolean", "writable": writable && trial,
++                "experimental_active": dynamic,
++            }),
++            TARGET => json!({
++                "value": graphics.target_fps, "type": "integer", "writable": writable && trial,
++                "min": TARGET_MIN, "max": TARGET_MAX, "step": SLIDER_STEP,
++            }),
++            _ => return None,
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn preset_and_fixed_scale_apply_ui_values_and_reject_invalid_scale() {
++        let mut settings = Settings::default();
++        assert!(set(&mut settings, PRESET, "full_performance", false).unwrap());
++        assert_eq!(settings.render_distance, 6);
++        assert_eq!(settings.simulation_distance, 5);
++        assert_eq!(settings.horizon.resolution_scale, 75);
++        assert!(!settings.horizon.dynamic_resolution);
++        assert_eq!(settings.horizon.preset, Preset::FullPerformance);
++        for rejected in ["49", "76", "nan"] {
++            assert!(set(&mut settings, SCALE, rejected, false).is_err());
++            assert_eq!(settings.horizon.resolution_scale, 75);
++        }
++        for value in [100, 75, 50, 75] {
++            assert!(set(&mut settings, SCALE, &value.to_string(), false).unwrap());
++            assert_eq!(settings.horizon.resolution_scale, value);
++        }
++        assert_eq!(settings.horizon.preset, Preset::Custom);
++    }
++
++    #[test]
++    fn drs_changes_follow_trial_gate_and_slider_limits() {
++        let mut settings = Settings::default();
++        assert!(set(&mut settings, DYNAMIC, "true", false).is_err());
++        assert!(set(&mut settings, TARGET, "30", false).is_err());
++        assert!(!settings.horizon.dynamic_resolution);
++        assert_eq!(settings.horizon.target_fps, 60);
++        assert!(set(&mut settings, TARGET, "31", true).is_err());
++        assert!(set(&mut settings, DYNAMIC, "true", true).unwrap());
++        assert!(set(&mut settings, TARGET, "30", true).unwrap());
++        assert!(settings.horizon.dynamic_resolution);
++        assert_eq!(settings.horizon.target_fps, 30);
++    }
++}
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index bdc620686eb8c1af8c4d700c23dbd17974faac94..39725f33de2fae8d9bb64d8895e6a377bcdcddc6 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -223,6 +223,7 @@ pub(in crate::game) struct CafePerformance {
+     active: Option<Window>,
+     pub(in crate::game) latest: Option<Sample>,
+     pub(in crate::game) presented: u64,
++    pub(in crate::game) paired_resolution: Option<(WorldResolution, Instant)>,
+     gpu_timing: Option<GpuTimingObservation>,
+ }
+ 
+@@ -302,6 +303,9 @@ impl CafePerformance {
+         spans: StepSpans,
+         work: CafeFrameWork,
+     ) -> bool {
++        if work.presented == [true; 2] {
++            self.paired_resolution = work.world_resolution.map(|resolution| (resolution, now));
++        }
+         let Some(window) = self.active.as_mut() else {
+             return false;
+         };
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index 378109809add3569a1675de85d10703269fb9246..876db44baabf9a92d6dfbea987f89b1ca8c46476 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -173,6 +173,7 @@ const OBSERVE: &[&str] = &[
+     "game_narration",
+     "game_wait_ready",
+     "game_screenshot",
++    "game_options_get",
+ ];
+ const CONTROL: &[&str] = &[
+     "game_move",
+@@ -193,6 +194,7 @@ const CONTROL: &[&str] = &[
+     "game_open_inventory",
+     "game_pause",
+     "game_resume",
++    "game_options_set",
+     "game_save",
+     "game_quit",
+ ];
+@@ -207,10 +209,18 @@ fn catalog() -> &'static [Value] {
+             .unwrap()
+             .iter()
+             .flat_map(|row| row.get("tool").cloned())
+-            .filter(|tool| {
+-                NightTools
+-                    .required(tool["name"].as_str().unwrap_or_default())
+-                    .is_some()
++            .filter_map(|mut tool| {
++                let name = tool["name"].as_str()?;
++                NightTools.required(name)?;
++                let description = match name {
++                    "game_options_get" => Some("Read game option values and valid ranges. Wii U also reports horizonGraphicsPreset, resolutionScale, dynamicResolution and targetFps. Pass a space-separated list of keys or omit keys for all options."),
++                    "game_options_set" => Some("Apply and save one supported Wii U graphics option by key and value. Read its current value and allowed range with game_options_get. For fixed-resolution comparisons use resolutionScale with 50 through 100 in steps of 5."),
++                    _ => None,
++                };
++                if let Some(description) = description {
++                    tool["description"] = description.into();
++                }
++                Some(tool)
+             })
+             .collect()
+     })
+@@ -331,6 +341,32 @@ fn game_call(
+         return no_game();
+     }
+     let name = full_name.trim_start_matches("game_");
++    if name == "options_set"
++        && !matches!(
++            args["key"].as_str(),
++            Some(
++                "horizonGraphicsPreset"
++                    | "resolutionScale"
++                    | "dynamicResolution"
++                    | "targetFps"
++                    | "renderDistance"
++                    | "simulationDistance"
++                    | "entityDistanceScaling"
++                    | "renderClouds"
++                    | "particles"
++                    | "entityShadows"
++                    | "mipmapLevels"
++                    | "biomeBlendRadius"
++                    | "weatherRadius"
++                    | "gamma"
++            )
++        )
++    {
++        return text_result(
++            "Only Wii U graphics options can be changed with this tool.",
++            true,
++        );
++    }
+     let Some(cmd) = commands::COMMANDS
+         .iter()
+         .find(|cmd| cmd.mcp && commands::tool_name(cmd) == name)
+@@ -344,10 +380,11 @@ fn game_call(
+     if words
+         .iter()
+         .any(|word| word.len() > 240 || word.chars().any(char::is_control))
+-        || words
+-            .iter()
+-            .skip(1)
+-            .any(|word| word.chars().any(char::is_whitespace))
++        || (name != "options_get"
++            && words
++                .iter()
++                .skip(1)
++                .any(|word| word.chars().any(char::is_whitespace)))
+     {
+         return text_result("Use one value per game argument.", true);
+     }

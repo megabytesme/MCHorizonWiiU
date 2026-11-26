@@ -141,6 +141,25 @@ adapters. The current service does not advertise commands that delete worlds,
 change arbitrary security settings, or start dedicated servers.
 [Tool inventory and dispositions](parity.md)
 
+### Live graphics in the hosted development recipe
+
+Use `game_options_get` with `game.observe` to read game options. For example,
+pass `{"keys":"horizonGraphicsPreset resolutionScale dynamicResolution targetFps"}`.
+`resolutionScale.value` is the saved configuration, `requested` is the scale
+for the next frame, and `last_paired_submission` reports the requested and
+effective scale of the last accepted TV and GamePad pair with its age.
+
+Use `game_options_set` with `game.control` to apply one option by key and value.
+`{"key":"horizonGraphicsPreset","value":"full_performance"}` applies the same
+stock settings as the graphics screen. `{"key":"resolutionScale","value":"75"}`
+sets the configured scale. With DRS off, 50 through 100 are accepted in 5-point
+steps. `dynamicResolution` and `targetFps` follow the native trial gate. The tool
+also accepts the stock `renderDistance`, `simulationDistance`,
+`entityDistanceScaling`, `renderClouds`, `particles`, `entityShadows`,
+`mipmapLevels`, `biomeBlendRadius`, `weatherRadius` and `gamma` keys. Read back
+the last paired submission before opening a fixed-scale measurement window.
+Graphics writes are unavailable during a running benchmark.
+
 ## Build and test
 
 The pinned release combination is client **0.7.0**, patch **0.4.0** and

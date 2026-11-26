@@ -1,0 +1,157 @@
+diff --git a/crates/horizon-client/src/mobs/data.rs b/crates/horizon-client/src/mobs/data.rs
+index 77fdb127673fef9e2d792ecd5c038db615104ea8..16336f3b1eacf8ce095ad11e7ca6d56127b94749 100644
+--- a/crates/horizon-client/src/mobs/data.rs
++++ b/crates/horizon-client/src/mobs/data.rs
+@@ -188,25 +188,31 @@ impl MobData {
+     pub fn load(root: &ResourceRoot, facts: &BlockFacts) -> Self {
+         let source = root.source();
+         let root = root.prepared();
+-        let mut data = fs::read(root.join("mob-data.json"))
+-            .ok()
+-            .and_then(|bytes| Self::from_prepared_json(&bytes, facts.states.len()))
+-            .unwrap_or_else(|| Self::fallback(facts));
+-        data.biome_tags = crate::items::load_tags(
+-            root,
+-            "worldgen/biome",
+-            &horizon_world::loot::PackOverlay::NONE,
+-        )
+-        .unwrap_or_default();
+-        data.entity_tags =
+-            crate::items::load_tags(root, "entity_type", &horizon_world::loot::PackOverlay::NONE)
+-                .unwrap_or_default();
+-        data.villager_hats =
+-            std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
+-        let random = horizon_optifine::random_textures::RandomTextures::scan(source);
+-        let blinks = horizon_optifine::blink::Blinks::scan(source, &random);
+-        let mut emissive = horizon_optifine::emissive::Emissive::scan(source, &random);
+-        emissive.pair_beside(source, blinks.files());
++        use crate::spans::startup;
++
++        let mut data = startup::time("rest.mobs.data.decode", || {
++            fs::read(root.join("mob-data.json"))
++                .ok()
++                .and_then(|bytes| Self::from_prepared_json(&bytes, facts.states.len()))
++                .unwrap_or_else(|| Self::fallback(facts))
++        });
++        (data.biome_tags, data.entity_tags) = startup::time("rest.mobs.data.tags", || {
++            let no_overlay = &horizon_world::loot::PackOverlay::NONE;
++            let biomes = crate::items::load_tags(root, "worldgen/biome", no_overlay);
++            let entities = crate::items::load_tags(root, "entity_type", no_overlay);
++            (biomes.unwrap_or_default(), entities.unwrap_or_default())
++        });
++        let hats = startup::time("rest.mobs.data.villager_hats", || {
++            super::villager_hats::VillagerHats::load(source)
++        });
++        data.villager_hats = std::sync::RwLock::new(hats);
++        let (random, blinks, emissive) = startup::time("rest.mobs.data.optifine", || {
++            let random = horizon_optifine::random_textures::RandomTextures::scan(source);
++            let blinks = horizon_optifine::blink::Blinks::scan(source, &random);
++            let mut emissive = horizon_optifine::emissive::Emissive::scan(source, &random);
++            emissive.pair_beside(source, blinks.files());
++            (random, blinks, emissive)
++        });
+         data.emissive = std::sync::RwLock::new(std::sync::Arc::new(emissive));
+         data.blinks = std::sync::RwLock::new(blinks);
+         data.random_textures = std::sync::RwLock::new(random);
+diff --git a/crates/horizon-client/src/mobs/villager_hats.rs b/crates/horizon-client/src/mobs/villager_hats.rs
+index 9fe2049d3424241ca7111b9c30be3a684e81e8bd..3374985d8fbe7be27e96131328972182a9f665ed 100644
+--- a/crates/horizon-client/src/mobs/villager_hats.rs
++++ b/crates/horizon-client/src/mobs/villager_hats.rs
+@@ -18,20 +18,21 @@ pub struct VillagerHats(HashMap<String, Hat>);
+ impl VillagerHats {
+     pub fn load(root: &ResourceSource) -> Self {
+         let mut hats = HashMap::new();
+-        for texture in crate::atlas_sources::list_textures(root) {
+-            let (namespace, path) = texture.split_once(':').expect("qualified texture");
+-            if ![
+-                "entity/villager/type/",
+-                "entity/villager/profession/",
+-                "entity/zombie_villager/type/",
+-                "entity/zombie_villager/profession/",
+-            ]
+-            .iter()
+-            .any(|prefix| path.starts_with(prefix))
+-            {
++        let directories = [
++            "textures/entity/villager/profession",
++            "textures/entity/villager/type",
++            "textures/entity/zombie_villager/profession",
++            "textures/entity/zombie_villager/type",
++        ];
++        for file in root.list_under("assets", &directories) {
++            let Some((namespace, path)) = file
++                .strip_prefix("assets/")
++                .and_then(|file| file.strip_suffix(".png"))
++                .and_then(|file| file.split_once("/textures/"))
++            else {
+                 continue;
+-            }
+-            let metadata_path = format!("assets/{namespace}/textures/{path}.png.mcmeta");
++            };
++            let metadata_path = format!("{file}.mcmeta");
+             let metadata = root
+                 .read(&metadata_path)
+                 .ok()
+@@ -44,7 +45,7 @@ impl VillagerHats {
+                 Some("full") => Hat::Full,
+                 _ => Hat::None,
+             };
+-            hats.insert(texture, hat);
++            hats.insert(format!("{namespace}:{path}"), hat);
+         }
+         Self(hats)
+     }
+@@ -127,6 +128,53 @@ mod tests {
+         fs::remove_dir_all(root).unwrap();
+     }
+ 
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn archived_hats_use_only_villager_type_and_profession_textures() {
++        use std::io::Write;
++        let root = std::env::temp_dir().join(format!("horizon-archive-hats-{}", std::process::id()));
++        fs::create_dir_all(&root).unwrap();
++        let path = root.join("hats.zip");
++        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
++        for (path, bytes) in [
++            (
++                "assets/z_mod/textures/entity/zombie_villager/profession/nested/farmer.png",
++                [].as_slice(),
++            ),
++            (
++                "assets/z_mod/textures/entity/zombie_villager/profession/nested/farmer.png.mcmeta",
++                br#"{"villager":{"hat":"full"}}"#,
++            ),
++            (
++                "assets/a_mod/textures/entity/villager/profession_overlay/test.png",
++                [].as_slice(),
++            ),
++            (
++                "assets/a_mod/textures/entity/villager/profession_overlay/test.png.mcmeta",
++                br#"{"villager":{"hat":"partial"}}"#,
++            ),
++        ] {
++            writer
++                .start_file(path, zip::write::SimpleFileOptions::default())
++                .unwrap();
++            writer.write_all(bytes).unwrap();
++        }
++        drop(writer.finish().unwrap());
++        let source = ResourceSource::archive(&path).unwrap();
++        let hats = VillagerHats::load(&source);
++        assert_eq!(
++            hats.policy(
++                "entity/zombie_villager",
++                "profession",
++                "z_mod:nested/farmer",
++            ),
++            Hat::Full,
++        );
++        assert_eq!(hats.0.len(), 1);
++        drop(source);
++        fs::remove_dir_all(root).unwrap();
++    }
++
+     #[test]
+     #[ignore = "daily"]
+     fn metadata_head_visibility_matches_exported_no_hat_models() {

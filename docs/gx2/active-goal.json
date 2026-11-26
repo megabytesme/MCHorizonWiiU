@@ -153,14 +153,19 @@
       "cemu_first_game_frame",
       "cemu_first_save_pcm_and_heap_recovery"
     ],
-    "hosted_4t_replay": "reopen_in_progress"
+    "hosted_4t_replay": "open_save_reopen_passed_movement_pending"
   },
   "next_source": {
     "candidate": "0.8.0-rc.41",
     "engine_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
     "validation": [
-      "exact_assembly"
+      "exact_assembly",
+      "native_build",
+      "package_hashes",
+      "cemu_distinct_night_captures"
     ],
-    "native_build": "in_progress"
+    "native_build": "passed",
+    "rpx_sha256": "a1195b54d75715224c7827cf762fb491094282d4ef9454a3724d167409c7694f",
+    "wuhb_sha256": "6e3d159782f6da82896dec80a067c704acea12c479276027268332b361e08980"
   }
 }

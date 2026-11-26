@@ -1,0 +1,130 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 093828331d77b21dbacd46df4e1e45fcb740073b..ab8f973cf7940b4d9a873e059a09125d0ccf36cc 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -45,6 +45,7 @@ struct HorizonGx2Terrain {
+    int shader_loaded;
+    bool legacy_attributes;
+    bool legacy_uniforms;
++   bool solid_back_culling;
+ };
+ static const GX2RResourceFlags texture_flags = GX2R_RESOURCE_BIND_TEXTURE |
+    GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
+@@ -344,7 +345,7 @@ int horizon_gx2_terrain_bind(HorizonGx2Terrain *t, uint32_t target_width, uint32
+                       translucent ? GX2_BLEND_MODE_INV_SRC_ALPHA : GX2_BLEND_MODE_ZERO,
+                       GX2_BLEND_COMBINE_MODE_ADD);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+-   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, translucent);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, translucent || t->solid_back_culling);
+    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, translucent ? 1 : 0, FALSE, TRUE);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
+@@ -362,6 +363,11 @@ void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool en
+    terrain->legacy_uniforms = enabled;
+ }
+ 
++void horizon_gx2_terrain_set_solid_back_culling(HorizonGx2Terrain *terrain, bool enabled)
++{
++   terrain->solid_back_culling = enabled;
++}
++
+ static void bind_section_uniforms(const HorizonGx2Terrain *t, const float clip_rows[16],
+                                   const float section_origin[4])
+ {
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index f8b9d1268e81304f3faeb77c348549528abd2f70..dfe6b006860ac18a0a95bb0fe53ff6c8027c2333 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -64,6 +64,8 @@ void horizon_gx2_terrain_wait_idle(void);
+ void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool enabled);
+ /* Keep separate section uniform writes for matched measurements. */
+ void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool enabled);
++/* Compare stock WGPU back-face state for solid and cutout terrain. */
++void horizon_gx2_terrain_set_solid_back_culling(HorizonGx2Terrain *terrain, bool enabled);
+ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ void horizon_gx2_terrain_section_destroy(HorizonGx2TerrainSection *section);
+ /* Caller has completed every submitted use of this section. */
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index e1bb15d56227ee6a6176a021cd8cecc0c75f8e0a..599b4219abcb575100fdbfb0dae1aeb02b9d84f2 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -81,7 +81,7 @@ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_at
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads;
+ static uint32_t hud_patch_mode;
+-static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits;
++static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -128,6 +128,7 @@ void horizon_gx2_profile_init(void)
+    skip_scaled_output_clear = variant == 'c';
+    defer_flip = variant == 'q';
+    skip_terrain_waits = variant == 't';
++   solid_back_culling = variant == 'b';
+    fclose(marker);
+    epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+@@ -138,6 +139,7 @@ void horizon_gx2_profile_init(void)
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
++   if (solid_back_culling) OSReport("Horizon GX2 solid terrain back-face culling trial enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+ }
+@@ -201,6 +203,11 @@ bool horizon_gx2_profile_skip_terrain_waits(void)
+    return false;
+ }
+ 
++bool horizon_gx2_profile_solid_back_culling(void)
++{
++   return solid_back_culling;
++}
++
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    gpu_sample.status = GX2_GPU_NO_SAMPLE;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 5266ac38d392defe452fdc17f21fed2b226f5323..b4a587443a0a408a5fb746f3a6efcf7c87092a2d 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -45,6 +45,7 @@ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
++bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 0c40514306139656ccd1a7a8a3829dea065cdbc6..59389883b66b6a774e9a64fff726d422c2ab9a29 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -207,6 +207,7 @@ extern "C" {
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_profile_defer_flip() -> bool;
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
++    fn horizon_gx2_profile_solid_back_culling() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+         gfd: *const c_void,
+@@ -237,6 +238,7 @@ extern "C" {
+     fn horizon_gx2_terrain_set_legacy_attributes(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_attributes() -> bool;
+     fn horizon_gx2_terrain_set_legacy_uniforms(terrain: *mut c_void, enabled: bool);
++    fn horizon_gx2_terrain_set_solid_back_culling(terrain: *mut c_void, enabled: bool);
+     fn horizon_gx2_profile_legacy_terrain_uniforms() -> bool;
+     fn horizon_gx2_profile_shared_hud_upload() -> bool;
+     fn horizon_gx2_profile_shared_model_uploads() -> bool;
+@@ -1482,6 +1484,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     native.as_ptr(),
+                     horizon_gx2_profile_legacy_terrain_uniforms(),
+                 );
++                horizon_gx2_terrain_set_solid_back_culling(
++                    native.as_ptr(),
++                    horizon_gx2_profile_solid_back_culling(),
++                );
+             }
+             self.terrain = Some(terrain);
+             self.resident_animations =

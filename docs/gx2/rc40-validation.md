@@ -40,8 +40,7 @@ RPX and WUHB hashes. An independent byte comparison is pending.
   pending. [MCP comparison](../mcp/nightly-parity.md)
 
 The package booted Night with distinct 1920×1080 TV and 854×480 GamePad
-captures in the established forced-interpreter Cemu. A saved-world
-`4t` replay is in progress. The scratch recompiler returned a startup
+captures in the established forced-interpreter Cemu. The saved-world `4t` replay ran two rounds. The scratch recompiler returned a startup
 fault before gameplay and duplicated the GamePad capture under both
 output names. Use the established emulator for independent display
 evidence. [Recompiler record](../../wiiu/cemu/RECOMPILER.md)
@@ -53,7 +52,12 @@ terrain. The retained HZP3 recorded one playing pair with visible sections
 on both outputs and zero explicit terrain wait. This exercises `4t` but
 does not establish settled terrain or a frame-time difference. The first
 session saved the moved player, produced native PCM and recovered
-234,880,920 free GX2 bulk bytes. The same-process reopen is running.
+234,880,920 free GX2 bulk bytes. The same-process reopen returned the
+first Game frame in 514.247 s and saved again with the same heap recovery
+and native PCM. The default marker `4` control returned the first Game
+frame in 572.106 s and also saved with heap recovery. The movement check
+failed in both arms after inputs started before terrain settled. The
+timings describe separate emulator runs with other work on the host.
 
 The Cemu runner now supports `--minimum-terrain-sections` to wait for a
 specified visible section count per output before captures or the timed

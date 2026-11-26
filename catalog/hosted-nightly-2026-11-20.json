@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "7d98701b0bae6958962993487ff5ef66851a5bc4",
+  "output_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -842,12 +842,36 @@
       "sha256": "30d3005688317a754ea1d0a2de63fe0b9b08ac2c4d3e07f63636b963be7b3048",
       "input_tree": "5cfe4c28ce1a8ca47407bb65d7dbc5abbf0278f0",
       "output_tree": "7d98701b0bae6958962993487ff5ef66851a5bc4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0139-scope-mob-texture-discovery.patch",
+      "sha256": "5d0cb8b5f8d9585c54d5d8674ae61ba8fa4fc9e7633a2e5689cbf6ce4919369b",
+      "input_tree": "7d98701b0bae6958962993487ff5ef66851a5bc4",
+      "output_tree": "617fabe3b0acd83be28d9315b0b68023849ea025"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0140-configure-native-graphics-through-mcp.patch",
+      "sha256": "72ea51103e3a92d8dd009ff606188bdc41adb5d71e5a9382c0b42aae4925c1ce",
+      "input_tree": "617fabe3b0acd83be28d9315b0b68023849ea025",
+      "output_tree": "5eece9de74c2408ae81abe3fb1995d8efffa0c47"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0141-trial-gx2-solid-terrain-back-face-culling.patch",
+      "sha256": "6914eb343f35024a380fb119ad2305feb80fb65849d6a599a5f7d0199f721b89",
+      "input_tree": "5eece9de74c2408ae81abe3fb1995d8efffa0c47",
+      "output_tree": "a0bc06b2874d799b112f04db4c8019f5915214b4"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0142-skip-unused-fusion-texture-discovery.patch",
+      "sha256": "b5e35cfdaa27ecc2f2730ecb4d9041a0138c2e908bdda8355c90e68afae2562f",
+      "input_tree": "a0bc06b2874d799b112f04db4c8019f5915214b4",
+      "output_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.40",
-    "patch": "0.5.0-rc.40"
+    "client": "0.8.0-rc.41",
+    "patch": "0.5.0-rc.41"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
