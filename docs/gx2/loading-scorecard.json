@@ -1592,6 +1592,181 @@
           ]
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.36",
+      "revision": "stock saved-world cold entry and warm reopen",
+      "source_commit": "aa49dd1b4a6",
+      "engine_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e",
+      "toolchain": "1.1.0",
+      "rpx_sha256": "9943740b5a437af03aa7a712750409c792eddecb730a99e35c34dc68549ba78b",
+      "environment": "Ben-Desktop, NSS-patched Cemu forced interpreter under concurrent development work",
+      "archive_sha256": "8b26733d3b75d099ea412679034e4659524b400c9f0cc29e29d002a845c0e866",
+      "prepared_schema": 7,
+      "same_process": true,
+      "cases": [
+        {
+          "id": "existing_world_first_entry",
+          "stages_ms": {
+            "ui.atlas_discovery": 967.656,
+            "ui.atlas_decode": 36411.785,
+            "ui.atlas_assemble": 7127.284,
+            "ui.atlas": 44736.177,
+            "ui.load": 44752.43,
+            "core.sprite_cache_fingerprint": 3635.788,
+            "core.sprite_cache_open": 3642.775,
+            "core.block_facts": 139305.547,
+            "core": 199967.803,
+            "pack.mesh_tables": 18968.081,
+            "pack.assemble": 13064.166,
+            "handoff.game_cpu": 22920.738,
+            "handoff.renderer_textures": 31112.728,
+            "rest.mobs": 46234.836,
+            "rest.behaviours": 106340.269,
+            "rest": 106352.432,
+            "world.preload.generator": 189237.038,
+            "world.preload": 258425.929,
+            "sync.recipe_catalog": 18894.561,
+            "sync.recipe_acceptance": 2310.58,
+            "sync.network_recipes": 24398.616,
+            "server.open_world": 43949.808,
+            "server.sync_adopt": 0.064
+          },
+          "snapshot_messages": [
+            "wrote registry-v1.bin",
+            "wrote behaviours-v3.bin"
+          ],
+          "sprite_cache": {
+            "hits": 0,
+            "misses": 28641,
+            "entries": 1311
+          },
+          "reused_resolved_behaviours": true,
+          "world_resolution": "Horizon GX2 world resolution requested_scale=75 effective_scale=75 tv=1440x809 drc=641x360 surface_bytes=11378688 mode=fixed",
+          "first_positive_terrain_serial_ms": 652007,
+          "gameplay_ready_ms": 616598,
+          "after_save": {
+            "rust_live": 45316180,
+            "rust_peak": 326409350,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          },
+          "verbose_png_lines": 0
+        },
+        {
+          "id": "existing_world_warm_reopen",
+          "stages_ms": {
+            "ui.atlas_discovery": 880.36,
+            "ui.atlas_decode": 50194.872,
+            "ui.atlas_assemble": 9833.999,
+            "ui.atlas": 61316.978,
+            "ui.load": 61332.86,
+            "core.sprite_cache_fingerprint": 0.013,
+            "core.sprite_cache_open": 1766.065,
+            "core.block_facts": 143371.458,
+            "core": 190900.16,
+            "pack.mesh_tables": 22348.558,
+            "pack.assemble": 2697.352,
+            "rest.behaviours": 11697.326,
+            "handoff.game_cpu": 23484.042,
+            "handoff.renderer_textures": 32270.677,
+            "rest.mobs": 49754.545,
+            "rest": 85538.95,
+            "world.preload.generator": 170920.034,
+            "sync.recipe_catalog": 19712.251,
+            "sync.recipe_acceptance": 2597.738,
+            "sync.network_recipes": 27453.071,
+            "world.preload": 223573.111,
+            "server.open_world": 46682.909,
+            "server.sync_adopt": 0.077
+          },
+          "snapshot_messages": [
+            "restored registry-v1.bin",
+            "restored behaviours-v3.bin"
+          ],
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311
+          },
+          "reused_resolved_behaviours": true,
+          "world_resolution": "Horizon GX2 world resolution requested_scale=75 effective_scale=75 tv=1440x809 drc=641x360 surface_bytes=11378688 mode=fixed",
+          "first_positive_terrain_serial_ms": 640381,
+          "gameplay_ready_ms": 594048,
+          "after_save": {
+            "rust_live": 45486629,
+            "rust_peak": 360793148,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          },
+          "verbose_png_lines": 0
+        }
+      ]
+    },
+    {
+      "version": "0.8.0-rc.37",
+      "revision": "stock saved-world cold entry with shared model uploads",
+      "source_commit": "a91c6787333",
+      "engine_tree": "140d6c4e3a28d5cb26fe8e53714823d638b1797e",
+      "toolchain": "1.1.0",
+      "rpx_sha256": "e916d7c10c5ab3ce5f55e26e0193d06c5dd520566d5fd3f902ffc0655f38e18b",
+      "environment": "Ben-Desktop, NSS-patched Cemu forced interpreter under concurrent development work",
+      "archive_sha256": "8b26733d3b75d099ea412679034e4659524b400c9f0cc29e29d002a845c0e866",
+      "prepared_schema": 7,
+      "same_process": false,
+      "cases": [
+        {
+          "id": "existing_world_first_entry",
+          "stages_ms": {
+            "ui.atlas_discovery": 1285.352,
+            "ui.atlas_decode": 42301.691,
+            "ui.atlas_assemble": 10096.761,
+            "ui.atlas": 54026.724,
+            "ui.load": 54045.35,
+            "core.sprite_cache_fingerprint": 4674.345,
+            "core.sprite_cache_open": 4681.571,
+            "core.block_facts": 119545.944,
+            "core": 183868.306,
+            "pack.mesh_tables": 16804.887,
+            "pack.assemble": 11647.426,
+            "handoff.game_cpu": 18590.466,
+            "handoff.renderer_textures": 25823.076,
+            "rest.mobs": 37375.62,
+            "rest.behaviours": 85661.747,
+            "rest": 85675.383,
+            "world.preload.generator": 157904.191,
+            "world.preload": 230212.929,
+            "sync.recipe_catalog": 19437.437,
+            "sync.recipe_acceptance": 2552.447,
+            "sync.network_recipes": 25345.239,
+            "server.open_world": 49075.539,
+            "server.sync_adopt": 0.057
+          },
+          "snapshot_messages": [
+            "wrote registry-v1.bin",
+            "wrote behaviours-v3.bin"
+          ],
+          "sprite_cache": {
+            "hits": 0,
+            "misses": 28641,
+            "entries": 1311
+          },
+          "reused_resolved_behaviours": true,
+          "world_resolution": "Horizon GX2 world resolution requested_scale=75 effective_scale=75 tv=1440x809 drc=641x360 surface_bytes=11378688 mode=fixed",
+          "first_positive_terrain_serial_ms": 630725,
+          "gameplay_ready_ms": 589862,
+          "after_save": {
+            "rust_live": 45118753,
+            "rust_peak": 308631865,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          },
+          "verbose_png_lines": 0
+        }
+      ]
     }
   ],
   "host_microbenchmarks": [

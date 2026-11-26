@@ -67,6 +67,33 @@ behaviour snapshots. A warm comparison needs the same candidate and
 prepared inputs in both entries. [Loading scorecard](loading-scorecard.json) ·
 [Horizon NX comparison](horizon-nx-comparison.md)
 
+### Exact saved-world replay
+
+The exact RPX opened the stock 6/5 fixture twice in one NSS-patched,
+forced-interpreter Cemu process at fixed 75% with marker `4a`. Other
+build and emulator work overlapped the replay. Both displays showed
+terrain and the HUD. The first entry saved a moved position, and the
+untouched warm session preserved it. Both produced nonzero AX output,
+returned to Night and recovered 234,880,920 free GX2 bulk bytes and a
+234,880,896-byte largest block. The guest then reached the Wii U Menu exit.
+
+| Interpreter observation | First entry | Warm reopen |
+| --- | ---: | ---: |
+| World-ready, s | 616.598 | 594.048 |
+| First positive paired terrain sample, s | 652.007 | 640.381 |
+| Block behaviours, s | 106.340 | 11.697 |
+| Mob preparation, s | 46.235 | 49.755 |
+| Sprite cache hits / misses | 0 / 28,641 | 28,639 / 2 |
+| Verbose PNG lines | 0 | 0 |
+
+The first entry wrote both snapshots, and the reopen restored both.
+Peak sampled terrain was five sections per display. Settled terrain
+remains open for this workload.
+Behaviour preparation fell by 94.643 seconds in this interpreter run.
+World-ready fell by 22.550 seconds and paired terrain arrived 11.626
+seconds earlier. These elapsed times include host contention and
+overlapping stages. [Machine-readable loading scorecard](loading-scorecard.json)
+
 ## Multiplayer
 
 The hosted client now uses separate Cafe connect and receive timeouts.

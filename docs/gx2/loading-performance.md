@@ -301,3 +301,10 @@ benchmarks separately from world-entry timings. The climate-index patch
 changes the engine identity used by registry and behaviour snapshots, so
 measure first publication and same-candidate restore separately.
 [Candidate record](rc36-validation.md) · [Loading scorecard](loading-scorecard.json)
+
+The exact RC 36 Cemu replay restored both snapshots during a same-process
+warm reopen. Behaviour preparation changed from 106.340 to 11.697 seconds,
+world-ready from 616.598 to 594.048 seconds and first paired terrain from
+652.007 to 640.381 seconds. Both entries saved and recovered the GX2 bulk
+heap. The two interpreter entries overlapped other development work.
+[Replay and build identity](rc36-validation.md#exact-saved-world-replay)

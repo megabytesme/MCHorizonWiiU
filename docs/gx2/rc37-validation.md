@@ -47,5 +47,18 @@ custom hit color and shared uploads. Its RPX SHA-256 is
 `6ff7a44dfc622ce754ec1812a5a14d283058fb7b8ab614753e2ee6ee0c82ce68`.
 [Fixture and expected colors](../../wiiu/diagnostics/gx2-hand/README.md)
 
-Live RC 37 cold and warm times, physical materials and physical
-frame timing remain open. [Hardware qualification queue](post-rc35-queue.md)
+## Exact saved-world replay
+
+The exact RPX ran the stock saved-world fixture at fixed 75%, render
+distance 6 and simulation distance 5, in NSS-patched forced-interpreter
+Cemu. Mode `4m` confirmed that shared native model uploads were enabled.
+World-ready arrived at 589.862 seconds and the first sampled terrain on
+both displays at 630.725 seconds during concurrent development work.
+Movement persisted after save, AX output was nonzero and shutdown
+recovered all 234,880,920 GX2 bulk bytes. The game returned to Night and
+reached the Wii U Menu exit.
+
+The broad host world suite had one process-global logger collision
+among 794 passes and 24 ignored cases. The affected test passed alone.
+Physical materials, frame timing and same-candidate warm timing remain
+open. [Hardware qualification queue](post-rc35-queue.md)
