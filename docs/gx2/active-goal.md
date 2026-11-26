@@ -15,7 +15,7 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
 | Sustained native gameplay | Repeated settled physical windows of at least 60 seconds on stock Full Performance, fixed 75%, DRS off, render 6 and simulation 5, with the saved 174-section view on both outputs. Record paired cadence, unique flip evidence where available, frame-time tails, terrain, TPS, visuals and memory. Keep separate heavy and traversal results. | RC 38 delivered 20.011 and 20.001 pairs/s in two shorter windows. The matched scale sweep was about 19.97 pairs/s at 100% and 75%, and 29.92 at 50%. |
 | Persistent authenticated MCP | One owner-approved full-scope grant across Night, games, process and console restarts and compatible updates. Exercise the complete launch, capture, settings, save/reopen, benchmark and multiplayer sequence, plus revocation and rejection of unknown clients. | RC 42 reused the RC 26 disposable grant in Cemu and exercised Night, launch, live graphics, save and return, and benchmark status and report reads. Physical restart and the remaining tool flow are still pending. |
 | Usable loading | Below 60 s on physical Wii U. Measure first responsive gameplay, first paired terrain and settled terrain at comparable cache states. Target substantially faster reopening with a 30 s stretch goal. | RC 38 first returned game frame 116.798 s after upgrade and 106.918 s on warm reopen. First paired terrain 124.937 s and 114.999 s. The warm run restored both preparation snapshots. |
-| Online mode | Physical account-backed join, terrain, movement, clean disconnect and rejoin. Qualify profile certificates, SRV and bounded, cancellable requests. | RC 36 passed authenticated join and reconnect in Cemu. RC 38 updated profile lookup and signing keys. Physical session pending. |
+| Online mode | Physical account-backed join, terrain, movement, clean disconnect and rejoin. Qualify profile certificates, SRV and bounded, cancellable requests. | RC 43 reused the approved grant and account in Cemu, joined and rejoined a secure online-mode server and moved 28.49 blocks. Physical qualification is pending. |
 | Automatic DRS | Qualified physical timing and upward/downward transitions at 30 and 60 targets, stable surface allocation and native HUD on both outputs. | Physical upward transitions at 30 FPS. The corrected 60 FPS probe boots in Cemu and reports unavailable GPU endpoints there. |
 | Village streaming | At least 95% eligible terrain time on the original route and rules. | RC 33 measured 62.34%. Separate RC 33 stationary control was 99.64% eligible at fixed 100% and 562 sections per output. |
 | Rendering and splitscreen | Improve the 32-pass matrix with dual-output checks. Document independent players, projections, HUDs, controllers and resource ownership, with independent-view measurements when implemented. | Shared world resources already serve separate TV and GamePad projections. Renderer gaps and independent player views remain open. |
@@ -94,7 +94,8 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
 - RC 45 extends the stock audit to 62 tools, including bookmark changes
   and isolated owner test worlds. The candidate adds the opt-in `4v`
   solid draw plan and `4j` guarded shared HUD submission. The pinned
-  native build is underway.
+  native build and package hashes passed. The exact-package replay is
+  exercising the new tools and isolated save path.
   [RC 45 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc45-qualification/docs/gx2/rc45-qualification.md)
 
 ## Physical queue

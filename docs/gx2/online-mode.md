@@ -85,6 +85,30 @@ rendered both outputs and disconnected cleanly a second time. The guest
 then reached the Wii U Menu exit. The run used RC 36 RPX SHA-256
 `9943740b5a437af03aa7a712750409c792eddecb730a99e35c34dc68549ba78b`.
 
+## Authenticated RC 43 join and rejoin
+
+The exact RC 43 RPX
+`356f9cf09d578b701b61aeb8044947d1e9fc6479dc5a49119938599ef0cf638a`
+reused the prior four-scope MCP grant and previously approved disposable
+Microsoft profile in the established forced interpreter. Codex selected
+the profile through Night, waited for `ready`, read the saved loopback
+bookmark and called `wiiu_multiplayer_join`.
+
+A disposable vanilla Java 26.3 server with `online-mode`,
+`enforce-secure-profile` and its allowlist enabled recorded two logins and
+two clean disconnects. Both rounds displayed received terrain in
+separate TV 1920×1080 and GamePad 854×480 captures. During the first round
+the client moved 28.49 blocks horizontally. The same Night process
+rejoined after authenticated disconnect, recovered 234,880,920 GX2 bulk
+bytes after each round, and reached `coreinit.exit(0)`.
+
+The explicit saved host and port exercised the online protocol and
+session service. Individual service response captures, a production SRV
+alias and the physical join/rejoin timing remain in the supervised queue.
+[RC 43 qualification](rc43-qualification.md)
+
+## Cafe profile service requests
+
 The offline RC 36 replay exposed a different consumer with the same
 overall-timeout problem. The RC 38 fix in
 `horizon-server-files/src/profiles.rs` uses the Cafe connect and receive

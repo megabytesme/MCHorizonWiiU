@@ -46,6 +46,12 @@ server CPU preparation span. The later 10-section warm sample followed
 a different saved pose. Matched physical first usable terrain, heap
 peaks and whole-world loading remain to be measured.
 
+A separate exact-package Cemu run reused the approved MCP grant and
+online profile. It joined and rejoined a controlled secure online-mode
+server through the saved bookmark, rendered terrain on both displays,
+moved 28.49 blocks in the first round and recovered the full GX2 bulk
+heap after both authenticated disconnects. [Online-mode replay](online-mode.md#authenticated-rc-43-join-and-rejoin)
+
 ## Physical comparisons
 
 Run the `4` and `4o` arms on the same package with matched sections, scale,
