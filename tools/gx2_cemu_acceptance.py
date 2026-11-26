@@ -22,10 +22,12 @@ BAD_MARKERS = ("Crashlog for Cemu", "panicked at", "frame.startup_error",
                "rust allocation failed", "alloc_failed", "upload failed",
                "AX shutdown skipped", "save compression failed")
 POSITION_TAG = b"\x09\x00\x03Pos\x06\x00\x00\x00\x03"
+ROTATION_TAG = b"\x09\x00\x08Rotation\x05\x00\x00\x00\x02"
 GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
 DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
 HEALTH_TAG = b"\x05\x00\x06Health"
 GROUND_TAG = b"\x01\x00\x08OnGround"
+MIN_MOVEMENT_BLOCKS = 0.05
 MOVEMENT_BINDINGS = {
     "forward": ("17", 87),
     "backward": ("18", 83),
@@ -161,6 +163,22 @@ def position(world):
     return struct.unpack_from(">ddd", data, tag_offset(data, POSITION_TAG))
 
 
+def movement_along_input(before, after, yaw, direction):
+    delta_x = after[0] - before[0]
+    delta_z = after[2] - before[2]
+    angle = math.radians(yaw)
+    forward = (-math.sin(angle), math.cos(angle))
+    left = (forward[1], -forward[0])
+    axes = {
+        "forward": forward,
+        "backward": (-forward[0], -forward[1]),
+        "left": left,
+        "right": (-left[0], -left[1]),
+    }
+    x, z = axes[direction]
+    return delta_x * x + delta_z * z
+
+
 def prepare_fall(world):
     record, original = player_record(world)
     if DEATH_TAG in original or struct.unpack_from(">i", original, tag_offset(original, GAME_MODE_TAG))[0] != 0:
@@ -282,7 +300,10 @@ def exercise(args):
     before = position(world)
     elevated_y = prepare_fall(world) if args.respawn_fixture else None
     configure_fixture_controls(root, args.respawn_fixture, args.movement_direction)
-    player_path, _ = player_record(world)
+    player_path, initial_player = player_record(world)
+    fixture_yaw = struct.unpack_from(">f", initial_player, tag_offset(initial_player, ROTATION_TAG))[0]
+    if not math.isfinite(fixture_yaw):
+        raise ValueError("the fixture player must have a finite saved yaw")
     with (root / "acceptance-inputs.json").open("x", encoding="utf-8") as receipt:
         json.dump({"controller_sha256": gx2_cemu.sha256(portable / "controllerProfiles/controller0.xml"),
                    "fixture_level_sha256": gx2_cemu.sha256(world / "level.dat"),
@@ -291,6 +312,8 @@ def exercise(args):
                    "sessions": args.sessions, "save_at": args.save_at,
                    "gameplay_dwell": args.gameplay_dwell,
                    "movement_direction": args.movement_direction,
+                   "fixture_yaw": fixture_yaw,
+                   "minimum_movement_blocks": MIN_MOVEMENT_BLOCKS,
                    "minimum_terrain_sections": args.minimum_terrain_sections}, receipt, indent=2)
     lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id),
               args.require_distinct_captures)
@@ -379,7 +402,11 @@ def exercise(args):
             persisted = position(world)
             if index == 1:
                 if elevated_y is None:
-                    movement_ok = persisted[::2] != before[::2]
+                    displacement = movement_along_input(before, persisted, fixture_yaw, args.movement_direction)
+                    movement_ok = math.isfinite(displacement) and displacement >= MIN_MOVEMENT_BLOCKS
+                    lab.record("movement-measured", direction=args.movement_direction,
+                               initial_position=before, saved_position=persisted,
+                               blocks_along_input=displacement if math.isfinite(displacement) else None)
                 if elevated_y is not None:
                     _, data = player_record(world)
                     health = struct.unpack_from(">f", data, tag_offset(data, HEALTH_TAG))[0]
@@ -388,7 +415,8 @@ def exercise(args):
                     lab.record("respawn-confirmed", activation="emulated GamePad D-pad and A",
                                health=health, position=persisted)
                     if args.spawn_xz is not None:
-                        movement_ok = persisted[::2] != tuple(args.spawn_xz)
+                        displacement = math.dist(persisted[::2], args.spawn_xz)
+                        movement_ok = math.isfinite(displacement) and displacement >= MIN_MOVEMENT_BLOCKS
             if index > 1 and persisted != before:
                 raise ValueError("the untouched reopened session rewrote the durable position")
             if int(bulk[1]) != 234880920 or int(bulk[2]) != 234880896:
@@ -413,7 +441,7 @@ def exercise(args):
         if inventory_ok is False:
             raise RuntimeError("the virtual GamePad did not open the inventory")
         if movement_ok is False:
-            raise RuntimeError("movement left no horizontal change in the durable player record")
+            raise RuntimeError("the durable player record did not confirm the requested movement")
     except Exception as error:
         lab.record("failure", detail=str(error))
         if lab.process.poll() is None:

@@ -66,10 +66,14 @@ dwell. Use `--require-distinct-captures` for independent display evidence.
 The terrain-gated rerun reached ten visible sections per output before
 the stationary dwell. The TV and GamePad stills show terrain and HUD.
 It again saved and recovered the bulk heap, but forward input did not
-change the horizontal position recorded in the save. The saved Z is 0.3 blocks from the
-next block boundary, consistent with an obstructed forward path. A replay can now choose its movement
-direction with `--movement-direction` and retain the same stationary
-camera and settings for the measured interval.
+change the horizontal position recorded in the save. The disposable region
+contains a sand block at `(-14, 68, 97)` immediately ahead of the saved
+player at `(-13.345155872, 68, 96.699999988)` with yaw `0°`. The air at
+player height above the sand floor from Z 96 back through Z 93 gives the
+next replay a clear backward path. `--movement-direction backward` keeps
+the same stationary camera and settings for the measured interval. The
+runner now checks the displacement along the requested direction using
+the saved yaw and requires at least 0.05 blocks in the durable record.
 
 Seventeen screenshot-free HZP3 pairs had ten or eleven visible sections
 on both displays, with zero explicit terrain wait on every pair. This
