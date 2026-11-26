@@ -649,3 +649,9 @@ The corrected RC 34 package exposed an empty-path filesystem query on
 hardware during initial streaming. RC 35 skips the desktop frame check
 when the native presenter has no desktop renderer. The verified RC 33
 package was restored for benchmark work. [RC 34 failure and diagnosis](rc34-validation.md#first-hardware-entry)
+
+Corrected RC 35 includes the desktop-frame guard, cache publication and
+shared behaviour construction, prepared UI listings and resident terrain
+animation updates. Two native builds produced byte-identical packages.
+The exact interpreter replay passed save, reopen, audio and GX2 recovery.
+[RC 35 validation](rc35-validation.md)

@@ -1247,6 +1247,115 @@
           }
         }
       ]
+    },
+    {
+      "version": "0.8.0-rc.35",
+      "revision": "corrected native frame guard",
+      "source_commit": "8fd16da2052385e6b6c45ba941556ffc029fa1aa",
+      "engine_tree": "ea2616b8da95bd4c08f0ea51b5f33e36b38d40e7",
+      "toolchain": "1.1.0",
+      "rpx_sha256": "dd0ea0606917225cd9aa9cd07245c91c50e80d5c152c191cdc056c50a5b8ae3d",
+      "environment": "NSS-patched Cemu, forced interpreter, concurrent native build. Profile mode 4a.",
+      "archive_sha256": "8b26733d3b75d099ea412679034e4659524b400c9f0cc29e29d002a845c0e866",
+      "prepared_schema": 7,
+      "same_process": true,
+      "cases": [
+        {
+          "id": "existing_world_cold_prepared",
+          "stages_ms": {
+            "ui.atlas_discovery": 980.146,
+            "ui.atlas_decode": 37811.66,
+            "ui.atlas_assemble": 7105.566,
+            "ui.atlas": 46140.782,
+            "ui.load": 46157.573,
+            "core.sprite_cache_fingerprint": 3497.728,
+            "core.sprite_cache_open": 3504.727,
+            "core.block_facts": 109979.93,
+            "core": 164847.355,
+            "pack.mesh_tables": 17734.843,
+            "pack.assemble": 12329.137,
+            "handoff.game_cpu": 20688.895,
+            "handoff.renderer_textures": 28556.172,
+            "rest.mobs": 47204.979,
+            "rest.behaviours": 94714.759,
+            "rest": 94724.432,
+            "world.preload.generator": 173656.192,
+            "world.preload": 239997.492,
+            "sync.recipe_catalog": 21169.422,
+            "sync.recipe_acceptance": 2187.956,
+            "sync.network_recipes": 26713.846,
+            "server.open_world": 41435.434,
+            "server.sync_adopt": 0.052
+          },
+          "sprite_cache": {
+            "hits": 0,
+            "misses": 28641,
+            "entries": 1311
+          },
+          "gameplay_ready_ms": 552627,
+          "after_save": {
+            "rust_live": 44692247,
+            "rust_peak": 333371336,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          },
+          "reused_resolved_behaviours": true,
+          "verbose_png_lines": 2202,
+          "first_positive_terrain_serial_ms": 583179,
+          "snapshot_messages": [
+            "wrote registry-v1.bin",
+            "wrote behaviours-v3.bin"
+          ]
+        },
+        {
+          "id": "existing_world_warm_reopen",
+          "stages_ms": {
+            "ui.atlas_discovery": 819.177,
+            "ui.atlas_decode": 46676.069,
+            "ui.atlas_assemble": 8634.644,
+            "ui.atlas": 56509.674,
+            "ui.load": 56517.69,
+            "core.sprite_cache_fingerprint": 0.01,
+            "core.sprite_cache_open": 1383.785,
+            "core.block_facts": 124343.235,
+            "core": 169046.877,
+            "pack.mesh_tables": 19426.768,
+            "pack.assemble": 2320.123,
+            "rest.behaviours": 10808.131,
+            "handoff.game_cpu": 22883.482,
+            "handoff.renderer_textures": 30890.32,
+            "rest.mobs": 54106.472,
+            "rest": 79129.421,
+            "world.preload.generator": 155047.648,
+            "sync.recipe_catalog": 20508.714,
+            "sync.recipe_acceptance": 2619.771,
+            "sync.network_recipes": 28347.536,
+            "world.preload": 207485.847,
+            "server.open_world": 40686.477,
+            "server.sync_adopt": 0.077
+          },
+          "sprite_cache": {
+            "hits": 28639,
+            "misses": 2,
+            "entries": 1311
+          },
+          "gameplay_ready_ms": 539293,
+          "after_save": {
+            "rust_live": 44778195,
+            "rust_peak": 364143913,
+            "bulk_free": 234880920,
+            "bulk_largest": 234880896,
+            "ax_nonzero": true
+          },
+          "reused_resolved_behaviours": true,
+          "verbose_png_lines": 2208,
+          "snapshot_messages": [
+            "restored registry-v1.bin",
+            "restored behaviours-v3.bin"
+          ]
+        }
+      ]
     }
   ],
   "host_microbenchmarks": [

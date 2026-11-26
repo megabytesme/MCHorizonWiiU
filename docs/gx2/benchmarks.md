@@ -425,3 +425,31 @@ game. Keep the DRS option off during a fixed-scale or shared-HUD run.
 Preserve account and pairing data. Keep the accepted previous package
 available off-card. The qualification uses the existing serial monitor,
 authenticated HTTPS and still-image capture.
+
+## RC 33 physical Dynamic Resolution trial
+
+The same disposable fixture started in fixed 75% and direct HUD mode
+`4`. The test then set a 50% floor, enabled Dynamic Resolution through
+`gx2-drs-experimental.enable` and used the original 30 and 60 FPS targets.
+Authenticated MCP confirmed both target values and live retired GPU
+endpoint pairs on the 27 MHz clock. The ordinary settings and the
+experimental controller share the same configured resolution floor.
+
+At 30 FPS, tilting the camera up with some terrain on both displays
+raised the effective scale from 50% to 60%, then 70% and 80%. The two
+later transitions followed after 15.628 and 13.179 seconds. Each change
+reallocated the corresponding output targets. The 80% dimensions were
+1536Ã—863 TV and 683Ã—384 GamePad. In the fuller view with 236 sections per
+display, the scale held at 80% while mean game work outside the measured
+waits was about 34.3 ms and the sampled output GPU spans
+summed to 51.470 ms. A moderate view with 174 sections and about
+32.5 ms outside the waits also held at 80%.
+
+The 60 FPS trial held at 80% over 20.373 seconds
+with the same moderate view and both displays presenting. Mean game work
+outside measured waits was 29.967 ms, above the 16.667 ms target budget.
+The test establishes upward transitions at 30 and holds under these
+workloads. A physical downshift and an eligible 60 FPS transition still
+need a workload that isolates resolution-sensitive GPU cost. The report's
+public hardware endpoint status describes raw sampling and does not
+represent the trial's per-frame admission decision.
