@@ -70,3 +70,10 @@ change the horizontal position recorded in the save. The saved Z is 0.3 blocks f
 next block boundary, consistent with an obstructed forward path. A replay can now choose its movement
 direction with `--movement-direction` and retain the same stationary
 camera and settings for the measured interval.
+
+Seventeen screenshot-free HZP3 pairs had ten or eleven visible sections
+on both displays, with zero explicit terrain wait on every pair. This
+confirms the experimental retirement path executed during visible
+gameplay in Cemu. The movement driver maps the chosen direction to
+the virtual left stick in the disposable controller profile. A small
+Cafe input probe observed both forward and backward bindings.

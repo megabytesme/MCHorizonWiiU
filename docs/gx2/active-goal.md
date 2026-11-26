@@ -41,19 +41,25 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
 - The RC 40 package builds with the opt-in terrain retirement path and
   prepared server resource reuse. Night passed the independent Cemu
   display checks. Both saves and the reopen completed. The movement check
-  failed before terrain settled. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
+  is still open after a terrain-gated replay. [RC 40 package](rc40-validation.md) A subsequent source iteration scopes villager
   texture discovery and exposes authenticated live graphics controls.
 - The Cemu x64 reservation fix passed carry, operand and allocator probes
   in both JIT modes. Exact RC 38 opened one world, played audio and saved
   in multi-core JIT. Warm reopen still panicked, and the scratch emulator
   duplicated the GamePad capture. Use the established forced interpreter
   for sustained replay and independent pixels. [Cemu record](../../wiiu/cemu/RECOMPILER.md)
-- The next assembled tree includes fixed-scale graphics control through
-  authenticated MCP, narrower villager texture discovery, a stock Fusion
-  discovery shortcut and the opt-in solid back-face trial. The exact package
-  passed native verification and the Cemu Night smoke. [RC 41 package](rc41-validation.md)
-  The subsequent benchmark report and
-  axis-facing index range patches passed focused fixtures.
+- RC 41 adds fixed-scale graphics control through authenticated MCP,
+  narrower villager texture discovery, a stock Fusion shortcut and the
+  opt-in solid back-face trial. Its verified package passed the Night
+  smoke. The `4b` saved-world replay has a terrain gate and a verified
+  backward GamePad binding. Its fixture copy ran out of space before
+  Cemu launched. [RC 41 package](rc41-validation.md)
+- RC 42 is on the [qualification branch](https://github.com/megabytesme/MCHorizonWiiU/tree/codex/rc42-qualification).
+  Its exact source includes benchmark control and report access, axis-facing
+  terrain ranges, Village trace sequencing, the Cafe SRV adapter and a
+  scratch Cemu GamePad MCP capture. Native packaging needs more free
+  space on the desktop's system drive. The saved-world fixture itself
+  needs about 860 MiB. The runner now checks this before copying.
 - Real Codex host sessions verified read-only and all four scopes through
   pairing, independent restart and token refresh. Hosted graphics,
   benchmarks and complete restart and revocation evidence remain open.

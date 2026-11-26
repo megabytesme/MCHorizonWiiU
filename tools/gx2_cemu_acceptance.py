@@ -26,7 +26,12 @@ GAME_MODE_TAG = b"\x03\x00\x0eplayerGameType"
 DEATH_TAG = b"\x0a\x00\x11LastDeathLocation"
 HEALTH_TAG = b"\x05\x00\x06Health"
 GROUND_TAG = b"\x01\x00\x08OnGround"
-MOVEMENT_KEYS = {"forward": 87, "backward": 83, "left": 65, "right": 68}
+MOVEMENT_BINDINGS = {
+    "forward": ("17", 87),
+    "backward": ("18", 83),
+    "left": ("19", 65),
+    "right": ("20", 68),
+}
 CAFE_MENU_PHASE = r'Horizon Cafe cadence: .*\bphase=menu\b'
 MENU_PHASE = r'"phase":"menu"|' + CAFE_MENU_PHASE
 GAMEPLAY_PHASE = r'"phase":"gameplay"|Horizon Cafe cadence: .*\bphase=gameplay\b'
@@ -177,7 +182,7 @@ def prepare_fall(world):
     return elevated_y
 
 
-def configure_fixture_controls(root, respawn=False):
+def configure_fixture_controls(root, respawn=False, movement_direction="forward"):
     """Map keys to the virtual GamePad only in the disposable controller profile."""
     path = root / "portable/controllerProfiles/controller0.xml"
     tree = ET.parse(path)
@@ -188,6 +193,8 @@ def configure_fixture_controls(root, respawn=False):
     if mappings is None or root_element.findtext("controller/api") != "Keyboard":
         raise ValueError("the fixture must have a keyboard-backed GamePad")
     remap = {"1": 90, "9": 80, "17": 87}  # Z is A, P is Plus and W is left stick up.
+    mapping, key = MOVEMENT_BINDINGS[movement_direction]
+    remap[mapping] = key
     if respawn:
         remap.update({"11": 81, "4": 73})  # Q is D-pad Up and I is Y.
     keys = {str(key) for key in remap.values()}
@@ -274,7 +281,7 @@ def exercise(args):
         raise ValueError("prepare a default-instance lab with the disposable world first")
     before = position(world)
     elevated_y = prepare_fall(world) if args.respawn_fixture else None
-    configure_fixture_controls(root, args.respawn_fixture)
+    configure_fixture_controls(root, args.respawn_fixture, args.movement_direction)
     player_path, _ = player_record(world)
     with (root / "acceptance-inputs.json").open("x", encoding="utf-8") as receipt:
         json.dump({"controller_sha256": gx2_cemu.sha256(portable / "controllerProfiles/controller0.xml"),
@@ -335,7 +342,7 @@ def exercise(args):
                 lab.show("stationary-gameplay")
 
             if index == 1:
-                key = MOVEMENT_KEYS[args.movement_direction]
+                _, key = MOVEMENT_BINDINGS[args.movement_direction]
                 lab.send("key", key=key, hold=max(2, game_hold))
                 time.sleep(16 if elevated_y is not None else 4)
             lab.phase = f"session-{index}-audio"
@@ -433,7 +440,7 @@ def main():
     parser.add_argument("--audio-timeout", type=float, default=180)
     parser.add_argument("--gameplay-dwell", type=float, default=0,
                         help="seconds to keep the first gameplay view stationary")
-    parser.add_argument("--movement-direction", choices=MOVEMENT_KEYS, default="forward",
+    parser.add_argument("--movement-direction", choices=MOVEMENT_BINDINGS, default="forward",
                         help="direction to move from the saved fixture pose")
     parser.add_argument("--minimum-terrain-sections", type=int, default=0,
                         help="wait for at least this many visible sections per output before gameplay captures")

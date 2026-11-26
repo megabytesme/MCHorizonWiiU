@@ -141,7 +141,7 @@
       "independent_display_pixels": "pending"
     }
   },
-  "development_candidate": {
+  "rc40_replay": {
     "candidate": "0.8.0-rc.40",
     "engine_tree": "7d98701b0bae6958962993487ff5ef66851a5bc4",
     "rpx_sha256": "e18b98834d09ae0af8359a9213f94adf5a35df5cca8b230c23d9001e68e56aa4",
@@ -153,9 +153,11 @@
       "cemu_first_game_frame",
       "cemu_first_save_pcm_and_heap_recovery"
     ],
-    "hosted_4t_replay": "open_save_reopen_passed_movement_pending"
+    "hosted_4t_replay": "open_save_reopen_passed_movement_unverified",
+    "terrain_gated_paired_frames": 17,
+    "terrain_wait_ms_max": 0.0
   },
-  "next_source": {
+  "development_candidate": {
     "candidate": "0.8.0-rc.41",
     "engine_tree": "598a9678ea46d7f13463a7dcb8cfcf209944a7aa",
     "validation": [
@@ -166,6 +168,18 @@
     ],
     "native_build": "passed",
     "rpx_sha256": "a1195b54d75715224c7827cf762fb491094282d4ef9454a3724d167409c7694f",
-    "wuhb_sha256": "6e3d159782f6da82896dec80a067c704acea12c479276027268332b361e08980"
+    "wuhb_sha256": "6e3d159782f6da82896dec80a067c704acea12c479276027268332b361e08980",
+    "hosted_4b_replay": "pending_fixture_storage"
+  },
+  "source_qualification": {
+    "candidate": "0.8.0-rc.42",
+    "branch": "codex/rc42-qualification",
+    "commit": "9b0233659c1",
+    "engine_tree": "9d7e310c2b2ba9dbbe16bd432a810dec9c4e00ef",
+    "validation": [
+      "exact_patch_chain",
+      "focused_host_and_cemu_fixtures"
+    ],
+    "native_build": "pending_host_storage"
   }
 }

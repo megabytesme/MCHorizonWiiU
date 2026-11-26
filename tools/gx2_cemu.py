@@ -39,12 +39,55 @@ def paths(lab):
     return portable, portable / "sdcard/wiiu/apps/HorizonWiiU"
 
 
+def require_fixture_space(destination, sources):
+    parent = next(part for part in destination.absolute().parents if part.is_dir())
+    unit = 4096
+    if os.name == "nt":
+        sectors, sector_bytes, free, total = (wintypes.DWORD() for _ in range(4))
+        get_space = ctypes.WinDLL("kernel32", use_last_error=True).GetDiskFreeSpaceW
+        get_space.argtypes = [wintypes.LPCWSTR] + [ctypes.POINTER(wintypes.DWORD)] * 4
+        get_space.restype = wintypes.BOOL
+        if get_space(parent.anchor, ctypes.byref(sectors), ctypes.byref(sector_bytes),
+                     ctypes.byref(free), ctypes.byref(total)):
+            unit = sectors.value * sector_bytes.value or unit
+
+    def allocated(file):
+        size = file.stat().st_size
+        return (size + unit - 1) // unit * unit
+
+    needed = sum(sum(allocated(file) for file in path.rglob("*") if file.is_file())
+                 if path.is_dir() else allocated(path) for path in sources)
+    available = shutil.disk_usage(parent).free
+    if needed > available:
+        mib = 1024 ** 2
+        raise ValueError(f"fixture copy needs about {needed / mib:.0f} MiB, with "
+                         f"{available / mib:.0f} MiB free on {parent.anchor}")
+
+
 def prepare(args):
     portable, app = paths(args.lab)
     instance = "default" if args.default_instance else "Lab"
     game = app if args.default_instance else app / "instances/Lab"
     if args.keep_fixture_distances and (not args.game or not (args.game / "options.txt").is_file()):
         raise ValueError("preserving fixture distances requires --game with options.txt")
+    if args.lab.exists():
+        raise FileExistsError(f"fixture directory already exists: {args.lab}")
+    subpath = ".local/horizon-client/26.3"
+    resources = args.game / subpath if args.game else None
+    sources = [args.cemu, args.rpx, args.template / "settings.xml",
+               args.template / "controllerProfiles"]
+    if resources:
+        if not (resources / "horizon-resources.json").is_file():
+            raise ValueError("fixture game directory has no prepared 26.3 manifest")
+        sources.append(resources)
+        sources.extend(args.game / name for name in ("options.txt", "horizon-controller.txt", "horizon-graphics.txt")
+                       if (args.game / name).is_file())
+    if args.scratch_world:
+        if not (args.scratch_world / "level.dat").is_file():
+            raise ValueError("provide a disposable world fixture with level.dat")
+        sources.append(args.scratch_world)
+    require_fixture_space(args.lab, sources)
+
     args.lab.mkdir(parents=True)
     game.mkdir(parents=True)
     (app / "launcher").mkdir()
@@ -58,18 +101,16 @@ def prepare(args):
     settings_xml.write(settings_file, encoding="utf-8", xml_declaration=True)
     shutil.copytree(args.template / "controllerProfiles", portable / "controllerProfiles")
     inputs = [args.lab / "Cemu.exe", args.lab / "HorizonWiiU.rpx", portable / "settings.xml"]
-    if args.game:
-        subpath = ".local/horizon-client/26.3"
-        resources = args.game / subpath
-        if not (resources / "horizon-resources.json").is_file():
-            raise ValueError("fixture game directory has no prepared 26.3 manifest")
+    if resources:
         result = subprocess.run(
             ["robocopy", str(resources), str(game / subpath), "/E", "/MT:32",
              "/R:1", "/W:1", "/NJS", "/NJH", "/NP", "/NFL", "/NDL"],
-            check=False, timeout=240,
+            check=False, timeout=240, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace",
         )
         if result.returncode >= 8:
-            raise ValueError(f"resource copy failed ({result.returncode})")
+            details = "\n".join(result.stdout.splitlines()[-10:])
+            raise ValueError(f"resource copy failed ({result.returncode})\n{details}")
         inputs.append(game / subpath / "horizon-resources.json")
         if (game / subpath / "horizon-data.bin").is_file():
             inputs.append(game / subpath / "horizon-data.bin")
@@ -83,8 +124,6 @@ def prepare(args):
             opts.write_text("\n".join(lines + ["renderDistance:12", "simulationDistance:12", ""]), encoding="utf-8")
         inputs.extend(sorted(game.glob("*.txt")))
     if args.scratch_world:
-        if not (args.scratch_world / "level.dat").is_file():
-            raise ValueError("provide a disposable world fixture with level.dat")
         copy = game / "saves" / args.scratch_world.name
         shutil.copytree(args.scratch_world, copy, ignore=shutil.ignore_patterns("session.lock"))
         inputs.extend(sorted(path for path in copy.rglob("*") if path.is_file()))
@@ -210,7 +249,7 @@ def send(args, pid, key=None):
     post.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     if key is None:
         if not (0 <= args.x < 854 and 0 <= args.y < 480):
-            raise ValueError("coordinates must be within the 854×480 GamePad image")
+            raise ValueError("coordinates must be within the 854Ãƒâ€”480 GamePad image")
         window = windows[min(1, len(windows) - 1)]
         rect = wintypes.RECT()
         user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
