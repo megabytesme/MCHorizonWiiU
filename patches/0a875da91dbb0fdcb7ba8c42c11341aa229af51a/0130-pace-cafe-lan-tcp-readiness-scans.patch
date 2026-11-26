@@ -1,0 +1,165 @@
+diff --git a/crates/horizon-client/src/lan/io_pool.rs b/crates/horizon-client/src/lan/io_pool.rs
+index bf875e9..f2b9630 100644
+--- a/crates/horizon-client/src/lan/io_pool.rs
++++ b/crates/horizon-client/src/lan/io_pool.rs
+@@ -42,9 +42,42 @@ const LINGER: Duration = Duration::from_millis(50);
+ /// this interval. In-memory pipes still wake it immediately.
+ #[cfg(any(target_os = "cafe", test))]
+ const TCP_POLL: Duration = Duration::from_millis(10);
++
+ #[cfg(any(target_os = "cafe", test))]
+-fn tcp_poll_interval() -> Duration {
+-    TCP_POLL
++#[derive(Default)]
++struct TcpScan {
++    sockets: usize,
++    deadline: Option<Instant>,
++}
++
++#[cfg(any(target_os = "cafe", test))]
++impl TcpScan {
++    fn opened(&mut self, now: Instant) {
++        self.sockets += 1;
++        self.deadline.get_or_insert(now + TCP_POLL);
++    }
++
++    fn closed(&mut self) {
++        self.sockets -= 1;
++        if self.sockets == 0 {
++            self.deadline = None;
++        }
++    }
++
++    fn wait(&self, now: Instant, sweep_at: Instant) -> Duration {
++        self.deadline
++            .map_or(sweep_at, |deadline| sweep_at.min(deadline))
++            .saturating_duration_since(now)
++    }
++
++    fn due(&mut self, now: Instant) -> bool {
++        if self.deadline.is_some_and(|deadline| deadline <= now) {
++            self.deadline = Some(now + TCP_POLL);
++            true
++        } else {
++            false
++        }
++    }
+ }
+ #[cfg(test)]
+ static TEST_CONDVAR_POLLER: AtomicBool = AtomicBool::new(false);
+@@ -467,12 +500,14 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+     let mut free: Vec<usize> = Vec::new();
+     let mut touched: Vec<usize> = Vec::new();
+     let mut sweep_at = Instant::now() + SWEEP;
++    #[cfg(any(target_os = "cafe", test))]
++    let mut tcp_scan = TcpScan::default();
+     let mut release_seen = horizon_threads::release_seen();
+     loop {
+-        let wait = sweep_at.saturating_duration_since(Instant::now());
+         match &mut poll {
+             #[cfg(not(target_os = "cafe"))]
+             Poller::Socket(poll) => {
++                let wait = sweep_at.saturating_duration_since(Instant::now());
+                 if let Err(e) = poll.poll(&mut events, Some(wait))
+                     && e.kind() != ErrorKind::Interrupted
+                 {
+@@ -482,11 +517,7 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+             }
+             #[cfg(any(target_os = "cafe", test))]
+             Poller::Memory => {
+-                let wait = if conns.iter().flatten().any(|c| c.io.is_tcp_std()) {
+-                    wait.min(tcp_poll_interval())
+-                } else {
+-                    wait
+-                };
++                let wait = tcp_scan.wait(Instant::now(), sweep_at);
+                 let inbox = worker.inbox.lock().unwrap_or_else(PoisonError::into_inner);
+                 let _guard = worker
+                     .ready
+@@ -522,6 +553,10 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+             }
+             match Conn::register(adopted, poll.registry(), worker, i, now) {
+                 Ok(mut c) => {
++                    #[cfg(any(target_os = "cafe", test))]
++                    if c.io.is_tcp_std() {
++                        tcp_scan.opened(now);
++                    }
+                     c.outbox.attach(i);
+                     c.read(now);
+                     c.serve(now);
+@@ -544,7 +579,7 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+             }
+         }
+         #[cfg(any(target_os = "cafe", test))]
+-        if matches!(poll, Poller::Memory) {
++        if tcp_scan.due(now) {
+             for (i, slot) in conns.iter_mut().enumerate() {
+                 if let Some(c) = slot.as_mut().filter(|c| c.io.is_tcp_std()) {
+                     c.read(now);
+@@ -575,6 +610,10 @@ fn run(mut poll: Poller, worker: &Arc<Worker>) {
+         for i in touched.drain(..) {
+             if conns[i].as_ref().is_some_and(|c| c.done(now)) {
+                 let c = conns[i].take().expect("checked");
++                #[cfg(any(target_os = "cafe", test))]
++                if c.io.is_tcp_std() {
++                    tcp_scan.closed();
++                }
+                 c.close(poll.registry(), worker);
+                 free.push(i);
+             }
+@@ -1178,6 +1217,34 @@ mod tests {
+         assert!(client.recv().unwrap_err().is_end_of_stream());
+     }
+ 
++    #[test]
++    fn pipe_wakeups_do_not_advance_the_tcp_scan() {
++        let start = Instant::now();
++        let sweep = start + Duration::from_millis(100);
++        let mut scan = TcpScan::default();
++
++        assert_eq!(scan.wait(start, sweep), Duration::from_millis(100));
++        assert!(!scan.due(sweep));
++
++        scan.opened(start);
++        for millis in 0..10 {
++            let wake = start + Duration::from_millis(millis);
++            assert_eq!(scan.wait(wake, sweep), Duration::from_millis(10 - millis));
++            assert!(!scan.due(wake));
++        }
++        scan.opened(start + Duration::from_millis(9));
++        let first_scan = start + Duration::from_millis(10);
++        assert!(scan.due(first_scan));
++        assert!(!scan.due(first_scan));
++
++        scan.closed();
++        assert_eq!(scan.wait(first_scan, sweep), Duration::from_millis(10));
++        assert!(scan.due(first_scan + Duration::from_millis(10)));
++        scan.closed();
++        assert!(!scan.due(sweep));
++        assert_eq!(scan.wait(first_scan, sweep), Duration::from_millis(90));
++    }
++
+     /// The Cafe-style Condvar worker scans nonblocking TCP while Pipe readiness
+     /// still wakes it immediately. Split framing across writes to exercise the
+     /// same codec path as desktop mio without depending on network multicast.
+@@ -1211,9 +1278,9 @@ mod tests {
+         let mut client = client;
+         let payload = body(7, 11);
+         client.write_all(&[payload.len() as u8]).unwrap();
+-        std::thread::sleep(tcp_poll_interval() * 2);
++        std::thread::sleep(TCP_POLL * 2);
+         client.write_all(&payload[..3]).unwrap();
+-        std::thread::sleep(tcp_poll_interval() * 2);
++        std::thread::sleep(TCP_POLL * 2);
+         client.write_all(&payload[3..]).unwrap();
+         assert_eq!(tcp_served.next(), Seen::Packet(7, payload[1..].to_vec()));
+ 
+@@ -1239,7 +1306,7 @@ mod tests {
+         let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+         let served = serve_memory(server, quiet, Duration::from_secs(30));
+         let full = || {
+-            std::thread::sleep(tcp_poll_interval() * 2);
++            std::thread::sleep(TCP_POLL * 2);
+             served.pending.load(Ordering::Relaxed) > 0
+         };
+         for i in 0..=u8::MAX {

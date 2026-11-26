@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "f47bf29e8b97f68d145a57165627ae86f3d64c93",
+  "output_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -788,6 +788,18 @@
       "sha256": "05a5392e882bf7fd584d33ece2802b83976f11d72e7c9d600627b0c81ded58ff",
       "input_tree": "1a853e532f4875ea022977433902a6a042928dfe",
       "output_tree": "f47bf29e8b97f68d145a57165627ae86f3d64c93"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0130-pace-cafe-lan-tcp-readiness-scans.patch",
+      "sha256": "38b18e52764282ecb0a5aa44626900edbcb292f582d3c61368f1387393eadb0a",
+      "input_tree": "f47bf29e8b97f68d145a57165627ae86f3d64c93",
+      "output_tree": "383ca77db8f628ea092d51fe6322a0412340ed1b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0131-borrow-prepared-archive-index-keys.patch",
+      "sha256": "1d29317b7d983c56628cf545d51997600a4d2acbd70ca861c65002145c15c95f",
+      "input_tree": "383ca77db8f628ea092d51fe6322a0412340ed1b",
+      "output_tree": "edea5ac7ddcb71268c17ed92492a04df9175ad1e"
     }
   ],
   "candidate": {

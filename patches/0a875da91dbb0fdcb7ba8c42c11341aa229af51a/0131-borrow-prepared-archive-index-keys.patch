@@ -1,0 +1,149 @@
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index a87611f..8ee17ff 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -22,6 +22,7 @@
+ //! - the name pool: `/`-separated paths from the root;
+ //! - the files' bytes.
+ use std::{
++    borrow::Cow,
+     fs::{self, File},
+     hash::{DefaultHasher, Hasher},
+     io::{self, BufWriter, Read, Write},
+@@ -236,7 +237,10 @@ impl ReadAhead {
+ 
+         // Pay for an exact read until the request order shows locality.
+         let Some((previous, _)) = previous.filter(|&(start, last_end)| {
+-            offset.saturating_sub(last_end).max(start.saturating_sub(end)) <= READ_AHEAD_GAP
++            offset
++                .saturating_sub(last_end)
++                .max(start.saturating_sub(end))
++                <= READ_AHEAD_GAP
+         }) else {
+             return read_at(file, out, offset);
+         };
+@@ -548,11 +552,11 @@ fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>>
+ /// The file holding `path` (a file or folder under a prepared root) and
+ /// `path` from that root; `None` when no root above it has a usable file.
+ pub fn find(path: &Path) -> Option<(Arc<PreparedFiles>, String)> {
+-    find_with_trace(path, false)
++    find_with_trace(path, false).map(|(files, relative)| (files, relative.into_owned()))
+ }
+ 
+ #[cfg(target_os = "cafe")]
+-fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, String)> {
++fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, Cow<'_, str>)> {
+     // Cafe's Path::ancestors stalls while producing the first parent of the
+     // title resource path. Scan string prefixes here; other targets keep the
+     // original Path-based lookup below.
+@@ -570,7 +574,6 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+         }
+         let suffix = &text[separator + 1..];
+         if cafe_holds_folder(suffix) {
+-            let rel = cafe_relative(suffix);
+             if trace_lock {
+                 prepared_trace!(
+                     "Horizon prepared files: Cafe separator candidate matched index={index}"
+@@ -582,7 +585,7 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+                         "Horizon prepared files: Cafe separator candidate opened index={index}"
+                     );
+                 }
+-                return Some((files, rel));
++                return Some((files, cafe_relative(suffix)));
+             }
+         }
+         if trace_lock {
+@@ -598,7 +601,6 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+             );
+         }
+         if cafe_holds_folder(text) {
+-            let rel = cafe_relative(text);
+             if trace_lock {
+                 prepared_trace!(
+                     "Horizon prepared files: Cafe separator candidate matched index={index}"
+@@ -610,7 +612,7 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+                         "Horizon prepared files: Cafe separator candidate opened index={index}"
+                     );
+                 }
+-                return Some((files, rel));
++                return Some((files, cafe_relative(text)));
+             }
+         }
+     }
+@@ -632,10 +634,15 @@ fn cafe_holds_folder(path: &str) -> bool {
+     }
+ }
+ 
+-#[cfg(target_os = "cafe")]
+-fn cafe_relative(path: &str) -> String {
++#[cfg(any(target_os = "cafe", test))]
++fn cafe_relative(path: &str) -> Cow<'_, str> {
++    // Most paths built by the resource reader already match the archive's
++    // slash-separated names. The index can compare that slice directly.
++    if path.split('/').all(|part| !part.is_empty() && part != ".") {
++        return Cow::Borrowed(path);
++    }
+     let mut relative = String::with_capacity(path.len());
+-    for component in path.split(std::path::MAIN_SEPARATOR) {
++    for component in path.split('/') {
+         if component.is_empty() || component == "." {
+             continue;
+         }
+@@ -644,17 +651,17 @@ fn cafe_relative(path: &str) -> String {
+         }
+         relative.push_str(component);
+     }
+-    relative
++    Cow::Owned(relative)
+ }
+ 
+ #[cfg(not(target_os = "cafe"))]
+-fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, String)> {
++fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>, Cow<'_, str>)> {
+     path.ancestors().skip(1).find_map(|root| {
+         // Only a root holding one of the folders: no lookup for other paths.
+         let rel = path.strip_prefix(root).ok()?;
+         let rel = rel.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+         holds_folder(&rel).then_some(())?;
+-        Some((open_with_trace(root, trace_lock)?, rel))
++        Some((open_with_trace(root, trace_lock)?, Cow::Owned(rel)))
+     })
+ }
+ 
+@@ -662,7 +669,7 @@ fn find_with_trace(path: &Path, trace_lock: bool) -> Option<(Arc<PreparedFiles>,
+ const SOUND_REGISTRY: &str = "assets/minecraft/sounds.json";
+ 
+ fn read_prepared(path: &Path, max: u64) -> Option<io::Result<Vec<u8>>> {
+-    let (files, relative) = find(path)?;
++    let (files, relative) = find_with_trace(path, false)?;
+     if !holds_file(&relative) {
+         return None;
+     }
+@@ -960,6 +967,21 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn cafe_index_paths_borrow_normalized_names_and_keep_other_spellings() {
++        let name = "assets/minecraft/textures/block/clay.png";
++        assert!(matches!(cafe_relative(name), Cow::Borrowed(value) if value == name));
++        assert_eq!(
++            cafe_relative("/assets//minecraft/./textures/block/clay.png/"),
++            name
++        );
++        assert_eq!(
++            cafe_relative("worldgen/structure/../templates/a.nbt"),
++            "worldgen/structure/../templates/a.nbt"
++        );
++        assert_eq!(cafe_relative(".//"), "");
++    }
++
+     #[test]
+     fn cafe_cache_identity_requires_an_unambiguous_absolute_root() {
+         let root = "/vol/external01/wiiu/apps/HorizonWiiU/.local/horizon-client/26.3";
+@@ -1319,5 +1341,4 @@ mod tests {
+         assert_eq!(read(&registry).unwrap(), sounds);
+         let _ = fs::remove_dir_all(root);
+     }
+-
+ }
