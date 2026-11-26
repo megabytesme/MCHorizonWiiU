@@ -291,6 +291,8 @@ def village_window(frames, coverage, first_sequence=None):
 def village_streaming_samples(rows, lines):
     frames = {row["sequence"]: row for row in rows}
     samples = {}
+    earliest_flight_start = -float_info.max
+    latest_flight_start = float_info.max
     for line in lines:
         match = VILLAGE_TRACE.search(line)
         if not match:
@@ -303,9 +305,17 @@ def village_streaming_samples(rows, lines):
         sections = [int(tv), int(drc)]
         if sections != [row["tv_sections_drawn"], row["drc_sections_drawn"]]:
             raise ValueError(f"Village serial and HZP3 sections disagree at frame {sequence}")
+        eligible = row["tv_submissions"] == row["gamepad_submissions"] == 1 and min(sections) > 0
+        if reason != "progress" and eligible != (reason == "recovered"):
+            raise ValueError(f"Village trace reason disagrees with HZP3 coverage at frame {sequence}")
+        elapsed_ms = int(elapsed)
+        # The trace observation is inside its host row, with elapsed rounded down to ms.
+        # All matching observations must admit the same flight start on the HZP clock.
+        earliest_flight_start = max(earliest_flight_start, row["start_ms"] - elapsed_ms - 1)
+        latest_flight_start = min(latest_flight_start, row["start_ms"] + row["loop_ms"] - elapsed_ms)
         sample = {
             "sequence": sequence,
-            "elapsed_ms": int(elapsed),
+            "elapsed_ms": elapsed_ms,
             "reason": reason,
             "camera_xz": [float(x), float(z)],
             "drawn_sections": sections,
@@ -318,6 +328,8 @@ def village_streaming_samples(rows, lines):
         }
         if samples.setdefault(sequence, sample) != sample:
             raise ValueError(f"conflicting Village serial reports for frame {sequence}")
+    if earliest_flight_start > latest_flight_start + 0.001:
+        raise ValueError("Village serial timing does not match the HZP3 frame clock")
     return [samples[seq] for seq in sorted(samples)]
 
 

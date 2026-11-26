@@ -115,6 +115,22 @@ class BenchmarkReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sections disagree"):
             audit.village_profile(result, rows, serial=[trace.replace("sections=0/0", "sections=3/0")])
 
+    def test_village_serial_rejects_wrong_edge_or_incompatible_frame_clock(self):
+        rows = [village_frame(100, 5), village_frame(101, 0)]
+        first = (
+            "Cafe Village streaming seq=100 elapsed_ms=12 reason=progress camera=-960.00,87.20"
+            " sections=5/5 columns=60 client_pending=12 uploads=9 remote_pending=2"
+            " forward_resident=3 forward_lit=1"
+        )
+        loss = first.replace("seq=100 elapsed_ms=12 reason=progress", "seq=101 elapsed_ms=162 reason=lost")
+        loss = loss.replace("sections=5/5", "sections=0/0")
+        samples = audit.village_streaming_samples(rows, [first, loss])
+        self.assertEqual([sample["reason"] for sample in samples], ["progress", "lost"])
+        with self.assertRaisesRegex(ValueError, "reason disagrees"):
+            audit.village_streaming_samples(rows, [first, loss.replace("reason=lost", "reason=recovered")])
+        with self.assertRaisesRegex(ValueError, "timing does not match"):
+            audit.village_streaming_samples(rows, [first, loss.replace("elapsed_ms=162", "elapsed_ms=100")])
+
     def test_village_profile_rejects_ambiguous_or_mismatched_retained_frames(self):
         result = audit.summarize(benchmark(
             host_frames=3, paired_frames=3, terrain_paired_frames=3,
