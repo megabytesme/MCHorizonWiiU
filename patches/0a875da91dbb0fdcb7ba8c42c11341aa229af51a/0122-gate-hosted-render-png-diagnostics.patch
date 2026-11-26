@@ -1,0 +1,79 @@
+diff --git a/crates/horizon-client-platform/src/logging.rs b/crates/horizon-client-platform/src/logging.rs
+index ce06dda..55f5309 100644
+--- a/crates/horizon-client-platform/src/logging.rs
++++ b/crates/horizon-client-platform/src/logging.rs
+@@ -477,11 +477,13 @@ fn enabled_policy(level: log::Level, target: &str, quiet_cafe_serial: bool) -> b
+     }
+ }
+ 
+-fn enabled_png_trace(level: log::Level, target: &str, trace_png: bool) -> bool {
++/// Keep targeted PNG diagnostics quiet while retaining warnings and errors.
++pub fn enabled_png_trace(level: log::Level, target: &str, trace_png: bool) -> bool {
+     trace_png || level != log::Level::Info || target != "horizon.png"
+ }
+ 
+-fn trace_png_enabled() -> bool {
++/// Read the Cafe diagnostic marker when installing either client logger.
++pub fn trace_png_enabled() -> bool {
+     #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+     return Path::new("/vol/external01/wiiu/apps/HorizonWiiU/horizon-png-trace.enable").is_file();
+     #[cfg(not(all(feature = "cafe", target_arch = "powerpc")))]
+diff --git a/crates/horizon-client-render/src/logging.rs b/crates/horizon-client-render/src/logging.rs
+index a56db21..472425e 100644
+--- a/crates/horizon-client-render/src/logging.rs
++++ b/crates/horizon-client-render/src/logging.rs
+@@ -323,6 +323,8 @@ struct Logger {
+     /// dedicated server, as in vanilla.
+     main_thread: &'static str,
+     floods: Mutex<Floods>,
++    #[cfg(target_os = "cafe")]
++    trace_png: bool,
+ }
+ 
+ /// What the flood limit does with one warning or error.
+@@ -464,7 +466,17 @@ fn ours(target: &str) -> bool {
+ 
+ impl log::Log for Logger {
+     fn enabled(&self, meta: &log::Metadata) -> bool {
+-        meta.level() <= log::Level::Info
++        if meta.level() > log::Level::Info {
++            return false;
++        }
++        #[cfg(target_os = "cafe")]
++        return horizon_client_platform::logging::enabled_png_trace(
++            meta.level(),
++            meta.target(),
++            self.trace_png,
++        );
++        #[cfg(not(target_os = "cafe"))]
++        true
+     }
+ 
+     fn log(&self, record: &log::Record) {
+@@ -609,6 +621,8 @@ pub fn init(home: &Path, main_thread: &'static str) {
+             recent: Mutex::new(VecDeque::new()),
+             main_thread,
+             floods: Mutex::new(Floods::default()),
++            #[cfg(target_os = "cafe")]
++            trace_png: horizon_client_platform::logging::trace_png_enabled(),
+         }
+     });
+     if log::set_logger(logger).is_ok() {
+@@ -756,6 +770,8 @@ mod tests {
+             recent: Mutex::new(VecDeque::new()),
+             main_thread: "Render thread",
+             floods: Mutex::new(Floods::default()),
++            #[cfg(target_os = "cafe")]
++            trace_png: true,
+         };
+         for (target, level, message) in [
+             ("meridian_horizon::save", log::Level::Warn, "save failed"),
+@@ -796,6 +812,8 @@ mod tests {
+             recent: Mutex::new(VecDeque::new()),
+             main_thread: "Render thread",
+             floods: Mutex::new(Floods::default()),
++            #[cfg(target_os = "cafe")]
++            trace_png: true,
+         };
+         for target in ["horizon_client::game", "meridian_core", "wgpu_hal::vulkan"] {
+             logger.log(

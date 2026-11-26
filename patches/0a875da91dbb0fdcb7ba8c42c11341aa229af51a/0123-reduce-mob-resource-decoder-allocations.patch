@@ -1,0 +1,218 @@
+diff --git a/crates/horizon-client/src/mobs/data.rs b/crates/horizon-client/src/mobs/data.rs
+index 2cca4b9..77fdb12 100644
+--- a/crates/horizon-client/src/mobs/data.rs
++++ b/crates/horizon-client/src/mobs/data.rs
+@@ -137,6 +137,18 @@ pub enum Placement {
+     InLava,
+     NoRestrictions,
+ }
++/// Columns exported for the mob state table. The usual rows borrow their
++/// path names from the document rather than allocating a JSON tree per state.
++#[derive(serde::Deserialize)]
++struct ExportedMobData<'a> {
++    #[serde(borrow)]
++    states: Vec<(&'a str, u64, f64)>,
++    #[serde(default)]
++    placements: Value,
++    #[serde(default)]
++    animations: Value,
++}
++
+ pub struct MobData {
+     pub states: Vec<StateData>,
+     /// What the mods' block parts made of each state, by state (see [`MobData::resolve_parts`]).
+@@ -176,19 +188,10 @@ impl MobData {
+     pub fn load(root: &ResourceRoot, facts: &BlockFacts) -> Self {
+         let source = root.source();
+         let root = root.prepared();
+-        let parsed: Option<Value> = fs::read(root.join("mob-data.json"))
++        let mut data = fs::read(root.join("mob-data.json"))
+             .ok()
+-            .and_then(|b| serde_json::from_slice(&b).ok());
+-        let mut data = match parsed {
+-            Some(v)
+-                if v["states"]
+-                    .as_array()
+-                    .is_some_and(|a| a.len() == facts.states.len()) =>
+-            {
+-                Self::from_json(&v)
+-            }
+-            _ => Self::fallback(facts),
+-        };
++            .and_then(|bytes| Self::from_prepared_json(&bytes, facts.states.len()))
++            .unwrap_or_else(|| Self::fallback(facts));
+         data.biome_tags = crate::items::load_tags(
+             root,
+             "worldgen/biome",
+@@ -278,6 +281,26 @@ impl MobData {
+     pub fn biome_has(&self, tag: &str, biome: &str) -> bool {
+         self.biome_tags.get(tag).is_some_and(|s| s.contains(biome))
+     }
++    fn from_prepared_json(bytes: &[u8], state_count: usize) -> Option<Self> {
++        if let Ok(exported) = serde_json::from_slice::<ExportedMobData<'_>>(bytes) {
++            return (exported.states.len() == state_count).then(|| {
++                let states = exported
++                    .states
++                    .into_iter()
++                    .map(|(path, flags, top)| StateData {
++                        path: PathType::from_name(path),
++                        flags: flags as u16,
++                        top: top as f32,
++                    })
++                    .collect();
++                Self::from_tables(states, &exported.placements, &exported.animations)
++            });
++        }
++        // Keep the permissive reader for older files and unconventional rows.
++        let value: Value = serde_json::from_slice(bytes).ok()?;
++        (value["states"].as_array()?.len() == state_count).then(|| Self::from_json(&value))
++    }
++
+     fn from_json(v: &Value) -> Self {
+         let states = v["states"]
+             .as_array()
+@@ -289,7 +312,17 @@ impl MobData {
+                 top: s[2].as_f64().unwrap_or(0.0) as f32,
+             })
+             .collect();
+-        let placements = v["placements"]
++        Self::from_tables(states, &v["placements"], &v["animations"])
++    }
++
++    fn from_tables(states: Vec<StateData>, placements: &Value, animations: &Value) -> Self {
++        let heightmaps = placements
++            .as_object()
++            .into_iter()
++            .flatten()
++            .filter_map(|(k, p)| Some((k.clone(), p["heightmap"].as_str()?.to_owned())))
++            .collect();
++        let placements = placements
+             .as_object()
+             .into_iter()
+             .flatten()
+@@ -303,13 +336,7 @@ impl MobData {
+                 (k.clone(), placement)
+             })
+             .collect();
+-        let heightmaps = v["placements"]
+-            .as_object()
+-            .into_iter()
+-            .flatten()
+-            .filter_map(|(k, p)| Some((k.clone(), p["heightmap"].as_str()?.to_owned())))
+-            .collect();
+-        let animations = v["animations"]
++        let animations = animations
+             .as_object()
+             .into_iter()
+             .flatten()
+@@ -470,6 +497,38 @@ impl MobData {
+     }
+ }
+ 
++#[cfg(test)]
++mod export_tests {
++    use super::*;
++
++    #[test]
++    fn prepared_mob_rows_keep_legacy_defaults_and_check_state_count() {
++        let ordinary = br#"{
++            "states":[["OPEN",3,1.25]],
++            "placements":{"test:mob":{"placement":"in_water","heightmap":"MOTION_BLOCKING"}},
++            "animations":{"test:walk":{"length":1.5,"looping":true}}
++        }"#;
++        let data = MobData::from_prepared_json(ordinary, 1).unwrap();
++        assert_eq!(data.states[0].path, PathType::Open);
++        assert_eq!(data.states[0].flags, 3);
++        assert_eq!(data.states[0].top.to_bits(), 1.25_f32.to_bits());
++        assert_eq!(data.placements["test:mob"], Placement::InWater);
++        assert_eq!(data.heightmaps["test:mob"], "MOTION_BLOCKING");
++        assert_eq!(data.animations["test:walk"].length, 1.5);
++        assert!(data.animations["test:walk"].looping);
++        assert!(MobData::from_prepared_json(ordinary, 2).is_none());
++
++        let unusual = br#"{"states":[["LAVA",65539,null,"unused"],["UNKNOWN",-1]]}"#;
++        let data = MobData::from_prepared_json(unusual, 2).unwrap();
++        assert_eq!(data.states[0].path, PathType::Lava);
++        assert_eq!(data.states[0].flags, 3);
++        assert_eq!(data.states[0].top.to_bits(), 0.0_f32.to_bits());
++        assert_eq!(data.states[1].path, PathType::Blocked);
++        assert_eq!(data.states[1].flags, 0);
++        assert!(MobData::from_prepared_json(unusual, 1).is_none());
++    }
++}
++
+ #[cfg(test)]
+ #[path = "path_type_tests.rs"]
+ mod path_type_tests;
+diff --git a/crates/horizon-client/src/mobs/model.rs b/crates/horizon-client/src/mobs/model.rs
+index 0a03bfa..9e13f9f 100644
+--- a/crates/horizon-client/src/mobs/model.rs
++++ b/crates/horizon-client/src/mobs/model.rs
+@@ -145,15 +145,9 @@ impl Part {
+         }
+     }
+     pub(super) fn parse(name: &str, v: &Value) -> Self {
+-        let pose: Vec<f32> = v["pose"]
+-            .as_array()
+-            .into_iter()
+-            .flatten()
+-            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+-            .collect();
+         let mut p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+-        for (i, x) in pose.iter().enumerate().take(9) {
+-            p[i] = *x;
++        for (component, value) in p.iter_mut().zip(v["pose"].as_array().into_iter().flatten()) {
++            *component = value.as_f64().unwrap_or(0.0) as f32;
+         }
+         let polygons: Vec<Polygon> = v["polygons"]
+             .as_array()
+@@ -161,35 +155,26 @@ impl Part {
+             .flatten()
+             .enumerate()
+             .filter_map(|(index, poly)| {
+-                let verts: Vec<[f32; 5]> = poly
+-                    .as_array()?
+-                    .iter()
+-                    .map(|vx| {
+-                        let a: Vec<f32> = vx
+-                            .as_array()
+-                            .into_iter()
+-                            .flatten()
+-                            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+-                            .collect();
+-                        [a[0], a[1], a[2], a[3], a[4]]
+-                    })
+-                    .collect();
+-                (verts.len() == 4).then(|| Polygon {
++                let input = poly.as_array()?;
++                let mut verts = [[0.0; 5]; 4];
++                for (i, vertex) in input.iter().enumerate() {
++                    let values = vertex.as_array().map(Vec::as_slice).unwrap_or_default();
++                    let converted =
++                        std::array::from_fn(|j| values[j].as_f64().unwrap_or(0.0) as f32);
++                    if let Some(row) = verts.get_mut(i) {
++                        *row = converted;
++                    }
++                }
++                (input.len() == 4).then(|| Polygon {
+                     normal: v["normals"][index].as_array().map_or_else(
+                         || {
+                             // shortcut: collapsed legacy faces have no recoverable normal; re-prepare resources.
+-                            let p = verts
+-                                .iter()
+-                                .map(|v| glam::Vec3::new(v[0], v[1], v[2]))
+-                                .collect::<Vec<_>>();
+-                            (p[1] - p[0])
+-                                .cross(p[2] - p[0])
+-                                .normalize_or_zero()
+-                                .to_array()
++                            let [a, b, c, _] = verts.map(|v| glam::Vec3::new(v[0], v[1], v[2]));
++                            (b - a).cross(c - a).normalize_or_zero().to_array()
+                         },
+                         |n| std::array::from_fn(|i| n[i].as_f64().unwrap_or(0.0) as f32),
+                     ),
+-                    vertices: [verts[0], verts[1], verts[2], verts[3]],
++                    vertices: verts,
+                     cull_back: false,
+                 })
+             })

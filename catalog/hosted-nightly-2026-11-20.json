@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "21491473a4c6583dd20c79c0417c22272bf465af",
+  "output_tree": "8707977f795088d55d7ff2d5da385e757e6371b1",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -740,6 +740,24 @@
       "sha256": "bcb1158b80c7e550f8f03972773518aeb46880f41ddc6cb0e3803a2619ee5756",
       "input_tree": "ea2616b8da95bd4c08f0ea51b5f33e36b38d40e7",
       "output_tree": "21491473a4c6583dd20c79c0417c22272bf465af"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0122-gate-hosted-render-png-diagnostics.patch",
+      "sha256": "e8f1bc8252546f584ab91184abddcd9398cc1f133183941a4b7771a40f5c0df9",
+      "input_tree": "21491473a4c6583dd20c79c0417c22272bf465af",
+      "output_tree": "dd13580f663d413c06dc89a95c1bb058751b4008"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0123-reduce-mob-resource-decoder-allocations.patch",
+      "sha256": "503dff870dd18e686950dec8e6a553bf9cfe0d45251ce4eac4a44222d2abdd44",
+      "input_tree": "dd13580f663d413c06dc89a95c1bb058751b4008",
+      "output_tree": "7fb232c9d794c8ac78c7084b4ddfc31c115a363a"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0124-trace-cafe-mob-preparation-stages.patch",
+      "sha256": "be9a0183d75488aa8ff3b5e934d2dfdf08402d53ee68778a939515e4c521297d",
+      "input_tree": "7fb232c9d794c8ac78c7084b4ddfc31c115a363a",
+      "output_tree": "8707977f795088d55d7ff2d5da385e757e6371b1"
     }
   ],
   "candidate": {

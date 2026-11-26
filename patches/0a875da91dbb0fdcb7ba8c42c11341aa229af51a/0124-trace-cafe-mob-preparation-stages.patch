@@ -1,0 +1,67 @@
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index 6ac714c..87e6b1f 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -95,19 +95,21 @@ pub(super) fn load_world_rest(
+         progress.checkpoint()?;
+         let _step = startup::step("rest.mobs");
+         let catalog = &resources.motion().attributes;
+-        let mut types = if draws {
+-            match entity_models {
+-                Some(document) => MobTypes::load_with_document_and_defaults(
+-                    root,
+-                    document,
+-                    item_defaults.entries(),
+-                    catalog,
+-                )?,
+-                None => MobTypes::load_with_defaults(root, item_defaults.entries(), catalog)?,
++        let mut types = startup::time("rest.mobs.types", || {
++            if draws {
++                match entity_models {
++                    Some(document) => MobTypes::load_with_document_and_defaults(
++                        root,
++                        document,
++                        item_defaults.entries(),
++                        catalog,
++                    ),
++                    None => MobTypes::load_with_defaults(root, item_defaults.entries(), catalog),
++                }
++            } else {
++                MobTypes::load_for_server(root, catalog)
+             }
+-        } else {
+-            MobTypes::load_for_server(root, catalog)?
+-        };
++        })?;
+         // arismoko/horizon#845: the declared sets take their types' rows — the merged rows
+         // the live attribute map's catalog took in core (the template's with
+         // the declared set on top) — as their attribute map and spawn
+@@ -138,7 +140,9 @@ pub(super) fn load_world_rest(
+             .into_iter()
+             .map(|(k, v)| (k, Arc::new(v)))
+             .collect();
+-        let mut mob_data = horizon_client::mobs::MobData::load(resource_root, facts);
++        let mut mob_data = startup::time("rest.mobs.data", || {
++            horizon_client::mobs::MobData::load(resource_root, facts)
++        });
+         // arismoko/horizon#847: the mods' spawn rules (`RegisterSpawnPlacementsEvent`) take
+         // their types' placement, heightmap and predicate here, once, so a
+         // spawn check reads one table with no pass over the mods.
+@@ -156,11 +160,15 @@ pub(super) fn load_world_rest(
+             mob_types.contains_key(kind)
+         })?;
+         mob_data.cem = std::sync::RwLock::new(Arc::new(if draws {
+-            horizon_client::mobs::cem::CemModels::load(resource_root.source(), &mob_types)
++            startup::time("rest.mobs.cem", || {
++                horizon_client::mobs::cem::CemModels::load(resource_root.source(), &mob_types)
++            })
+         } else {
+             horizon_client::mobs::cem::CemModels::default()
+         }));
+-        horizon_client::mobs::trial_spawner::load_registry(root);
++        startup::time("rest.mobs.trial_registry", || {
++            horizon_client::mobs::trial_spawner::load_registry(root);
++        });
+         Ok((mob_types, mob_data))
+     };
+     let load_transformers = || -> Result<_> {
