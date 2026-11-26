@@ -1,0 +1,903 @@
+diff --git a/crates/horizon-client-render/examples/stock_model_digest.rs b/crates/horizon-client-render/examples/stock_model_digest.rs
+index b313ea2ccb6bcae47ba9625916b0cc70c2521360..a43c6eea81363f500de883afc6da6a80ad290ea9 100644
+--- a/crates/horizon-client-render/examples/stock_model_digest.rs
++++ b/crates/horizon-client-render/examples/stock_model_digest.rs
+@@ -1,19 +1,33 @@
+ //! Digest the unmodified stock block bake on a disposable prepared root.
+ //! Run `cargo run -p horizon-client-render --example stock_model_digest --
+-//! <prepared-root> <scratch-cache> <direct|preparsed>`.
+-use horizon_assets::model::Direction;
++//! <prepared-root> <scratch-cache> <direct|preparsed>
++//! [<write-wire|check-wire> <scratch-wire>]`.
++#[path = "stock_model_digest/wire.rs"]
++mod wire;
++
++use horizon_assets::{bake::ModelQuad, model::Direction};
+ use horizon_client_render::{
+     Result,
+     assets::{Assets, RenderAssets},
+     model_library::ParsedModels,
+-    models::catalog::descriptor,
++    models::catalog::{BakedFace, descriptor},
+     resource_source::{ResourceRoot, ResourceSource},
+     spans::startup,
+ };
+ use horizon_world::registry::{BlockRegistry, BlockStateId};
+ use serde_json::json;
+ use sha2::{Digest, Sha256};
+-use std::{path::PathBuf, time::Instant};
++use std::{
++    fs::File,
++    io::{self, BufReader, BufWriter, Read},
++    path::{Path, PathBuf},
++    time::Instant,
++};
++
++const WIRE_BUFFER_BYTES: usize = 8 * 1024;
++const MAX_MODEL_INPUTS: usize = 16_384;
++const MAX_MODEL_INPUT_BYTES: usize = 32 * 1024 * 1024;
++const MAX_MODEL_ENTRY_BYTES: u64 = 1 << 20;
+ 
+ struct Transcript(Sha256);
+ 
+@@ -55,6 +69,79 @@ impl Transcript {
+     fn finish(self) -> String {
+         format!("{:x}", self.0.finalize())
+     }
++
++    fn finish_bytes(self) -> [u8; 32] {
++        self.0.finalize().into()
++    }
++}
++
++fn sha_file(path: &Path) -> io::Result<sha2::digest::Output<Sha256>> {
++    let mut file = File::open(path)?;
++    let mut digest = Sha256::new();
++    let mut buffer = [0; WIRE_BUFFER_BYTES];
++    let mut bytes = 0;
++    loop {
++        let count = file.read(&mut buffer)?;
++        if count == 0 {
++            return Ok(digest.finalize());
++        }
++        bytes += count;
++        if bytes > MAX_MODEL_INPUT_BYTES {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "stock model input exceeds limit",
++            ));
++        }
++        digest.update(&buffer[..count]);
++    }
++}
++
++/// Identity for the disposable stock fixture. Transform inputs include the
++/// exact blockstate/model resources and loose state schemas, plus the registry
++/// order they bind against. Live texture bytes and sprite assignments stay
++/// outside the transformed quad wire and are checked by the render receipt.
++fn model_input_identity(
++    source: &ResourceSource,
++    registry: &BlockRegistry,
++    manifest: &[u8],
++    model_states: &[u8],
++) -> Result<[u8; 32]> {
++    let mut identity = Transcript::new("horizon stock model inputs v1");
++    identity.bytes(manifest);
++    identity.bytes(model_states);
++    identity.count(registry.len());
++    for index in 0..registry.len() {
++        let state = registry
++            .state(BlockStateId(u32::try_from(index)?))
++            .ok_or("missing registered state")?;
++        identity.text(&state.name);
++        identity.count(state.properties.len());
++        for (key, value) in &state.properties {
++            identity.text(key);
++            identity.text(value);
++        }
++        let default = registry
++            .default_state(&state.name)
++            .ok_or("missing registry default")?;
++        identity.u32(default.0);
++    }
++    let names = source.list_under("assets", &["blockstates", "models"]);
++    if names.len() > MAX_MODEL_INPUTS || names.is_empty() {
++        return Err("stock model input file count exceeds limit".into());
++    }
++    identity.count(names.len());
++    let mut bytes = 0;
++    for name in names {
++        let payload = source.read_limited(&name, MAX_MODEL_ENTRY_BYTES)?;
++        bytes += payload.len();
++        if bytes > MAX_MODEL_INPUT_BYTES {
++            return Err("stock model inputs exceed byte limit".into());
++        }
++        identity.text(&name);
++        identity.count(payload.len());
++        identity.bytes(payload);
++    }
++    Ok(identity.finish_bytes())
+ }
+ 
+ /// Expectations from the pinned blockstate documents, stone's unit cube and
+@@ -84,28 +171,9 @@ fn check_stock(registry: &BlockRegistry, render: &RenderAssets) -> Result<()> {
+                 .iter()
+                 .find(|face| face.quad.facing == direction)
+                 .expect("missing stone side");
+-            assert_eq!(face.quad.cull, Some(direction));
++            check_stone_face(&face.quad);
+             assert_eq!(face.layer, stone_layer);
+             assert!(face.opaque && !face.translucent);
+-            let (axis, u, v, plane) = match direction {
+-                Direction::Down => (1, 0, 2, 0.0),
+-                Direction::Up => (1, 0, 2, 1.0),
+-                Direction::North => (2, 0, 1, 0.0),
+-                Direction::South => (2, 0, 1, 1.0),
+-                Direction::West => (0, 2, 1, 0.0),
+-                Direction::East => (0, 2, 1, 1.0),
+-            };
+-            let mut corners = 0;
+-            for position in face.quad.positions {
+-                assert_eq!(position[axis], plane);
+-                assert!(
+-                    [position[u], position[v]]
+-                        .iter()
+-                        .all(|p| *p == 0.0 || *p == 1.0)
+-                );
+-                corners |= 1 << (position[u] as u8 + 2 * position[v] as u8);
+-            }
+-            assert_eq!(corners, 0b1111);
+         }
+     }
+     let fence = registry.resolve(&descriptor(
+@@ -132,7 +200,60 @@ fn check_stock(registry: &BlockRegistry, render: &RenderAssets) -> Result<()> {
+     Ok(())
+ }
+ 
+-fn bake_report(registry: &BlockRegistry, render: &mut RenderAssets) -> Result<serde_json::Value> {
++fn check_stone_face(quad: &ModelQuad) {
++    assert_eq!(quad.cull, Some(quad.facing));
++    assert_eq!(quad.material.sprite, "minecraft:block/stone");
++    let (axis, u, v, plane) = match quad.facing {
++        Direction::Down => (1, 0, 2, 0.0),
++        Direction::Up => (1, 0, 2, 1.0),
++        Direction::North => (2, 0, 1, 0.0),
++        Direction::South => (2, 0, 1, 1.0),
++        Direction::West => (0, 2, 1, 0.0),
++        Direction::East => (0, 2, 1, 1.0),
++    };
++    let mut corners = 0;
++    for position in quad.positions {
++        assert_eq!(position[axis], plane);
++        assert!(
++            [position[u], position[v]]
++                .iter()
++                .all(|p| *p == 0.0 || *p == 1.0)
++        );
++        corners |= 1 << (position[u] as u8 + 2 * position[v] as u8);
++    }
++    assert_eq!(corners, 0b1111);
++}
++
++fn write_wire(render: &mut RenderAssets, path: &Path, input_identity: &[u8; 32]) -> Result<()> {
++    let materials =
++        wire::MaterialNames::collect(render.model_catalog.models_mut().flat_map(|(_, model)| {
++            model
++                .faces
++                .iter()
++                .map(|face| face.quad.material.sprite.as_str())
++        }))?;
++    let file = File::create_new(path)?;
++    let models = render.model_catalog.models_mut().count();
++    let mut encoder = wire::Encoder::new(
++        BufWriter::with_capacity(WIRE_BUFFER_BYTES, file),
++        models,
++        input_identity,
++        &materials,
++    )?;
++    for (variant, model) in render.model_catalog.models_mut() {
++        encoder.model(variant, model.ambient_occlusion, model.faces.len())?;
++        for face in &model.faces {
++            encoder.face(&face.quad)?;
++        }
++    }
++    Ok(encoder.finish()?)
++}
++
++fn bake_report(
++    registry: &BlockRegistry,
++    render: &mut RenderAssets,
++    mut decoder: Option<wire::Decoder<BufReader<File>>>,
++) -> Result<serde_json::Value> {
+     check_stock(registry, render)?;
+     let mut geometry = Transcript::new("horizon stock model geometry v1");
+     let mut models = 0;
+@@ -145,7 +266,33 @@ fn bake_report(registry: &BlockRegistry, render: &mut RenderAssets) -> Result<se
+         geometry.bytes([u8::from(variant.uv_lock), u8::from(model.ambient_occlusion)]);
+         geometry.optional(model.particle, Transcript::u32);
+         geometry.count(model.faces.len());
+-        for face in &model.faces {
++        if let Some(decoder) = &mut decoder {
++            decoder.model(variant, model.ambient_occlusion, model.faces.len())?;
++        }
++        for original in &model.faces {
++            let derived;
++            let face = if let Some(decoder) = &mut decoder {
++                let quad = decoder.face()?;
++                if quad != original.quad {
++                    return Err("stock geometry quad differs from bake".into());
++                }
++                if matches!(
++                    variant.model.as_str(),
++                    "minecraft:block/stone" | "minecraft:block/stone_mirrored"
++                ) {
++                    check_stone_face(&quad);
++                }
++                derived = BakedFace::new(
++                    quad,
++                    original.layer,
++                    original.opaque,
++                    original.translucent,
++                    original.fusion,
++                );
++                &derived
++            } else {
++                original
++            };
+             let quad = &face.quad;
+             for v in quad
+                 .positions
+@@ -193,6 +340,9 @@ fn bake_report(registry: &BlockRegistry, render: &mut RenderAssets) -> Result<se
+             }
+         });
+     }
++    if let Some(decoder) = decoder {
++        decoder.finish()?;
++    }
+     let catalog = &render.model_catalog;
+     let mut selection = Transcript::new("horizon stock model selections v1");
+     let mut unbound = 0;
+@@ -264,12 +414,19 @@ fn main() -> Result<()> {
+     let prepared = PathBuf::from(args.next().ok_or("provide a private stock prepared root")?);
+     let cache = PathBuf::from(args.next().ok_or("provide a scratch cache directory")?);
+     let mode = args.next().ok_or("provide direct or preparsed")?;
+-    if args.next().is_some() || (mode != "direct" && mode != "preparsed") {
++    if mode != "direct" && mode != "preparsed" {
+         return Err("expected <prepared-root> <scratch-cache> <direct|preparsed>".into());
+     }
++    let wire = match (args.next(), args.next(), args.next()) {
++        (None, None, None) => None,
++        (Some(action), Some(path), None) if action == "write-wire" || action == "check-wire" => {
++            Some((action == "write-wire", PathBuf::from(path)))
++        }
++        _ => return Err("expected [<write-wire|check-wire> <scratch-wire>]".into()),
++    };
+     let mode = mode.to_string_lossy();
+-    let prepared_hash = Sha256::digest(std::fs::read(prepared.join("horizon-resources.json"))?);
+-    let state_hash = Sha256::digest(std::fs::read(prepared.join("model-states.json"))?);
++    let prepared_hash = sha_file(&prepared.join("horizon-resources.json"))?;
++    let state_hash = sha_file(&prepared.join("model-states.json"))?;
+     let root = ResourceRoot::new(prepared.clone(), cache, ResourceSource::directory(prepared));
+     let assets = Assets::load(root.prepared())?;
+     let start = Instant::now();
+@@ -281,8 +438,42 @@ fn main() -> Result<()> {
+     };
+     let reload_ms = start.elapsed().as_secs_f64() * 1000.0;
+     let start = Instant::now();
+-    let receipt = bake_report(assets.registry, &mut render)?;
++    let receipt = bake_report(assets.registry, &mut render, None)?;
+     let digest_ms = start.elapsed().as_secs_f64() * 1000.0;
++    let wire = if let Some((write, path)) = wire {
++        let start = Instant::now();
++        let input_identity =
++            model_input_identity(root.source(), assets.registry, &prepared_hash, &state_hash)?;
++        let identity_ms = start.elapsed().as_secs_f64() * 1000.0;
++        let write_ms = if write {
++            let start = Instant::now();
++            write_wire(&mut render, &path, &input_identity)?;
++            Some(start.elapsed().as_secs_f64() * 1000.0)
++        } else {
++            None
++        };
++        let input = BufReader::with_capacity(WIRE_BUFFER_BYTES, File::open(&path)?);
++        let model_count = render.model_catalog.models_mut().count();
++        let start = Instant::now();
++        let decoder = wire::Decoder::new(input, model_count, &input_identity)?;
++        let materials = decoder.materials().count();
++        let material_text_bytes = decoder.materials().text_bytes;
++        let restored = bake_report(assets.registry, &mut render, Some(decoder))?;
++        if restored != receipt {
++            return Err("restored stock geometry receipt differs from bake".into());
++        }
++        Some(json!({
++            "bytes": path.metadata()?.len(),
++            "material_names": materials,
++            "material_text_bytes": material_text_bytes,
++            "identity_sha256": format!("{:x}", sha2::digest::Output::<Sha256>::from(input_identity)),
++            "identity_ms": identity_ms,
++            "encode_ms": write_ms,
++            "decode_and_compare_ms": start.elapsed().as_secs_f64() * 1000.0,
++        }))
++    } else {
++        None
++    };
+     println!(
+         "{}",
+         json!({
+@@ -292,6 +483,7 @@ fn main() -> Result<()> {
+             "reload_ms": reload_ms,
+             "digest_ms": digest_ms,
+             "receipt": receipt,
++            "wire": wire,
+         })
+     );
+     Ok(())
+diff --git a/crates/horizon-client-render/examples/stock_model_digest/wire.rs b/crates/horizon-client-render/examples/stock_model_digest/wire.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3272815fc0e98a68c99f6d7f4994903c4d59a60b
+--- /dev/null
++++ b/crates/horizon-client-render/examples/stock_model_digest/wire.rs
+@@ -0,0 +1,563 @@
++//! Host fixture wire for transformed stock quads. Version 2 starts with an
++//! eight-byte magic, a 32-byte model input identity, a little-endian u32
++//! model count, and the sorted length-prefixed material names. Faces refer
++//! to this table with u16 slots. Each model record holds its key, ambient
++//! occlusion, and faces in bake order. The trailer contains the SHA-256 of
++//! every preceding byte. The table and the streamed records have fixed caps.
++use horizon_assets::{
++    bake::{ModelQuad, RenderType},
++    blockstate::Variant,
++    model::{Direction, Material},
++};
++use sha2::{Digest, Sha256};
++use std::{
++    collections::BTreeSet,
++    io::{self, Read, Write},
++};
++
++const MAGIC: [u8; 8] = *b"HZSTMDL2";
++const MAX_MODELS: usize = 16_384;
++const MAX_FACES_PER_MODEL: usize = 4_096;
++const MAX_FACES: usize = 196_608;
++const MAX_NAME_BYTES: usize = 512;
++const MAX_MATERIAL_NAMES: usize = 4096;
++const MAX_MATERIAL_BYTES: usize = 128 * 1024;
++const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
++
++fn invalid(message: &'static str) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, message)
++}
++
++struct Limits {
++    models: usize,
++    faces: usize,
++    model_faces: usize,
++}
++impl Limits {
++    fn new(models: usize) -> io::Result<Self> {
++        if !(1..=MAX_MODELS).contains(&models) {
++            return Err(invalid("stock geometry model count exceeds limit"));
++        }
++        Ok(Self {
++            models,
++            faces: 0,
++            model_faces: 0,
++        })
++    }
++
++    fn model(&mut self, faces: usize) -> io::Result<()> {
++        if self.models == 0 || self.model_faces != 0 {
++            return Err(invalid("unexpected stock geometry model"));
++        }
++        if faces > MAX_FACES_PER_MODEL || self.faces + faces > MAX_FACES {
++            return Err(invalid("stock geometry face count exceeds limit"));
++        }
++        self.models -= 1;
++        self.faces += faces;
++        self.model_faces = faces;
++        Ok(())
++    }
++
++    fn face(&mut self) -> io::Result<()> {
++        self.model_faces = self
++            .model_faces
++            .checked_sub(1)
++            .ok_or_else(|| invalid("unexpected stock geometry face"))?;
++        Ok(())
++    }
++
++    fn finish(&self) -> io::Result<()> {
++        if self.models != 0 || self.model_faces != 0 {
++            return Err(invalid("unfinished stock geometry records"));
++        }
++        Ok(())
++    }
++}
++
++struct Checksum {
++    digest: Sha256,
++    bytes: usize,
++}
++impl Checksum {
++    fn new() -> Self {
++        Self {
++            digest: Sha256::new(),
++            bytes: 0,
++        }
++    }
++
++    fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
++        self.bytes += bytes.len();
++        if self.bytes > MAX_PAYLOAD {
++            return Err(invalid("stock geometry payload exceeds limit"));
++        }
++        self.digest.update(bytes);
++        Ok(())
++    }
++
++    fn finish(self) -> [u8; 32] {
++        self.digest.finalize().into()
++    }
++}
++
++pub(super) struct MaterialNames {
++    names: Vec<String>,
++    pub(super) text_bytes: usize,
++}
++
++impl MaterialNames {
++    pub(super) fn collect<'a>(names: impl IntoIterator<Item = &'a str>) -> io::Result<Self> {
++        let mut unique = BTreeSet::new();
++        let mut text_bytes = 0;
++        for name in names {
++            if unique.contains(name) {
++                continue;
++            }
++            if !(1..=MAX_NAME_BYTES).contains(&name.len()) || unique.len() == MAX_MATERIAL_NAMES {
++                return Err(invalid("stock geometry material name limit exceeded"));
++            }
++            text_bytes = material_bytes(text_bytes, name.len())?;
++            unique.insert(name.to_owned());
++        }
++        Ok(Self {
++            names: unique.into_iter().collect(),
++            text_bytes,
++        })
++    }
++
++    pub(super) fn count(&self) -> usize {
++        self.names.len()
++    }
++
++    fn slot(&self, name: &str) -> io::Result<u16> {
++        self.names
++            .binary_search_by(|candidate| candidate.as_str().cmp(name))
++            .map(|slot| slot as u16)
++            .map_err(|_| invalid("stock geometry material missing from table"))
++    }
++
++    fn name(&self, slot: u16) -> io::Result<&str> {
++        self.names
++            .get(usize::from(slot))
++            .map(String::as_str)
++            .ok_or_else(|| invalid("stock geometry material slot out of range"))
++    }
++}
++
++fn material_bytes(used: usize, additional: usize) -> io::Result<usize> {
++    let used = used + additional;
++    if used > MAX_MATERIAL_BYTES {
++        return Err(invalid("stock geometry material text exceeds limit"));
++    }
++    Ok(used)
++}
++
++pub(super) struct Encoder<'a, W> {
++    out: W,
++    checksum: Checksum,
++    limits: Limits,
++    materials: &'a MaterialNames,
++}
++impl<'a, W: Write> Encoder<'a, W> {
++    pub(super) fn new(
++        out: W,
++        models: usize,
++        input_identity: &[u8; 32],
++        materials: &'a MaterialNames,
++    ) -> io::Result<Self> {
++        let mut encoder = Self {
++            out,
++            checksum: Checksum::new(),
++            limits: Limits::new(models)?,
++            materials,
++        };
++        encoder.put(&MAGIC)?;
++        encoder.put(input_identity)?;
++        encoder.put(&(models as u32).to_le_bytes())?;
++        encoder.put(&(materials.count() as u16).to_le_bytes())?;
++        for name in &materials.names {
++            encoder.text(name)?;
++        }
++        Ok(encoder)
++    }
++
++    pub(super) fn model(
++        &mut self,
++        variant: &Variant,
++        ambient: bool,
++        faces: usize,
++    ) -> io::Result<()> {
++        self.limits.model(faces)?;
++        if variant.rotations.iter().any(|&turns| turns > 3) {
++            return Err(invalid("invalid stock geometry rotation"));
++        }
++        self.text(&variant.model)?;
++        self.put(&variant.rotations)?;
++        self.put(&[u8::from(variant.uv_lock), u8::from(ambient)])?;
++        self.put(&(faces as u32).to_le_bytes())
++    }
++
++    pub(super) fn face(&mut self, quad: &ModelQuad) -> io::Result<()> {
++        self.limits.face()?;
++        let mut coordinates = [0; 80];
++        for (bytes, value) in coordinates.chunks_exact_mut(4).zip(
++            quad.positions
++                .into_iter()
++                .flatten()
++                .chain(quad.uv.into_iter().flatten()),
++        ) {
++            if !value.is_finite() {
++                return Err(invalid("nonfinite stock geometry coordinate"));
++            }
++            bytes.copy_from_slice(&value.to_bits().to_le_bytes());
++        }
++        self.put(&coordinates)?;
++        self.put(&self.materials.slot(&quad.material.sprite)?.to_le_bytes())?;
++        self.put(&[
++            direction_code(quad.facing),
++            quad.cull.map_or(255, direction_code),
++            quad.shade_direction_override.map_or(255, direction_code),
++            quad.light_emission,
++            quad.light[0],
++            quad.light[1],
++            quad.render_type.map_or(255, render_type_code),
++            quad.ambient_occlusion.map_or(0, |ao| 1 + u8::from(ao)),
++            u8::from(quad.shade),
++            u8::from(quad.material.force_translucent),
++            u8::from(quad.color.is_some()),
++        ])?;
++        self.put(&quad.tint_index.to_le_bytes())?;
++        if let Some(color) = quad.color {
++            self.put(&color.to_le_bytes())?;
++        }
++        Ok(())
++    }
++
++    pub(super) fn finish(mut self) -> io::Result<()> {
++        self.limits.finish()?;
++        self.out.write_all(&self.checksum.finish())?;
++        self.out.flush()
++    }
++
++    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
++        self.checksum.update(bytes)?;
++        self.out.write_all(bytes)
++    }
++
++    fn text(&mut self, text: &str) -> io::Result<()> {
++        let len = text.len();
++        if !(1..=MAX_NAME_BYTES).contains(&len) {
++            return Err(invalid("stock geometry name length exceeds limit"));
++        }
++        self.put(&(len as u16).to_le_bytes())?;
++        self.put(text.as_bytes())
++    }
++}
++
++pub(super) struct Decoder<R> {
++    input: R,
++    checksum: Checksum,
++    limits: Limits,
++    materials: MaterialNames,
++}
++impl<R: Read> Decoder<R> {
++    pub(super) fn new(
++        input: R,
++        expected_models: usize,
++        input_identity: &[u8; 32],
++    ) -> io::Result<Self> {
++        let mut decoder = Self {
++            input,
++            checksum: Checksum::new(),
++            limits: Limits::new(expected_models)?,
++            materials: MaterialNames {
++                names: Vec::new(),
++                text_bytes: 0,
++            },
++        };
++        if decoder.take::<8>()? != MAGIC {
++            return Err(invalid("invalid stock geometry wire version"));
++        }
++        if &decoder.take::<32>()? != input_identity {
++            return Err(invalid("stock geometry input identity mismatch"));
++        }
++        if u32::from_le_bytes(decoder.take()?) as usize != expected_models {
++            return Err(invalid("unexpected stock geometry model count"));
++        }
++        let count = usize::from(u16::from_le_bytes(decoder.take()?));
++        if count > MAX_MATERIAL_NAMES {
++            return Err(invalid("stock geometry material name limit exceeded"));
++        }
++        let mut names = Vec::with_capacity(count);
++        let mut text_bytes = 0;
++        for _ in 0..count {
++            let name = decoder.text()?;
++            if names.last().is_some_and(|previous| previous >= &name) {
++                return Err(invalid(
++                    "stock geometry material names must be sorted and unique",
++                ));
++            }
++            text_bytes = material_bytes(text_bytes, name.len())?;
++            names.push(name);
++        }
++        decoder.materials = MaterialNames { names, text_bytes };
++        Ok(decoder)
++    }
++
++    pub(super) fn materials(&self) -> &MaterialNames {
++        &self.materials
++    }
++
++    pub(super) fn model(
++        &mut self,
++        variant: &Variant,
++        ambient: bool,
++        faces: usize,
++    ) -> io::Result<()> {
++        let name = self.text()?;
++        let rotations = self.take::<3>()?;
++        let [lock, actual_ambient] = self.take::<2>()?;
++        let actual_faces = u32::from_le_bytes(self.take()?) as usize;
++        self.limits.model(actual_faces)?;
++        if name != variant.model
++            || rotations != variant.rotations
++            || flag(lock)? != variant.uv_lock
++            || flag(actual_ambient)? != ambient
++            || actual_faces != faces
++        {
++            return Err(invalid("stock geometry model differs from bake"));
++        }
++        Ok(())
++    }
++
++    pub(super) fn face(&mut self) -> io::Result<ModelQuad> {
++        self.limits.face()?;
++        let bytes = self.take::<80>()?;
++        let mut coordinates = [0.0; 20];
++        for (value, bytes) in coordinates.iter_mut().zip(bytes.chunks_exact(4)) {
++            *value = f32::from_bits(u32::from_le_bytes(
++                bytes.try_into().expect("four-byte word"),
++            ));
++            if !value.is_finite() {
++                return Err(invalid("nonfinite stock geometry coordinate"));
++            }
++        }
++        let [
++            ax,
++            ay,
++            az,
++            bx,
++            by,
++            bz,
++            cx,
++            cy,
++            cz,
++            dx,
++            dy,
++            dz,
++            au,
++            av,
++            bu,
++            bv,
++            cu,
++            cv,
++            du,
++            dv,
++        ] = coordinates;
++        let slot = u16::from_le_bytes(self.take()?);
++        let sprite = self.materials.name(slot)?.to_owned();
++        let [
++            facing,
++            cull,
++            shade_dir,
++            light_emission,
++            block_light,
++            sky_light,
++            render_type,
++            ao,
++            shade,
++            force_translucent,
++            color,
++        ] = self.take::<11>()?;
++        let tint_index = i32::from_le_bytes(self.take()?);
++        let color = if flag(color)? {
++            Some(i32::from_le_bytes(self.take()?))
++        } else {
++            None
++        };
++        Ok(ModelQuad {
++            positions: [[ax, ay, az], [bx, by, bz], [cx, cy, cz], [dx, dy, dz]],
++            uv: [[au, av], [bu, bv], [cu, cv], [du, dv]],
++            facing: direction(facing)?,
++            cull: optional_direction(cull)?,
++            material: Material {
++                sprite,
++                force_translucent: flag(force_translucent)?,
++            },
++            tint_index,
++            shade_direction_override: optional_direction(shade_dir)?,
++            light_emission,
++            light: [block_light, sky_light],
++            color,
++            ambient_occlusion: match ao {
++                0 => None,
++                1 => Some(false),
++                2 => Some(true),
++                _ => return Err(invalid("invalid stock geometry ambient occlusion")),
++            },
++            render_type: match render_type {
++                0 => Some(RenderType::Unsupported),
++                1 => Some(RenderType::Solid),
++                2 => Some(RenderType::Cutout),
++                3 => Some(RenderType::CutoutMipped),
++                4 => Some(RenderType::Translucent),
++                5 => Some(RenderType::Tripwire),
++                255 => None,
++                _ => return Err(invalid("invalid stock geometry render type")),
++            },
++            shade: flag(shade)?,
++        })
++    }
++
++    pub(super) fn finish(mut self) -> io::Result<()> {
++        self.limits.finish()?;
++        let mut actual = [0; 32];
++        self.input.read_exact(&mut actual)?;
++        if actual != self.checksum.finish() {
++            return Err(invalid("invalid stock geometry checksum"));
++        }
++        if self.input.read(&mut [0])? != 0 {
++            return Err(invalid("trailing bytes in stock geometry"));
++        }
++        Ok(())
++    }
++
++    fn read(&mut self, bytes: &mut [u8]) -> io::Result<()> {
++        self.input.read_exact(bytes)?;
++        self.checksum.update(bytes)
++    }
++
++    fn take<const N: usize>(&mut self) -> io::Result<[u8; N]> {
++        let mut bytes = [0; N];
++        self.read(&mut bytes)?;
++        Ok(bytes)
++    }
++
++    fn text(&mut self) -> io::Result<String> {
++        let len = usize::from(u16::from_le_bytes(self.take()?));
++        if !(1..=MAX_NAME_BYTES).contains(&len) {
++            return Err(invalid("stock geometry name length exceeds limit"));
++        }
++        let mut bytes = [0; MAX_NAME_BYTES];
++        self.read(&mut bytes[..len])?;
++        let text = std::str::from_utf8(&bytes[..len])
++            .map_err(|_| invalid("invalid stock geometry name"))?;
++        Ok(text.to_owned())
++    }
++}
++
++fn direction_code(value: Direction) -> u8 {
++    match value {
++        Direction::Down => 0,
++        Direction::Up => 1,
++        Direction::North => 2,
++        Direction::South => 3,
++        Direction::West => 4,
++        Direction::East => 5,
++    }
++}
++
++fn render_type_code(value: RenderType) -> u8 {
++    match value {
++        RenderType::Unsupported => 0,
++        RenderType::Solid => 1,
++        RenderType::Cutout => 2,
++        RenderType::CutoutMipped => 3,
++        RenderType::Translucent => 4,
++        RenderType::Tripwire => 5,
++    }
++}
++
++fn direction(value: u8) -> io::Result<Direction> {
++    match value {
++        0 => Ok(Direction::Down),
++        1 => Ok(Direction::Up),
++        2 => Ok(Direction::North),
++        3 => Ok(Direction::South),
++        4 => Ok(Direction::West),
++        5 => Ok(Direction::East),
++        _ => Err(invalid("invalid stock geometry direction")),
++    }
++}
++
++fn optional_direction(value: u8) -> io::Result<Option<Direction>> {
++    if value == 255 {
++        Ok(None)
++    } else {
++        direction(value).map(Some)
++    }
++}
++
++fn flag(value: u8) -> io::Result<bool> {
++    match value {
++        0 => Ok(false),
++        1 => Ok(true),
++        _ => Err(invalid("invalid stock geometry flag")),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn optional_metadata_and_float_bits_roundtrip_on_a_fragmented_stream() -> io::Result<()> {
++        let variant = Variant {
++            model: "fixture:block/wire".into(),
++            rotations: [0, 1, 3],
++            uv_lock: true,
++        };
++        let quad = ModelQuad {
++            positions: [[-0.0, 0.125, 1.0]; 4],
++            uv: [[0.25, -0.0]; 4],
++            facing: Direction::Up,
++            cull: Some(Direction::North),
++            material: Material {
++                sprite: "fixture:block/test".into(),
++                force_translucent: true,
++            },
++            tint_index: 17,
++            shade_direction_override: Some(Direction::Down),
++            light_emission: 3,
++            light: [5, 7],
++            color: Some(-12),
++            ambient_occlusion: Some(false),
++            render_type: Some(RenderType::CutoutMipped),
++            shade: true,
++        };
++        let mut bytes = Vec::new();
++        let identity = [0x2b; 32];
++        let materials = MaterialNames::collect(["fixture:block/test", "fixture:block/test"])?;
++        assert_eq!(materials.count(), 1);
++        let mut writer = Encoder::new(&mut bytes, 1, &identity, &materials)?;
++        writer.model(&variant, true, 1)?;
++        writer.face(&quad)?;
++        writer.finish()?;
++
++        struct Fragmented<'a>(&'a [u8]);
++        impl Read for Fragmented<'_> {
++            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
++                let len = buffer.len().min(3);
++                self.0.read(&mut buffer[..len])
++            }
++        }
++
++        let mut reader = Decoder::new(Fragmented(&bytes), 1, &identity)?;
++        reader.model(&variant, true, 1)?;
++        let decoded = reader.face()?;
++        assert_eq!(decoded, quad);
++        assert_eq!(decoded.positions[0][0].to_bits(), (-0.0f32).to_bits());
++        assert_eq!(decoded.uv[0][1].to_bits(), (-0.0f32).to_bits());
++        reader.finish()
++    }
++}

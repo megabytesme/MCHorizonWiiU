@@ -41,3 +41,33 @@ The prepared manifest SHA-256 was
 `635320e23eae6285e515b22a9d426be4d7a0a47f39a71da5a516967cace6c95d`.
 Warm unoptimized host bake took 1.219–1.327 s. Compare these outputs to a
 native Cafe bake before qualifying a persistent host-prepared model plan.
+
+## Streaming geometry experiment
+
+Apply `stream-stock-model-geometry.patch` after the digest patch in the
+same disposable checkout. The example accepts `write-wire` or `check-wire`
+after the mode.
+
+```sh
+git apply "$port/wiiu/diagnostics/stock-model-digest/stream-stock-model-geometry.patch"
+cargo run --offline --locked --no-default-features -p horizon-client-render \
+    --example stock_model_digest -- "$prepared_root" "$scratch/cache" direct \
+    write-wire "$scratch/stock-models.bin"
+cargo run --offline --locked --no-default-features -p horizon-client-render \
+    --example stock_model_digest -- "$prepared_root" "$scratch/cache" preparsed \
+    check-wire "$scratch/stock-models.bin"
+```
+
+The interned wire file was 8,169,746 bytes, down from 10,560,953 bytes in
+the inline-name prototype. Direct and preparsed runs emitted SHA-256
+`6a6eb1555e4cda6ac6b8c820a3939db3a28c538d4117d2edcd69ec3ee5397d1d`.
+The reader uses an 8 KiB input buffer, a bounded table of material names
+and one quad at a time. Stock model and blockstate bytes, manifest and
+model-state bytes, and the ordered registry provide the input identity.
+
+Sixteen malformed-file cases and three stale-input edits were rejected.
+A texture-only edit kept the transform identity and changed the live
+atlas. The unoptimized host median was 235.4 ms to encode, 870.0 ms to
+decode and check the full oracle, and 177.9 ms to compute input identity.
+The fixture still bakes a live catalog for comparison. Native loading,
+selectors, particles, sprite replay and peak heap remain to be qualified.
