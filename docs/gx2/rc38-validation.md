@@ -98,6 +98,17 @@ includes that request. Paired submissions measure host presentation
 cadence. The later physical scale sweep also retained GX2 driver flip
 timestamps. [Combined flip analysis](#physical-combined-flip-cadence)
 
+## Longer fixed 75% capture
+
+The later scale sweep retained 1,975 consecutive gameplay rows at fixed
+75% with 174 visible sections on each output. Run the stock saved-view
+summary on phase-7 HZP3 clock seconds 1478.24484–1576.8374 for the
+98.593-second interval before a 3.839-second gap. It contains 1,970 paired
+submissions, all partial, at 19.971 pairs/s. Frame-start intervals were
+50.119 ms p50, 50.932 ms p95, 54.391 ms p99 and 73.484 ms maximum.
+Including the gap and its last five frames gives 102.628 seconds at
+19.235 pairs/s. The difference records the wall-clock cost of the gap.
+
 ## Physical combined flip cadence
 
 Run `python -B tools/gx2_profile.py CAPTURE --flip-refresh-hz 59.94 --flip-terrain-sections 174`

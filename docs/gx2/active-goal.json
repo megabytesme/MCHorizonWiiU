@@ -33,7 +33,15 @@
       "physical_paired_submissions_per_second": [
         20.011,
         20.001
-      ]
+      ],
+      "physical_fixed_75_long_window": {
+        "duration_ms": 98592.526,
+        "paired_submissions": 1970,
+        "paired_submissions_per_second": 19.971,
+        "complete_submissions": 0,
+        "partial_submissions": 1970,
+        "pacing_ms": {"p50": 50.119, "p95": 50.932, "p99": 54.391, "max": 73.484}
+      }
     },
     "mcp": {
       "status": "in_progress",

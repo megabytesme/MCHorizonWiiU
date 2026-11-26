@@ -54,6 +54,23 @@ def gpu_capture():
     return profile.read(header + b"".join(rows))[1]
 
 
+def stock_view_capture(frames, clock_hz=1000):
+    rows = []
+    for sequence, (start, phase, paired, scale, sections, screenshot, partial) in enumerate(frames):
+        original = list(profile.ROW.unpack(row(
+            sequence, phase, start, capture=screenshot, presented=paired,
+        )))
+        original[6 + len(profile.STAGES) + 1] = partial
+        outputs = [0] * len(profile.V2_STAGES) + [
+            1, paired, paired, paired, paired, 0, 1335, 1335, sections, sections, 1920, 1080, 854, 480,
+        ]
+        worlds = [0] * len(profile.V3_STAGES) + [scale, scale, 1440, 809, 641, 360, 0, 0]
+        rows.append(profile.V3_ROW.pack(*original, *outputs, *worlds))
+    count = len(rows)
+    return profile.HEADER.pack(0x485A5033, 3, clock_hz, profile.V3_ROW.size,
+                               4096, count, count) + b"".join(rows)
+
+
 def uwp_event(sequence, payload=None):
     event = {"seq": sequence, "time": "2026-11-24T20:20:01Z", "port": "COM3",
              "kind": "capture_start" if payload is None else "rx"}
@@ -63,6 +80,42 @@ def uwp_event(sequence, payload=None):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_saved_view_bills_empty_terrain_readback_and_disconnected_loops_to_wall_time(self):
+        capture = stock_view_capture([
+            (1000, 5, 1, 75, 174, 0, 0),
+            (11_000, 5, 1, 50, 174, 0, 0),
+            (21_000, 5, 1, 75, 174, 0, 1),
+            (31_000, 5, 1, 75, 0, 0, 0),
+            (36_000, 5, 1, 75, 174, 1, 0),
+            (40_000, 5, 0, 75, 174, 0, 0),
+            (51_000, 4, 1, 75, 174, 0, 0),
+            (61_000, 5, 1, 75, 174, 0, 0),
+        ])
+        _, frames = profile.read(capture)
+        window = profile.summarize_stock_saved_view(frames, 0, 62)
+        self.assertTrue(window["at_least_60_seconds_retained"])
+        self.assertEqual(window["wall_ms"], 60_000)
+        self.assertEqual(window["gameplay_paired_submissions"], 6)
+        self.assertEqual(window["paired_submissions_outside_reference"], 3)
+        self.assertEqual(window["reference_complete_submissions"], 2)
+        self.assertEqual(window["reference_partial_submissions"], 1)
+        self.assertEqual(window["non_playing_loops"], 1)
+        self.assertEqual(window["reference_pairs_per_second"], .033)
+        self.assertEqual(window["reference_pair_intervals_ms"]["p99"], 40_000)
+        self.assertEqual(window["reference_dimensions"][0]["world_tv_gamepad"], [[1440, 809], [641, 360]])
+        self.assertFalse(profile.summarize_stock_saved_view(frames, 0, 61)["at_least_60_seconds_retained"])
+
+    def test_saved_view_counts_intervals_without_counting_the_clock_origin(self):
+        capture = stock_view_capture(
+            [(i * 1000, 5, 1, 75, 174, 0, 0) for i in range(3601)], clock_hz=60_000,
+        )
+        _, frames = profile.read(capture)
+        window = profile.summarize_stock_saved_view(frames, 0, 70)
+        self.assertEqual(window["reference_pairs_per_second"], 60)
+        self.assertEqual(window["reference_paired_submissions"], 3601)
+        self.assertEqual(window["reference_pair_intervals_ms"]["samples"], 3600)
+        self.assertEqual(window["reference_pair_intervals_ms"]["p99"], 16.667)
+
     def test_hzp2_counts_builds_and_display_results_independently(self):
         def v2(sequence, *, paired, partial, gamepad, flips, interval):
             legacy = list(profile.ROW.unpack(row(sequence, 5, sequence * 16, presented=paired)))

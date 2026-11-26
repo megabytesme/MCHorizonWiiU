@@ -76,6 +76,28 @@ simulation and time of day where needed, using the same viewport resolution
 on the corresponding output. Screenshot capture is its own measured
 stage. Record mode, hash, settings and screenshot pairing for every run.
 
+## Physical fixed 75% saved view
+
+Use the original 174-section archived pose with stock Full Performance,
+render distance 6, simulation distance 5 and DRS disabled. Start a separate
+HZP3 capture for each settled window and retain at least 60 seconds per
+window. The 4,096-row ring retains about 68 seconds at 60 rows per second.
+Confirm the capture boundaries before starting the next window.
+
+Run the summary on the retained in-world interval with the measured
+refresh rate. Add the matching serial recording for GPU endpoint correlation.
+
+    python tools/gx2_profile.py CAPTURE --start FIRST --end END --stock-saved-view --flip-refresh-hz 59.94 --flip-terrain-sections 174
+
+The saved-view summary counts paired submissions with one newly built Game
+frame, fixed 75% targets and 174 sections on each display. Loading, capture,
+empty terrain, a different scale and unpaired iterations still consume wall
+time. The matching interval statistics include gaps between qualifying Game
+frames. The combined driver flip summary measures refresh intervals where
+the driver supplies them. Record individual display scanout where available,
+camera and stock settings, serial TPS, images and memory recovery alongside
+the HZP3 summaries. Keep the heavy stationary and Village runs separate.
+
 ## Stationary render diagnostic
 
 RC 30 adds **Stationary render diagnostic** to the Night benchmark menu.

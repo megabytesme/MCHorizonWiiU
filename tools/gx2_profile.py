@@ -251,6 +251,66 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
     }
 
 
+def summarize_stock_saved_view(frames, start, end):
+    """Measure the 174-section fixed-75% reference across its full retained wall interval."""
+    rows = [row for row in frames if start <= row["start_ms"] / 1000 < end]
+    if len(rows) < 2 or rows[0]["start_ms"] == rows[-1]["start_ms"]:
+        raise ValueError("the saved-view window needs two distinct retained times")
+    wall_ms = rows[-1]["start_ms"] - rows[0]["start_ms"]
+    gameplay_pairs = [
+        row for row in rows
+        if row["phase"] == "playing"
+        and row["presented"] == row["tv_submissions"] == row["gamepad_submissions"] == 1
+        and row["game_frames_built"] == 1
+    ]
+    reference = [
+        row for row in gameplay_pairs
+        if not row["screenshot_ms"]
+        and row["world_requested_scale"] == row["world_effective_scale"] == 75
+        and row["tv_sections_drawn"] == row["drc_sections_drawn"] == 174
+        and min(row[key] for key in ("tv_width", "tv_height", "drc_width", "drc_height",
+                                    "tv_world_width", "tv_world_height",
+                                    "drc_world_width", "drc_world_height")) > 0
+    ]
+    # Each interval is billed to its ending frame. The first retained row
+    # supplies the clock boundary and cannot also count as an interval.
+    timed_pairs = sum(row["sequence"] != rows[0]["sequence"] for row in reference)
+    intervals = [
+        current["start_ms"] - prior["start_ms"]
+        for prior, current in zip(reference, reference[1:])
+    ]
+    partial = sum(row["partial"] for row in reference)
+    dimensions = sorted({
+        (row["tv_width"], row["tv_height"], row["drc_width"], row["drc_height"],
+         row["tv_world_width"], row["tv_world_height"],
+         row["drc_world_width"], row["drc_world_height"])
+        for row in reference
+    })
+    return {
+        "first_sequence": rows[0]["sequence"],
+        "last_sequence": rows[-1]["sequence"],
+        "wall_ms": round(wall_ms, 3),
+        "at_least_60_seconds_retained": wall_ms >= 60_000,
+        "host_loops": len(rows),
+        "non_playing_loops": sum(row["phase"] != "playing" for row in rows),
+        "gameplay_paired_submissions": len(gameplay_pairs),
+        "paired_submissions_outside_reference": len(gameplay_pairs) - len(reference),
+        "reference_paired_submissions": len(reference),
+        "reference_complete_submissions": len(reference) - partial,
+        "reference_partial_submissions": partial,
+        "reference_pairs_per_second": round(1000 * timed_pairs / wall_ms, 3),
+        "reference_pair_intervals_ms": stats(intervals),
+        "reference_dimensions": [
+            {"outputs_tv_gamepad": [list(size[0:2]), list(size[2:4])],
+             "world_tv_gamepad": [list(size[4:6]), list(size[6:8])]} for size in dimensions
+        ],
+        "reference_section_draws": stats(row["section_draws"] for row in reference),
+        "reference_indices": stats(row["indices"] for row in reference),
+        "rust_live_bytes": stats(row["rust_live_bytes"] for row in rows),
+        "rust_peak_bytes": max(row["rust_peak_bytes"] for row in rows),
+    }
+
+
 def _remember_gpu_record(records, sequence, record):
     if records.setdefault(sequence, record) != record:
         raise ValueError(f"conflicting GPU serial records at HZP sequence {sequence}")
@@ -451,6 +511,8 @@ def main():
     parser.add_argument("--start", type=float, default=0, help="start in seconds after capture activation")
     parser.add_argument("--end", type=float, default=math.inf, help="end in seconds after capture activation")
     parser.add_argument("--stall-ms", type=float, default=50, help="pacing stall threshold")
+    parser.add_argument("--stock-saved-view", action="store_true",
+                        help="measure the fixed 75%% / 174-section TV and GamePad reference")
     parser.add_argument("--flip-refresh-hz", type=float, help="bin combined driver flips against this measured refresh rate")
     parser.add_argument("--flip-terrain-sections", type=int, help="require this visible section count on both outputs")
     args = parser.parse_args()
@@ -468,6 +530,10 @@ def main():
     try:
         metadata, frames = read(args.capture.read_bytes())
         report = {**metadata, "phases": summarize(frames, args.start, args.end, args.stall_ms)}
+        if args.stock_saved_view:
+            if metadata["version"] != 3:
+                raise ValueError("the stock saved-view comparison requires HZP3")
+            report["stock_saved_view"] = summarize_stock_saved_view(frames, args.start, args.end)
         if args.flip_refresh_hz is not None:
             if metadata["version"] != 3:
                 raise ValueError("matched flip quantization requires HZP3")
