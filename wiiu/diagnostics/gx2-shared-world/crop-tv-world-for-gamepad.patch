@@ -1,0 +1,136 @@
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+index 17699c51829c7158a79b1700dcccd3d82997e670..fac42a84cf81192952c367387a79085cbfbeff85 100644
+--- a/wiiu/loading_host/world_scale.c
++++ b/wiiu/loading_host/world_scale.c
+@@ -34,7 +34,8 @@ typedef struct {
+ struct HorizonGx2WorldScale {
+    WorldTarget outputs[2];
+    WHBGfxShaderGroup shader;
+-   GX2RBuffer geometry;
++   GX2RBuffer geometry, shared_geometry;
++   uint32_t shared_width, shared_height;
+    GX2Sampler sampler;
+    uint32_t texture_slot;
+ };
+@@ -133,6 +134,7 @@ void horizon_gx2_world_scale_destroy(HorizonGx2WorldScale *scale)
+       if (output->color.surface.image) GX2RDestroySurfaceEx(&output->color.surface, color_flags);
+    }
+    if (GX2RBufferExists(&scale->geometry)) GX2RDestroyBufferEx(&scale->geometry, 0);
++   if (GX2RBufferExists(&scale->shared_geometry)) GX2RDestroyBufferEx(&scale->shared_geometry, 0);
+    WHBGfxFreeShaderGroup(&scale->shader);
+    free(scale);
+ }
+@@ -203,17 +205,18 @@ void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
+    GX2SetScissor(0, 0, width, height);
+ }
+ 
+-void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
+-                                  const uint32_t viewport[4], bool composite)
++static void restore_output(uint32_t target)
+ {
+    GX2SetContextState(target == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
+    GX2SetColorBuffer(target == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer(),
+                      GX2_RENDER_TARGET_0);
+    GX2SetDepthBuffer(target == 0 ? WHBGfxGetTVDepthBuffer() : WHBGfxGetDRCDepthBuffer());
+-   if (!composite) return;
++}
+ 
++static void composite_world(HorizonGx2WorldScale *scale, WorldTarget *output,
++                            GX2RBuffer *geometry, const uint32_t viewport[4])
++{
+    // Order the render-target writes before sampling the same image.
+-   WorldTarget *output = &scale->outputs[target];
+    GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE,
+                  output->color.surface.image, output->color.surface.imageSize);
+    const uint32_t x = viewport[0], y = viewport[1], width = viewport[2], height = viewport[3];
+@@ -223,7 +226,7 @@ void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
+    GX2SetVertexShader(scale->shader.vertexShader);
+    GX2SetPixelShader(scale->shader.pixelShader);
+    GX2SetFetchShader(&scale->shader.fetchShader);
+-   GX2RSetAttributeBuffer(&scale->geometry, 0, sizeof(CompositeVertex), 0);
++   GX2RSetAttributeBuffer(geometry, 0, sizeof(CompositeVertex), 0);
+    GX2SetPixelTexture(&output->texture, scale->texture_slot);
+    GX2SetPixelSampler(&scale->sampler, scale->texture_slot);
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+@@ -234,3 +237,60 @@ void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
+ }
++
++void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
++                                  const uint32_t viewport[4], bool composite)
++{
++   restore_output(target);
++   if (composite) composite_world(scale, &scale->outputs[target], &scale->geometry, viewport);
++}
++
++bool horizon_gx2_world_scale_prepare_shared(HorizonGx2WorldScale *scale,
++                                            const uint32_t tv[4], const uint32_t drc[4])
++{
++   if (!scale) return false;
++   scale->shared_width = scale->shared_height = 0;
++   if (!tv || !drc || !tv[2] || !tv[3] || !drc[2] || !drc[3]) return false;
++   const uint64_t numerator = (uint64_t)drc[2] * tv[3];
++   const uint64_t denominator = (uint64_t)tv[2] * drc[3];
++   if (numerator > denominator) return false;
++   const GX2Surface *source = &scale->outputs[0].color.surface;
++   const GX2Surface *recipient = &scale->outputs[1].color.surface;
++   const double crop = (double)numerator / (double)denominator;
++   if (source->width * crop < recipient->width || source->height < recipient->height)
++      return false;
++   const float left = (float)((1.0 - crop) * 0.5);
++   const float span = (float)crop;
++   const CompositeVertex triangle[] = {
++      {{-1.0f,  1.0f}, {left, 0.0f}},
++      {{-1.0f, -3.0f}, {left, 2.0f}},
++      {{ 3.0f,  1.0f}, {left + 2.0f * span, 0.0f}},
++   };
++   GX2RBuffer *geometry = &scale->shared_geometry;
++   if (!GX2RBufferExists(geometry)) {
++      *geometry = (GX2RBuffer){
++         .flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_WRITE |
++                  GX2R_RESOURCE_USAGE_GPU_READ,
++         .elemSize = sizeof(CompositeVertex), .elemCount = 3,
++      };
++      if (!GX2RCreateBuffer(geometry)) return false;
++   }
++   void *mapped = GX2RLockBufferEx(geometry, 0);
++   if (!mapped) return false;
++   memcpy(mapped, triangle, sizeof(triangle));
++   GX2RUnlockBufferEx(geometry, 0);
++   scale->shared_width = drc[2];
++   scale->shared_height = drc[3];
++   return true;
++}
++
++bool horizon_gx2_world_scale_composite_shared(HorizonGx2WorldScale *scale,
++                                              const uint32_t viewport[4])
++{
++   if (!scale || !viewport || !scale->shared_width || !scale->shared_height ||
++       scale->shared_width != viewport[2] || scale->shared_height != viewport[3])
++      return false;
++   restore_output(1);
++   composite_world(scale, &scale->outputs[0], &scale->shared_geometry, viewport);
++   return true;
++}
+diff --git a/wiiu/loading_host/world_scale.h b/wiiu/loading_host/world_scale.h
+index b4c469573a4a4778c17c10e9cc4e05b04609ec8e..ab2ede2b83db45c0555d31475b63a404355d273d 100644
+--- a/wiiu/loading_host/world_scale.h
++++ b/wiiu/loading_host/world_scale.h
+@@ -18,3 +18,16 @@ void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
+ /* Restore the WHB output. Upscale the world to the viewport on success. */
+ void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
+                                   const uint32_t viewport[4], bool composite);
++
++/* Prepare crop geometry between frames after the previous pair's final
++ * retirement. Requires the same vertical camera projection for both outputs,
++ * a TV frustum covering the GamePad, and enough source texels to avoid
++ * undersampling the configured GamePad world size. */
++bool horizon_gx2_world_scale_prepare_shared(HorizonGx2WorldScale *scale,
++                                            const uint32_t tv[4], const uint32_t drc[4]);
++
++/* The caller has completed submission of this pair's TV world pass to the
++ * scaled color target and begun the GamePad WHB output. This copies only
++ * the cropped world color. The GamePad HUD is still drawn by its caller. */
++bool horizon_gx2_world_scale_composite_shared(HorizonGx2WorldScale *scale,
++                                              const uint32_t viewport[4]);

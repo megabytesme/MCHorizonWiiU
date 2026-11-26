@@ -46,6 +46,12 @@ The host draws TV and GamePad separately and calculates a projection using each
 output's dimensions. Both still use the submitted Horizon frame's camera pose.
 Geometry and texture resources are shared across draws.
 
+A standalone compatible-view fixture shares the wider world color
+target and draws separate native HUD batches. Its independent TV
+reference matched byte-for-byte and changes on GamePad stayed within
+synthetic edges. The stock presenter still uses independent draws.
+[Shared-world fixture](../../wiiu/diagnostics/gx2-shared-world/README.md)
+
 Profile modes test alternate HUD atlas writeback, shared model uploads,
 scaled-output clear omission and early TV submission. Use separate
 dual-output comparisons at matched settings before changing defaults.
