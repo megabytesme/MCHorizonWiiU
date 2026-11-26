@@ -86,9 +86,10 @@ fix, those counters reported 16,496 live and 120,692 peak bytes.
 First entry reached the original game's world-ready frame after 83.369 s.
 The retained HZP3 session contained 82 playing records with one submission
 to each output, with TV at 1920×1080 and GamePad at 854×480. Fixed 75%
-world targets were 1440×809 and 641×360. The save recorded
-the new position, and the run returned to Night with 234,880,920 free
-GX2 bulk bytes and a largest free block of 234,880,896 bytes. Native audio
+world targets were 1440×809 and 641×360. The durable save preserved the
+initial position. Movement was unverified. The run returned to Night
+with 234,880,920 free GX2 bulk bytes and a largest free block of
+234,880,896 bytes. Native audio
 callbacks delivered nonzero PCM and the final queue read/write counts agreed.
 
 The same-process reopen restored preparation caches and then the
