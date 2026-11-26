@@ -340,3 +340,25 @@ Game and 6.905 s opening the save.
    if it again gates first entry. The root and worldgen stock collision
    registries are byte-identical in this preparation, making shared raw
    shape data a candidate with an alternate-input fallback.
+
+## Integrated-server CPU handoff experiment
+
+The exact RC 40 interpreter spent 9.033 s in `game.new_cpu_resources`
+on first entry and 8.442 s on same-process reopen. RC 41's first
+interpreter entry measured 8.018 s in that same server stage. The client
+had already prepared the same pack generation. On these runs the
+integrated server reused the parsed entity document and the silent audio
+registry but built its own baked model and Creative data.
+
+Patch 0150 stages a local-world handoff at engine tree
+`377d9d00b5de87912f6568d59c7f8b8a72b17aac`. It keeps the same prepared
+path and resource generation and consumes the bundle once. Pack
+replacement invalidates the bundle. The two sessions share immutable
+Creative exports and own separate screen, search and model state. A
+focused host fixture covered adoption, fallback and state isolation.
+
+Before integration, compile the exact Cafe source and compare
+`handoff.server_cpu_fork` and first paired terrain against the previous
+build using the same archive and cache states. Record allocator peak at
+handoff, warm reopen, pack replacement and heap recovery after save.
+The early model copies and Creative rebuild can move the peak earlier.
