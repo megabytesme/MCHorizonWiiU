@@ -58,17 +58,22 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   and reused the original Codex grant through a saved-world round. The
   configured and paired scales agreed at 100%, 75%, 50% and 75%.
   Two fresh Codex processes reused the same grant after the app restarted.
+  The same grant started and cancelled a benchmark with the normal save
+  unchanged. The local reports page blocked the next remote launch.
   [RC 42 qualification](rc42-qualification.md)
 - The next source recipe adds Night profile selection, the CPU handoff and
   an opt-in solid shader specialization, plus authenticated saved-bookmark
   joins. The standalone Cemu control and shader trial matched both full
-  outputs with fog enabled and disabled. The second native build reached
-  the launcher and exposed a Cafe-only module path in profile refresh.
+  outputs with fog enabled and disabled. The profile-refresh path now
+  passes the host fixture using the native module layout, and the exact
+  native rebuild is running.
   [RC 43 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc43-qualification/docs/gx2/rc43-qualification.md)
-- A separate source recipe implements same-client cancellation before
-  gameplay handoff. The 13 host tests cover authorization, launch IDs and
-  races against that boundary. Packaged qualification remains open.
-  [Night load cancellation](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/night-load-cancellation/docs/gx2/night-load-cancellation.md)
+- RC 44 stages same-client load cancellation and idle Night close. It also
+  drops queued mesh snapshots once a newer revision supersedes them on
+  Cafe. The deterministic host fixture reduced stale work from 157 jobs
+  to zero and kept the final revisions identical. The original Village
+  route still needs a native comparison.
+  [RC 44 qualification](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/rc44-qualification/docs/gx2/rc44-qualification.md)
 
 ## Physical queue
 

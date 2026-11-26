@@ -184,12 +184,14 @@
       "focused_host_and_cemu_fixtures",
       "native_package_hashes",
       "cemu_rc26_grant_reused_for_rc42_world_settings_save_and_night",
-      "cemu_rc42_grant_reused_after_application_restart"
+      "cemu_rc42_grant_reused_after_application_restart",
+      "cemu_authenticated_benchmark_start_and_cancel"
     ],
     "native_build": "passed",
     "rpx_sha256": "8188bbb334da899e9ecc995ebe1089c3713d8228ff110f4bb52a5d4ad02d98c1",
     "wuhb_sha256": "acf3132551b9a9b728e63afd1c7c73e19b8c16883a4f07a66b1e898d15734b3d",
-    "stock_mcp_tools": 51
+    "stock_mcp_tools": 51,
+    "remote_benchmark_relaunch": "blocked_by_local_reports_page"
   },
   "loading_experiment": {
     "branch": "codex/loading-cpu-handoff",
@@ -200,11 +202,11 @@
   },
   "next_source_qualification": {
     "branch": "codex/rc43-qualification",
-    "commit": "d74dd3d14b6",
-    "engine_tree": "d377ac3bbf63753e023fda7c30bcdd632d456d41",
+    "commit": "3364cd88a0c",
+    "engine_tree": "e05bfda937b14a024f2ee3b34ffec95496a04c99",
     "stock_mcp_tools": 54,
     "standalone_opaque_shader_paired_pixels": "matched_fog_and_no_fog",
-    "native_build": "cafe_profile_module_path_fix_pending"
+    "native_build": "retry_started_after_cafe_profile_module_path_fix"
   },
   "night_load_cancellation": {
     "branch": "codex/night-load-cancellation",
@@ -212,6 +214,14 @@
     "engine_tree": "aed79902d1582c03f91129b425591632e3cfc2dd",
     "stock_mcp_tools": 56,
     "host_adapter_tests": 13,
+    "native_build": "pending"
+  },
+  "lifecycle_and_streaming_qualification": {
+    "branch": "codex/rc44-qualification",
+    "commit": "15fae0213c8",
+    "engine_tree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
+    "stock_mcp_tools": 57,
+    "synthetic_stale_mesh_jobs": [157, 0],
     "native_build": "pending"
   }
 }

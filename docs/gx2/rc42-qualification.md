@@ -58,6 +58,13 @@ disposable installation and Codex profile. Two new Codex processes called
 Night again on that grant. Benchmark status returned idle and the title
 again exited through `coreinit.exit(0)`.
 
+The same grant started and cancelled `cafe-stationary` during loading.
+The launcher reported `cancelled`, the normal save remained byte-identical,
+and the selected installation's report list was unchanged. The app then
+opened Night's local reports page. The next remote start received the
+Home-page requirement. A fresh Cemu process can start the next run while
+the remote return-to-Home fix is qualified.
+
 The replay used distances 12/12 and the emulator's own dual-display
 capture path. A distant plant differed from the RC 41 stills with a
 different terrain section count. Matched control pixels and throughput,
