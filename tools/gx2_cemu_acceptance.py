@@ -29,6 +29,7 @@ GROUND_TAG = b"\x01\x00\x08OnGround"
 CAFE_MENU_PHASE = r'Horizon Cafe cadence: .*\bphase=menu\b'
 MENU_PHASE = r'"phase":"menu"|' + CAFE_MENU_PHASE
 GAMEPLAY_PHASE = r'"phase":"gameplay"|Horizon Cafe cadence: .*\bphase=gameplay\b'
+TERRAIN_SAMPLE = r"Horizon Cafe streaming: .*\btv_sections=(\d+) gamepad_sections=(\d+)\b"
 
 
 def timestamp():
@@ -59,7 +60,7 @@ class Lab:
     def mark(self):
         return self.log.stat().st_size if self.log.is_file() else 0
 
-    def wait(self, marker, timeout, offset=0):
+    def wait(self, marker, timeout, offset=0, qualifies=None):
         deadline = time.monotonic() + timeout
         pattern = re.compile(marker)
         pending = b""
@@ -77,7 +78,7 @@ class Lab:
                     if any(bad in line for bad in BAD_MARKERS):
                         raise RuntimeError(f"Cafe or Cemu reported a fault in {self.phase}")
                     match = pattern.search(line)
-                    if match:
+                    if match and (qualifies is None or qualifies(match)):
                         return match
             if self.process.poll() is not None:
                 raise RuntimeError(f"Cemu exited with code {self.process.returncode}")
@@ -250,6 +251,8 @@ def tap_save(lab, x, y, hold, offset, deadline):
 
 
 def exercise(args):
+    if args.minimum_terrain_sections < 0:
+        raise ValueError("minimum terrain sections must be nonnegative")
     if not 1 <= args.sessions <= 5:
         raise ValueError("choose one to five same-process sessions")
     if not all(math.isfinite(value) and value > 0 for value in
@@ -278,7 +281,8 @@ def exercise(args):
                    "fixture_player_sha256": gx2_cemu.sha256(player_path), "fall_y": elevated_y,
                    "spawn_xz": args.spawn_xz,
                    "sessions": args.sessions, "save_at": args.save_at,
-                   "gameplay_dwell": args.gameplay_dwell}, receipt, indent=2)
+                   "gameplay_dwell": args.gameplay_dwell,
+                   "minimum_terrain_sections": args.minimum_terrain_sections}, receipt, indent=2)
     lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id),
               args.require_distinct_captures)
     audio_failures = []
@@ -298,12 +302,22 @@ def exercise(args):
         for index in range(1, args.sessions + 1):
             lab.phase = f"session-{index}-startup"
             start = lab.mark()
+            started = time.monotonic()
             lab.send("tap", x=150, y=168)
             lab.wait(r"frame.loading", 25, start)
             game = lab.wait(r"first original Game frame returned elapsed_ms=(\d+) world_ready=true",
                             args.startup_timeout, start)
             lab.record("gameplay-ready", elapsed_ms=int(game[1]))
             lab.wait(r"Horizon prepared I/O: stage=block_models_sprites", 5, start)
+            if args.minimum_terrain_sections:
+                remaining = args.startup_timeout - (time.monotonic() - started)
+                terrain = lab.wait(
+                    TERRAIN_SAMPLE, remaining, lab.mark(),
+                    qualifies=lambda sample: min(map(int, sample.groups())) >= args.minimum_terrain_sections,
+                )
+                lab.record("terrain-ready", tv_sections=int(terrain[1]),
+                           gamepad_sections=int(terrain[2]),
+                           elapsed_ms=round((time.monotonic() - started) * 1000))
             lab.show(f"session-{index}-gameplay")
             if index == 1 and elevated_y is not None:
                 inventory_ok = respawn_fixture(lab, start, game_hold)
@@ -416,6 +430,8 @@ def main():
     parser.add_argument("--audio-timeout", type=float, default=180)
     parser.add_argument("--gameplay-dwell", type=float, default=0,
                         help="seconds to keep the first gameplay view stationary")
+    parser.add_argument("--minimum-terrain-sections", type=int, default=0,
+                        help="wait for at least this many visible sections per output before gameplay captures")
     parser.add_argument("--require-distinct-captures", action="store_true",
                         help="fail if the emulator returns the same PNG for both outputs")
     parser.add_argument("--respawn-fixture", action="store_true",
