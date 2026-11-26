@@ -105,6 +105,28 @@ interpreter build for independent output captures and full lifecycle tests.
 Authenticated multiplayer, repeated saves and reopens, and an in-app exit
 remain unqualified on the reservation-corrected executable.
 
+### RC 40 fresh entry and an iterator control
+
+The reservation-corrected JIT returned to Night during fresh loading of
+RC 40 RPX `e18b98834d09ae0af8359a9213f94adf5a35df5cca8b230c23d9001e68e56aa4`.
+The failure appeared after about 26 s. The log closed the
+`core.motion`, `core.light` and enclosing `core` timing spans and
+showed no panic or allocator failure. The bulk heap recovered.
+The same RPX and `4t` profile reached gameplay and saved in the established
+forced interpreter. The JIT run ended before any gameplay terrain submission,
+so it provides no measurement for the terrain-retirement trial.
+
+A pinned Cafe Rust fixture allocated synthetic BTreeMaps with 0–24 tagged
+string keys, checked immutable forward and reverse iteration and iterator
+cloning, and verified collection into a BTreeSet and consuming map
+iteration. RPX SHA-256
+`4c5ec7f9fe823fa99a0029b869e93b0f060229479ee44302850a26b9e782ef40`
+passed all 140,000 iterations in forced-interpreter, single-core JIT and
+multi-core JIT modes. The synthetic key workload did not reproduce the
+RC 38 warm panic. RC 40 reached a different observable boundary.
+Result logging around core resource completion and publication of the
+built-in registry orders can narrow the fresh-entry error.
+
 ## Disposable saved-world runs
 
 Prepare a fresh lab from a disposable portable template and an offline world
