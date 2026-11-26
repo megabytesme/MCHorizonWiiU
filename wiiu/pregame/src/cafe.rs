@@ -145,6 +145,13 @@ fn open_view() -> Option<FrameStorage> {
     Some(FrameStorage(data))
 }
 
+// Optional LocalMenu command and reply bit shared with the Night engine's
+// hosted.rs. A frozen host ignores the command and never returns this bit.
+#[cfg(horizon_wiiu_native_mcp)]
+const POLL_AGENT_QUIT: u8 = 15;
+#[cfg(horizon_wiiu_native_mcp)]
+const AGENT_QUIT_REQUESTED: u8 = 8;
+
 #[no_mangle]
 extern "C" fn horizon_pregame_run() -> i32 {
     let atlas = theme::ATLAS;
@@ -328,6 +335,12 @@ extern "C" fn horizon_pregame_run() -> i32 {
         #[cfg(horizon_wiiu_native_mcp)]
         if unsafe { horizon_night_mcp_tick(launcher.view().page == Page::Home) } {
             launcher.dispatch(Action::Play);
+        }
+        #[cfg(horizon_wiiu_native_mcp)]
+        if frame % 8 == 0 && !keyboard {
+            launcher.poll_agent_quit(|| {
+                crate::hosted::local_menu(POLL_AGENT_QUIT, 0, "").mode == AGENT_QUIT_REQUESTED
+            });
         }
         let view = launcher.view();
         if view.page == Page::Exiting {

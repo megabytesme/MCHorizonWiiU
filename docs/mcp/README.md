@@ -179,6 +179,18 @@ launch policy. It uses the selected profile and the ordinary connection
 path. Add an entry through `multiplayer_add` when the server is missing
 from the list.
 
+### Remote Night cancellation and close
+
+Ordinary remote `play` and `wiiu_multiplayer_join` responses include a
+`launch_id`. The owning client can use `wiiu_loading_status` with
+`launcher.read` and `wiiu_loading_cancel` with `launcher.manage`,
+`game.control` and Night's remote launch policy. Cancellation completes
+after the worker drain and is available before gameplay handoff.
+
+From idle Night Home, use `wiiu_close_to_menu` with `launcher.manage`.
+The ordinary Close Horizon action requires any previous launch, profile
+selection or save-to-Night transition to have finished.
+
 ### Benchmarks in the hosted development recipe
 
 With `launcher.manage` and `game.control`, call `wiiu_benchmark_start` from

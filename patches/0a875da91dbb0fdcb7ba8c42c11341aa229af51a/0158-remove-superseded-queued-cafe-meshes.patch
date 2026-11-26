@@ -1,0 +1,61 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index da9d8c8a4da877f0689f9a2ed0cf0b333eba5830..365bcef88b21fdf4706297753f95aaf428bb0eca 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -1450,15 +1450,36 @@ impl Streaming {
+     /// times four plus `bias`, which orders a column's jobs. A job without a
+     /// column (a save, meshes to free) goes ahead of every other.
+     fn submit(&mut self, at: Option<(i32, i32)>, bias: i64, job: Job) {
++        self.submit_replacing(at, bias, job, None);
++    }
++
++    fn submit_replacing(
++        &mut self,
++        at: Option<(i32, i32)>,
++        bias: i64,
++        job: Job,
++        replaced_mesh: Option<u64>,
++    ) {
+         self.order += 1;
+         let priority = at.map_or(i64::MIN, |(x, z)| self.distance(x, z) * 4 + bias);
+-        self.shared.queue.lock().unwrap().push(Queued {
++        let mut queue = self.shared.queue.lock().unwrap();
++        if cfg!(target_os = "cafe")
++            && let Some(previous) = replaced_mesh
++        {
++            // The client can no longer accept this older sequence. Keep the
++            // worker's normal stale-result handling for a job already taken.
++            queue.retain(|queued| {
++                !matches!(&queued.job, Job::Mesh(_, _, _, _, seq, _) if *seq == previous)
++            });
++        }
++        queue.push(Queued {
+             priority,
+             at,
+             bias,
+             order: self.order,
+             job,
+         });
++        drop(queue);
+         self.jobs.notify();
+     }
+     /// Rank the queued jobs again when what their priorities were computed
+@@ -2366,8 +2387,8 @@ impl Streaming {
+             for sy in selected.iter().map(|sy| sy as i32) {
+                 let first = self.meshed.insert((x, z));
+                 self.sequence += 1;
+-                self.meshing.insert((x, sy, z), self.sequence);
+-                self.submit(
++                let previous = self.meshing.insert((x, sy, z), self.sequence);
++                self.submit_replacing(
+                     Some((x, z)),
+                     if first { 2 } else { 0 },
+                     Job::Mesh(
+@@ -2378,6 +2399,7 @@ impl Streaming {
+                         self.sequence,
+                         self.mesh_settings(),
+                     ),
++                    previous,
+                 );
+             }
+             true

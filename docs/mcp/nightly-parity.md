@@ -1,8 +1,8 @@
 # Nightly MCP comparison
 
 The upstream Horizon pin `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`
-registers 194 tools. The assembled RC 43 tree
-`e05bfda937b14a024f2ee3b34ffec95496a04c99` registers 54 stock tools through
+registers 194 tools. The assembled RC 44 tree
+`8de3c2f34cd19ed155615ff81fb0641ae1fe73b4` registers 57 stock tools through
 Night's authenticated HTTPS endpoint. Night embeds the earlier Horizon
 `69fab597a6f0e8a6ce524d38d1b73e599e343034` inventory and applies its
 own availability and permission rules. The committed files hold the
@@ -36,9 +36,10 @@ local emergency control remain available with the native HTTPS endpoint.
 - Night can list instances, worlds and multiplayer bookmarks, select an
   instance, add a bookmark and start a compatible game. RC 42 adds scoped
   benchmark start, status, report access and cancellation. RC 43 adds
-  existing profile selection and joining saved bookmarks. Disposable world
-  creation, bookmark editing, general load cancellation and clean
-  application exit remain open.
+  existing profile selection and joining saved bookmarks. RC 44 adds
+  cancellation before ordinary remote gameplay handoff and the idle
+  Night close action. Disposable world creation and bookmark editing
+  remain open.
 - Exercise the live tool catalogue and outputs under all four granted
   scopes and after restart or upgrade. The exact-source comparison below
   checks registrations and embedded definitions. Runtime qualification
@@ -53,5 +54,5 @@ source directory produced by the builder.
 ~~~sh
 python -B tools/mcp_inventory.py --revision 0a875da91dbb0fdcb7ba8c42c11341aa229af51a \
   --output docs/mcp/nightly-tools.json --check
-python -B tools/mcp_parity.py --nightly-source "$assembled_rc43_source" --check
+python -B tools/mcp_parity.py --nightly-source "$assembled_rc44_source" --check
 ~~~

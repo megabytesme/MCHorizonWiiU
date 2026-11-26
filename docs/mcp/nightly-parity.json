@@ -1,6 +1,6 @@
 {
   "upstream": "0a875da91dbb0fdcb7ba8c42c11341aa229af51a",
-  "assembledTree": "e05bfda937b14a024f2ee3b34ffec95496a04c99",
+  "assembledTree": "8de3c2f34cd19ed155615ff81fb0641ae1fe73b4",
   "embeddedRevision": "69fab597a6f0e8a6ce524d38d1b73e599e343034",
   "tools": {
     "account_list": {
@@ -1338,6 +1338,16 @@
       "game.control"
     ],
     "wiiu_benchmark_status": [
+      "launcher.read"
+    ],
+    "wiiu_close_to_menu": [
+      "launcher.manage"
+    ],
+    "wiiu_loading_cancel": [
+      "launcher.manage",
+      "game.control"
+    ],
+    "wiiu_loading_status": [
       "launcher.read"
     ],
     "wiiu_multiplayer_join": [

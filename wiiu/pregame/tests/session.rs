@@ -320,6 +320,46 @@ fn launcher_waits_for_save_and_drain_before_restoring_menu() {
 }
 
 #[test]
+fn agent_close_uses_idle_home_after_the_original_save_and_release() {
+    let (mut queued, _) = launcher();
+    queued.dispatch(Action::Play);
+    queued.poll_agent_quit(|| panic!("a pending Play has the foreground"));
+    assert_eq!(queued.view().page, Page::Loading);
+
+    let (mut app, probe) = launcher();
+    app.focus(false);
+    app.poll_agent_quit(|| panic!("background Night cannot dispatch"));
+    assert_eq!(app.view().page, Page::Home);
+    app.focus(true);
+    make_live(&mut app, &probe);
+    app.poll_agent_quit(|| panic!("a live game owns the session"));
+
+    app.dispatch(Action::SaveAndQuit);
+    app.poll_agent_quit(|| panic!("a save must finish before Night closes"));
+    assert_eq!(app.view().session, Some(SessionStatus::Saving));
+    probe.save.set(SavePoll::Complete);
+    app.advance();
+    app.poll_agent_quit(|| panic!("the game must drain and release before Night closes"));
+    probe.drained.set(true);
+    app.advance();
+    assert_eq!(app.view().page, Page::Home);
+    assert_eq!(app.view().session, None);
+    app.poll_agent_quit(|| false);
+    assert_eq!(app.view().page, Page::Home);
+    app.poll_agent_quit(|| true);
+    assert_eq!(app.view().page, Page::Exiting);
+    app.close().unwrap();
+    let events = probe.events.borrow();
+    assert!(events.ends_with(&[
+        Event::SaveCompleted,
+        Event::StopRequested,
+        Event::Drained,
+        Event::Dropped,
+    ]));
+    assert!(!events.iter().any(|event| matches!(event, Event::OsExit(_))));
+}
+
+#[test]
 fn game_requested_quit_shares_save_barrier_and_can_retry_failure() {
     let (mut app, probe) = launcher();
     make_live(&mut app, &probe);

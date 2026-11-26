@@ -1,0 +1,813 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 34df5bb07c9746ac2bd29ec58b6dab35f4466431..945e6e86dd2727f9f22bb528eb8e4f2f47a5a70f 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -218,10 +218,22 @@ impl<'resources> CafeLoadingSession<'resources> {
+     /// The initial splash can be cancelled before the game title is usable.
+     #[cfg(target_os = "cafe")]
+     pub fn hosted_can_cancel(&self) -> bool {
+-        self.loading.loaded.is_none() && self.loading.options.is_some()
++        self.loading.loaded.is_none() && self.hosted_owns_loading()
+             && self.loading.menu.pending.is_none()
+     }
+ 
++    /// The session still owns its resource workers ahead of the game handoff.
++    #[cfg(target_os = "cafe")]
++    pub fn hosted_owns_loading(&self) -> bool {
++        self.loading.options.is_some()
++    }
++
++    /// A game transfer is possible, as opposed to an idle original title menu.
++    #[cfg(target_os = "cafe")]
++    pub fn hosted_has_pending_game(&self) -> bool {
++        self.pending_game_kind().is_ok_and(|kind| kind.is_some())
++    }
++
+     /// Join the top-level resource worker before draining its final message.
+     /// The optional world-resource tail can still be in that queued message.
+     #[cfg(target_os = "cafe")]
+@@ -374,10 +386,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+         self.start_pending_game()
+     }
+ 
+-    /// Transfer a queued world or server into Game once resources are ready.
+-    /// In an opted-in Cemu control session, transfer the title as well so
+-    /// Horizon's existing Game control and UI paths own it.
+-    pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession<'resources>>> {
++    fn pending_game_kind(&self) -> Result<Option<CafeGameEntryKind>> {
+         let entry_kind = match self.loading.menu.pending.as_ref() {
+             Some(PendingWorldEntry::Local { .. }) => CafeGameEntryKind::LocalWorld,
+             Some(PendingWorldEntry::Server { .. }) => CafeGameEntryKind::RemoteServer,
+@@ -398,6 +407,16 @@ impl<'resources> CafeLoadingSession<'resources> {
+             }
+             None => return Ok(None),
+         };
++        Ok(Some(entry_kind))
++    }
++
++    /// Transfer a queued world or server into Game once resources are ready.
++    /// In an opted-in Cemu control session, transfer the title as well so
++    /// Horizon's existing Game control and UI paths own it.
++    pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession<'resources>>> {
++        let Some(entry_kind) = self.pending_game_kind()? else {
++            return Ok(None);
++        };
+         if self.status() != CafeLoadingStatus::ReadyForHandoff {
+             return Err(match entry_kind {
+                 CafeGameEntryKind::RemoteServer => {
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 0c48536f73fbe036ffc29ea7bb71858957de3bb4..e936f075f7f378b058bd60d100790a797ed7abdf 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -1,6 +1,6 @@
+ //! Game side of the launcher-owned Cafe session.
+ use std::path::Path;
+-use std::sync::{Mutex, OnceLock};
++use std::sync::{Arc, Mutex, OnceLock};
+ 
+ use super::{CafeLoadingStatus, CafeRunOutcome, Gx2LoadingPresenter, LoadingHost, CAFE_APP_ROOT};
+ 
+@@ -169,25 +169,34 @@ pub unsafe extern "C" fn horizon_night_local(
+ /// released the Night HUD and lends the same ProcUI pump and WHB context.
+ #[no_mangle]
+ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+-    let launch = match mcp::take_launch() {
+-        Ok(Some(launch)) => launch,
++    let (launch, startup) = match mcp::take_launch() {
++        Ok(Some(remote)) => (remote.launch, remote.startup),
+         Ok(None) => match local_service()
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+             .launch()
+         {
+-            Ok(launch) => launch,
++            Ok(launch) => (launch, None),
+             Err(code) => return i32::from(code),
+         },
+         Err(mcp::LaunchError::Cancelled) => return RETURNED,
+         Err(mcp::LaunchError::Failed) => return FAILED,
+     };
++    if let Some(startup) = &startup {
++        if startup.poll_cancel() {
++            startup.finish(true);
++            return RETURNED;
++        }
++    }
+     let benchmarking = launch.benchmark.is_some();
+     if let Some(run) = &launch.benchmark {
+         mcp::benchmark_loading(run.scenario, &run.instance);
+     }
+     let _registration = (!benchmarking).then(mcp::prepare_game);
+     if std::env::set_current_dir(&launch.game).is_err() {
++        if let Some(startup) = &startup {
++            startup.finish(false);
++        }
+         if benchmarking {
+             mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
+         }
+@@ -195,7 +204,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     }
+     horizon_client::spans::startup::enable_log_sink();
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+-    let result = run(launch);
++    let result = run(launch, startup.clone());
+     if benchmarking && result != RETURNED {
+         mcp::benchmark_finished(BenchmarkOutcome::Failed, None);
+     }
+@@ -207,10 +216,13 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     // The foreground thread still owns the recorder. Save the last played
+     // session before Night's presentation cadence can fill the ring again.
+     unsafe { horizon_gx2_profile_checkpoint_session() };
++    if let Some(startup) = &startup {
++        startup.finish(matches!(result, RETURNED | SAVED));
++    }
+     result
+ }
+ 
+-fn run(launch: night_menu::Launch) -> i32 {
++fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
+     let mut presenter = match unsafe { Gx2LoadingPresenter::new_embedded(16_384) } {
+         Ok(presenter) => presenter,
+         Err(error) => {
+@@ -221,6 +233,7 @@ fn run(launch: night_menu::Launch) -> i32 {
+     let mut host = LoadingHost::new(&mut presenter);
+     host.hosted = true;
+     host.hosted_benchmark = launch.benchmark.is_some();
++    host.hosted_startup = startup;
+     host.hosted_swap_ab = launch.swap_ab;
+     host.pad_blocked_until_neutral = true;
+     unsafe { super::OSReport(c"Horizon Wii U startup: hosted game entry\n".as_ptr()) };
+@@ -241,6 +254,13 @@ fn run(launch: night_menu::Launch) -> i32 {
+     if let Some(benchmark) = &launch.benchmark {
+         options.extend(["--benchmark".into(), benchmark.scenario.into()]);
+     }
++    if host
++        .hosted_startup
++        .as_ref()
++        .is_some_and(|startup| startup.poll_cancel())
++    {
++        return RETURNED;
++    }
+     let outcome = horizon_client::entry::run_hosted_cafe(
+         &mut host,
+         options,
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 8a1249a5d3f1adeb475669cefb2836b69ea8728c..67bcc147cc6f47d3c714a211628067bea14cb8d8 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -21,6 +21,7 @@ use horizon_wiiu_platform::{
+ use std::cell::Cell;
+ use std::ffi::CString;
+ use std::net::{TcpStream, ToSocketAddrs};
++use std::sync::Arc;
+ use std::time::{Duration, Instant};
+ 
+ unsafe extern "C" {
+@@ -448,6 +449,7 @@ struct LoadingHost<'a> {
+     hosted_saved: bool,
+     hosted_exit_save_failed: bool,
+     hosted_benchmark: bool,
++    hosted_startup: Option<Arc<hosted::mcp::Startup>>,
+     hosted_benchmark_outcome: hosted::BenchmarkOutcome,
+     hosted_benchmark_report: Option<std::path::PathBuf>,
+ }
+@@ -486,6 +488,7 @@ impl<'a> LoadingHost<'a> {
+             hosted_saved: false,
+             hosted_exit_save_failed: false,
+             hosted_benchmark: false,
++            hosted_startup: None,
+             hosted_benchmark_outcome: hosted::BenchmarkOutcome::Cancelled,
+             hosted_benchmark_report: None,
+         }
+@@ -1027,6 +1030,13 @@ impl CafeLoadingHost for LoadingHost<'_> {
+                     host_loop_iteration
+                 );
+             }
++            if game_session.is_none()
++                && session.hosted_owns_loading()
++                && self.hosted_startup.as_ref().is_some_and(|startup| startup.poll_cancel())
++            {
++                startup_report!("hosted loading cancelled by Agent Control");
++                break;
++            }
+             let alive = session.poll(self);
+             if trace_this_iteration {
+                 log::info!(
+@@ -1513,6 +1523,12 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             match loading_status {
+                 CafeLoadingStatus::Loading => {}
+                 CafeLoadingStatus::ReadyForHandoff if game_session.is_none() => {
++                    if self.hosted_startup.as_ref().is_some_and(|startup| {
++                        session.hosted_has_pending_game() && !startup.begin_handoff()
++                    }) {
++                        startup_report!("hosted loading cancelled before game handoff");
++                        break;
++                    }
+                     if !game_handoff_started {
+                         game_handoff_started = true;
+                         startup_report!("Cafe Game handoff begin");
+diff --git a/wiiu/loading_app/src/night_mcp.rs b/wiiu/loading_app/src/night_mcp.rs
+index d2965803343aeb543ca817b5a1b08bcf76fdae63..6aa611e7dcd4c208daff2ec0e3894e24d54a2350 100644
+--- a/wiiu/loading_app/src/night_mcp.rs
++++ b/wiiu/loading_app/src/night_mcp.rs
+@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
+ mod commands;
+ #[path = "night_mcp_menu.rs"]
+ mod menu;
++#[path = "night_startup.rs"]
++mod startup;
++pub(crate) use startup::Startup;
+ 
+ static HOME: AtomicBool = AtomicBool::new(false);
+ static LAUNCHER_ALLOWED: AtomicBool = AtomicBool::new(false);
+@@ -41,10 +44,16 @@ enum LaunchArgs {
+ struct PendingLaunch {
+     principal: Principal,
+     args: LaunchArgs,
++    startup: Option<Arc<Startup>>,
+     cancelled: bool,
+     dispatched: bool,
+ }
+ 
++pub(super) struct RemoteLaunch {
++    pub(super) launch: Launch,
++    pub(super) startup: Option<Arc<Startup>>,
++}
++
+ pub(super) enum LaunchError {
+     Cancelled,
+     Failed,
+@@ -59,6 +68,7 @@ struct Benchmark {
+ }
+ 
+ static LAUNCH: Mutex<Option<PendingLaunch>> = Mutex::new(None);
++static STARTUP: Mutex<Option<Arc<Startup>>> = Mutex::new(None);
+ static BENCHMARK: Mutex<Benchmark> = Mutex::new(Benchmark {
+     scenario: None,
+     instance: None,
+@@ -263,11 +273,14 @@ fn discard_launch() {
+         if matches!(&request.args, LaunchArgs::Benchmark(_)) {
+             benchmark_finished(BenchmarkOutcome::Cancelled, None);
+         }
+-        if request.dispatched && !matches!(&request.args, LaunchArgs::Game(_)) {
++        if request.dispatched {
+             // Preserve the cancelled handoff so it cannot become normal Play.
+             request.cancelled = true;
+             return;
+         }
++        if let Some(startup) = &request.startup {
++            startup.finish(true);
++        }
+     }
+     launch.take();
+ }
+@@ -330,17 +343,23 @@ pub extern "C" fn horizon_night_mcp_tick(on_home: bool) -> bool {
+     let changed = HOME.swap(on_home, Ordering::AcqRel) != on_home;
+     if on_home {
+         let mut launch = LAUNCH.lock().unwrap();
+-        if launch.as_ref().is_some_and(|request| {
+-            request.cancelled
+-                || (matches!(request.args, LaunchArgs::Bookmark(_))
+-                    && !launch_authorized(&request.principal))
+-        }) {
++        let Some(request) = launch.as_mut() else {
++            return false;
++        };
++        if request.cancelled
++            || (!request.dispatched
++                && request.startup.as_ref().is_some_and(|startup| {
++                    !launch_authorized(&request.principal) || startup.poll_cancel()
++                }))
++        {
++            if let Some(startup) = &request.startup {
++                startup.finish(true);
++            }
+             launch.take();
++            return false;
+         }
+-        return launch.as_mut().is_some_and(|request| {
+-            request.dispatched = true;
+-            true
+-        });
++        request.dispatched = true;
++        return true;
+     }
+     if changed {
+         discard_launch();
+@@ -360,7 +379,7 @@ pub extern "C" fn horizon_night_mcp_shutdown() {
+     }
+ }
+ 
+-pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
++pub(super) fn take_launch() -> Result<Option<RemoteLaunch>, LaunchError> {
+     HOME.store(false, Ordering::Release);
+     discard_profile();
+     let mut pending = LAUNCH.lock().unwrap();
+@@ -369,34 +388,6 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+     };
+     let allowed = !request.cancelled && launch_authorized(&request.principal);
+     match request.args {
+-        LaunchArgs::Game(args) if allowed => {
+-            drop(pending);
+-            local_service()
+-                .lock()
+-                .unwrap()
+-                .tool_launch(&args)
+-                .map(Some)
+-                .map_err(|_| LaunchError::Failed)
+-        }
+-        LaunchArgs::Game(_) => Err(LaunchError::Failed),
+-        LaunchArgs::Bookmark(bookmark) => {
+-            if !request.dispatched {
+-                // Local Play got the foreground before the MCP handoff.
+-                return Ok(None);
+-            }
+-            if !allowed {
+-                return Err(LaunchError::Cancelled);
+-            }
+-            drop(pending);
+-            let service = local_service().lock().unwrap();
+-            if !launch_authorized(&request.principal) {
+-                return Err(LaunchError::Cancelled);
+-            }
+-            service
+-                .launch_bookmark(&bookmark)
+-                .map(Some)
+-                .map_err(|_| LaunchError::Failed)
+-        }
+         LaunchArgs::Benchmark(benchmark) => {
+             if !request.dispatched {
+                 // A local Play handoff won the race before MCP dispatched one.
+@@ -420,7 +411,49 @@ pub(super) fn take_launch() -> Result<Option<Launch>, LaunchError> {
+             if launch.is_err() {
+                 benchmark_finished(BenchmarkOutcome::Failed, None);
+             }
+-            launch.map(Some).map_err(|_| LaunchError::Failed)
++            launch
++                .map(|launch| {
++                    Some(RemoteLaunch {
++                        launch,
++                        startup: None,
++                    })
++                })
++                .map_err(|_| LaunchError::Failed)
++        }
++        ordinary => {
++            let startup = request
++                .startup
++                .expect("ordinary remote launch has an owner");
++            if !request.dispatched {
++                // Local Play got the foreground before the MCP handoff.
++                startup.finish(true);
++                return Ok(None);
++            }
++            if !allowed || !startup.begin_loading() {
++                startup.finish(true);
++                return Err(LaunchError::Cancelled);
++            }
++            drop(pending);
++            let service = local_service().lock().unwrap();
++            if !launch_authorized(&request.principal) || startup.poll_cancel() {
++                startup.finish(true);
++                return Err(LaunchError::Cancelled);
++            }
++            let launch = match ordinary {
++                LaunchArgs::Game(args) => service.tool_launch(&args),
++                LaunchArgs::Bookmark(bookmark) => service.launch_bookmark(&bookmark),
++                LaunchArgs::Benchmark(_) => unreachable!("benchmark handled above"),
++            };
++            match launch {
++                Ok(launch) => Ok(Some(RemoteLaunch {
++                    launch,
++                    startup: Some(startup),
++                })),
++                Err(_) => {
++                    startup.finish(false);
++                    Err(LaunchError::Failed)
++                }
++            }
+         }
+     }
+ }
+@@ -463,6 +496,7 @@ const READ: &[&str] = &[
+     "versions",
+     "settings",
+     "wiiu_profiles_list",
++    "wiiu_loading_status",
+     "instance_list",
+     "worlds_list",
+     "multiplayer_list",
+@@ -553,6 +587,23 @@ fn catalog() -> &'static [Value] {
+                         "required": ["address"], "additionalProperties": false,
+                     },
+                 }),
++                json!({
++                    "name": "wiiu_loading_status",
++                    "description": "Read the current remote Night game startup or its last result. Use your launch ID from play or wiiu_multiplayer_join.",
++                    "annotations": {"readOnlyHint": true},
++                    "inputSchema": {
++                        "type": "object", "properties": {"launch_id": {"type": "string", "minLength": 32, "maxLength": 32}},
++                        "required": ["launch_id"], "additionalProperties": false,
++                    },
++                }),
++                json!({
++                    "name": "wiiu_loading_cancel",
++                    "description": "Request cancellation of your remote Night game startup before it hands off to gameplay. Use the launch ID from play or wiiu_multiplayer_join. Check wiiu_loading_status for the result.",
++                    "inputSchema": {
++                        "type": "object", "properties": {"launch_id": {"type": "string", "minLength": 32, "maxLength": 32}},
++                        "required": ["launch_id"], "additionalProperties": false,
++                    },
++                }),
+                 json!({
+                     "name": "wiiu_benchmark_reports",
+                     "description": "List saved Wii U benchmark report IDs in the requested installation. Omit instance to use the selected installation.",
+@@ -670,6 +721,9 @@ impl Backend for NightTools {
+                 "AI features are off: turn off No AI in the launcher's settings",
+             ));
+         }
++        if matches!(name, "wiiu_loading_status" | "wiiu_loading_cancel") {
++            return Ok(startup_tool(principal, name, args));
++        }
+         if name == "wiiu_profile_select" {
+             return Ok(select_profile(principal, args, disconnected));
+         }
+@@ -755,22 +809,32 @@ impl Backend for NightTools {
+                     .tool_launch(args)
+                     .map(|_| LaunchArgs::Game(args.clone()))
+             };
++            drop(service);
+             return Ok(match start {
+                 Ok(args) => {
+-                    let message = if let LaunchArgs::Benchmark(benchmark) = &args {
++                    let (startup, result) = if let LaunchArgs::Benchmark(benchmark) = &args {
+                         benchmark_queued(benchmark);
+-                        benchmark_state().to_string()
++                        (None, text_result(&benchmark_state().to_string(), false))
+                     } else {
+-                        "Horizon is starting. Use game_wait_ready once the game tools appear."
+-                            .to_owned()
++                        let Ok(startup) = Startup::new(principal).map(Arc::new) else {
++                            return Ok(text_result("Night could not identify this launch.", true));
++                        };
++                        let mut result = text_result(
++                            &format!("Horizon is starting. Use game_wait_ready once the game tools appear.\nLaunch ID: {}", startup.id),
++                            false,
++                        );
++                        result["structuredContent"] = startup.status();
++                        *STARTUP.lock().unwrap() = Some(startup.clone());
++                        (Some(startup), result)
+                     };
+                     *request = Some(PendingLaunch {
+                         principal: principal.clone(),
+                         args,
++                        startup,
+                         cancelled: false,
+                         dispatched: false,
+                     });
+-                    text_result(&message, false)
++                    result
+                 }
+                 Err(err) => text_result(err, true),
+             });
+@@ -786,6 +850,37 @@ impl Backend for NightTools {
+     }
+ }
+ 
++fn startup_tool(principal: &Principal, name: &str, args: &Value) -> Value {
++    let id = args
++        .as_object()
++        .filter(|args| args.len() == 1)
++        .and_then(|args| args.get("launch_id"))
++        .and_then(Value::as_str)
++        .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
++    let Some(id) = id else {
++        return text_result(
++            "A launch ID from play or wiiu_multiplayer_join is required.",
++            true,
++        );
++    };
++    let tracked = STARTUP.lock().unwrap();
++    let Some(startup) = tracked
++        .as_ref()
++        .filter(|startup| startup.id == id && startup.owner == principal.client_id)
++    else {
++        return text_result("No startup is available for this launch ID.", true);
++    };
++    if name == "wiiu_loading_cancel" && !startup.request_cancel(principal) {
++        return text_result("This launch cannot be cancelled.", true);
++    }
++    if name == "wiiu_loading_status"
++        && (!principal.is_active() || !principal.scopes.contains(Scopes::LAUNCHER_READ))
++    {
++        return text_result("Reading launch status requires launcher.read.", true);
++    }
++    text_result(&startup.status().to_string(), false)
++}
++
+ const LAUNCH_SCOPES: Scopes = Scopes::LAUNCHER_MANAGE.union(Scopes::GAME_CONTROL);
+ 
+ fn launch_authorized(principal: &Principal) -> bool {
+@@ -797,7 +892,11 @@ fn launch_authorized(principal: &Principal) -> bool {
+ fn requires_launch_policy(name: &str) -> bool {
+     matches!(
+         name,
+-        "play" | "wiiu_benchmark_start" | "wiiu_benchmark_cancel" | "wiiu_multiplayer_join"
++        "play"
++            | "wiiu_benchmark_start"
++            | "wiiu_benchmark_cancel"
++            | "wiiu_multiplayer_join"
++            | "wiiu_loading_cancel"
+     )
+ }
+ 
+diff --git a/wiiu/loading_app/src/night_startup.rs b/wiiu/loading_app/src/night_startup.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e464c018be9f04355f196de4e377ee2070a97cf7
+--- /dev/null
++++ b/wiiu/loading_app/src/night_startup.rs
+@@ -0,0 +1,269 @@
++//! Ownership and cancellation for one ordinary remote startup.
++use std::sync::Mutex;
++
++use horizon_wiiu_mcp::oauth::{self, Principal};
++use serde_json::{json, Value};
++
++use super::launch_authorized;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Phase {
++    Queued,
++    Loading,
++    Draining,
++    Handoff,
++    Cancelled,
++    Failed,
++}
++
++impl Phase {
++    fn name(self) -> &'static str {
++        match self {
++            Self::Queued => "queued",
++            Self::Loading => "loading",
++            Self::Draining => "draining",
++            Self::Handoff => "handoff_started",
++            Self::Cancelled => "cancelled",
++            Self::Failed => "failed",
++        }
++    }
++
++    fn cancellable(self) -> bool {
++        matches!(self, Self::Queued | Self::Loading)
++    }
++}
++
++struct State {
++    phase: Phase,
++    cancel: Option<Principal>,
++}
++
++impl State {
++    fn poll_cancel(&mut self) -> bool {
++        if self.phase.cancellable()
++            && self
++                .cancel
++                .take()
++                .is_some_and(|principal| launch_authorized(&principal))
++        {
++            self.phase = Phase::Draining;
++        }
++        self.phase == Phase::Draining
++    }
++}
++
++pub(crate) struct Startup {
++    pub(super) id: String,
++    pub(super) owner: String,
++    state: Mutex<State>,
++}
++
++impl Startup {
++    pub(super) fn new(owner: &Principal) -> Result<Self, oauth::Error> {
++        let id = u128::from_be_bytes(oauth::random_bytes()?);
++        Ok(Self {
++            id: format!("{id:032x}"),
++            owner: owner.client_id.clone(),
++            state: Mutex::new(State {
++                phase: Phase::Queued,
++                cancel: None,
++            }),
++        })
++    }
++
++    pub(super) fn status(&self) -> Value {
++        let state = self.state.lock().unwrap();
++        json!({
++            "launch_id": self.id,
++            "phase": state.phase.name(),
++            "cancel_requested": state.cancel.is_some() || state.phase == Phase::Draining,
++        })
++    }
++
++    pub(super) fn request_cancel(&self, principal: &Principal) -> bool {
++        let mut state = self.state.lock().unwrap();
++        if self.owner != principal.client_id
++            || !launch_authorized(principal)
++            || !state.phase.cancellable()
++        {
++            return false;
++        }
++        state.cancel = Some(principal.clone());
++        true
++    }
++
++    pub(super) fn begin_loading(&self) -> bool {
++        let mut state = self.state.lock().unwrap();
++        if state.phase != Phase::Queued || state.poll_cancel() {
++            return false;
++        }
++        state.phase = Phase::Loading;
++        true
++    }
++
++    pub(crate) fn poll_cancel(&self) -> bool {
++        self.state.lock().unwrap().poll_cancel()
++    }
++
++    /// Cancel and handoff compete under the same lock. The winner determines
++    /// whether the foreground returns to Night or starts the pending game.
++    pub(crate) fn begin_handoff(&self) -> bool {
++        let mut state = self.state.lock().unwrap();
++        if state.phase != Phase::Loading || state.poll_cancel() {
++            return false;
++        }
++        state.phase = Phase::Handoff;
++        true
++    }
++
++    pub(crate) fn finish(&self, returned: bool) {
++        let mut state = self.state.lock().unwrap();
++        if !returned {
++            state.phase = Phase::Failed;
++        } else if matches!(
++            state.phase,
++            Phase::Queued | Phase::Loading | Phase::Draining
++        ) {
++            state.phase = Phase::Cancelled;
++        }
++        state.cancel = None;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use horizon_wiiu_mcp::{
++        oauth::{AuthorizeRequest, OAuth, Persistence, Tokens},
++        service::Policy,
++    };
++    use std::{io, sync::mpsc, time::SystemTime};
++
++    #[derive(Default)]
++    struct Memory(Option<zeroize::Zeroizing<Vec<u8>>>);
++
++    impl Persistence for Memory {
++        fn load(&self) -> io::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
++            Ok(self.0.clone())
++        }
++
++        fn save(&mut self, bytes: &[u8]) -> io::Result<()> {
++            self.0 = Some(zeroize::Zeroizing::new(bytes.to_vec()));
++            Ok(())
++        }
++    }
++
++    fn pair(oauth: &mut OAuth<Memory>, now: u64, label: &str) -> (Principal, Tokens) {
++        let redirect = "http://127.0.0.1:55171/oauth/callback";
++        oauth.open_pairing(now);
++        let client = oauth
++            .register(now, label, &[redirect.into()], true)
++            .unwrap();
++        let request = oauth
++            .authorization(
++                now,
++                AuthorizeRequest {
++                    client_id: &client,
++                    redirect_uri: redirect,
++                    scope: Some("launcher.read launcher.manage game.control"),
++                    challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
++                    state: "fixture",
++                    resource: None,
++                },
++            )
++            .unwrap();
++        let approval = oauth.begin_consent(now, request).unwrap();
++        oauth.decide(now, &approval, true).unwrap();
++        let url = oauth
++            .finish(now, &approval, "https://horizon.test")
++            .unwrap()
++            .unwrap();
++        let code = url.query_pairs().find(|(key, _)| key == "code").unwrap().1;
++        let tokens = oauth
++            .exchange(
++                now,
++                &client,
++                redirect,
++                &code,
++                "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
++                None,
++            )
++            .unwrap();
++        (
++            oauth.authenticate(now, &tokens.access_token).unwrap(),
++            tokens,
++        )
++    }
++
++    #[test]
++    fn authorized_cancel_and_game_handoff_have_one_winner() {
++        super::super::load_policy(Policy {
++            enabled: true,
++            allow_game: true,
++            allow_launch: true,
++            no_ai: false,
++        });
++        let now = SystemTime::now()
++            .duration_since(SystemTime::UNIX_EPOCH)
++            .unwrap()
++            .as_secs();
++        let mut auth = OAuth::open(Memory::default(), "https://horizon.test/mcp".into()).unwrap();
++        let (owner, tokens) = pair(&mut auth, now, "Launch owner");
++        let (other, _) = pair(&mut auth, now, "Another client");
++        let refreshed = auth
++            .refresh(
++                now,
++                &owner.client_id,
++                tokens.refresh_token.as_deref().unwrap(),
++                None,
++                None,
++            )
++            .unwrap();
++        let caller = auth.authenticate(now, &refreshed.access_token).unwrap();
++
++        let cancelled = Startup::new(&owner).unwrap();
++        assert!(cancelled.begin_loading());
++        assert!(!cancelled.request_cancel(&other));
++        std::thread::scope(|scope| {
++            let (allow_handoff, wait) = mpsc::channel();
++            let startup = &cancelled;
++            let foreground = scope.spawn(move || {
++                wait.recv().unwrap();
++                startup.begin_handoff()
++            });
++            assert!(cancelled.request_cancel(&caller));
++            allow_handoff.send(()).unwrap();
++            assert!(!foreground.join().unwrap());
++        });
++        assert_eq!(cancelled.status()["phase"], "draining");
++        cancelled.finish(true);
++        assert_eq!(cancelled.status()["phase"], "cancelled");
++
++        let handed_off = Startup::new(&owner).unwrap();
++        assert_ne!(handed_off.id, cancelled.id);
++        assert!(handed_off.begin_loading());
++        std::thread::scope(|scope| {
++            let (sealed, wait) = mpsc::channel();
++            let startup = &handed_off;
++            let foreground = scope.spawn(move || {
++                let allowed = startup.begin_handoff();
++                sealed.send(allowed).unwrap();
++            });
++            assert!(wait.recv().unwrap());
++            assert!(!handed_off.request_cancel(&caller));
++            foreground.join().unwrap();
++        });
++        assert!(!handed_off.poll_cancel());
++        assert_eq!(handed_off.status()["phase"], "handoff_started");
++        handed_off.finish(false);
++        assert_eq!(handed_off.status()["phase"], "failed");
++
++        let revoked = Startup::new(&owner).unwrap();
++        assert!(revoked.begin_loading());
++        assert!(revoked.request_cancel(&caller));
++        auth.revoke_client(&owner.client_id).unwrap();
++        assert!(revoked.begin_handoff());
++        assert!(!revoked.poll_cancel());
++        super::super::load_policy(Policy::default());
++    }
++}
+diff --git a/wiiu/mcp/src/oauth.rs b/wiiu/mcp/src/oauth.rs
+index 4aac69deda937cf23ca75615f2e6eb6ec94f5543..a9f8577698df1ce9b7d5998d34161b3dc0661560 100644
+--- a/wiiu/mcp/src/oauth.rs
++++ b/wiiu/mcp/src/oauth.rs
+@@ -262,6 +262,11 @@ pub struct OAuth<P> {
+     activity: BTreeMap<String, u64>,
+ }
+ 
++/// Draw secure random bytes from the same platform source as OAuth grants.
++pub fn random_bytes<const N: usize>() -> Result<[u8; N], Error> {
++    random()
++}
++
+ pub(crate) fn random<const N: usize>() -> Result<[u8; N], Error> {
+     let mut bytes = [0u8; N];
+     SystemRandom::new()
