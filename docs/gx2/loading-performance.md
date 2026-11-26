@@ -362,3 +362,5 @@ model-state facts. Stream validated records into the final catalog and
 discard the trial catalog and sprite builder if validation fails. Compare
 native and host geometry, state choices, sprite layers and terrain meshes.
 Measure decoding, sprite replay and peak heap at equivalent cache states.
+The host digest is reproducible across the direct and preparsed paths.
+[Stock model bake digest](../../wiiu/diagnostics/stock-model-digest/README.md)

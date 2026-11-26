@@ -1,0 +1,304 @@
+diff --git a/crates/horizon-client-render/examples/stock_model_digest.rs b/crates/horizon-client-render/examples/stock_model_digest.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b313ea2ccb6bcae47ba9625916b0cc70c2521360
+--- /dev/null
++++ b/crates/horizon-client-render/examples/stock_model_digest.rs
+@@ -0,0 +1,298 @@
++//! Digest the unmodified stock block bake on a disposable prepared root.
++//! Run `cargo run -p horizon-client-render --example stock_model_digest --
++//! <prepared-root> <scratch-cache> <direct|preparsed>`.
++use horizon_assets::model::Direction;
++use horizon_client_render::{
++    Result,
++    assets::{Assets, RenderAssets},
++    model_library::ParsedModels,
++    models::catalog::descriptor,
++    resource_source::{ResourceRoot, ResourceSource},
++    spans::startup,
++};
++use horizon_world::registry::{BlockRegistry, BlockStateId};
++use serde_json::json;
++use sha2::{Digest, Sha256};
++use std::{path::PathBuf, time::Instant};
++
++struct Transcript(Sha256);
++
++impl Transcript {
++    fn new(domain: &str) -> Self {
++        let mut digest = Self(Sha256::new());
++        digest.text(domain);
++        digest
++    }
++
++    fn bytes(&mut self, value: impl AsRef<[u8]>) {
++        self.0.update(value);
++    }
++
++    fn count(&mut self, value: usize) {
++        self.u32(u32::try_from(value).expect("stock model count exceeds u32"));
++    }
++
++    fn text(&mut self, value: &str) {
++        self.count(value.len());
++        self.bytes(value);
++    }
++
++    fn u32(&mut self, value: u32) {
++        self.bytes(value.to_le_bytes());
++    }
++
++    fn float(&mut self, value: f32) {
++        self.u32(value.to_bits());
++    }
++
++    fn optional<T>(&mut self, value: Option<T>, encode: impl FnOnce(&mut Self, T)) {
++        self.bytes([u8::from(value.is_some())]);
++        if let Some(value) = value {
++            encode(self, value);
++        }
++    }
++
++    fn finish(self) -> String {
++        format!("{:x}", self.0.finalize())
++    }
++}
++
++/// Expectations from the pinned blockstate documents, stone's unit cube and
++/// the first Java Random draw for these fixed seeds.
++fn check_stock(registry: &BlockRegistry, render: &RenderAssets) -> Result<()> {
++    let catalog = &render.model_catalog;
++    let stone = registry.resolve(&descriptor("stone", &[]))?;
++    let stone_layer = render.sprite_layers["minecraft:block/stone"];
++    for (seed, (name, y)) in [
++        (0, ("minecraft:block/stone", 2)),
++        (-1, ("minecraft:block/stone_mirrored", 0)),
++        (1234567, ("minecraft:block/stone", 0)),
++        (256, ("minecraft:block/stone_mirrored", 2)),
++    ] {
++        let selected = catalog.collect_seeded(stone, seed)?;
++        assert_eq!(selected.len(), 1);
++        let (variant, model) = selected[0];
++        assert_eq!(
++            (variant.model.as_str(), variant.rotations),
++            (name, [0, y, 0])
++        );
++        assert_eq!(model.particle, Some(stone_layer));
++        assert_eq!(model.faces.len(), 6);
++        for direction in Direction::ALL {
++            let face = model
++                .faces
++                .iter()
++                .find(|face| face.quad.facing == direction)
++                .expect("missing stone side");
++            assert_eq!(face.quad.cull, Some(direction));
++            assert_eq!(face.layer, stone_layer);
++            assert!(face.opaque && !face.translucent);
++            let (axis, u, v, plane) = match direction {
++                Direction::Down => (1, 0, 2, 0.0),
++                Direction::Up => (1, 0, 2, 1.0),
++                Direction::North => (2, 0, 1, 0.0),
++                Direction::South => (2, 0, 1, 1.0),
++                Direction::West => (0, 2, 1, 0.0),
++                Direction::East => (0, 2, 1, 1.0),
++            };
++            let mut corners = 0;
++            for position in face.quad.positions {
++                assert_eq!(position[axis], plane);
++                assert!(
++                    [position[u], position[v]]
++                        .iter()
++                        .all(|p| *p == 0.0 || *p == 1.0)
++                );
++                corners |= 1 << (position[u] as u8 + 2 * position[v] as u8);
++            }
++            assert_eq!(corners, 0b1111);
++        }
++    }
++    let fence = registry.resolve(&descriptor(
++        "oak_fence",
++        &[("north", "true"), ("west", "true")],
++    ))?;
++    let chosen = catalog.collect_seeded(fence, 42)?;
++    let variants: Vec<_> = chosen
++        .iter()
++        .map(|(v, _)| (v.model.as_str(), v.rotations, v.uv_lock))
++        .collect();
++    assert_eq!(
++        variants,
++        [
++            ("minecraft:block/oak_fence_post", [0, 0, 0], false),
++            ("minecraft:block/oak_fence_side", [0, 0, 0], true),
++            ("minecraft:block/oak_fence_side", [0, 3, 0], true),
++        ]
++    );
++    let snowy = registry.resolve(&descriptor("grass_block", &[("snowy", "true")]))?;
++    let chosen = catalog.collect_seeded(snowy, 0)?;
++    assert_eq!(chosen.len(), 1);
++    assert_eq!(chosen[0].0.model, "minecraft:block/grass_block_snow");
++    Ok(())
++}
++
++fn bake_report(registry: &BlockRegistry, render: &mut RenderAssets) -> Result<serde_json::Value> {
++    check_stock(registry, render)?;
++    let mut geometry = Transcript::new("horizon stock model geometry v1");
++    let mut models = 0;
++    let mut faces = 0;
++    for (variant, model) in render.model_catalog.models_mut() {
++        models += 1;
++        faces += model.faces.len();
++        geometry.text(&variant.model);
++        geometry.bytes(variant.rotations);
++        geometry.bytes([u8::from(variant.uv_lock), u8::from(model.ambient_occlusion)]);
++        geometry.optional(model.particle, Transcript::u32);
++        geometry.count(model.faces.len());
++        for face in &model.faces {
++            let quad = &face.quad;
++            for v in quad
++                .positions
++                .into_iter()
++                .flatten()
++                .chain(quad.uv.into_iter().flatten())
++            {
++                geometry.float(v);
++            }
++            geometry.text(quad.material.sprite.as_str());
++            geometry.bytes([
++                quad.facing as u8,
++                quad.light_emission,
++                u8::from(quad.shade),
++                u8::from(quad.material.force_translucent),
++                u8::from(face.opaque),
++                u8::from(face.translucent),
++            ]);
++            geometry.bytes(quad.light);
++            geometry.bytes(quad.tint_index.to_le_bytes());
++            geometry.optional(quad.cull, |out, direction| out.bytes([direction as u8]));
++            geometry.optional(quad.shade_direction_override, |out, direction| {
++                out.bytes([direction as u8]);
++            });
++            geometry.optional(quad.color, |out, color| out.bytes(color.to_le_bytes()));
++            geometry.optional(quad.ambient_occlusion, |out, ao| out.bytes([u8::from(ao)]));
++            geometry.optional(quad.render_type, |out, pass| out.bytes([pass as u8]));
++            geometry.u32(face.layer);
++            geometry.optional(face.fusion, |out, rule| out.bytes(rule.get().to_le_bytes()));
++            for shape in &face.shapes {
++                for v in shape.bounds {
++                    geometry.float(v);
++                }
++                geometry.bytes([u8::from(shape.partial), u8::from(shape.cubic)]);
++            }
++            for fixed in face.uv_fixed.into_iter().flatten() {
++                geometry.bytes(fixed.to_le_bytes());
++            }
++        }
++        geometry.optional(model.cube, |out, styles| {
++            for style in styles {
++                out.u32(style.layer);
++                out.bytes(style.uv.map(|v| v as u8));
++                out.u32(style.shade_bits);
++            }
++        });
++    }
++    let catalog = &render.model_catalog;
++    let mut selection = Transcript::new("horizon stock model selections v1");
++    let mut unbound = 0;
++    selection.count(registry.len());
++    for index in 0..registry.len() {
++        let id = BlockStateId(u32::try_from(index)?);
++        let state = registry.state(id).ok_or("missing registered state")?;
++        selection.text(&state.name);
++        selection.count(state.properties.len());
++        for (key, value) in &state.properties {
++            selection.text(key);
++            selection.text(value);
++        }
++        selection.optional(catalog.particle(id), Transcript::u32);
++        selection.optional(catalog.render_bounds(id), |out, bounds| {
++            for v in bounds.into_iter().flatten() {
++                out.float(v);
++            }
++        });
++        for seed in [0, -1, 42, -42, 1234567, 987654321, i64::MAX, i64::MIN] {
++            match catalog.collect_seeded(id, seed) {
++                Ok(selected) => {
++                    selection.bytes([1]);
++                    selection.count(selected.len());
++                    for (variant, _) in selected {
++                        selection.text(&variant.model);
++                        selection.bytes(variant.rotations);
++                        selection.bytes([u8::from(variant.uv_lock)]);
++                    }
++                }
++                Err(error) if error.to_string() == "unbound gallery block state" => {
++                    unbound += usize::from(seed == 0);
++                    selection.bytes([0]);
++                }
++                Err(error) => return Err(error),
++            }
++        }
++    }
++    let mut sprites = Transcript::new("horizon stock model sprites v1");
++    sprites.u32(render.sprite_size);
++    sprites.u32(render.sprite_minimum_size);
++    sprites.u32(render.texture_layers);
++    sprites.count(render.sprite_layers.len());
++    for (name, &layer) in &render.sprite_layers {
++        sprites.text(name);
++        sprites.u32(layer);
++    }
++    for &translucent in &render.translucent_layers {
++        sprites.bytes([u8::from(translucent)]);
++    }
++    let pixels = render.pixels.get();
++    Ok(json!({
++        "model_count": models,
++        "quad_count": faces,
++        "state_count": registry.len(),
++        "unbound_state_count": unbound,
++        "sprite_layer_count": render.texture_layers,
++        "sprite_atlas_bytes": pixels.len(),
++        "geometry_sha256": geometry.finish(),
++        "selections_sha256": selection.finish(),
++        "sprites_sha256": sprites.finish(),
++        "atlas_sha256": format!("{:x}", Sha256::digest(pixels.as_slice())),
++    }))
++}
++
++fn main() -> Result<()> {
++    startup::init(Instant::now());
++    let mut args = std::env::args_os().skip(1);
++    let prepared = PathBuf::from(args.next().ok_or("provide a private stock prepared root")?);
++    let cache = PathBuf::from(args.next().ok_or("provide a scratch cache directory")?);
++    let mode = args.next().ok_or("provide direct or preparsed")?;
++    if args.next().is_some() || (mode != "direct" && mode != "preparsed") {
++        return Err("expected <prepared-root> <scratch-cache> <direct|preparsed>".into());
++    }
++    let mode = mode.to_string_lossy();
++    let prepared_hash = Sha256::digest(std::fs::read(prepared.join("horizon-resources.json"))?);
++    let state_hash = Sha256::digest(std::fs::read(prepared.join("model-states.json"))?);
++    let root = ResourceRoot::new(prepared.clone(), cache, ResourceSource::directory(prepared));
++    let assets = Assets::load(root.prepared())?;
++    let start = Instant::now();
++    let mut render = if mode == "preparsed" {
++        let parsed = ParsedModels::load(root.source());
++        assets.reload_with_models(&root, parsed)?
++    } else {
++        assets.reload(&root)?
++    };
++    let reload_ms = start.elapsed().as_secs_f64() * 1000.0;
++    let start = Instant::now();
++    let receipt = bake_report(assets.registry, &mut render)?;
++    let digest_ms = start.elapsed().as_secs_f64() * 1000.0;
++    println!(
++        "{}",
++        json!({
++            "mode": mode,
++            "prepared_manifest_sha256": format!("{prepared_hash:x}"),
++            "model_states_sha256": format!("{state_hash:x}"),
++            "reload_ms": reload_ms,
++            "digest_ms": digest_ms,
++            "receipt": receipt,
++        })
++    );
++    Ok(())
++}
