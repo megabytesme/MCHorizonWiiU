@@ -64,7 +64,8 @@ static void draw_pattern(HorizonGx2WorldScale *scale, const GX2Texture *texture,
    draw_pattern_with_depth(scale, texture, x, y, w, h, true, GX2_COMPARE_FUNC_LEQUAL);
 }
 
-static bool draw_hud(HorizonGx2Hud *hud, uint32_t target, uint32_t w, uint32_t h)
+static bool draw_hud(HorizonGx2Hud *hud, uint32_t target, uint32_t w, uint32_t h,
+                     bool depth_tested)
 {
    const float corners[6][2] = {{4, 20}, {7, 20}, {7, 30}, {4, 20}, {7, 30}, {4, 30}};
    HorizonHudVertex vertices[6] = {0};
@@ -73,7 +74,9 @@ static bool draw_hud(HorizonGx2Hud *hud, uint32_t target, uint32_t w, uint32_t h
       vertices[i].uv[0] = vertices[i].uv[1] = 0.5f;
       vertices[i].color = 0xff00ff00;
    }
-   const HorizonHudRun run = {0, 6, HORIZON_HUD_ALPHA, {0}};
+   const HorizonHudRun run = {
+      0, 6, depth_tested ? HORIZON_HUD_DEPTH : HORIZON_HUD_ALPHA, {4, 20, 3, 10}
+   };
    const HorizonHudFrame frame = {
       .vertices = vertices, .vertex_count = 6, .runs = &run, .run_count = 1,
       .viewport_width = w, .viewport_height = h, .scale = 1.0f,
@@ -143,7 +146,7 @@ static bool present_scale_frame(HorizonGx2WorldScale *state, HorizonGx2Hud *hud,
                       viewports[target][2], viewports[target][3]);
       }
       const uint32_t output_w = outputs[target]->width, output_h = outputs[target]->height;
-      passed &= draw_hud(hud, target, output_w, output_h);
+      passed &= draw_hud(hud, target, output_w, output_h, false);
 #ifndef HORIZON_SCALE_VISUAL
       passed &= readback(output_w, output_h, target, percent);
 #endif
@@ -153,6 +156,95 @@ static bool present_scale_frame(HorizonGx2WorldScale *state, HorizonGx2Hud *hud,
    WHBGfxFinishRender();
    return passed;
 }
+
+#ifdef HORIZON_SCALE_CLEAR_COMPARISON
+typedef struct {
+   HorizonGx2WorldScale *state;
+   HorizonGx2Hud *hud;
+   const GX2Texture *pattern;
+   uint32_t scaled[4];
+   uint32_t viewports[2][4];
+   uint8_t *reference[2];
+   uint8_t *candidate[2];
+   bool compare;
+} ClearComparison;
+
+static int draw_clear_comparison(void *opaque, uint32_t target, uint32_t width, uint32_t height)
+{
+   ClearComparison *test = opaque;
+   horizon_gx2_world_scale_begin(test->state, target, (float[]){0.0f, 1.0f, 0.0f, 1.0f});
+   draw_pattern(test->state, test->pattern, 0, 0, test->scaled[target * 2],
+                test->scaled[target * 2 + 1]);
+   horizon_gx2_world_scale_end(test->state, target, test->viewports[target], true);
+   if (!draw_hud(test->hud, target, width, height, true)) return -1;
+   const size_t bytes = (size_t)width * height * 4;
+   uint8_t *pixels = test->compare ? test->candidate[target] : test->reference[target];
+   if (horizon_loading_host_read_rgba(target, pixels, bytes) != 0) return -1;
+   const uint8_t *hud = pixels + (22 * width + 6) * 4;
+   if (hud[0] != 0 || hud[1] != 255 || hud[2] != 0) return -1;
+   if (!test->compare) return 0;
+   const bool matches = memcmp(pixels, test->reference[target], bytes) == 0;
+   OSReport("GX2 scaled clear comparison target=%u viewport=%s bytes=%u result=%s\n",
+            target, test->viewports[target][0] ? "inset" : "full",
+            (uint32_t)bytes, matches ? "PASS" : "FAIL");
+   return matches ? 0 : -1;
+}
+
+static int accept_clear_only(void *opaque, uint32_t target, uint32_t width, uint32_t height)
+{
+   (void)opaque;
+   (void)target;
+   (void)width;
+   (void)height;
+   return 0;
+}
+
+static bool compare_scaled_output_clears(HorizonGx2Hud *hud, const GX2Texture *pattern,
+                                         GX2Surface *const outputs[2])
+{
+   ClearComparison test = {.hud = hud, .pattern = pattern};
+   for (unsigned target = 0; target < 2; ++target) {
+      const uint32_t w = outputs[target]->width, h = outputs[target]->height;
+      const size_t bytes = (size_t)w * h * 4;
+      test.scaled[target * 2] = (w + 1) / 2;
+      test.scaled[target * 2 + 1] = (h + 1) / 2;
+      test.reference[target] = malloc(bytes);
+      test.candidate[target] = malloc(bytes);
+   }
+   uint32_t surface_bytes;
+   test.state = horizon_gx2_world_scale_create(test.scaled, &surface_bytes);
+   bool passed = test.state && test.reference[0] && test.reference[1] &&
+      test.candidate[0] && test.candidate[1];
+   const float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+   const float magenta[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+   const float cyan[4] = {0.0f, 1.0f, 1.0f, 1.0f};
+   for (unsigned trial = 0; passed && trial < 2; ++trial) {
+      for (unsigned target = 0; target < 2; ++target) {
+         const uint32_t inset = trial && target == 0 ? 8 : 0;
+         const uint32_t w = outputs[target]->width, h = outputs[target]->height;
+         const uint32_t viewport[4] = {inset, inset, w - 2 * inset, h - 2 * inset};
+         memcpy(test.viewports[target], viewport, sizeof(viewport));
+      }
+      test.compare = false;
+      // Put a different colour behind each arm, so missing coverage cannot
+      // accidentally match through a retained backbuffer from the control.
+      passed = horizon_loading_host_present_with_clear(accept_clear_only, NULL, magenta, NULL) == 0 &&
+         horizon_loading_host_present_with_clear(draw_clear_comparison, &test, black, NULL) == 0 &&
+         horizon_loading_host_present_with_clear(accept_clear_only, NULL, cyan, NULL) == 0;
+      test.compare = true;
+      uint32_t viewports[8];
+      memcpy(viewports, test.viewports, sizeof(viewports));
+      passed = passed && horizon_loading_host_present_with_clear(
+         draw_clear_comparison, &test, black, viewports) == 0;
+   }
+   horizon_gx2_world_scale_destroy(test.state);
+   for (unsigned target = 0; target < 2; ++target) {
+      free(test.candidate[target]);
+      free(test.reference[target]);
+   }
+   return passed;
+}
+#endif
 
 static int run_scale_diagnostic(void)
 {
@@ -230,6 +322,9 @@ static int run_scale_diagnostic(void)
       if (!passed) break;
 #endif
    }
+#ifdef HORIZON_SCALE_CLEAR_COMPARISON
+   if (passed) passed = compare_scaled_output_clears(hud, &pattern, outputs);
+#endif
    horizon_gx2_hud_destroy(hud);
    GX2RDestroySurfaceEx(&pattern.surface, 0);
 #ifdef HORIZON_SCALE_VISUAL

@@ -43,6 +43,27 @@ viewport. Use a hosted gameplay test to check the live graphics menu, screenshot
 readback, touch mapping and game session transitions. The diagnostic timings
 cannot establish console performance.
 
+With an assembled source containing the scaled output clear trial, add
+`-DHORIZON_SCALE_CLEAR_COMPARISON=ON` to the native build. After the usual
+scale sweep, the fixture compares every RGBA byte at 50% against the
+ordinary WHB clear. It uses distinct preceding background colours and a
+depth-tested HUD on both outputs. The full viewport trial reports omission
+mask 3. The inset TV trial reports mask 2 and checks the retained margin.
+Look for four `GX2 scaled clear comparison` lines with `result=PASS`.
+
+The RC 35-based trial built with the pinned WUT, devkitPPC and CafeGLSL
+and passed all four full-frame comparisons in NSS-patched Cemu 2.6 with
+the forced interpreter. Each compared 8,294,400 TV bytes or 1,639,680
+GamePad bytes and checked the depth-tested HUD; the allocation budget
+check and ten original pixel checks also passed. The fixture RPX SHA-256
+was `c696e9c93e9f7570fed4ee16171032ba646c57b51d17d6c222985c844aa520bf`.
+The hosted same-binary comparison uses `4` and `4c` in `gx2-profile.enable`,
+at a fixed scale below 100%. The omission mask identifies any display
+with a full composite. The physical comparison needs paired pacing
+and both display outputs. The existing GPU endpoint bracket begins
+after each output setup, so it misses any reduction before the TV start
+marker.
+
 For physical testing, configure a separate build with
 `-DHORIZON_SCALE_VISUAL=ON`. It uses the same depth-tested world draw and
 native HUD geometry and presents each scale for seven seconds. This mode
