@@ -123,5 +123,19 @@
   "dependencies": {
     "physical": "Supervised console launch. Continue host and emulator work while pending.",
     "recompiler": "Forced-interpreter fallback. Corrected carry probe passed, but full gameplay remains unqualified."
+  },
+  "diagnostics": {
+    "winding": {
+      "status": "cemu_pass",
+      "both_output_pixel_checks": 32
+    },
+    "netconf": {
+      "status": "physical_pending",
+      "cemu_assigned_resolvers": 0
+    },
+    "recompiler": {
+      "status": "minimal_native_repro",
+      "exact_rc38_world_entry": "startup_failed"
+    }
   }
 }

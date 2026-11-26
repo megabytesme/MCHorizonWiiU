@@ -34,10 +34,18 @@ fallback. [Machine-readable status](active-goal.json) · [RC 38 evidence](rc38-v
   packaged Cemu and physical qualification.
 - Loading agent is tracing the warm critical path through client preparation
   and integrated-server construction. Compare identical archives and cache states.
-- Integration owns candidate recipes, evidence and supervised hardware staging.
-  Keep forced-interpreter Cemu available while recovering the independent
-  recompiler investigation. The carry patch passed its instruction probe.
-  Full recompiler gameplay remains unqualified. [Cemu record](../../wiiu/cemu/RECOMPILER.md)
+- The standalone winding fixture passed 32 RGB checks across both outputs
+  in forced-interpreter Cemu. Qualify an opt-in solid terrain back-face
+  path in a hosted world before moving on to axis-facing index ranges.
+  [Winding fixture](../../wiiu/diagnostics/gx2-terrain-winding/README.md)
+- The integration build tests an opt-in terrain retirement path and reuses
+  prepared server resources. A subsequent source iteration scopes villager
+  texture discovery and exposes authenticated live graphics controls.
+- The RC 38 multi-core Cemu retry captured both Night displays and reached
+  native loading before returning to Night with invalid allocator counters.
+  A small native fixture reproduces the counter error under the recompiler.
+  Forced-interpreter Cemu remains the gameplay fallback.
+  [Cemu record](../../wiiu/cemu/RECOMPILER.md)
 
 ## Physical queue
 

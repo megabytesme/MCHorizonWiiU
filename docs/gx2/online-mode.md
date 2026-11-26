@@ -113,8 +113,10 @@ diagnostic resolves the export dynamically and reports per-interface
 status and resolver count. It built with Cafe Toolchain 1.1.0. Check
 initialization, byte order and the active interface on hardware before
 passing the configured nameservers to the existing UDP/TCP SRV resolver.
-Stock Cemu 2.6 lacks the export, so the lookup needs an unavailable
-result that still allows explicit host-and-port joins.
+The standalone probe resolves the entry points dynamically. NSS-patched
+Cemu 2.6 returned zero assigned resolvers on each interface. Preserve
+explicit host-and-port joins when the configured resolver is unavailable.
+[Probe build and console procedure](../../wiiu/diagnostics/cafe-netconf/README.md)
 
 The deployed Cafe HTTPS correction uses connect and receive timeouts.
 A single deadline and cancellation need to include synchronous DNS,
