@@ -198,6 +198,7 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
         cohort = None
         if (row["phase"] == "playing" and start <= row["start_ms"] / 1000 < end
                 and row["presented"] == row["tv_submissions"] == row["gamepad_submissions"] == 1
+                and row["game_frames_built"] == 1
                 and not row["screenshot_ms"]
                 and row["world_requested_scale"] == row["world_effective_scale"] > 0
                 and min(row["tv_sections_drawn"], row["drc_sections_drawn"]) > 0
@@ -239,6 +240,9 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
             "combined_flip_interval_ms": stats(flips),
             "intervals_without_one_timed_flip": counts["consecutive_pairs"] - len(flips),
             "flips_by_refresh_count": dict(sorted(bins.items())),
+            "missed_combined_refresh_intervals": (
+                sum((refreshes - 1) * count for refreshes, count in bins.items()) if bins else None
+            ),
             "off_grid_flip_intervals": len(flips) - sum(bins.values()),
             "whb_wait_flip_ms": stats(waits),
             "whb_finish_ms": stats(finishes),

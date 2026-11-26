@@ -202,16 +202,19 @@ class ProfileTests(unittest.TestCase):
             frame(14, 50),
             frame(16, 50),  # Capture sequence gap.
             frame(17, 34, gx2_flip_interval_ms=None),
+            frame(18, 50, game_frames_built=0),  # Presentation of a previous game frame.
         ]
         reports = profile.summarize_flip_quantization(frames, 0.05, 1, 59.94, 174)["cohorts"]
         self.assertEqual([r["requested_and_effective_scale"] for r in reports], [50, 75])
         fifty, seventy_five = reports
         self.assertIsNone(fifty["combined_flip_interval_ms"])
+        self.assertIsNone(fifty["missed_combined_refresh_intervals"])
         self.assertEqual(seventy_five["paired_submissions"], 11)
         self.assertEqual(seventy_five["consecutive_pairs"], 4)
         self.assertEqual(seventy_five["gx2_swap_delta"], 4)
         self.assertEqual(seventy_five["gx2_flip_delta"], 5)
         self.assertEqual(seventy_five["flips_by_refresh_count"], {3: 1})
+        self.assertEqual(seventy_five["missed_combined_refresh_intervals"], 2)
         self.assertEqual(seventy_five["off_grid_flip_intervals"], 1)
         self.assertEqual(seventy_five["intervals_without_one_timed_flip"], 2)
         self.assertEqual(seventy_five["combined_flip_interval_ms"]["samples"], 2)

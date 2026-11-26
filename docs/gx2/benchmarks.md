@@ -123,10 +123,13 @@ The saved-view summary counts paired submissions with one newly built Game
 frame, fixed 75% targets and 174 sections on each display. Loading, capture,
 empty terrain, a different scale and unpaired iterations still consume wall
 time. The matching interval statistics include gaps between qualifying Game
-frames. The combined driver flip summary measures refresh intervals where
-the driver supplies them. Record individual display scanout where available,
-camera and stock settings, serial TPS, images and memory recovery alongside
-the HZP3 summaries. Keep the heavy stationary and Village runs separate.
+frames. The combined driver flip summary requires consecutive newly built
+pairs. It counts missed combined refresh intervals from placed timing bins,
+with three refresh periods between flips counting as two missed intervals.
+Missing timings and off-grid intervals have separate counts. Record
+individual display scanout where available, camera and stock settings,
+serial TPS, images and memory recovery alongside the HZP3 summaries.
+Keep the heavy stationary and Village runs separate.
 
 ## Stationary render diagnostic
 

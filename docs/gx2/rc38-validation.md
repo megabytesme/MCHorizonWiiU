@@ -109,6 +109,11 @@ submissions, all partial, at 19.971 pairs/s. Frame-start intervals were
 Including the gap and its last five frames gives 102.628 seconds at
 19.235 pairs/s. The difference records the wall-clock cost of the gap.
 
+At 59.94 Hz the 98.593-second interval contains 1,920 timed combined flips.
+The driver intervals span three refreshes 1,917 times and four refreshes
+three times, giving 3,843 missed combined refresh intervals in the timed
+sample. The other 49 consecutive pairs lack a single timed driver flip.
+
 ## Physical combined flip cadence
 
 Run `python -B tools/gx2_profile.py CAPTURE --flip-refresh-hz 59.94 --flip-terrain-sections 174`
