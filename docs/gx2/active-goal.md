@@ -37,6 +37,10 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   in Cemu. A separate source branch stages one-time reuse for the same
   resource generation. Compare first entry, warm reopen and peak heap
   with identical archives and cache states. [Handoff experiment](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/loading-cpu-handoff/docs/gx2/loading-performance.md#integrated-server-cpu-handoff-experiment)
+- A host-only stock HUD seed restored a 112 MiB atlas byte-for-byte from
+  9.53 MB of retained data and recreated the session's mutable HUD state.
+  Native reuse needs a verified archive identity and bounded font setup.
+  [Stock HUD seed fixture](../../wiiu/diagnostics/stock-hud-seed/README.md)
 - The RC 40 package builds with the opt-in terrain retirement path and
   prepared server resource reuse. Night passed the independent Cemu
   display checks. Both saves and the reopen completed. Forward movement
