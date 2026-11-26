@@ -35,10 +35,17 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def png_dimensions(data):
+    if len(data) < 24 or data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR":
+        raise ValueError("Cemu capture lacks a valid PNG header")
+    return struct.unpack_from(">II", data, 16)
+
+
 class Lab:
-    def __init__(self, root, process):
+    def __init__(self, root, process, require_distinct_captures=False):
         self.root = root
         self.process = process
+        self.require_distinct_captures = require_distinct_captures
         self.log = gx2_cemu.paths(root)[0] / "log.txt"
         self.phase = "night"
 
@@ -84,7 +91,17 @@ class Lab:
 
     def show(self, name):
         self.send("shot", name=name)
-        self.record("displays", tv=f"{name}-tv.png", gamepad=f"{name}-gamepad.png")
+        tv = f"{name}-tv.png"
+        gamepad = f"{name}-gamepad.png"
+        tv_png = (self.root / tv).read_bytes()
+        gamepad_png = (self.root / gamepad).read_bytes()
+        tv_dimensions = png_dimensions(tv_png)
+        gamepad_dimensions = png_dimensions(gamepad_png)
+        identical = tv_png == gamepad_png
+        self.record("displays", tv=tv, gamepad=gamepad, tv_dimensions=tv_dimensions,
+                    gamepad_dimensions=gamepad_dimensions, identical_captures=identical)
+        if identical and self.require_distinct_captures:
+            raise ValueError("Cemu produced identical TV and GamePad captures")
 
     def select_world(self):
         start = self.mark()
@@ -262,7 +279,8 @@ def exercise(args):
                    "spawn_xz": args.spawn_xz,
                    "sessions": args.sessions, "save_at": args.save_at,
                    "gameplay_dwell": args.gameplay_dwell}, receipt, indent=2)
-    lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id))
+    lab = Lab(root, gx2_cemu.start(root, args.cpu_mode, args.title_id),
+              args.require_distinct_captures)
     audio_failures = []
     inventory_ok = None
     movement_ok = None
@@ -398,6 +416,8 @@ def main():
     parser.add_argument("--audio-timeout", type=float, default=180)
     parser.add_argument("--gameplay-dwell", type=float, default=0,
                         help="seconds to keep the first gameplay view stationary")
+    parser.add_argument("--require-distinct-captures", action="store_true",
+                        help="fail if the emulator returns the same PNG for both outputs")
     parser.add_argument("--respawn-fixture", action="store_true",
                         help="raise the disposable Survival player for a controller-only fall and Respawn")
     parser.add_argument("--spawn-xz", type=float, nargs=2,
