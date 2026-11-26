@@ -81,17 +81,17 @@ struct SortSlot {
     indices: Vec<u32>,
 }
 
-struct Translucent {
+struct Translucent<const VIEWS: usize> {
     buffer: Buffer,
-    slots: [SortSlot; 2],
+    slots: [SortSlot; VIEWS],
 }
 
-struct Resident {
+struct Resident<const VIEWS: usize> {
     generation: u64,
     bytes: usize,
     bounds: Option<TerrainBounds>,
     solid: Option<Buffer>,
-    translucent: Option<Translucent>,
+    translucent: Option<Translucent<VIEWS>>,
 }
 
 struct Mesh<'a> {
@@ -102,16 +102,16 @@ struct Mesh<'a> {
 }
 
 impl Mesh<'_> {
-    fn accounted_bytes(&self) -> usize {
-        // The host deliberately charges both retained index slots and both
-        // exact SortState instances. Native would use GX2 allocation sizes.
-        self.vertex_bytes + self.centers.len() * 2 * (6 * size_of::<u32>() + size_of::<[f32; 3]>())
+    fn accounted_bytes<const VIEWS: usize>(&self) -> usize {
+        // Each view holds its retained indices and an exact SortState.
+        self.vertex_bytes
+            + self.centers.len() * VIEWS * (6 * size_of::<u32>() + size_of::<[f32; 3]>())
     }
 
-    fn publish(self) -> Resident {
+    fn publish<const VIEWS: usize>(self) -> Resident<VIEWS> {
         Resident {
             generation: self.generation,
-            bytes: self.accounted_bytes(),
+            bytes: self.accounted_bytes::<VIEWS>(),
             bounds: self.bounds,
             solid: Some(Buffer {
                 bounds: self.bounds,
@@ -129,21 +129,22 @@ impl Mesh<'_> {
     }
 }
 
-struct SharedTerrain {
-    sections: BTreeMap<SectionKey, Resident>,
+struct SharedTerrain<const VIEWS: usize = 2> {
+    sections: BTreeMap<SectionKey, Resident<VIEWS>>,
     used_bytes: usize,
-    views: [View; 2],
-    plans: [SolidDrawPlan; 2],
+    views: [View; VIEWS],
+    plans: [SolidDrawPlan; VIEWS],
     sorter: Sorter,
 }
 
-impl SharedTerrain {
-    fn new(views: [View; 2]) -> Self {
+impl<const VIEWS: usize> SharedTerrain<VIEWS> {
+    fn new(views: [View; VIEWS]) -> Self {
+        assert!((1..=5).contains(&VIEWS));
         Self {
             sections: BTreeMap::new(),
             used_bytes: 0,
             views,
-            plans: Default::default(),
+            plans: std::array::from_fn(|_| SolidDrawPlan::default()),
             sorter: Default::default(),
         }
     }
@@ -157,16 +158,16 @@ impl SharedTerrain {
 
     fn rank(&self, key: SectionKey, bounds: Option<TerrainBounds>) -> Priority {
         // Visibility dominates distance. The nearest interested camera wins;
-        // when both reject a section, use proximity as a tie-breaker.
-        let [a, b] = self
-            .views
-            .each_ref()
-            .map(|view| priority(key, view.section, view.sees(key, bounds)));
-        a.min(b)
+        // when every view rejects a section, use proximity as a tie-breaker.
+        self.views
+            .iter()
+            .map(|view| priority(key, view.section, view.sees(key, bounds)))
+            .min()
+            .unwrap()
     }
 
     fn upload(&mut self, key: SectionKey, mesh: Mesh<'_>) -> bool {
-        let bytes = mesh.accounted_bytes();
+        let bytes = mesh.accounted_bytes::<VIEWS>();
         if bytes > RESIDENT_VERTEX_BYTES {
             return false;
         }

@@ -52,7 +52,7 @@ fn scene() -> SharedTerrain {
     world
 }
 
-fn keysets(world: &mut SharedTerrain) -> [BTreeSet<SectionKey>; 2] {
+fn keysets<const VIEWS: usize>(world: &mut SharedTerrain<VIEWS>) -> [BTreeSet<SectionKey>; VIEWS] {
     std::array::from_fn(|player| {
         let view = &world.views[player];
         let expected = world
@@ -215,9 +215,9 @@ struct SingleView {
 }
 
 impl SingleView {
-    fn draw(
+    fn draw<const VIEWS: usize>(
         &mut self,
-        world: &SharedTerrain,
+        world: &SharedTerrain<VIEWS>,
         contents: &BTreeMap<SectionKey, &'static [[f32; 3]]>,
         player: usize,
     ) -> Vec<SortDraw> {
@@ -261,11 +261,11 @@ impl SingleView {
     }
 }
 
-fn sort_frame(
-    world: &mut SharedTerrain,
-    references: &mut [SingleView; 2],
+fn sort_frame<const VIEWS: usize>(
+    world: &mut SharedTerrain<VIEWS>,
+    references: &mut [SingleView; VIEWS],
     contents: &BTreeMap<SectionKey, &'static [[f32; 3]]>,
-) -> [Vec<SortDraw>; 2] {
+) -> [Vec<SortDraw>; VIEWS] {
     std::array::from_fn(|player| {
         let expected = references[player].draw(world, contents, player);
         let actual = world.draw_translucent(player);
@@ -328,4 +328,79 @@ fn opponent_views_sort_same_geometry_differently_and_replacement_resets_both() {
                 .all(|draw| !draw.uploaded)
         );
     }
+}
+
+#[test]
+fn five_independent_views_share_nearby_meshes_and_keep_distant_plans_disjoint() {
+    const SEATS: usize = 5;
+    const MESH_BYTES: usize = 128;
+    let pose = |seat: usize, separation: f64| {
+        let aspect = if seat == SEATS - 1 {
+            854.0 / 480.0
+        } else {
+            960.0 / 540.0
+        };
+        View::new(
+            [8.0 + separation + seat as f64 * 0.25, 72.25, -16.0],
+            180.0 + seat as f32,
+            0.0,
+            aspect,
+            70.0,
+        )
+    };
+    let local_keys: [SectionKey; SEATS] = std::array::from_fn(|seat| (seat as i32 * 64, 8, -4));
+    let mut world = SharedTerrain::new(std::array::from_fn(|seat| pose(seat, 0.0)));
+    let mut references: [SingleView; SEATS] = std::array::from_fn(|_| SingleView::default());
+    let mut contents = BTreeMap::from([(OVERLAP_NEAR_A, &ORIGINAL[..])]);
+
+    assert!(world.upload(OVERLAP_NEAR_A, mesh(1, MESH_BYTES, &ORIGINAL)));
+    assert_eq!(world.sections.len(), 1);
+    assert_eq!(world.used_bytes, MESH_BYTES + 360);
+    let nearby = keysets(&mut world);
+    assert!(
+        nearby
+            .iter()
+            .all(|keys| *keys == BTreeSet::from([OVERLAP_NEAR_A]))
+    );
+    let clips = (0..SEATS)
+        .map(|seat| {
+            world.solid(seat)[0]
+                .clip
+                .rows
+                .map(|row| row.map(f32::to_bits))
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(clips.len(), SEATS);
+    let nearby_draws = sort_frame(&mut world, &mut references, &contents);
+    assert!(nearby_draws.iter().flatten().all(|draw| draw.uploaded));
+    let warm_draws = sort_frame(&mut world, &mut references, &contents);
+    assert!(warm_draws.iter().flatten().all(|draw| !draw.uploaded));
+
+    for (seat, &key) in local_keys.iter().enumerate().skip(1) {
+        world.update_view(seat, pose(seat, seat as f64 * 1024.0));
+        assert!(world.upload(key, mesh(1, MESH_BYTES, &ORIGINAL)));
+        contents.insert(key, &ORIGINAL);
+    }
+    assert_eq!(world.sections.len(), SEATS);
+    assert_eq!(world.used_bytes, SEATS * (MESH_BYTES + 360));
+    let distant = keysets(&mut world);
+    let distant_draws = sort_frame(&mut world, &mut references, &contents);
+    for (seat, &key) in local_keys.iter().enumerate() {
+        assert_eq!(distant[seat], BTreeSet::from([key]));
+        assert_eq!(distant_draws[seat][0].key, key);
+        let exact_rank = world
+            .views
+            .iter()
+            .map(|view| LegacyRanks::for_view(view).section_rank(key, section_bounds()))
+            .min()
+            .unwrap();
+        assert_eq!(world.rank(key, section_bounds()), exact_rank);
+    }
+    assert!(!distant_draws[0][0].uploaded);
+    assert!(
+        distant_draws[1..]
+            .iter()
+            .flatten()
+            .all(|draw| draw.uploaded)
+    );
 }

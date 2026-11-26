@@ -75,9 +75,9 @@ fn single_solid(
 
 struct LegacyTranslucent { visible: Vec<(f64, SectionKey)> }
 impl LegacyTranslucent {
-    fn section_order(
+    fn section_order<const VIEWS: usize>(
         &mut self,
-        sections: &BTreeMap<SectionKey, Resident>,
+        sections: &BTreeMap<SectionKey, Resident<VIEWS>>,
         projection: &TerrainProjection,
     ) -> Vec<SectionKey> {
         let mut additional_tested = 0;

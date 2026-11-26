@@ -49,11 +49,12 @@ support also requires the gameplay and lifecycle checks in the table.
   the same render workload.
 
 The current Cafe presenter accepts one shared-game frame and renders the
-two displays separately. A host terrain fixture already compares two
-moving frustums and their translucent sorts with the existing Cafe
-decision paths. The saved player, input and viewport paths still need
+two displays separately. A host terrain fixture compares up to five
+frustums and their translucent sorts with the existing Cafe decision
+paths. Nearby poses reuse a resident mesh, while distant poses require
+separate resident meshes. The saved player, input and viewport paths still need
 native integration. [Horizon and NX comparison](horizon-nx-comparison.md) ·
-[Two-view terrain fixture](../../wiiu/diagnostics/gx2-split-terrain/README.md)
+[Independent-view terrain fixture](../../wiiu/diagnostics/gx2-split-terrain/README.md)
 
 ## Native viewport fixture
 
