@@ -1,0 +1,108 @@
+--- a/src/Cafe/OS/libs/nsysnet/nsysnet.cpp
++++ b/src/Cafe/OS/libs/nsysnet/nsysnet.cpp
+@@ -14,6 +14,12 @@
+ #define WSAESHUTDOWN ESHUTDOWN
+ #define WSAECONNABORTED ECONNABORTED
+ #define WSAHOST_NOT_FOUND EAI_NONAME
++#define WSAENOBUFS ENOBUFS
++#define WSAEOPNOTSUPP EOPNOTSUPP
++#define WSAEINVAL EINVAL
++#define WSAENOPROTOOPT ENOPROTOOPT
++#define WSAENOTSOCK ENOTSOCK
++#define WSAEFAULT EFAULT
+ #define WSAENOTCONN ENOTCONN
+ 
+ #define GETLASTERR errno
+@@ -92,6 +98,14 @@
+ #define WU_SO_EINPROGRESS	0x0016
+ #define WU_SO_EAFNOSUPPORT  0x0021
+ 
++#define WU_SO_ENOBUFS       1
++#define WU_SO_EOPNOTSUPP    4
++#define WU_SO_ENOPROTOOPT   16
++#define WU_SO_ELOWER        23
++#define WU_SO_ENOTSOCK      24
++#define WU_SO_EFAULT        29
++#define WU_SO_ELIBNOTREADY  43
++
+ #define WU_SO_ESHUTDOWN		0x000F
+ 
+ 
+@@ -486,6 +500,40 @@
+ 	return fcntl(s, F_SETFL, flags);
+ #endif
+ }
++static sint32 nsysnet_setTcpNoDelay(const virtualSocket_t* vs, MPTR optval, sint32 optlen)
++{
++	if (!sockLibReady)
++		return WU_SO_ELIBNOTREADY;
++	if (!vs)
++		return WU_SO_ENOTSOCK;
++	if (optlen != sizeof(sint32))
++		return WU_SO_EINVAL;
++	if (!optval || !memory_isAddressRangeAccessible(optval, sizeof(sint32)))
++		return WU_SO_EFAULT;
++
++	const int mode = memory_readU32(optval) != 0;
++	const sint32 type = vs->type;
++	const sint32 protocol = vs->protocol;
++	if (setsockopt(vs->s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&mode), sizeof(mode)) == 0)
++		return WU_SO_SUCCESS;
++
++	const sint32 error = GETLASTERR;
++	cemuLog_log(LogType::Force, "nsysnet TCP_NODELAY failed: host error {} (type {}, protocol {})", error, type, protocol);
++	switch (error)
++	{
++	case WSAENOBUFS: return WU_SO_ENOBUFS;
++	case WSAEOPNOTSUPP: return WU_SO_EOPNOTSUPP;
++	case WSAEINVAL: return WU_SO_EINVAL;
++	case WSAENOPROTOOPT: return WU_SO_ENOPROTOOPT;
++	case WSAENOTSOCK: return WU_SO_ENOTSOCK;
++	case WSAEFAULT: return WU_SO_EFAULT;
++#if BOOST_OS_UNIX
++	case EBADF: return WU_SO_ENOTSOCK;
++#endif
++	default: return WU_SO_ELOWER;
++	}
++}
++
+ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
+ {
+ 	cemuLog_log(LogType::Socket, "setsockopt({},0x{:x},0x{:05x},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
+@@ -496,6 +544,14 @@
+ 	ppcDefineParamS32(optlen, 4);
+ 
+ 	virtualSocket_t* vs = nsysnet_getVirtualSocketObject(s);
++
++	if (level == WU_IPPROTO_TCP && optname == WU_TCP_NODELAY)
++	{
++		const sint32 error = nsysnet_setTcpNoDelay(vs, PPCInterpreter_getCallParamU32(hCPU, 3), optlen);
++		_setSockError(error);
++		osLib_returnFromFunction(hCPU, error == WU_SO_SUCCESS ? 0 : -1);
++		return;
++	}
+ 	if (!vs)
+ 	{
+ 		cemu_assert_suspicious();
+@@ -579,20 +635,7 @@
+ 		}
+ 		else if (level == WU_IPPROTO_TCP)
+ 		{
+-			hostLevel = IPPROTO_TCP;
+-			if (optname == WU_TCP_NODELAY)
+-			{
+-				if (optlen != 4)
+-					assert_dbg();
+-				sint32 optvalLE = _swapEndianU32(*(uint32*)optval);
+-				u_long mode = optvalLE;  // 1 -> enable, 0 -> disable
+-				if (setsockopt(vs->s, IPPROTO_TCP, TCP_NODELAY, (const char*)&mode, sizeof(u_long)) != 0)
+-					assert_dbg();
+-			}
+-			else
+-			{
+-				cemuLog_logDebug(LogType::Force, "setsockopt(WU_IPPROTO_TCP): Unsupported optname 0x{:08x}", optname);
+-			}
++			cemuLog_logDebug(LogType::Force, "setsockopt(WU_IPPROTO_TCP): Unsupported optname 0x{:08x}", optname);
+ 		}
+ 		else if (level == WU_IPPROTO_IP)
+ 		{

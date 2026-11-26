@@ -128,6 +128,29 @@ RC 38 warm panic. RC 40 reached a different observable boundary.
 Result logging around core resource completion and publication of the
 built-in registry orders can narrow the fresh-entry error.
 
+## TCP_NODELAY host errors
+
+The reservation-corrected multi-core emulator trapped during an RC 46
+offline world entry. The guest passed Cafe option `0x2004` at TCP level 6
+with a four-byte enabled value. The host already mapped it to Winsock
+`TCP_NODELAY`. The breakpoint followed the host call returning an error.
+
+Apply [the socket-option patch](tcp-nodelay-errors-cemu-2.6.patch) to
+the pinned Cemu source to return the translated Cafe error to the guest.
+The optional patch remains local to the emulator. The standalone probe
+uses no connection and checks TCP enable, disable and re-enable, plus
+UDP, invalid descriptor, length and pointer errors.
+
+    bash wiiu/cemu/host-tcp-nodelay-test/build.sh OUTPUT_DIRECTORY
+
+The probe reproduced RPX SHA-256
+`aa47d057eb2ba026feebacbb8adca454cd5e0be978cd308835eecb7dd47279e5`.
+All seven checks passed in multi-core Cemu. The UDP case translated
+Winsock error 10022 to Cafe error 11 and returned to the guest. The
+separate exact RC 46 replay with the repair returned to Night's startup
+error earlier in resource preparation. JIT lifecycle qualification
+remains open. Use the established interpreter for acceptance evidence.
+
 ## Disposable saved-world runs
 
 Prepare a fresh lab from a disposable portable template and an offline world
