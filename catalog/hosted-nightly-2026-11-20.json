@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "90198bbcd8785af9e733b43efc87c990c04ea0cf",
+  "output_tree": "8977f932ca96cae2f7b637c1c143c89f4c1c654b",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -764,6 +764,12 @@
       "sha256": "de4afca1aa5729585da5c927dccdc040837234ff71d28dc79466cef048aa73d0",
       "input_tree": "8707977f795088d55d7ff2d5da385e757e6371b1",
       "output_tree": "90198bbcd8785af9e733b43efc87c990c04ea0cf"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0126-trace-village-forward-streaming.patch",
+      "sha256": "cadcd508c9dd342f4d19827ec01cd0ea42bebb52f863838093e60c651afa1ba6",
+      "input_tree": "90198bbcd8785af9e733b43efc87c990c04ea0cf",
+      "output_tree": "8977f932ca96cae2f7b637c1c143c89f4c1c654b"
     }
   ],
   "candidate": {

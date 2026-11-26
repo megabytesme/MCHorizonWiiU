@@ -1,0 +1,131 @@
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 5d9cc0a..b65fd8b 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -89,9 +89,86 @@ pub struct Flight {
+     /// The world's smoothed tick time each frame (the F3 server line): the
+     /// server thread's when single player runs on one.
+     tick_ms: Vec<f32>,
++    #[cfg(target_os = "cafe")]
++    village_trace: CafeVillageTrace,
++}
++
++#[cfg(target_os = "cafe")]
++#[derive(Default)]
++struct CafeVillageTrace {
++    next: Duration,
++    previously_present: Option<bool>,
++    logged_edges: u8,
++}
++
++#[cfg(target_os = "cafe")]
++impl CafeVillageTrace {
++    fn sample(&mut self, elapsed: Duration, present: bool) -> Option<&'static str> {
++        let previous = self.previously_present.replace(present);
++        if previous.is_some_and(|last| last != present) && self.logged_edges < 2 {
++            self.logged_edges += 1;
++            return Some(if present { "recovered" } else { "lost" });
++        }
++        if elapsed >= self.next {
++            self.next = elapsed + Duration::from_secs(2);
++            return Some("progress");
++        }
++        None
++    }
+ }
+ 
+ impl Game<'_> {
++    #[cfg(target_os = "cafe")]
++    pub(super) fn trace_cafe_village_terrain(&mut self, work: &super::cafe::CafeFrameWork) {
++        if self.options.benchmark.as_deref() != Some("village") {
++            return;
++        }
++        let (Some(flight), Some(camera)) = (&mut self.flight, work.terrain_camera) else {
++            return;
++        };
++        // The raw request is the timed route. Setup sends a short non-raw hold.
++        if !flight.raw {
++            return;
++        }
++        let Some(sample) = work.gpu_sample else {
++            return;
++        };
++        let elapsed = flight.started.elapsed();
++        let present = work.presented == [true; 2] && !work.terrain_sections.contains(&0);
++        let Some(reason) = flight.village_trace.sample(elapsed, present) else {
++            return;
++        };
++        let [x, _, z] = camera;
++        let dx = flight.to.x - flight.from.x;
++        let dz = flight.to.z - flight.from.z;
++        let distance = dx.hypot(dz);
++        if !distance.is_finite() || distance == 0.0 {
++            return;
++        }
++        let mut resident = 0;
++        let mut lit = 0;
++        // One bit per position at the rendered camera and 1, 2 or 4 chunks
++        // ahead. This probes the route centreline without walking resident data.
++        for (bit, blocks) in [0.0, 16.0, 32.0, 64.0].into_iter().enumerate() {
++            let cx = ((x + blocks * dx / distance).floor() as i32) >> 4;
++            let cz = ((z + blocks * dz / distance).floor() as i32) >> 4;
++            resident |= u8::from(self.world.chunks.contains_key(&(cx, cz))) << bit;
++            lit |= u8::from(self.streaming.is_lit(cx, cz)) << bit;
++        }
++        log::info!(
++            "Cafe Village streaming seq={} elapsed_ms={} reason={} camera={x:.2},{z:.2} sections={}/{} columns={} client_pending={} uploads={} remote_pending={} forward_resident={resident:x} forward_lit={lit:x}",
++            sample.sequence(),
++            elapsed.as_millis(),
++            reason,
++            work.terrain_sections[0],
++            work.terrain_sections[1],
++            self.world.chunks.len(),
++            self.streaming.pending(),
++            self.pending_uploads.len(),
++            self.remote_backlog(),
++        );
++    }
++
+     /// Move the camera along the running flight; reply when it ends.
+     pub(super) fn advance_flight(&mut self) {
+         let tick_ms = self
+@@ -1308,6 +1385,8 @@ impl Game<'_> {
+                     raw: words.get(9) == Some(&"raw"),
+                     reply: reply.clone(),
+                     tick_ms: Vec::new(),
++                    #[cfg(target_os = "cafe")]
++                    village_trace: CafeVillageTrace::default(),
+                 });
+                 Ok(None)
+             }
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 3eefb02..0e703a3 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -872,6 +872,8 @@ impl CafeGameSession<'_> {
+         let redraw = redraw.elapsed();
+         let work = backend.take_frame_work();
+         let end = Instant::now();
++        #[cfg(target_os = "cafe")]
++        self.game.trace_cafe_village_terrain(&work);
+         if self.game.cafe_drs_trial_active() {
+             let graphics = &self.game.settings.horizon;
+             let frame = end.duration_since(start);
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index f51e091..bdc6206 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -22,6 +22,13 @@ pub struct CafeGpuSample {
+ 
+ const _: () = assert!(std::mem::size_of::<CafeGpuSample>() == 72);
+ 
++impl CafeGpuSample {
++    #[cfg(target_os = "cafe")]
++    pub(crate) fn sequence(&self) -> u32 {
++        self.sequence
++    }
++}
++
+ struct GpuTimingObservation {
+     sample: CafeGpuSample,
+     at: Instant,
