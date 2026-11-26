@@ -88,6 +88,21 @@ def wait_for_terminal(call, accepted, timeout, receipt, clock, pause):
     raise BenchmarkWaitTimeout("Night did not report the benchmark terminal at Home within the polling window")
 
 
+def cancel_owned_run(call, accepted, receipt):
+    run_id = accepted.get("run_id")
+    if run_id is None:
+        return
+    try:
+        state = benchmark_status(call, "wiiu_benchmark_cancel", {"run_id": run_id})
+        if ((identity(state), state.get("run_id")) != (identity(accepted), run_id)
+                or not (state["phase"] == "cancelled" or state["cancel_requested"])):
+            raise ValueError("Night returned a different benchmark cancellation")
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as error:
+        receipt["cancellation_error"] = str(error)
+    else:
+        receipt["cancellation_status"] = state
+
+
 def artifact_ids(state, existing):
     scenario, profile = state["scenario"], state["profile"]
     report_id, capture_id = state["report_id"], state["capture_id"]
@@ -140,7 +155,11 @@ def collect(call, instance, scenario, profile, timeout, receipt, *, clock=time.m
         raise RuntimeError("Night did not acknowledge the requested queued benchmark")
     receipt["observations"].append({"seconds_after_start": 0, **accepted})
 
-    terminal = wait_for_terminal(call, accepted, timeout, receipt, clock, pause)
+    try:
+        terminal = wait_for_terminal(call, accepted, timeout, receipt, clock, pause)
+    except (BenchmarkWaitTimeout, KeyboardInterrupt):
+        cancel_owned_run(call, accepted, receipt)
+        raise
     if terminal["phase"] != "completed":
         raise RuntimeError(f"Night benchmark ended in phase {terminal['phase']}")
     report_id, capture_id = artifact_ids(terminal, existing)
@@ -158,7 +177,7 @@ def main():
         description=__doc__,
         epilog="Use the paired profile exclusively during this run. The polling window is checked "
                "between synchronous MCP calls. On timeout the waiter exits and leaves the console run "
-               "alone because the current cancel tool has no run identity.",
+               "alone when Night supplied no run ID.",
     )
     parser.add_argument("--codex-home", type=Path, required=True)
     parser.add_argument("--ca", type=Path, required=True)

@@ -61,6 +61,9 @@ class Fixture:
         if tool == "wiiu_benchmark_start":
             self.test.assertEqual(args, {"scenario": SCENARIO, "profile": PROFILE})
             return text_reply(self.start)
+        if tool == "wiiu_benchmark_cancel":
+            self.test.assertEqual(args, {"run_id": self.start["run_id"]})
+            return text_reply(row("running", run_id=args["run_id"], cancel_requested=True))
         if tool == "wiiu_benchmark_report":
             self.test.assertEqual(args, {"instance": INSTANCE, "id": REPORT})
             self.now += 0.25
@@ -160,6 +163,17 @@ class LifecycleTests(unittest.TestCase):
         _, _, _, capture, _ = fixture.collect()
         self.assertEqual(capture, fixture.binary)
         self.assertEqual(fixture.receipt["terminal_status"]["run_id"], run)
+
+    def test_wait_timeout_cancels_only_a_returned_run_id(self):
+        run = "a" * 32
+        fixture = Fixture(self, [row("running", run_id=run)])
+        fixture.start = row("queued", run_id=run)
+        with self.assertRaises(BenchmarkWaitTimeout):
+            fixture.collect(timeout=1.0)
+        self.assertEqual(fixture.calls[-1], ("wiiu_benchmark_cancel", {"run_id": run}))
+        self.assertEqual(fixture.receipt["cancellation_status"]["run_id"], run)
+        self.assertTrue(fixture.receipt["cancellation_status"]["cancel_requested"])
+        self.assertNotIn("wiiu_benchmark_report", fixture.tools())
 
     def test_wait_timeout_keeps_last_observation_and_leaves_the_run_alone(self):
         fixture = Fixture(self, [row("running")])

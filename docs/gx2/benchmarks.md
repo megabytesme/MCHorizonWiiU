@@ -88,7 +88,8 @@ the JSON report, HZP3 capture and a receipt in the new directory. The receipt
 keeps the host polling and download times separate from the game's measured
 interval. Reserve the pairing profile and benchmark launcher for this run.
 If the polling deadline expires, the receipt records the last observed
-state and Night keeps running the benchmark.
+state. When Night supplied an owned run ID, the runner requests cancellation
+for that ID and records the reply. On RC 47, the benchmark continues in Night.
 
 ## Disposable-world lifecycle
 
