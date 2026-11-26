@@ -38,8 +38,9 @@ fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38
   resource generation. Compare first entry, warm reopen and peak heap
   with identical archives and cache states. [Handoff experiment](https://github.com/megabytesme/MCHorizonWiiU/blob/codex/loading-cpu-handoff/docs/gx2/loading-performance.md#integrated-server-cpu-handoff-experiment)
 - A host-only stock HUD seed restored a 112 MiB atlas byte-for-byte from
-  9.53 MB of retained data and recreated the session's mutable HUD state.
-  Native reuse needs a verified archive identity and bounded font setup.
+  9.53 MB of retained data. The same verified archive descriptor backed
+  the rebuilt font, and a replacement at the same path invalidated the
+  seed. Cafe needs the corresponding Night lifetime and mapped upload.
   [Stock HUD seed fixture](../../wiiu/diagnostics/stock-hud-seed/README.md)
 - The RC 40 package builds with the opt-in terrain retirement path and
   prepared server resource reuse. Night passed the independent Cemu

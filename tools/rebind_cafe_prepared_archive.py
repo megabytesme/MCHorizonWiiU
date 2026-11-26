@@ -130,7 +130,11 @@ def preflight(preparation, archive, guest_root, recipe, expected_sha256=None, pa
 
 
 def rebind(preparation, output, guest_root):
-    guest = guest_path(guest_root).encode("utf-8")
+    write_rebound_archive(preparation, output, guest_path(guest_root))
+
+
+def write_rebound_archive(preparation, output, root):
+    guest = root.encode("utf-8")
     manifest = (preparation / MANIFEST).read_bytes()
     if output.exists() or output.is_symlink():
         raise ValueError("choose a new output file for the private archive")
