@@ -609,6 +609,9 @@ resource schema and release pins. [Loading record](loading-performance.md)
 
 ## RC 34 follow-up from physical RC 33
 
+The [RC 34 validation record](rc34-validation.md) identifies the frozen
+package and its verification scope.
+
 The RC 33 direct capture puts texture work at about 7.5 ms per pair and
 pre-native HUD, entity and particle construction below 1 ms combined in
 the 75% stock window. The outer redraw still has about 17 ms beyond those

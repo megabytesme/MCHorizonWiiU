@@ -224,6 +224,11 @@ The first sampled hosted menu after an input was 293.602 s from entry.
 That input was deliberately delayed for the stationary captures. The
 earliest time the game could accept input was untimed.
 
+The PC received the authenticated Play acknowledgement about 0.31 s
+before it received the hosted-entry serial record. This is a host
+observation and includes serial delivery. The deployment preflight was
+verified separately before launch.
+
 After the first durable save barrier, Night returned in 8.341 s on the
 guest clock. The GX2 bulk heap recovered 234,880,920 bytes free and a
 234,880,896-byte largest block. Process Rust requested memory after

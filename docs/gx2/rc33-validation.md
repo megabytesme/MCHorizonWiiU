@@ -103,8 +103,10 @@ The first session reached the gameplay frame in 140.550 s and the
 same-process reopen took 144.354 s. The reopen preserved the position,
 yaw and pitch and reused 28,639 sprite-cache entries with two misses.
 Both saves recovered 234,880,920 bytes of GX2 bulk memory with a
-234,880,896-byte largest aligned block. Save & Quit returned to Night,
-then Close Horizon returned to the Wii U Menu. The FAT32 card held two
+234,880,896-byte largest aligned block. Both sessions logged nonzero
+AX PCM. Controller input opened the inventory and changed fixed scale
+in game. Save & Quit returned to Night, then Close Horizon returned to
+the Wii U Menu. The FAT32 card held two
 distinct, readable HZP3 session snapshots, with the first retained as
 `.previous` after the second publication. TV screen-pixel stills
 confirmed textured gameplay and the direct inventory.

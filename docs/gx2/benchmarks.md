@@ -334,8 +334,16 @@ comparison. Record the package, archive, graphics and fixture digests
 with the serial boundary. The [preflight procedure](../builder.md#prepare-a-copied-archive-for-an-isolated-game-path)
 covers the archive and its deployment copy.
 
-1. Start the test instance with an empty instance-local sprite cache and
-   the verified archive. With profile mode `4`, collect application start,
+The profiler reads its two mode bytes at startup. The DRS capability and
+camera-height admission marker are cached on first use for the life of
+the application. Archive the captures and close Horizon before changing
+any of these markers. The ordinary fixed scale setting can change in
+game. Keep the DRS option off during a fixed-scale or shared-HUD run.
+
+1. Start the test instance with the verified archive and record the
+   existing sprite-cache state. Use a separate disposable fixture with
+   an empty cache when measuring cold sprite preparation. With profile
+   mode `4`, collect application start,
    Night readiness, Play, hosted entry, first terrain, first accepted
    input and settled terrain. Open the same saved world again in the same
    process after a durable Save & Quit. After leaving the application,
