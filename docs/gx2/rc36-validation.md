@@ -14,7 +14,11 @@ Port recipe integrated at `aa49dd1b4a6`, recipe SHA-256
 `tools/build_cafe_game_isolated.sh --hosted-nightly`, the pinned source
 checkout and Cafe overlay inputs. Cargo used 32 jobs and completed the
 release build in 24 minutes 9 seconds. Native packaging verified the
-imports and relocations.
+imports and relocations. The independent build at
+`/var/tmp/mchorizon-rc36-root.BTvLBV0f/build-final-b` used separate
+prepared Cafe inputs and a separate prior cache. It completed the Cargo
+release build in 21 minutes 59 seconds. The resulting RPX and WUHB bytes,
+embedded build identities and Aroma estimate matched the first build.
 
 | Component | Identity |
 | --- | --- |

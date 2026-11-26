@@ -58,6 +58,21 @@ receives. A hard end-to-end request deadline, a send deadline and
 interruption of in-progress service calls remain open. Keep the diagnostic
 separate from a live Microsoft identity.
 
+## Controlled online-mode login
+
+The user signed in to a test account through Night in a disposable Cemu
+profile. Night refreshed that same profile after opening the exact RC 36
+RPX. A loopback vanilla Java 26.3 server with protocol 777 and both online
+mode and secure profiles enabled verified the account through Mojang's
+session service. The server's default allowlist then refused entry. The
+authorized test profile was added to that fixture's allowlist and the
+full world-entry test was retried.
+
+A separate Cafe server-side HTTPS consumer emitted a public-key fetch
+warning during offline integrated-server startup. Its agent is in
+`horizon-server-files/src/profiles.rs` and still uses the overall socket
+timeout in RC 36. That warning has a separate validation path.
+
 ## Online-mode acceptance
 
 Use Night's normal sign-in or unlock an existing selected profile in the
