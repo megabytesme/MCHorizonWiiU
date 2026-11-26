@@ -1,0 +1,62 @@
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+--- a/wiiu/loading_host/world_scale.c
++++ b/wiiu/loading_host/world_scale.c
+@@ -301,3 +301,41 @@
+    composite_world(scale, &scale->outputs[0], &scale->shared_geometry, viewport);
+    return true;
+ }
++
++#ifdef HORIZON_GX2_PREHAND_DIAGNOSTIC
++static void bind_retained_world(HorizonGx2WorldScale *scale, uint32_t target)
++{
++   WorldTarget *output = &scale->outputs[target];
++   GX2SetContextState(target == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
++   GX2SetColorBuffer(&output->color, GX2_RENDER_TARGET_0);
++   GX2SetDepthBuffer(&output->depth);
++   const uint32_t w = output->color.surface.width, h = output->color.surface.height;
++   GX2SetViewport(0, 0, w, h, 0.0f, 1.0f);
++   GX2SetScissor(0, 0, w, h);
++}
++
++bool horizon_gx2_world_scale_seed_gamepad_before_hand(HorizonGx2WorldScale *scale,
++                                                      const uint32_t gamepad[4])
++{
++   if (!scale || !gamepad || !scale->shared_width || !scale->shared_height ||
++       scale->shared_width != gamepad[2] || scale->shared_height != gamepad[3])
++      return false;
++   WorldTarget *tv = &scale->outputs[0];
++   const GX2Surface *dst = &scale->outputs[1].color.surface;
++   const uint32_t offscreen[4] = {0, 0, dst->width, dst->height};
++   bind_retained_world(scale, 1);
++   // Enqueue the crop on the scaled target. The stock compositor invalidates
++   // TV color before its texture read.
++   composite_world(scale, tv, &scale->shared_geometry, offscreen);
++   // Schedule the reciprocal texture-to-color barrier before the TV hand.
++   GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE,
++                 tv->color.surface.image, tv->color.surface.imageSize);
++   bind_retained_world(scale, 0);
++   return true;
++}
++
++void horizon_gx2_world_scale_resume_seeded_gamepad(HorizonGx2WorldScale *scale)
++{
++   bind_retained_world(scale, 1);
++}
++#endif
+diff --git a/wiiu/loading_host/world_scale.h b/wiiu/loading_host/world_scale.h
+--- a/wiiu/loading_host/world_scale.h
++++ b/wiiu/loading_host/world_scale.h
+@@ -31,3 +31,13 @@
+  * the cropped world color. The GamePad HUD is still drawn by its caller. */
+ bool horizon_gx2_world_scale_composite_shared(HorizonGx2WorldScale *scale,
+                                               const uint32_t viewport[4]);
++
++#ifdef HORIZON_GX2_PREHAND_DIAGNOSTIC
++/* Only from the TV scaled-world callback after finishing world color. A true
++ * result seeds the scaled GamePad color and restores both TV attachments. */
++bool horizon_gx2_world_scale_seed_gamepad_before_hand(HorizonGx2WorldScale *scale,
++                                                      const uint32_t gamepad[4]);
++/* Only after a same-pair seed, during the GamePad callback. Keep the seeded
++ * color. The native hand pass resets this target's depth before drawing. */
++void horizon_gx2_world_scale_resume_seeded_gamepad(HorizonGx2WorldScale *scale);
++#endif

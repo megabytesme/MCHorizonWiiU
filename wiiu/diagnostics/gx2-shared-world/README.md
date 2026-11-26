@@ -48,3 +48,26 @@ at the fitted TV and GamePad viewports. It also measures the change in
 outline width and screen-effect coordinates under a crop. Compare
 first-person pixels after per-output hand rendering and keep active
 outlines on independent world rendering. [First-person fixture](first-person/README.md)
+
+## Pre-hand world color
+
+Apply `prehand-world-scale.patch` after `crop-tv-world-for-gamepad.patch`.
+Pass `--prehand` after the source and output paths when running
+`build.sh`. The fixture seeds the scaled GamePad target before TV hand
+rendering, then draws the native hand and HUD independently for each
+output. The link wrapper counts application and WHB `GX2DrawDone` calls
+during the pair. The final finish and staged readback still retire the work.
+
+The RC 46-based RPX
+`3bf0ad1665ccdbc8c4dc83a91a072e192913e643f6459d3a6721eaa75be158fd`
+first ran the shared arm in a fresh Cemu process. Its independent hand,
+depth, alpha and HUD samples passed for TV 1920×1080 and GamePad 854×480.
+The subsequent matched pairs reported zero changed TV pixels and 960
+or 2,646 changed GamePad pixels, all within three pixels of expected
+world edges. The 16,359-pixel TV-only hand marker was absent from
+GamePad. The shared pairs drew one world and two hands and recorded
+zero linked draw waits between the outputs. The title exited through
+`coreinit.exit(0)`. The harness needed a targeted host-process cleanup.
+
+Physical timing, 720p pixels and real resource-pack and atlas updates
+remain open. The diagnostic build defines the pre-hand functions.
