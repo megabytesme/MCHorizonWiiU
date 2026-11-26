@@ -23,5 +23,14 @@ about 2.34 ms at the median. Measure `4` and `4v` with matched geometry,
 movement, both displays and intact shader coverage to establish any
 console gain.
 
-This recipe remains in source qualification. The integrated native
-package, hosted pixel comparison and physical cadence are pending.
+The pinned Cafe Toolchain 1.1.0 native build on Ben-Desktop passed with
+32 jobs and Cargo release took 18 min 48 s. Both package hashes passed.
+
+| Package | SHA-256 |
+| --- | --- |
+| RPX | `2fd4a7d0829d38a10bb4b3e3876973318a6b31b81cacf3c29af1511b5ba20404` |
+| WUHB | `cb986837f8fd72898bcec5fe621d987d12de8a33717d1d128c3cb1734b267ee3` |
+
+The estimate leaves 12,672,768 bytes in the observed Aroma code heap.
+Exact-package bookmark, isolated world, guarded submission and physical
+cadence qualification remain pending.
