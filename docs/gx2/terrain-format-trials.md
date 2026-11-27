@@ -60,6 +60,17 @@ The default-off gameplay bridge budgets the remap alongside native storage
 and falls back when a section would save no bytes. Native gameplay and
 physical timing remain open.
 
+## Tiled atlas storage
+
+The stock-sized 1D thin-tiled atlas passed exact dual-output RGBA,
+padding and animation checks in Cemu. A same-size host fixture streamed
+all 1,301 sprite layers through one 17,424-byte cell buffer. The layout
+adds 32,768 bytes to the existing single linear allocation. Four
+animated cells used 36 dirty spans instead of 264, with more bytes
+flushed and more CPU conversion work in the host control. Physical
+sampling time and safe gameplay mutation still govern adoption.
+[Tiled atlas fixture](../../wiiu/diagnostics/gx2-tiled-terrain-atlas/README.md)
+
 ## Greedy meshing eligibility
 
 The current packed terrain UVs encode one repeat below 2.0. Greedy runs

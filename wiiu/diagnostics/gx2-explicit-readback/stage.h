@@ -52,9 +52,10 @@ static void stage_observe(Stage *stage, OSTime submitted, OSTime retired)
    if (retired > stage->watermark_floor) stage->watermark_floor = retired;
 }
 
-static enum ReadStatus stage_read(Stage *stage, const GX2ColorBuffer *color,
-                                  uint8_t *rgba, size_t length)
+static inline enum ReadStatus stage_read_with_receipt(Stage *stage, const GX2ColorBuffer *color,
+                                                      uint8_t *rgba, size_t length, OSTime *receipt)
 {
+   if (receipt) *receipt = 0;
    if (stage->copy_pending) return READ_BUSY;
    const GX2Surface *src = &color->surface;
    if (!src->image || !src->width || !src->height ||
@@ -114,5 +115,12 @@ static enum ReadStatus stage_read(Stage *stage, const GX2ColorBuffer *color,
    if (!guard_matches(guard_start) || !guard_matches(guard_end)) return READ_COPY_GUARD;
    for (uint32_t y = 0; y < dst.height; ++y)
       memcpy(rgba + y * row_bytes, pixels + (size_t)y * dst.pitch * 4, row_bytes);
+   if (receipt) *receipt = submitted;
    return READ_OK;
+}
+
+static inline enum ReadStatus stage_read(Stage *stage, const GX2ColorBuffer *color,
+                                         uint8_t *rgba, size_t length)
+{
+   return stage_read_with_receipt(stage, color, rgba, length, NULL);
 }

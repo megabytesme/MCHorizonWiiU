@@ -142,6 +142,10 @@ before expanding that architecture.
   qualifying windows. The physical census and the separate signed
   atlas same-build comparison are staged. [RC 62 evidence](rc62-qualification.md)
   · [Display-list fixture](../../wiiu/diagnostics/gx2-solid-display-list/README.md)
+- The stock-sized tiled atlas matched linear RGBA on both outputs
+  across animation updates. A one-cell upload conversion is feasible.
+  Physical sampling time and retirement of gameplay texture updates
+  still need measurement. [Tiled atlas fixture](../../wiiu/diagnostics/gx2-tiled-terrain-atlas/README.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

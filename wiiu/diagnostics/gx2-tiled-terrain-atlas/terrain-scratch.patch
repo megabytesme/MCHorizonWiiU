@@ -1,0 +1,41 @@
+--- a/terrain.c
++++ b/terrain.c
+@@ -1,0 +2 @@
++#include "layout.h"
+@@ -395 +396,2 @@
+-   s->tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
++   const bool tiled = storage && fixture_atlas_layout == AtlasTile1D;
++   s->tileMode = tiled ? GX2_TILE_MODE_TILED_1D_THIN1 : GX2_TILE_MODE_LINEAR_ALIGNED;
+@@ -400 +402,10 @@
+-      if (!s->imageSize || !s->alignment || s->mipmapSize) return -3;
++      OSReport("GX2 tile atlas WUT requested=%u mode=%u size=%u pitch=%u width=%u height=%u alignment=%u swizzle=%08x\n",
++               (unsigned)fixture_atlas_layout, (unsigned)s->tileMode, s->imageSize, s->pitch,
++               s->width, s->height, s->alignment, s->swizzle);
++      if (width != WIDTH || height != HEIGHT || !s->imageSize || !s->alignment ||
++          (s->alignment & (s->alignment - 1)) || s->alignment < 32 || s->mipmapSize ||
++          s->pitch != PITCH ||
++          s->tileMode != (tiled ? GX2_TILE_MODE_TILED_1D_THIN1 : GX2_TILE_MODE_LINEAR_ALIGNED) ||
++          s->imageSize != (tiled ? TILED_BYTES : LINEAR_BYTES) ||
++          (tiled && (GX2GetSurfaceSwizzle(s) != 0 || (s->swizzle & 0x700))))
++         return -3;
+@@ -412,0 +424,4 @@
++      if (s->image != backing || s->pitch != PITCH ||
++          s->imageSize != (tiled ? TILED_BYTES : LINEAR_BYTES) ||
++          s->tileMode != (tiled ? GX2_TILE_MODE_TILED_1D_THIN1 : GX2_TILE_MODE_LINEAR_ALIGNED))
++         return -3;
+@@ -504 +519,2 @@
+-   uint8_t *pixels = GX2RLockSurfaceEx(s, 0, texture_flags);
++   const bool tiled = fixture_atlas_layout == AtlasTile1D;
++   uint8_t *pixels = tiled ? t->atlas_storage : GX2RLockSurfaceEx(s, 0, texture_flags);
+@@ -507 +523 @@
+-   memset(pixels, 0, (size_t)s->pitch * height * 4);
++   memset(pixels, 0xa9, s->imageSize);
+@@ -509 +525,7 @@
+-   GX2RUnlockSurfaceEx(s, 0, texture_flags);
++   if (tiled) {
++      DCStoreRange(pixels, s->imageSize);
++      OSMemoryBarrier();
++      GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, pixels, s->imageSize);
++   } else {
++      GX2RUnlockSurfaceEx(s, 0, texture_flags);
++   }
