@@ -1,0 +1,87 @@
+diff --git a/crates/horizon-world/src/worldgen/live.rs b/crates/horizon-world/src/worldgen/live.rs
+index 66f5f5d..6017d87 100644
+--- a/crates/horizon-world/src/worldgen/live.rs
++++ b/crates/horizon-world/src/worldgen/live.rs
+@@ -152,6 +152,9 @@ impl LiveFeatures {
+             .build(|name, _| resources.placed.contains_key(name).then(|| name.to_owned()))
+             .map_err(|e| resource(format!("feature tags: {e:?}")))?
+             .tags;
++        // This memo belongs only to the immutable input bundle while this registry builds.
++        let mut placed_bone_meal = HashMap::<&str, Vec<&str>>::new();
++        let mut memo_names_left = 4096;
+         let mut bone_meal = Vec::with_capacity(data.biome_names().len());
+         for i in 0..data.biome_names().len() {
+             let biome: Value = serde_json::from_str(data.biome_json(BiomeId(i as u32)))?;
+@@ -171,30 +174,53 @@ impl LiveFeatures {
+                 };
+                 for entry in entries {
+                     let name = super::tags::identifier(&entry)?;
+-                    let Some(placed) = resources
+-                        .placed
+-                        .get(&name)
+-                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+-                    else {
++                    let Some((placed_key, text)) = resources.placed.get_key_value(&name) else {
+                         continue;
+                     };
+-                    // PlacedFeature.getFeatures: its feature, then that feature's children.
+-                    let mut found = Vec::new();
+-                    match &placed["feature"] {
+-                        Value::String(feature) => {
+-                            let feature = super::tags::identifier(feature)?;
+-                            found.push(feature.clone());
+-                            if let Some(child) = resources
+-                                .features
+-                                .get(&feature)
+-                                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+-                            {
+-                                nested_features(&child, &resources.features, 0, &mut found);
++                    if let Some(found) = placed_bone_meal.get(placed_key.as_str()) {
++                        list.extend(found.iter().map(|name| (*name).to_owned()));
++                        continue;
++                    }
++
++                    let first_new = list.len();
++                    if let Ok(placed) = serde_json::from_str::<Value>(text) {
++                        // PlacedFeature.getFeatures: its feature, then that feature's children.
++                        let mut found = Vec::new();
++                        match &placed["feature"] {
++                            Value::String(feature) => {
++                                let feature = super::tags::identifier(feature)?;
++                                found.push(feature.clone());
++                                if let Some(child) = resources
++                                    .features
++                                    .get(&feature)
++                                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
++                                {
++                                    nested_features(&child, &resources.features, 0, &mut found);
++                                }
+                             }
++                            inline => nested_features(inline, &resources.features, 0, &mut found),
++                        }
++                        list.extend(found.into_iter().filter(|f| bone_meal_tag.contains(f)));
++                    }
++
++                    // Keep only references to tag names. Pack-defined workloads outside the
++                    // memo budget still use the same traversal.
++                    let new_names = list.len() - first_new;
++                    if placed_bone_meal.len() < 1024 && new_names <= memo_names_left {
++                        let mut names = Vec::new();
++                        if names.try_reserve_exact(new_names).is_ok()
++                            && placed_bone_meal.try_reserve(1).is_ok()
++                        {
++                            names.extend(list[first_new..].iter().map(|name| {
++                                bone_meal_tag
++                                    .get(name)
++                                    .expect("all bone meal names come from this tag")
++                                    .as_str()
++                            }));
++                            placed_bone_meal.insert(placed_key.as_str(), names);
++                            memo_names_left -= new_names;
+                         }
+-                        inline => nested_features(inline, &resources.features, 0, &mut found),
+                     }
+-                    list.extend(found.into_iter().filter(|f| bone_meal_tag.contains(f)));
+                 }
+             }
+             bone_meal.push(list);
