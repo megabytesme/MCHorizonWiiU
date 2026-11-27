@@ -1,0 +1,175 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 52977228054578f35e205a417875046f00bf49a4..2b50e8609e463d2bf532be462c54b03d52097c46 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -64,6 +64,10 @@ enum { GPU_PASS_COUNT = 7, GPU_PASS_SAMPLE_PERIOD = 120 };
+ static GpuCycleSlot gpu_pass_slots[2][GPU_PASS_COUNT];
+ static uint32_t gpu_pass_masks[2];
+ static bool gpu_pass_enabled, gpu_pass_active;
++enum { GROUPED_RETIREMENT_PERIOD = 120, GROUPED_RETIREMENT_CAPACITY = 32 };
++static bool grouped_retirement_enabled;
++static uint32_t grouped_retirement_count;
++static HorizonGx2GroupedRetirement grouped_retirement[GROUPED_RETIREMENT_CAPACITY];
+ 
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+@@ -362,7 +366,14 @@ bool horizon_gx2_profile_grouped_present(bool screenshot)
+             fclose(file);
+          }
+       }
+-      if (requested) OSReport("Horizon GX2 grouped pair trial requested\n");
++      if (requested) {
++         OSReport("Horizon GX2 grouped pair trial requested\n");
++         file = fopen(ROOT "gx2-grouped-retirement.enable", "rb");
++         if (file) {
++            grouped_retirement_enabled = true;
++            fclose(file);
++         }
++      }
+    }
+ 
+    static bool reported_screenshot;
+@@ -373,6 +384,56 @@ bool horizon_gx2_profile_grouped_present(bool screenshot)
+    return requested && !screenshot;
+ }
+ 
++HorizonGx2GroupedRetirement *horizon_gx2_profile_grouped_retirement_sample(void)
++{
++   if (!grouped_retirement_enabled || history != &process_history || !recording ||
++       current.phase != PLAYING_PHASE || history->total % GROUPED_RETIREMENT_PERIOD != 0 ||
++       grouped_retirement_count >= GROUPED_RETIREMENT_CAPACITY)
++      return NULL;
++   HorizonGx2GroupedRetirement *sample = &grouped_retirement[grouped_retirement_count++];
++   *sample = (HorizonGx2GroupedRetirement){
++      .sequence = history->total,
++      .start_ticks = started - history->epoch,
++   };
++   return sample;
++}
++
++static const char *grouped_retirement_class(const HorizonGx2GroupedRetirement *sample)
++{
++   if (!sample->draw_done) return "invalid-draw-done";
++   if (sample->before_flush <= 0 || sample->submitted <= sample->before_flush)
++      return "invalid-flush-token";
++   if (sample->retired_after_flush < 0 || sample->retired_after_flush > sample->submitted ||
++       sample->submitted_after_draw_done < sample->submitted ||
++       sample->retired_after_draw_done < sample->retired_after_flush ||
++       sample->retired_after_draw_done != sample->submitted_after_draw_done)
++      return "invalid-retirement";
++   if (!sample->accepted) return "invalid-pair-rejected";
++   return sample->retired_after_flush < sample->submitted ? "pending-after-flush" : "retired-after-flush";
++}
++
++static void report_grouped_retirement(void)
++{
++   if (history != &process_history) return;
++   for (uint32_t i = 0; i < grouped_retirement_count; ++i) {
++      const HorizonGx2GroupedRetirement *sample = &grouped_retirement[i];
++      // Match the existing serial convention for 64-bit fields.
++      char line[384];
++      snprintf(line, sizeof(line),
++               "Horizon GX2 grouped queue retirement seq=%u start_ticks=%llu class=%s "
++               "before_flush=%lld submitted=%lld retired_at_flush=%lld "
++               "submitted_after_draw_done=%lld retired_after_draw_done=%lld "
++               "draw_done=%u paired_accept=%u\n",
++               sample->sequence, (unsigned long long)sample->start_ticks,
++               grouped_retirement_class(sample), (long long)sample->before_flush,
++               (long long)sample->submitted, (long long)sample->retired_after_flush,
++               (long long)sample->submitted_after_draw_done, (long long)sample->retired_after_draw_done,
++               (unsigned)sample->draw_done, (unsigned)sample->accepted);
++      OSReport("%s", line);
++   }
++   grouped_retirement_count = 0;
++}
++
+ bool horizon_gx2_profile_skip_terrain_waits(void)
+ {
+    if (!skip_terrain_waits) return false;
+@@ -909,6 +970,7 @@ void horizon_gx2_profile_checkpoint_session(void)
+       if (history == &process_history) horizon_worker_schedule_report();
+    }
+    const uint32_t presents = history->phase_frames[PLAYING_PHASE];
++   if (grouped_retirement_count != 0) report_grouped_retirement();
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 70b3063924cdd81efbb4d5244e21573527243e0e..5d8faaa2ba3303dd7de028c33cec9a96499b8354 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -48,6 +48,14 @@ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_grouped_present(bool screenshot);
++typedef struct {
++   uint32_t sequence;
++   uint64_t start_ticks;
++   int64_t before_flush, submitted, retired_after_flush;
++   int64_t submitted_after_draw_done, retired_after_draw_done;
++   bool draw_done, accepted;
++} HorizonGx2GroupedRetirement;
++HorizonGx2GroupedRetirement *horizon_gx2_profile_grouped_retirement_sample(void);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ /* 0 is off, 1 forces both waits, 2 permits the verified TV-only skip. */
+ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 24135ec52897211c16af0d39967cbde12bf77008..651fe292cbea4a2c96b00ba7075cfc0133b8b84a 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -8,8 +8,10 @@
+ #include <whb/gfx.h>
+ #include <gx2/clear.h>
+ #include <gx2/context.h>
++#include <gx2/display.h>
+ #include <gx2/event.h>
+ #include <gx2/state.h>
++#include <gx2/swap.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/time.h>
+ #include <coreinit/thread.h>
+@@ -268,6 +270,22 @@ static int reject_grouped(OSTime flip_wait, bool gpu_sample, const uint32_t dime
+    return result;
+ }
+ 
++/* Exact WUT 1.9.2 WHBGfxFinishRender order, sampled only in grouped presents.
++ * Read-only observations preserve the original acceptance and recovery rules. */
++static void grouped_finish_observed(HorizonGx2GroupedRetirement *sample)
++{
++   GX2SwapScanBuffers();
++   sample->before_flush = GX2GetLastSubmittedTimeStamp();
++   GX2Flush();
++   sample->submitted = GX2GetLastSubmittedTimeStamp();
++   sample->retired_after_flush = GX2GetRetiredTimeStamp();
++   sample->draw_done = GX2DrawDone();
++   sample->submitted_after_draw_done = GX2GetLastSubmittedTimeStamp();
++   sample->retired_after_draw_done = GX2GetRetiredTimeStamp();
++   GX2SetTVEnable(TRUE);
++   GX2SetDRCEnable(TRUE);
++}
++
+ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+                             const uint32_t opaque_viewports[8], uint64_t *retired_pair,
+                             bool *verified_finish)
+@@ -338,14 +356,19 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
++   HorizonGx2GroupedRetirement *sample = horizon_gx2_profile_grouped_retirement_sample();
+    stamp = horizon_gx2_profile_stamp();
+    const OSTime before_finish = GX2GetLastSubmittedTimeStamp();
+    const OSTime finish_start = OSGetTime();
+-   WHBGfxFinishRender();
++   if (sample) grouped_finish_observed(sample);
++   else WHBGfxFinishRender();
+    const OSTime waited = flip_wait + OSGetTime() - finish_start;
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+-   if (submitted <= 0 || submitted <= before_finish || GX2GetRetiredTimeStamp() < submitted) {
++   const bool accepted = submitted > 0 && submitted > before_finish &&
++                         GX2GetRetiredTimeStamp() >= submitted;
++   if (sample) sample->accepted = accepted;
++   if (!accepted) {
+       report_grouped(GROUPED_FINISH_UNVERIFIED, "swap issued, final GPU retirement unverified");
+       return reject_grouped(waited, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
+    }

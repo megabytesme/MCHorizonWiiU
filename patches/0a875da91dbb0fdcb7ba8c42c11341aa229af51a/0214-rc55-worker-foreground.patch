@@ -1,0 +1,122 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index 073cb56ab2801bb131a3f8cc7e7906db1427788e..62ba6dd87082b41f02e12755e0e0c12d24516191 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -102,6 +102,7 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_worker_stamp() -> u64;
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
++    fn horizon_worker_schedule_enable(enabled: bool);
+     fn horizon_worker_schedule_begin(role: u32, worker: u32) -> u32;
+     fn horizon_worker_schedule_end(ticket: u32);
+     fn horizon_gx2_profile_count(counter: u32, value: u32);
+@@ -201,6 +202,11 @@ pub enum ScheduleRole {
+     RegionWrite,
+ }
+ 
++/// End the active observation generation on the foreground host before release.
++pub fn suspend_worker_schedule() {
++    unsafe { horizon_worker_schedule_enable(false) }
++}
++
+ /// Captures boundary cores and wall ticks on the worker that owns this guard.
+ pub struct Schedule(u32, PhantomData<*mut ()>);
+ 
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 6821c838884c3ff3851929aa4621fee2b1d1dc06..634313296d30e88fde79788269bc5249c9f93693 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -1019,6 +1019,9 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             }
+             let input_capture = Span::new(Stage::Input);
+             let focused = self.update_focus(session, game_session.as_mut());
++            if !focused {
++                cafe_profile::suspend_worker_schedule();
++            }
+             if self.hosted && !focused {
+                 // The app host waits until the game has relinquished input.
+                 unsafe { horizon_wiiu_hosted_ack_release() };
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 2b50e8609e463d2bf532be462c54b03d52097c46..69731131f43f812dd8bf45c8e43a338106c66bb5 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -658,6 +658,9 @@ bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_tick
+  * loops so worker jobs need no dependency on the frame's recording state. */
+ static void update_worker_capture_phase(uint32_t phase)
+ {
++   if (worker_schedule_requested)
++      horizon_worker_schedule_enable(history == &process_history &&
++                                     (phase == PLAYING_PHASE || phase == CLOSING_PHASE));
+    const bool active = worker_marker_enabled && phase == PLAYING_PHASE;
+    if (active == worker_playing) return;
+    worker_playing = active;
+@@ -668,9 +671,6 @@ void horizon_gx2_profile_phase(uint32_t phase)
+ {
+    if (!recording) return;
+    current.phase = phase;
+-   if (worker_schedule_requested)
+-      horizon_worker_schedule_enable(history == &process_history &&
+-                                     (phase == PLAYING_PHASE || phase == CLOSING_PHASE));
+    update_worker_capture_phase(phase);
+ }
+ 
+diff --git a/wiiu/loading_host/worker_schedule.c b/wiiu/loading_host/worker_schedule.c
+index 434e2552c8b60d8657adad5933b3b7f5e96fa9b2..d2b9066ec2dab28e3c23532fbc438f1010432e15 100644
+--- a/wiiu/loading_host/worker_schedule.c
++++ b/wiiu/loading_host/worker_schedule.c
+@@ -14,6 +14,7 @@ typedef struct {
+    OSTime start, end;
+    uint32_t start_core, end_core, affinity;
+    int32_t base_priority;
++   unsigned generation;
+    atomic_bool complete;
+ } Sample;
+ 
+@@ -22,19 +23,23 @@ typedef struct {
+    Sample samples[SAMPLES];
+ } Lane;
+ 
+-static atomic_bool enabled;
++// Odd generations admit sampling. The foreground is the sole writer.
++static atomic_uint generation;
+ static Lane lanes[ROLES][WORKERS];
+ 
+ void horizon_worker_schedule_enable(bool active)
+ {
+-   if (active != atomic_load_explicit(&enabled, memory_order_relaxed))
+-      atomic_store_explicit(&enabled, active, memory_order_relaxed);
++   const unsigned previous = atomic_load_explicit(&generation, memory_order_relaxed);
++   if (active == ((previous & 1u) != 0)) return;
++   // Stop sampling at the last even value rather than reusing an epoch.
++   if (previous >= UINT32_MAX - 1u) return;
++   atomic_store_explicit(&generation, previous + 1u, memory_order_release);
+ }
+ 
+ uint32_t horizon_worker_schedule_begin(uint32_t role, uint32_t worker)
+ {
+-   if (!atomic_load_explicit(&enabled, memory_order_relaxed) ||
+-       role >= ROLES || worker >= WORKERS)
++   const unsigned active_generation = atomic_load_explicit(&generation, memory_order_acquire);
++   if (!(active_generation & 1u) || role >= ROLES || worker >= WORKERS)
+       return 0;
+ 
+    // The two save roles are intermittent. Sample their first few batches.
+@@ -51,6 +56,7 @@ uint32_t horizon_worker_schedule_begin(uint32_t role, uint32_t worker)
+    if (!self) return 0;
+    const uint32_t index = seen / stride;
+    Sample *sample = &lane->samples[index];
++   sample->generation = active_generation;
+    sample->affinity = OSGetThreadAffinity(self);
+    sample->base_priority = OSGetThreadPriority(self);
+    sample->start_core = OSGetCoreId();
+@@ -64,8 +70,10 @@ void horizon_worker_schedule_end(uint32_t ticket)
+    const uint32_t index = ticket - 1;
+    const uint32_t lane = index / SAMPLES;
+    Sample *sample = &lanes[lane / WORKERS][lane % WORKERS].samples[index % SAMPLES];
++   if (atomic_load_explicit(&generation, memory_order_acquire) != sample->generation) return;
+    sample->end = OSGetSystemTime();
+    sample->end_core = OSGetCoreId();
++   if (atomic_load_explicit(&generation, memory_order_acquire) != sample->generation) return;
+    atomic_store_explicit(&sample->complete, true, memory_order_release);
+ }
+ 

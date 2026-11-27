@@ -1,0 +1,323 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index daf13ccf324221f15844c524756dfafa1a76ba29..073cb56ab2801bb131a3f8cc7e7906db1427788e 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -102,6 +102,8 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_worker_stamp() -> u64;
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
++    fn horizon_worker_schedule_begin(role: u32, worker: u32) -> u32;
++    fn horizon_worker_schedule_end(ticket: u32);
+     fn horizon_gx2_profile_count(counter: u32, value: u32);
+     fn horizon_gx2_profile_world(requested: u32, effective: u32, dimensions: *const u32, bytes: u32);
+     fn horizon_gx2_profile_sorted_index_bytes(bytes: u32);
+@@ -188,6 +190,37 @@ impl Drop for Work {
+     }
+ }
+ 
++/// Roles in the separate marker-only scheduler observation. Order matches C.
++#[repr(u32)]
++#[derive(Clone, Copy)]
++pub enum ScheduleRole {
++    Streaming,
++    Mesh,
++    IntegratedTick,
++    ProtoSave,
++    RegionWrite,
++}
++
++/// Captures boundary cores and wall ticks on the worker that owns this guard.
++pub struct Schedule(u32, PhantomData<*mut ()>);
++
++impl Schedule {
++    pub fn new(role: ScheduleRole, pool_index: usize) -> Self {
++        let ticket = u32::try_from(pool_index).ok().map_or(0, |index| {
++            unsafe { horizon_worker_schedule_begin(role as u32, index) }
++        });
++        Self(ticket, PhantomData)
++    }
++}
++
++impl Drop for Schedule {
++    fn drop(&mut self) {
++        if self.0 != 0 {
++            unsafe { horizon_worker_schedule_end(self.0) };
++        }
++    }
++}
++
+ /// The portable game sources use this macro to keep the Cafe hooks target-only.
+ #[macro_export]
+ macro_rules! cafe_span {
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 48a7f308c5f8a99783d685e3da0a72e528d5f19c..09101952d1a3e5ed9f3dbae950aa647ee9f5ce16 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -985,6 +985,16 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
+             Job::Mesh(..) => "stream.mesh",
+             _ => "stream.other",
+         });
++        #[cfg(target_os = "cafe")]
++        let schedule = {
++            use horizon_client_platform::cafe_profile::{Schedule, ScheduleRole};
++            let role = match &job.job {
++                Job::Mesh(..) => ScheduleRole::Mesh,
++                Job::Save(..) => ScheduleRole::ProtoSave,
++                _ => ScheduleRole::Streaming,
++            };
++            Schedule::new(role, worker)
++        };
+         let done = self.locals.with(
+             worker,
+             || {
+@@ -997,6 +1007,8 @@ impl<G: ChunkGenerator> Source for Jobs<G> {
+             },
+             |local| self.run_job(job.job, local),
+         );
++        #[cfg(target_os = "cafe")]
++        drop(schedule);
+         if let Some((kind, started)) = started {
+             // A generation job that found the column saved loaded it.
+             let kind = if kind == 1 && matches!(done, Some(Done::Generated(_))) {
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index eb5f2d2d8782182ff055f1e65b0471e053f53de5..27310dae05cdd5f0f0a496739da2262bbae78d0a 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -866,8 +866,13 @@ impl Game<'_> {
+                         {
+                             #[cfg(target_os = "cafe")]
+                             let _work = {
+-                                use horizon_client_platform::cafe_profile::{Work, Worker};
+-                                Work::new(Worker::Integrated)
++                                use horizon_client_platform::cafe_profile::{
++                                    Schedule, ScheduleRole, Work, Worker,
++                                };
++                                (
++                                    Work::new(Worker::Integrated),
++                                    Schedule::new(ScheduleRole::IntegratedTick, 0),
++                                )
+                             };
+                             self.tick_server_measured(false)?;
+                         }
+diff --git a/crates/horizon-client/src/save/writes.rs b/crates/horizon-client/src/save/writes.rs
+index d2c20fdccf0f5cba8667fc5b2043394646951d9f..5d742fead4c78eab841afa9032812bc2a1e84e56 100644
+--- a/crates/horizon-client/src/save/writes.rs
++++ b/crates/horizon-client/src/save/writes.rs
+@@ -137,7 +137,14 @@ impl SaveDir {
+                     .filter_map(|(k, r, _)| Some((*k, resolve_poi(&root, cache, *k, r)?)))
+                     .collect();
+                 let records: Vec<_> = resolved.iter().map(|(k, r)| (*k, r)).collect();
+-                let result = write_region_records(&root, cache, folder, &records);
++                let result = {
++                    #[cfg(target_os = "cafe")]
++                    let _schedule = {
++                        use horizon_client_platform::cafe_profile::{Schedule, ScheduleRole};
++                        Schedule::new(ScheduleRole::RegionWrite, 0)
++                    };
++                    write_region_records(&root, cache, folder, &records)
++                };
+                 if let Err(e) = &result {
+                     let message = format!("failed to write {folder} files: {e}");
+                     log::warn!("Horizon: {message}");
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 077f11435dd04dd258cc83b5d8556014513a2b36..0c111b945c5657ac0a040bd3915c6bbea0694cd2 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -235,7 +235,7 @@ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" "${STOCK_SKY_GFD_OBJECT}
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+-   loading_host.c gx2_profile.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
++   loading_host.c gx2_profile.c worker_schedule.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+    stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c world_border.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}" "${TERRAIN_OPAQUE_GFD_OBJECT}"
+    "${TERRAIN_HALF_GFD_OBJECT}"
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 5684d9ec1e42138584e3912af73b03016f4a8e80..52977228054578f35e205a417875046f00bf49a4 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,4 +1,5 @@
+ #include "gx2_profile.h"
++#include "worker_schedule.h"
+ #include "../gx2_hud/hud.h"
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+@@ -26,6 +27,7 @@
+ #define WORLD_COUNTERS 8
+ #define SCREENSHOT_STAGE 16
+ #define PLAYING_PHASE 5
++#define CLOSING_PHASE 7
+ 
+ enum {
+    TV_SUBMISSIONS = 1,
+@@ -80,7 +82,7 @@ typedef struct {
+ } ProfileHeader;
+ 
+ static _Atomic bool enabled, worker_capture_active;
+-static bool worker_marker_enabled, worker_playing;
++static bool worker_marker_enabled, worker_playing, worker_schedule_requested;
+ static _Atomic uint32_t workers[WORKERS][2];
+ static ProfileFrame current;
+ static uint64_t started;
+@@ -228,7 +230,15 @@ void horizon_gx2_profile_init(void)
+    }
+ #endif
+    select_mode(marker_mode, marker_variant);
+-   if (plain_profile) init_tv_terrain_wait_trial();
++   if (plain_profile) {
++      init_tv_terrain_wait_trial();
++      FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
++      worker_schedule_requested = schedule != NULL;
++      if (schedule) {
++         fclose(schedule);
++         OSReport("Horizon Cafe worker schedule samples requested\n");
++      }
++   }
+    if (gpu_cycle_probe) {
+       FILE *passes = fopen(ROOT "gx2-gpu-pass-profile.enable", "rb");
+       if (passes) {
+@@ -597,6 +607,9 @@ void horizon_gx2_profile_phase(uint32_t phase)
+ {
+    if (!recording) return;
+    current.phase = phase;
++   if (worker_schedule_requested)
++      horizon_worker_schedule_enable(history == &process_history &&
++                                     (phase == PLAYING_PHASE || phase == CLOSING_PHASE));
+    update_worker_capture_phase(phase);
+ }
+ 
+@@ -891,6 +904,10 @@ static bool flush_to(const char *path, const char *temporary)
+ 
+ void horizon_gx2_profile_checkpoint_session(void)
+ {
++   if (worker_schedule_requested) {
++      horizon_worker_schedule_enable(false);
++      if (history == &process_history) horizon_worker_schedule_report();
++   }
+    const uint32_t presents = history->phase_frames[PLAYING_PHASE];
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+@@ -916,6 +933,7 @@ bool horizon_gx2_profile_begin_trial(uint32_t mode)
+       for (uint32_t j = 0; j < 2; ++j)
+          trial->worker_base[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
+    trial->epoch = (uint64_t)OSGetSystemTime();
++   if (worker_schedule_requested) horizon_worker_schedule_enable(false);
+    history = trial;
+    select_mode('4', mode == 1 ? 'q' : mode == 2 ? 'r' : EOF);
+    atomic_store_explicit(&enabled, true, memory_order_release);
+diff --git a/wiiu/loading_host/worker_schedule.c b/wiiu/loading_host/worker_schedule.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..434e2552c8b60d8657adad5933b3b7f5e96fa9b2
+--- /dev/null
++++ b/wiiu/loading_host/worker_schedule.c
+@@ -0,0 +1,92 @@
++#include "worker_schedule.h"
++
++#include <coreinit/core.h>
++#include <coreinit/debug.h>
++#include <coreinit/thread.h>
++#include <coreinit/time.h>
++#include <stdatomic.h>
++
++enum { ROLES = 5, WORKERS = 4, SAMPLES = 4, WORK_STRIDE = 64, CORE_COUNT = 3 };
++_Static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_BOOL_LOCK_FREE == 2,
++               "worker observations require lock-free state");
++
++typedef struct {
++   OSTime start, end;
++   uint32_t start_core, end_core, affinity;
++   int32_t base_priority;
++   atomic_bool complete;
++} Sample;
++
++typedef struct {
++   atomic_uint visits;
++   Sample samples[SAMPLES];
++} Lane;
++
++static atomic_bool enabled;
++static Lane lanes[ROLES][WORKERS];
++
++void horizon_worker_schedule_enable(bool active)
++{
++   if (active != atomic_load_explicit(&enabled, memory_order_relaxed))
++      atomic_store_explicit(&enabled, active, memory_order_relaxed);
++}
++
++uint32_t horizon_worker_schedule_begin(uint32_t role, uint32_t worker)
++{
++   if (!atomic_load_explicit(&enabled, memory_order_relaxed) ||
++       role >= ROLES || worker >= WORKERS)
++      return 0;
++
++   // The two save roles are intermittent. Sample their first few batches.
++   const uint32_t stride = role >= 3 ? 1 : WORK_STRIDE;
++   Lane *lane = &lanes[role][worker];
++   unsigned seen = atomic_load_explicit(&lane->visits, memory_order_relaxed);
++   do {
++      if (seen >= SAMPLES * stride) return 0;
++   } while (!atomic_compare_exchange_weak_explicit(&lane->visits, &seen, seen + 1,
++                                                  memory_order_relaxed, memory_order_relaxed));
++   if (seen % stride != 0) return 0;
++
++   OSThread *self = OSGetCurrentThread();
++   if (!self) return 0;
++   const uint32_t index = seen / stride;
++   Sample *sample = &lane->samples[index];
++   sample->affinity = OSGetThreadAffinity(self);
++   sample->base_priority = OSGetThreadPriority(self);
++   sample->start_core = OSGetCoreId();
++   sample->start = OSGetSystemTime();
++   return 1 + (role * WORKERS + worker) * SAMPLES + index;
++}
++
++void horizon_worker_schedule_end(uint32_t ticket)
++{
++   if (!ticket || ticket > ROLES * WORKERS * SAMPLES) return;
++   const uint32_t index = ticket - 1;
++   const uint32_t lane = index / SAMPLES;
++   Sample *sample = &lanes[lane / WORKERS][lane % WORKERS].samples[index % SAMPLES];
++   sample->end = OSGetSystemTime();
++   sample->end_core = OSGetCoreId();
++   atomic_store_explicit(&sample->complete, true, memory_order_release);
++}
++
++void horizon_worker_schedule_report(void)
++{
++   static const char *const names[ROLES] = {
++      "stream", "mesh", "integrated-tick", "proto-save", "region-write"
++   };
++   for (uint32_t role = 0; role < ROLES; ++role) {
++      for (uint32_t worker = 0; worker < WORKERS; ++worker) {
++         for (uint32_t index = 0; index < SAMPLES; ++index) {
++            Sample *sample = &lanes[role][worker].samples[index];
++            if (!atomic_exchange_explicit(&sample->complete, false, memory_order_acquire)) continue;
++            if (sample->start_core >= CORE_COUNT || sample->end_core >= CORE_COUNT ||
++                sample->start < 0 || sample->end < sample->start)
++               continue;
++            OSReport("Horizon Cafe worker schedule role=%s pool_index=%u sample=%u core_start=%u core_end=%u allowed_mask=%u base_priority=%d wall_ticks=%llu cpu_time=unavailable\n",
++                     names[role], worker, index, sample->start_core, sample->end_core,
++                     sample->affinity, sample->base_priority,
++                     (unsigned long long)(sample->end - sample->start));
++         }
++      }
++   }
++}
+diff --git a/wiiu/loading_host/worker_schedule.h b/wiiu/loading_host/worker_schedule.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e2465bbfc295866d133b85d9c895fc032d0b86e
+--- /dev/null
++++ b/wiiu/loading_host/worker_schedule.h
+@@ -0,0 +1,12 @@
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* Foreground profile owner. Emit captured rows after the hosted game drops. */
++void horizon_worker_schedule_enable(bool enabled);
++void horizon_worker_schedule_report(void);
++
++/* Same worker thread at begin/end. A zero ticket starts no observation. */
++uint32_t horizon_worker_schedule_begin(uint32_t role, uint32_t worker);
++void horizon_worker_schedule_end(uint32_t ticket);
