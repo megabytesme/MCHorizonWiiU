@@ -137,10 +137,12 @@ before expanding that architecture.
   save. Warm entries reached Game in 54.0–55.0 seconds. Physical
   loading and native heap measurements remain open. [RC 61 evidence](rc61-qualification.md)
 - The solid display-list fixture matched both outputs with 174 draws
-  and 32,736 bytes per view. RC 62's passive Cemu census found
-  1,206 hypothetical hits in 1,320 eligible pairs per view across
-  qualifying windows. The physical census and the separate signed
-  atlas same-build comparison are staged. [RC 62 evidence](rc62-qualification.md)
+  and 32,736 bytes per view. Its ordinary presentation finish retired
+  both lists before readback at native size and with separate stock 75%
+  targets. RC 62's passive Cemu census found 1,206 hypothetical hits in
+  1,320 eligible pairs per view across qualifying windows. The physical
+  census and signed-atlas comparison are staged. A bounded gameplay
+  cache still needs lifecycle and timing evidence. [RC 62 evidence](rc62-qualification.md)
   · [Display-list fixture](../../wiiu/diagnostics/gx2-solid-display-list/README.md)
 - The stock-sized tiled atlas matched linear RGBA on both outputs
   across animation updates. A one-cell upload conversion is feasible.

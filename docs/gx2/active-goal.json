@@ -7,6 +7,17 @@
     "authentication_and_security_changes": "pending_separate_review",
     "physical_qualification": "queued"
   },
+  "paired_solid_list_retirement": {
+    "validation": "cemu_interpreter_native_and_separate_fixed_75_targets",
+    "rpx_sha256": "29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860",
+    "draws_per_output": 174,
+    "list_bytes_per_output": 32736,
+    "byte_identical_comparisons": 24,
+    "paired_retirements_before_readback": 6,
+    "retirement": "ordinary_whb_finish",
+    "gameplay_cache_and_physical_timing": "pending",
+    "receipt": "../../wiiu/diagnostics/gx2-solid-display-list/README.md"
+  },
   "compact_indices_and_model_reuse": {
     "candidate": "0.8.0-rc.49",
     "engine_tree": "525181edcc48d623e3dc21d9f0793044648b3556",
