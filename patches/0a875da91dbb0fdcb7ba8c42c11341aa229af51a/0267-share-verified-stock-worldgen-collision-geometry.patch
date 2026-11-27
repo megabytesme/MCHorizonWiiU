@@ -1,0 +1,383 @@
+diff --git a/crates/horizon-client-render/Cargo.toml b/crates/horizon-client-render/Cargo.toml
+index 99db6ed..a127609 100644
+--- a/crates/horizon-client-render/Cargo.toml
++++ b/crates/horizon-client-render/Cargo.toml
+@@ -86,6 +86,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++stock-worldgen-collision = ["horizon-world/stock-worldgen-collision"]
+ stock-hud-seed = ["verified-prepared-assets"]
+ verified-prepared-assets = ["horizon-assets/verified-prepared-assets"]
+ # Sound output: horizon-client's `audio` feature.
+diff --git a/crates/horizon-client-render/src/collisions.rs b/crates/horizon-client-render/src/collisions.rs
+index f4c8275..c063bea 100644
+--- a/crates/horizon-client-render/src/collisions.rs
++++ b/crates/horizon-client-render/src/collisions.rs
+@@ -31,7 +31,23 @@ use std::{io, path::Path, sync::Arc};
+ 
+ pub fn load<'r>(root: &Path, registry: &'r BlockRegistry) -> Result<BlockCollisionRegistry<'r>> {
+     let file = BlockTableFile::open(&root.join("cached-collision.nbt"), registry)?;
+-    let cached = CachedCollisionRegistry::from_table(file.table("collision")?)?;
++    finish_load(CachedCollisionRegistry::from_table(
++        file.table("collision")?,
++    )?)
++}
++
++#[cfg(feature = "stock-worldgen-collision")]
++pub fn load_for_worldgen<'r>(
++    root: &Path,
++    registry: &'r BlockRegistry,
++) -> Result<BlockCollisionRegistry<'r>> {
++    finish_load(CachedCollisionRegistry::open_with_source_stamp(
++        &root.join("cached-collision.nbt"),
++        registry,
++    )?)
++}
++
++fn finish_load(cached: CachedCollisionRegistry<'_>) -> Result<BlockCollisionRegistry<'_>> {
+     if !cached.has_canonical_identities() {
+         return Err("scene collisions require canonical shape identities".into());
+     }
+diff --git a/crates/horizon-client/Cargo.toml b/crates/horizon-client/Cargo.toml
+index ffb39d4..f570901 100644
+--- a/crates/horizon-client/Cargo.toml
++++ b/crates/horizon-client/Cargo.toml
+@@ -138,6 +138,7 @@ winit = { version = "0.30.13", features = ["android-native-activity"] }
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++stock-worldgen-collision = ["horizon-client-render/stock-worldgen-collision", "horizon-world/stock-worldgen-collision"]
+ stock-hud-seed = ["horizon-client-render/stock-hud-seed", "horizon-client-lib/stock-hud-seed"]
+ # Source retention only: not compiled/tested on the fork; incompatible with typed residency.
+ # Do not enable (including via --all-features); integration is tracked in arismoko/horizon#3491.
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 8c26726..30785a4 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -250,6 +250,8 @@ pub(super) fn load_core(
+     parallel: bool,
+     progress: &Progress,
+     launch_world: Option<&str>,
++    #[cfg(all(target_os = "cafe", feature = "stock-worldgen-collision"))]
++    stock_collision_trial: bool,
+ ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
+     let checkpoint = || progress.checkpoint().map_err(|error| error.to_string());
+     checkpoint()?;
+@@ -387,8 +389,22 @@ pub(super) fn load_core(
+             });
+             let collision = Step::spawn(scope, parallel, "collision", || {
+                 checkpoint()?;
+-                startup::time("core.collision", || collisions::load(root, registry))
+-                    .map_err(|e| e.to_string())
++                startup::time("core.collision", || {
++                    #[cfg(all(target_os = "cafe", feature = "stock-worldgen-collision"))]
++                    if stock_collision_trial
++                        && !headless
++                        && launch_world.is_some()
++                        && additional_data.is_empty()
++                        && std::fs::metadata(
++                            "/vol/external01/wiiu/apps/HorizonWiiU/worldgen-collision-share.enable",
++                        )
++                        .is_ok_and(|marker| marker.is_file())
++                    {
++                        return collisions::load_for_worldgen(root, registry);
++                    }
++                    collisions::load(root, registry)
++                })
++                .map_err(|e| e.to_string())
+             });
+             let mut ready_visibility = None;
+             let gameplay = gameplay_tables_with_light(root, assets, parallel, progress, |facts| {
+@@ -696,6 +712,10 @@ pub(super) fn load_resources(
+             client_reload::collect_texture_atlases(),
+         )
+     };
++    #[cfg(all(target_os = "cafe", feature = "stock-worldgen-collision"))]
++    let stock_collision_trial = settings.resource_packs.is_empty()
++        && runtime_sprites.is_empty()
++        && texture_atlases.is_empty();
+     resolved = client_reload::stage_runtime_sprites(resolved, &runtime_sprites);
+     resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
+     #[cfg(target_os = "cafe")]
+@@ -780,6 +800,8 @@ pub(super) fn load_resources(
+                         parallel,
+                         progress,
+                         early,
++                        #[cfg(all(target_os = "cafe", feature = "stock-worldgen-collision"))]
++                        stock_collision_trial,
+                     )
+                 })
+             };
+diff --git a/crates/horizon-world/Cargo.toml b/crates/horizon-world/Cargo.toml
+index afa5376..79629e8 100644
+--- a/crates/horizon-world/Cargo.toml
++++ b/crates/horizon-world/Cargo.toml
+@@ -6,6 +6,9 @@ license.workspace = true
+ rust-version.workspace = true
+ description = "Horizon vanilla world data, NBT, regions and chunk storage"
+ 
++[features]
++stock-worldgen-collision = []
++
+ [dependencies]
+ indexmap = "2"
+ libm = "=0.2.16"
+diff --git a/crates/horizon-world/src/block_collision.rs b/crates/horizon-world/src/block_collision.rs
+index e851ed7..9130bd0 100644
+--- a/crates/horizon-world/src/block_collision.rs
++++ b/crates/horizon-world/src/block_collision.rs
+@@ -154,6 +154,11 @@ impl<'r> BlockCollisionRegistry<'r> {
+     pub fn cached_shapes(&self) -> &CachedCollisionRegistry<'r> {
+         &self.cached
+     }
++    #[cfg(feature = "stock-worldgen-collision")]
++    pub(crate) fn stamped_cached_shapes(&self) -> Option<Arc<CachedCollisionRegistry<'r>>> {
++        self.cached.has_source_stamp().then(|| self.cached.clone())
++    }
++
+     /// Immutable cursor-filter metadata, prepared once for this registry.
+     pub fn collision_block(&self, state: BlockStateId) -> io::Result<CollisionBlock> {
+         let flags = *self
+diff --git a/crates/horizon-world/src/collision.rs b/crates/horizon-world/src/collision.rs
+index 8823c94..2509d90 100644
+--- a/crates/horizon-world/src/collision.rs
++++ b/crates/horizon-world/src/collision.rs
+@@ -6,6 +6,12 @@
+ use crate::collision_context::EntityContextKind;
+ use horizon_core::geometry::{Axis, VoxelShape};
+ use std::{collections::HashMap, io};
++#[cfg(feature = "stock-worldgen-collision")]
++use {
++    crate::registry::BlockTableFile,
++    sha2::{Digest, Sha256},
++    std::path::Path,
++};
+ use {
+     crate::{
+         DATA_VERSION,
+@@ -48,6 +54,16 @@ pub fn pipe_shape(size: f64, sides: [bool; 6]) -> io::Result<VoxelShape> {
+     Ok(result)
+ }
+ 
++#[cfg(feature = "stock-worldgen-collision")]
++fn read_collision_table<'r>(
++    path: &Path,
++    bytes: &[u8],
++    registry: &'r BlockRegistry,
++) -> io::Result<BlockTableFile<'r>> {
++    BlockTableFile::read(bytes, registry)
++        .map_err(|error| invalid(format!("{}: {error}", path.display())))
++}
++
+ #[derive(PartialEq, Eq, Hash)]
+ struct GridKey<'a> {
+     coords: [&'a [i64]; 3],
+@@ -58,7 +74,27 @@ struct GridKey<'a> {
+     max: [i32; 3],
+ }
+ 
++#[cfg(feature = "stock-worldgen-collision")]
++#[derive(PartialEq, Eq)]
++struct CollisionSourceStamp {
++    len: usize,
++    sha256: [u8; 32],
++}
++
++#[cfg(feature = "stock-worldgen-collision")]
++impl CollisionSourceStamp {
++    fn of(bytes: &[u8]) -> Option<Self> {
++        const MAX_HASH_BYTES: usize = 8 * 1024 * 1024;
++        (bytes.len() <= MAX_HASH_BYTES).then(|| Self {
++            len: bytes.len(),
++            sha256: Sha256::digest(bytes).into(),
++        })
++    }
++}
++
+ pub struct CachedCollisionRegistry<'r> {
++    #[cfg(feature = "stock-worldgen-collision")]
++    source_stamp: Option<CollisionSourceStamp>,
+     registry: &'r BlockRegistry,
+     shapes: Vec<VoxelShape>,
+     state_shapes: Vec<i32>,
+@@ -68,6 +104,43 @@ pub struct CachedCollisionRegistry<'r> {
+     outline_edges: HashMap<usize, Vec<[f64; 6]>>,
+ }
+ impl<'r> CachedCollisionRegistry<'r> {
++    /// Decode and validate the same file snapshot used to record its identity.
++    #[cfg(feature = "stock-worldgen-collision")]
++    pub fn open_with_source_stamp(path: &Path, registry: &'r BlockRegistry) -> io::Result<Self> {
++        let (file, stamp) = {
++            let bytes = std::fs::read(path)?;
++            let file = read_collision_table(path, &bytes, registry)?;
++            (file, CollisionSourceStamp::of(&bytes))
++        };
++        let mut cached = Self::from_table(file.table("collision")?)?;
++        cached.source_stamp = stamp;
++        Ok(cached)
++    }
++
++    #[cfg(feature = "stock-worldgen-collision")]
++    pub(crate) fn has_source_stamp(&self) -> bool {
++        self.source_stamp.is_some()
++    }
++
++    /// Return None only when the selected file was read and matched a validated
++    /// source snapshot. Otherwise return the ordinary decoded file or its error.
++    #[cfg(feature = "stock-worldgen-collision")]
++    pub(crate) fn read_prepared_for_reuse(
++        &self,
++        path: &Path,
++        registry: &'r BlockRegistry,
++    ) -> io::Result<Option<BlockTableFile<'r>>> {
++        let bytes = std::fs::read(path)?;
++        if std::ptr::eq(self.registry, registry)
++            && self.source_stamp.as_ref().is_some_and(|stamp| {
++                stamp.len == bytes.len() && CollisionSourceStamp::of(&bytes).as_ref() == Some(stamp)
++            })
++        {
++            return Ok(None);
++        }
++        read_collision_table(path, &bytes, registry).map(Some)
++    }
++
+     pub fn registry(&self) -> &'r BlockRegistry {
+         self.registry
+     }
+@@ -297,6 +370,8 @@ impl<'r> CachedCollisionRegistry<'r> {
+             }
+         }
+         Ok(Self {
++            #[cfg(feature = "stock-worldgen-collision")]
++            source_stamp: None,
+             registry,
+             shapes,
+             state_shapes: state_shapes.clone(),
+diff --git a/crates/horizon-world/src/level/behaviour_inputs.rs b/crates/horizon-world/src/level/behaviour_inputs.rs
+index a3108c6..e802b1e 100644
+--- a/crates/horizon-world/src/level/behaviour_inputs.rs
++++ b/crates/horizon-world/src/level/behaviour_inputs.rs
+@@ -90,6 +90,22 @@ impl BlockBehaviourInputs {
+         self
+     }
+ 
++    #[cfg(feature = "stock-worldgen-collision")]
++    pub(crate) fn worldgen_collision(
++        &self,
++        root: &Path,
++        registry: &BlockRegistry,
++    ) -> Option<Arc<crate::collision::CachedCollisionRegistry<'static>>> {
++        let source = self.collision.as_ref()?;
++        if source.root != root
++            || !std::ptr::eq(source.registry.cached_shapes().registry(), registry)
++            || source.behaviour_pair.is_none()
++        {
++            return None;
++        }
++        source.registry.stamped_cached_shapes()
++    }
++
+     /// Each consumer owns its mutable world behaviour state.
+     pub fn load(&self, registry: &BlockRegistry, root: &Path) -> io::Result<Behaviours> {
+         let matching = self.collision.as_ref().filter(|source| {
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index 9e7f04c..bec44c6 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -259,10 +259,21 @@ impl GeneratorData {
+         // their own while this one reads the rest. A new world's first chunks
+         // wait for all of it, with the chunk workers idle.
+         let blocks = loading({
++            #[cfg(feature = "stock-worldgen-collision")]
++            let prepared_collision = dir.parent().filter(|_| ov.is_empty()).and_then(|root| {
++                crate::level::behaviour_inputs::for_worldgen(root, registry)?
++                    .worldgen_collision(root, registry)
++            });
+             let (dir, tags, fluids) = (dir.join("blocks"), block_tags.clone(), fluid_tags.clone());
+             move || {
+                 super::super::generator_blocks::BlockBehavior::load(
+-                    &dir, registry, &tags, &fluids, profile,
++                    &dir,
++                    registry,
++                    &tags,
++                    &fluids,
++                    profile,
++                    #[cfg(feature = "stock-worldgen-collision")]
++                    prepared_collision,
+                 )
+             }
+         })?;
+diff --git a/crates/horizon-world/src/worldgen/generator_blocks.rs b/crates/horizon-world/src/worldgen/generator_blocks.rs
+index dd92fcb..1e66d3f 100644
+--- a/crates/horizon-world/src/worldgen/generator_blocks.rs
++++ b/crates/horizon-world/src/worldgen/generator_blocks.rs
+@@ -98,6 +98,9 @@ impl BlockBehavior {
+         tags: &BTreeMap<String, Vec<String>>,
+         fluid_tags: &BTreeMap<String, Vec<String>>,
+         profile: Profile,
++        #[cfg(feature = "stock-worldgen-collision")] prepared_collision: Option<
++            Arc<CachedCollisionRegistry<'static>>,
++        >,
+     ) -> Result<Option<Self>, GeneratorError> {
+         let _step = profile.step("world.preload.generator.data.blocks");
+         if !dir.join("block-properties.nbt").exists() {
+@@ -121,9 +124,32 @@ impl BlockBehavior {
+             });
+             let collisions = {
+                 let _step = profile.step("world.preload.generator.data.blocks.collision");
+-                CachedCollisionRegistry::from_table(
+-                    read("cached-collision.nbt")?.table("collision")?,
+-                )?
++                let cold = || -> Result<_, GeneratorError> {
++                    Ok(CachedCollisionRegistry::from_table(
++                        read("cached-collision.nbt")?.table("collision")?,
++                    )?)
++                };
++                #[cfg(not(feature = "stock-worldgen-collision"))]
++                let collisions = cold()?;
++                #[cfg(feature = "stock-worldgen-collision")]
++                let collisions = match prepared_collision {
++                    Some(prepared) => {
++                        match prepared
++                            .read_prepared_for_reuse(&dir.join("cached-collision.nbt"), registry)
++                            .map_err(|error| resource(format!("cached-collision.nbt: {error}")))?
++                        {
++                            Some(file) => Arc::new(CachedCollisionRegistry::from_table(
++                                file.table("collision")?,
++                            )?),
++                            None => {
++                                log::info!("Horizon: reused verified worldgen collision snapshot");
++                                prepared
++                            }
++                        }
++                    }
++                    None => Arc::new(cold()?),
++                };
++                collisions
+             };
+             let properties = {
+                 let _step = profile.step("world.preload.generator.data.blocks.properties");
+@@ -139,7 +165,9 @@ impl BlockBehavior {
+         })?;
+         let collision = {
+             let _step = profile.step("world.preload.generator.data.blocks.collision_context");
+-            Arc::new(BlockCollisionRegistry::new(Arc::new(collisions))?)
++            #[cfg(not(feature = "stock-worldgen-collision"))]
++            let collisions = Arc::new(collisions);
++            Arc::new(BlockCollisionRegistry::new(collisions)?)
+         };
+         let rules = json("survival-rules.json")?
+             .as_object()
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index e519d1a..a982546 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ crate-type = ["staticlib"]
+ 
+ [features]
++stock-worldgen-collision = ["horizon-client/stock-worldgen-collision"]
+ gx2-clear-fog = ["horizon-wiiu-loading-host/gx2-clear-fog"]
+ gx2-screen-overlays = ["gx2-hud-view-lanes", "horizon-wiiu-loading-host/gx2-screen-overlays"]
+ gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]

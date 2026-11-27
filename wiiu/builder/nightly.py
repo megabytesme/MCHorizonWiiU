@@ -20,7 +20,7 @@ def validate(spec):
     feature_field = ("cargo_features",) if "cargo_features" in spec else ()
     if feature_field:
         features = spec["cargo_features"]
-        allowed = {"stock-hud-seed", "gx2-screen-overlays", "gx2-clear-fog"}
+        allowed = {"stock-hud-seed", "gx2-screen-overlays", "gx2-clear-fog", "stock-worldgen-collision"}
         if (type(features) is not list or not features
                 or any(type(name) is not str or name not in allowed for name in features)
                 or len(features) != len(set(features))):
