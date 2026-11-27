@@ -68,13 +68,24 @@ RC 64 stages boat-mask parity and the existing Village route with
 native admission records. Run its generator and server-pump markers in
 separate attribution sessions. [RC 64 package](rc64-qualification.md)
 
+The first supervised sweep uses four arms from the same RC 61 WUHB.
+Keep the exact saved pose, stock Full Performance, fixed 75%, DRS off,
+render distance 6 and simulation distance 5. Require two settled
+60-second windows per arm and 174 independently drawn sections per
+display. Read the marker and package identities from
+`compact_first_physical_sweep` in the local queue receipt.
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
-| 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
-| 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
-| 3 | Same RC 60 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
-| 4 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
-| 5 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
+| 1 | RC 61 stock direct | Record same-build paired cadence, frame tails, coverage, applicable native passes, save and heap recovery. |
+| 2 | RC 61 bounded HUD lanes | Add the lane marker and measure actual per-output use, fallback counts, waits and peak allocations. |
+| 3 | RC 61 grouped HUD control | Add grouped presentation and record paired sequencing, combined flips and terminal retirement. Exercise Home and foreground return in a separate lifecycle check. |
+| 4 | RC 61 grouped GamePad overlap | Add the GamePad entry-wait marker. Verify its admission, both displays and the retirement receipts. Run the separate observer outside the timing windows. |
+
+Follow with the queued RC 60 early submission, verified first-TV
+retirement, compact terrain, signed atlas and depth experiments. Record
+cold and warm loading, the original Village route and 30/60 DRS on their
+own runs.
 
 Keep screenshots outside the timing windows. Preserve stock view distances,
 materials and per-output world rendering in the reference. The viewport and
