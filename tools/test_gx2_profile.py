@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import gx2_profile as profile
+import gx2_saved_view_compare as saved_view_compare
 
 
 def row(seq, phase, start, *, pacing=0, presented=1, capture=0, worker=0):
@@ -80,6 +81,35 @@ def uwp_event(sequence, payload=None):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_compares_saved_view_runs_without_dropping_partial_pair_time(self):
+        with TemporaryDirectory() as tmp:
+            control = Path(tmp) / "control.hzp"
+            trial = Path(tmp) / "trial.hzp"
+            control.write_bytes(stock_view_capture([
+                (0, 5, 1, 75, 174, 0, 0),
+                (30_000, 5, 1, 75, 174, 0, 1),
+                (60_000, 5, 1, 75, 174, 0, 0),
+            ]))
+            trial.write_bytes(stock_view_capture([
+                (start, 5, 1, 75, 174, 0, 0) for start in (0, 20_000, 40_000, 60_000)
+            ]))
+            baseline = saved_view_compare.retained_window(control, 0, 2)
+            experiment = saved_view_compare.retained_window(trial, 0, 3)
+            comparison = saved_view_compare.compare([baseline], [experiment])
+            self.assertEqual(comparison["median_pairs_per_second_difference"], .017)
+            self.assertEqual(comparison["median_complete_pairs_per_second_difference"], .033)
+            self.assertEqual(comparison["control"]["longest_complete_pair_gap_ms"], 60_000)
+            self.assertEqual(comparison["trial"]["longest_complete_pair_gap_ms"], 20_000)
+            with self.assertRaisesRegex(ValueError, "overlap"):
+                saved_view_compare.compare([baseline], [baseline])
+            with self.assertRaisesRegex(ValueError, "at least 60 seconds"):
+                saved_view_compare.retained_window(trial, 0, 2)
+            with self.assertRaisesRegex(ValueError, "sequence bounds"):
+                saved_view_compare.retained_window(trial, 1, 4)
+            experiment["reference_dimensions"][0]["world_tv_gamepad"][0] = [1438, 809]
+            with self.assertRaisesRegex(ValueError, "different saved-view target dimensions"):
+                saved_view_compare.compare([baseline], [experiment])
+
     def test_saved_view_bills_empty_terrain_readback_and_disconnected_loops_to_wall_time(self):
         capture = stock_view_capture([
             (1000, 5, 1, 75, 174, 0, 0),

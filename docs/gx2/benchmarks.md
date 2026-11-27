@@ -144,6 +144,14 @@ individual display scanout where available, camera and stock settings,
 serial TPS, images and memory recovery alongside the HZP3 summaries.
 Keep the heavy stationary and Village runs separate.
 
+Compare repeated physical windows with explicit inclusive HZP3 sequence
+bounds. The report checks that each run retains 60 seconds and uses the same
+target dimensions. It keeps the individual results alongside the two arm
+summaries. Verify the camera, settings and independent rendering path in
+the run receipts.
+
+    python tools/gx2_saved_view_compare.py --control STOCK1 FIRST LAST --control STOCK2 FIRST LAST --trial TRIAL1 FIRST LAST --trial TRIAL2 FIRST LAST
+
 When the test package emits a solid-terrain completion marker, the GPU
 serial join adds `solid_boundary` to its report. It matches both original
 TV and GamePad endpoints, the GPU clock and the HZP3 sequence. The split
