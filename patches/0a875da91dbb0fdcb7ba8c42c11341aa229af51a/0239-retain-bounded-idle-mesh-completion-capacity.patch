@@ -1,0 +1,37 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 0910195..9ae0a13 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -453,6 +453,19 @@ impl Mailbox {
+             .map(|mut done| std::mem::take(&mut *done))
+             .unwrap_or_default()
+     }
++    /// A deferred completion may have emptied the producer queue already.
++    /// Keep only a small unused reserve, so waiting between server ticks
++    /// does not make the next worker grow the same deque again.
++    fn take_after_deferral(&self) -> VecDeque<Done> {
++        const MAX_IDLE_BYTES: usize = 4 * 1024;
++        let Some(mut done) = self.try_lock() else {
++            return VecDeque::new();
++        };
++        if done.is_empty() && done.capacity() <= MAX_IDLE_BYTES / std::mem::size_of::<Done>() {
++            return VecDeque::new();
++        }
++        std::mem::take(&mut *done)
++    }
+     fn try_recv(&self) -> Option<Done> {
+         self.try_lock()?.pop_front()
+     }
+@@ -1954,7 +1967,11 @@ impl Streaming {
+         self.relight_edits(world);
+         hz_laps.lap("st_relight_edits");
+         let deferred = std::mem::take(&mut self.deferred).into_iter();
+-        let received = self.shared.done.take();
++        let received = if deferred.len() == 0 {
++            self.shared.done.take()
++        } else {
++            self.shared.done.take_after_deferral()
++        };
+         self.resume_plan_update(
+             world,
+             PlanResume {
