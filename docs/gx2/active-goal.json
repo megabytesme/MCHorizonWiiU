@@ -57,6 +57,16 @@
     "verified_report_sha256": "3d39ae4fa9c78d2ef9fab8445161d73e9e04c2ff0a34ef77bdd064da24c5e131",
     "physical": "held_for_geometry_parity"
   },
+  "automatic_quad_fixture": {
+    "engine_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503",
+    "rpx_sha256": "1c91ccf4bdb21dedec2c28a4facdbe439b0eae36025ce35a800f33d39c59516c",
+    "wuhb_sha256": "2ce25e47fbbda0b9495140c91e83374dd8cc37afac48c6cd6c7563f89249fe22",
+    "cemu_passing_records_per_backend": 22,
+    "cold_opengl_tv_repeat_differs": true,
+    "warm_repeats_and_auto_match_both_outputs": true,
+    "receipt_sha256": "8faa894967bbd5b85f1e80aa95ae3d970c208b50eeabad2824dd14ce50f0b407",
+    "physical_primitive_parity_and_throughput": "pending"
+  },
   "opaque_terrain_shader_draw": {
     "candidate": "0.8.0-rc.69",
     "profile_variant": "4o",

@@ -173,6 +173,12 @@ The earlier RC 48 lifecycle receipt remains part of the separate review.
   Preserve the raw X/Y and logical-size mismatch counts. Controlled
   mismatches are valid sampler evidence.
   [Paired atlas fixture](../../wiiu/diagnostics/gx2-atlas-parity/README.md)
+- Run the automatic-quad diagnostic after the primary renderer comparison.
+  Keep the cold stock readbacks and require all 22 checked output records,
+  including warm stock repeats, automatic quads, changed diagonals and
+  depth-write controls. Record each display separately. This fixture
+  qualifies primitive parity before any gameplay timing trial.
+  [Automatic-quad fixture](../../wiiu/diagnostics/gx2-auto-quads/README.md)
 - Keep the original Village and heavy stationary runs separate. Use the
   hosted DRS decision report alongside the 30/60 physical timing probes.
   [Benchmark definitions](benchmarks.md#stationary-render-diagnostic)

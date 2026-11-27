@@ -106,6 +106,11 @@ before expanding that architecture.
   captures on both displays. A fresh Cemu draw probe verified the exact
   no-kill shader on both displays with culling disabled. Physical cost
   remains pending. [Paired draw coverage](terrain-format-trials.md#rc-69-gameplay-draw-coverage)
+- Automatic-index quads matched warm stock indexed triangles in all 22
+  standalone output checks on Cemu Vulkan and OpenGL. The tested native
+  package is queued for supervised primitive parity. GPU bandwidth and
+  frame-time gains are unmeasured.
+  [Automatic-quad fixture](../../wiiu/diagnostics/gx2-auto-quads/README.md)
 - Three original RC 69 Village flights reached both stock readiness gates
   and completed in offline Cemu. Two automated runs completed report
   capture, save, heap recovery and title exit without manual input.

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "name": "auto-quads",
+  "inputs": {
+    "fixture/main.c": "847dfd4a8ef17f37d5b2cd093ea73f6847e719b352d832d771b3fcdf819d87b1",
+    "engine/terrain.c": "5cccc52860df7b72b797e032b582eb21f791a17c2aea0530a54c4cc3d68c751e",
+    "engine/terrain.h": "ab8a8a1150ca38325f59ba38198c55d9f35cb97d8c950197e703890a8471f0c4",
+    "engine/terrain_buffers.h": "51d8033107bd10467b1b7248793f48cb4c5f20c0b4b6a8a65d1d42ba2fb24bb4",
+    "engine/terrain.vert": "a91482f84b8561b186269f8a755c6a0d38c6f23c5af5d03adee1f6bd505502f6",
+    "engine/terrain.frag": "0bb7da64e5fb55762aafcdc25c7056dddaf0033ed9272dcb6c105b35a3f59307",
+    "port/wiiu/diagnostics/gx2-tiled-terrain-atlas/draw_clear.vert": "3851fdf16af2f267fe7a6178a811aaaea125229ec5d099667782e1fe1fe1869a",
+    "port/wiiu/diagnostics/gx2-tiled-terrain-atlas/draw_clear.frag": "ff661ad05d80e3474927338a77cf17fd61349d4de0c30796bd69e19bb19a5444",
+    "port/wiiu/diagnostics/gx2-tiled-terrain-atlas/draw_clear.h": "ad82d8ffba53a3c0230bad3b0bc93e3e4653f4410e579bb1f9faf7f71c6026a8",
+    "port/wiiu/diagnostics/gx2-explicit-readback/retire.h": "5639defa17ba1820439928c1ceeaa7e073a003c3884bc70f5a4bddb08b779855",
+    "port/wiiu/diagnostics/gx2-explicit-readback/stage.h": "4f629024e7be74a9e120c117fcb0cb72cae1d21081af64890e6401d3e5340fd6"
+  },
+  "sources": [
+    {
+      "path": "fixture/main.c",
+      "object": "auto-quads-main"
+    }
+  ],
+  "includes": [
+    "engine",
+    "port/wiiu/diagnostics/gx2-tiled-terrain-atlas",
+    "port/wiiu/diagnostics/gx2-explicit-readback"
+  ],
+  "shaders": [
+    {
+      "name": "stock",
+      "vertex": "engine/terrain.vert",
+      "pixel": "engine/terrain.frag",
+      "sha256": "c07d3b7557e55341a3bfcd3e36cf2dbd048f8473514a8ac26d400878503f7133"
+    },
+    {
+      "name": "test_color",
+      "vertex": "port/wiiu/diagnostics/gx2-tiled-terrain-atlas/draw_clear.vert",
+      "pixel": "port/wiiu/diagnostics/gx2-tiled-terrain-atlas/draw_clear.frag",
+      "sha256": "5c29bc3ca5bd234eab66b6777731b47a184d2b1a36f8ca035c1a95b04d002470"
+    }
+  ],
+  "wuhb": {
+    "name": "GX2 Automatic Terrain Quads",
+    "short_name": "GX2 Quads",
+    "author": "Horizon"
+  }
+}
