@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "status": "active",
-  "verified_on": "2026-11-26",
+  "verified_on": "2026-11-27",
   "overnight_focus": {
     "independent_game_development": true,
     "authentication_and_security_changes": "pending_separate_review",
@@ -30,7 +30,9 @@
     "wuhb_sha256": "1dcb518ff0a168755086084c4efdd71671a1d19522512f2e563128f228ee17ca",
     "native_build": "passed",
     "host_drains_direct_hud_lanes_grouped": [5, 3, 3],
-    "runtime": "queued",
+    "runtime": "cemu_verified_tv_retirement_and_offline_save_pass",
+    "cemu_paired_gameplay_rows": 40,
+    "cemu_max_sections_per_output": 5,
     "physical": "queued",
     "receipt": "rc51-qualification.md"
   },

@@ -55,7 +55,27 @@ positive retirement, late keyboard and foreground handling, failed callbacks,
 the inset clear, and both scan copies. The warm deterministic pair used five
 whole-GPU drains with direct HUD and three with either bounded HUD arm.
 
-The earlier [exact grouped trial](grouped-hud-trial.md) also reached gameplay
-with distinct Cemu captures, movement and save. RC 51 still requires its
-own gameplay replay and matched physical pacing, visual and memory evidence.
-[Fixed-75% workload](benchmarks.md#physical-fixed-75-saved-view)
+## Offline RC 51 retirement replay
+
+The exact RPX reached the verified first-TV retirement branch with plain
+`4`, `gx2-tv-terrain-wait.enable=1`, and `gx2-worker-profile.enable` in
+the corrected Cemu interpreter. The disposable fixed-75% world reached
+gameplay at 505.407 s and its first paired terrain at 530.924 s. Independent
+1920×1080 TV and 854×480 GamePad captures were distinct on both sides of
+a 60 s dwell. Backward input moved the saved player 4.096 blocks. Save and
+clean exit succeeded. Audio drained all 111,917 items. After return to
+Night, the GX2 bulk heap reported 234,880,920 bytes free and its largest
+block was 234,880,896 bytes. Peak tracked Rust allocations were
+335,322,869 bytes.
+
+The session HZP3 capture SHA-256 is
+`653953edb7c008b809add4ac66b49d89f4ead7dcb7379c08100a9dab6b926fa5`.
+Its 40 paired gameplay rows reached 5 visible sections per output. They
+recorded 113 mesh completions and 58 integrated ticks with nonzero worker
+time. The logged GPU cycle pair was invalid under Cemu. This qualifies the
+retirement path and worker recording in emulation. Physical comparison of
+pacing, visuals and memory remains queued for the
+[fixed-75% workload](benchmarks.md#physical-fixed-75-saved-view).
+
+The earlier [exact grouped trial](grouped-hud-trial.md) separately reached
+gameplay with distinct Cemu captures, movement and save.
