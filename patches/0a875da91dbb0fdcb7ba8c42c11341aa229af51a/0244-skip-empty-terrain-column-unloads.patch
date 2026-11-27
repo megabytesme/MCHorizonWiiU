@@ -1,0 +1,41 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index d9136c4..616f6c6 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -2503,20 +2503,24 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+ 
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
+         let removed: HashSet<_> = columns.collect();
+-        Arc::make_mut(&mut self.block_entity_sections).remove_columns(&removed);
+-        let expired: Vec<_> = self
+-            .sections
+-            .keys()
+-            .copied()
+-            .filter(|(x, _, z)| removed.contains(&(*x, *z)))
+-            .collect();
+-        for key in expired {
+-            if let Some(old) = self.remove_native_section(key) {
+-                self.retire_section(old)
++        // The world update calls this even when no columns expired. Keep the
++        // retired-batch drain independent of whether this call removed any.
++        if !removed.is_empty() {
++            Arc::make_mut(&mut self.block_entity_sections).remove_columns(&removed);
++            let expired: Vec<_> = self
++                .sections
++                .keys()
++                .copied()
++                .filter(|(x, _, z)| removed.contains(&(*x, *z)))
++                .collect();
++            for key in expired {
++                if let Some(old) = self.remove_native_section(key) {
++                    self.retire_section(old)
++                }
+             }
++            self.deferred_terrain
++                .retain(|(x, _, z), _| !removed.contains(&(*x, *z)));
+         }
+-        self.deferred_terrain
+-            .retain(|(x, _, z), _| !removed.contains(&(*x, *z)));
+         if self.terrain_retired_bytes >= RETIRE_BATCH_BYTES {
+             self.flush_retired()
+         }
