@@ -41,8 +41,10 @@ the marker files for each arm. [RC 55 package](rc55-qualification.md) ·
 
 The grouped HUD comparisons are on hold after matched Cemu arms
 reproduced a HUD arena destruction assertion. Use the stock direct path
-for independent verification while this is resolved. The clear-fog arm
-also needs the corrected shader loader and an observed activation.
+for independent verification while this is resolved. RC 59 stages a
+separate stock-fog comparison of plain rendering and the opaque no-kill
+arm. The clear-fog shader is a parity diagnostic. Stock Overworld fog
+prevents its admission on the reference. [RC 59 package](rc59-qualification.md)
 
 | Order | Comparison | Evidence |
 | --- | --- | --- |

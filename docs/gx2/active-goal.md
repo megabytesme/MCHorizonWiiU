@@ -112,6 +112,13 @@ before expanding that architecture.
   display and passed save and heap checks. The staged grouped physical
   arms await resolution.
   [RC 57 qualification](rc57-qualification.md)
+- RC 59 isolates passive terrain-tile sampling and adds classified HUD
+  retirement receipts. The clear shader fixture passed both outputs.
+  Stock Overworld fog excludes the clear shortcut from the performance
+  workload. A corrected standalone HUD reducer passed both recompilers
+  after the old wrapper failed at arena teardown. The corrected full
+  game build is in progress. [RC 59 qualification](rc59-qualification.md) ·
+  [HUD reducer](hud-retirement-reducer.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

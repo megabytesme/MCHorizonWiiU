@@ -145,6 +145,34 @@
     "physical": "grouped_arms_staged_hold_for_teardown",
     "receipt": "rc57-qualification.md"
   },
+  "opaque_shader_and_resident_visibility": {
+    "candidate": "0.8.0-rc.59",
+    "engine_tree": "f5224f3d354acfdf9daccf2273249daa544580a0",
+    "rpx_sha256": "d613296a83fa3e3b99a3974603d8e40948836dd941ba69cd916d27efa611276e",
+    "wuhb_sha256": "d9d20681f549c3d975aaf0ea15679e689bd778464e896acef9970db7d334d079",
+    "native_build": "passed",
+    "clear_vertex_cemu_readback_cases": 12,
+    "clear_vertex_stock_overworld_admission": "zero_with_applicable_stock_atmospheric_fog",
+    "visibility_observer_preserves_stock_draws": true,
+    "cemu_resident_visibility_replay": {
+      "paired_observer_samples": 5,
+      "solid_indices_per_display": 862320,
+      "hypothetically_covered_indices_per_display": 21798,
+      "gameplay_pairs": 547,
+      "no_partial_pairs": 370,
+      "max_terrain_sections_per_display": 147,
+      "save_and_bulk_heap_recovery": "passed"
+    },
+    "hud_c_reducer": {
+      "pairs": 384,
+      "original_interpreter": "passed",
+      "original_recompilers": "active_arena_native_refusal",
+      "corrected_recompilers": "both_passed_retirement_and_destruction",
+      "corrected_hosted_game": "queued"
+    },
+    "physical": "stock_and_opaque_control_staged_grouped_on_hold",
+    "receipt": "rc59-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
