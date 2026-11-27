@@ -175,6 +175,12 @@ before expanding that architecture.
   count gate joined all 32 valid Cemu timing samples at 210 sections on
   both outputs. The supervised physical run uses the prepared `174`
   marker and original saved view. [RC 67 evidence](rc67-qualification.md)
+- RC 68 measured 1,537 warm replay pairs out of 1,680 exact Cemu
+  frames. The separate centered-light arm also matched stock scanout
+  pixels on both outputs. The CPU observer joined 24 ticks, including
+  20 omission-free frames. `Game::tick` accounted for most of the
+  measured Cemu client tick in the settled cohort.
+  Native shader and CPU comparisons are staged. [RC 68 evidence](rc68-qualification.md)
 - The standalone stock-fog light-packing fixture preserved all pixels on
   both outputs for opaque and cutout terrain, including a second scene
   with sorted translucency. The combined program reduces vertex ALU

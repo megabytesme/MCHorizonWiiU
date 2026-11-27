@@ -339,6 +339,19 @@
     "physical": "queued_supervised",
     "receipt": "rc67-qualification.md"
   },
+  "verified_replay_coverage_centered_light_and_cpu": {
+    "candidate": "0.8.0-rc.68",
+    "engine_tree": "b24421b563b1195818039eb6c0f1c49ea3c4bf22",
+    "rpx_sha256": "032e2fa2a7e30a1bdb650a3b8e460556ebf08185a6311f33c666a0f93df9d323",
+    "wuhb_sha256": "753bc30509049ab6e1b311fb6c7e8e3d09ba159dea1f0077f281fcbe098f8994",
+    "cemu_complete_replay_pairs": 1680,
+    "cemu_warm_replay_both_outputs": 1537,
+    "cemu_stock_vs_replay_and_shader_scanouts_match": true,
+    "cemu_exact_client_tick_joins": 24,
+    "cemu_omission_free_client_tick_joins": 20,
+    "physical": "centered_shader_and_cpu_staged_supervised",
+    "receipt": "rc68-qualification.md"
+  },
   "terrain_light_packing": {
     "rpx_sha256": "a9013d7153619d7c94675145256294f63c0925c108736c948103603b8b25a701",
     "wuhb_sha256": "a9bf760c8803c9adb0bf1c2085bd69bb1f5a9dd4e813c009db43a6ac57005b13",
