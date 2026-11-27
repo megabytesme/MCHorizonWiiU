@@ -45,6 +45,36 @@ the live atlas inside the guarded pair callback, retires it before release,
 and declines unsupported, bootstrapping or isolated benchmark frames.
 Strict C and host failure/foreground controls passed.
 
+## Matched Cemu underwater replay
+
+The exact RC 54 RPX ran both arms in the Cemu interpreter with the same
+prepared archive, ocean fixture, options and graphics inputs. Both saved
+the camera at `(46.5, 56.0, 148.5)`. This parity fixture disables the
+vignette to isolate the stock water overlay and retains one stationary
+terrain section per display. The 75% world targets measured 1440×809 and
+641×360, with separate 1920×1080 TV and 854×480 GamePad captures.
+
+| Observation | Control | Scaled screen effects |
+| --- | ---: | ---: |
+| Stable capture windows | 5 | 5 |
+| Paired rows bracketed by those windows | 9 | 7 |
+| Rows with just the screen-effect omission (`0x200`) | 9 | 0 |
+| Rows reporting zero omissions | 0 | 7 |
+| Rows with terrain uploads | 0 | 0 |
+
+The live marker arm reported the scaled screen effects submitted on both
+outputs. Of 1,344 stable pixel locations per display, 1,326 changed by
+at least two channel values on each. The measured changes fit the
+advisory stock-water blend envelope at 99.18% of stable TV locations
+and 97.99% of stable GamePad locations. The envelope uses the stock
+texture's channel and alpha bounds, a fitted brightness, and a two-level
+rounding allowance. Hardware overlay parity, the other live overlay
+modes and settled performance remain queued.
+
+The control and trial acceptance receipts have SHA-256
+`ba1065d2175b239b4b807eb67c29861e39f12fce4fe469681038f434d1623c09` and
+`55623d7c903388e3dbaa7c51057e0307df32958e8bd0610ce3738748bce62d03`.
+
 ## Frame timing and loading
 
 The `4f` sampler emits game-thread wall spans on every 120th eligible
@@ -84,3 +114,9 @@ construction of the owned definition and its use through the map. Check
 immediately after insertion and before interpretation of the completed map
 to narrow that interval. Successful multicore startup and physical pacing
 have separate acceptance requirements.
+
+The additional multicore clear-fog trial requested `4o` with
+`gx2-clear-fog.enable`. It stopped before Game handoff at the same
+farmland state and recorded the same origin and lookup lengths. The
+shader path was unreachable in that run. The receipt SHA-256 is
+`89de557b490b2f05836613f27b7b38e176ae0981f0fead082c8ee36120b8db8b`.

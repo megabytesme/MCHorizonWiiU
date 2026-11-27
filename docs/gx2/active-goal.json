@@ -77,7 +77,16 @@
     "clear_fog_pixel_dwords_control_trial": [112, 64],
     "runtime": "cemu_multicore_dual_output_save_pass",
     "cemu_single_core_key_origin": "correct_before_insert_empty_in_selected_stock_definition",
-    "cemu_screen_replay": "queued",
+    "cemu_screen_replay": {
+      "status": "interpreter_matched_independent_underwater_captures_and_both_saves_passed",
+      "isolated_saved_camera": [46.5, 56.0, 148.5],
+      "sections_per_output": [1, 1],
+      "paired_rows_control_trial": [9, 7],
+      "zero_omissions_control_trial": [0, 7],
+      "stable_samples_per_output": 1344,
+      "advisory_water_blend_match_fraction_tv_gamepad": [0.9918154761904762, 0.9799107142857143]
+    },
+    "cemu_clear_fog_trial": "multicore_startup_blocked_by_known_farmland_key_failure",
     "physical": "queued",
     "receipt": "rc54-qualification.md"
   },

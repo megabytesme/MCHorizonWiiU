@@ -1,8 +1,9 @@
 # Host stage timings from physical gameplay
 
 The settled RC 38 Full Performance workload drew 174 sections independently
-for each display. At fixed 75%, it delivered 19.971 complete display pairs per
+for each display. At fixed 75%, it delivered 19.971 paired submissions per
 second over 98.593 seconds, with a 54.391 ms p99 between frame starts.
+Every row reports a partial result in the RC 38 post-effect flag.
 [Physical qualification](rc38-validation.md)
 
 | Mean host wall time per loop | RC 38 fixed 75% | RC 38 fixed 50% |

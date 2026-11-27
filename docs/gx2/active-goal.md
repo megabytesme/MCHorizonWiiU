@@ -89,8 +89,11 @@ before expanding that architecture.
   The bounded host fixture admitted 28 forward sections from a full
   queue and rearmed each parked request. [RC 53 qualification](rc53-qualification.md)
 - RC 54 packages guarded scaled screen effects, a clear-fog opaque shader,
-  and frame-stage timing. Both pinned shaders and the exact native package
-  built. [RC 54 qualification](rc54-qualification.md)
+  and frame-stage timing. A matched interpreter replay drew the live
+  underwater overlay on both displays and saved the same camera in both
+  runs. The one-section fixture isolates overlay parity. The clear-fog
+  recompiler replay stopped at the existing farmland startup fault before
+  reaching a draw. [RC 54 qualification](rc54-qualification.md)
 - RC 55 adds physical worker and GX2 queue observations and optional warm
   mob data reuse. The exact native package is staged for supervised testing.
   [RC 55 qualification](rc55-qualification.md)
