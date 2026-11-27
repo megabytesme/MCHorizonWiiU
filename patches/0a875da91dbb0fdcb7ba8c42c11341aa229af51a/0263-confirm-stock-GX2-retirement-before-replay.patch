@@ -1,0 +1,236 @@
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 3c8a88c..aa74ab5 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -41,7 +41,7 @@ typedef struct {
+ typedef struct HorizonGx2SolidListUses {
+    int64_t queued_after[2];
+    int64_t receipt;
+-   uint32_t recovered;
++   uint32_t recovered, check_when_unused;
+ } HorizonGx2SolidListUses;
+ 
+ HorizonGx2SolidList *horizon_gx2_solid_list_create(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 43b1859..30aeb9f 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1161,9 +1161,16 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         }
+     }
+ 
++    fn reset_solid_list_surface(&mut self) {
++        self.invalidate_solid_lists();
++        if let Some(trial) = &mut self.solid_lists {
++            trial.reset_retirement_check();
++        }
++    }
++
+     /// A new foreground can recreate render targets at the same dimensions.
+     pub fn invalidate_tv_terrain_wait_ticket(&mut self) {
+-        self.invalidate_solid_lists();
++        self.reset_solid_list_surface();
+         if let Some(census) = &mut self.solid_list_census {
+             census.invalidate();
+         }
+@@ -2680,7 +2687,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     fn resize(&mut self, _width: u32, _height: u32) {
+         let outputs = output_dimensions();
+         if outputs.as_ref() != Ok(&self.outputs) {
+-            self.invalidate_solid_lists();
++            self.reset_solid_list_surface();
+         }
+         // The hosted loop polls the viewport before input and every draw.
+         // Preserve a ticket only when both physical outputs still match.
+@@ -2739,7 +2746,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.cit_generation = None;
+     }
+     fn recreate_surface(&mut self) -> horizon_client::Result<()> {
+-        self.invalidate_solid_lists();
++        self.reset_solid_list_surface();
+         if let Some(census) = &mut self.solid_list_census {
+             census.invalidate();
+         }
+@@ -4020,8 +4027,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             None
+         };
+         let mut list_uses = solid_lists::Uses::default();
++        if self.solid_lists.as_ref().is_some_and(solid_lists::Trial::needs_retirement_check) {
++            list_uses.check_when_unused = 1;
++        }
+         let list_uses_ptr = &raw mut list_uses;
+-        let solid_lists_allowed = self.solid_lists.is_some()
++        let solid_lists_allowed = self.solid_lists.as_ref().is_some_and(solid_lists::Trial::enabled)
+             && !frame.title && !screenshot_pending && !grouped_present && !defer_flip
+             && !view_hud_requested && !guarded_hud && !scaled_color_only && tv_wait_mode == 0
+             && per_output_terrain_waits && !skip_terrain_waits && opaque_viewports.is_null()
+@@ -4313,9 +4323,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.last_frame_partial = self.frame_work.omitted_pass_mask != 0;
+         if let Some(trial) = &mut self.solid_lists {
++            let complete = !self.last_frame_partial && outputs == 3;
++            if trial.finish_retirement_check(solid_lists.as_ref(), complete, &list_uses) {
++                unsafe {
++                    OSReport(c"Horizon GX2 solid list retirement unavailable, using direct terrain draws\n".as_ptr());
++                }
++            }
+             if let Some(row) = trial.finish(
+                 solid_lists,
+-                !self.last_frame_partial && outputs == 3,
++                complete,
+                 self.frame_work.terrain_sections.map(|count| count as u32),
+             ) {
+                 unsafe { horizon_gx2_profile_record_solid_replay(&row) };
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index aa12274..6fb99c9 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -718,13 +718,22 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ 
+    horizon_gx2_profile_deadline_ready(false);
+    const bool has_list_use = solid_lists && (solid_lists->queued_after[0] || solid_lists->queued_after[1]);
+-   const OSTime before_finish = (retired_pair || has_list_use) ? GX2GetLastSubmittedTimeStamp() : 0;
++   const bool inspect_retirement = solid_lists && solid_lists->check_when_unused;
++   const OSTime before_finish = (retired_pair || has_list_use || inspect_retirement)
++      ? GX2GetLastSubmittedTimeStamp() : 0;
+    const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+-   if (has_list_use)
++   if (has_list_use) {
+       last_wait_ns += OSTicksToNanoseconds(retire_solid_lists(solid_lists, before_finish));
++   } else if (inspect_retirement && !result && last_outputs == 3 && before_finish > 0) {
++      // Qualify the real stock finish before any list or referenced mesh
++      // can become queue-owned. The fallback can keep the direct renderer.
++      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (submitted > before_finish && GX2GetRetiredTimeStamp() >= submitted)
++         solid_lists->receipt = submitted;
++   }
+    if (retired_pair) {
+       const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+       if (submitted <= 0 || submitted <= before_finish || GX2GetRetiredTimeStamp() < submitted) {
+@@ -774,7 +783,7 @@ int horizon_loading_host_present_solid_lists(HorizonLoadingDrawTarget draw, void
+                                               const float rgba[4], HorizonGx2SolidListUses *uses)
+ {
+    if (!uses) return -1;
+-   *uses = (HorizonGx2SolidListUses){0};
++   *uses = (HorizonGx2SolidListUses){.check_when_unused = uses->check_when_unused};
+    return present_with_clear(draw, context, rgba, NULL, false, NULL, NULL, false, uses);
+ }
+ 
+diff --git a/wiiu/loading_host/solid_lists.rs b/wiiu/loading_host/solid_lists.rs
+index a6a5563..dcb38e3 100644
+--- a/wiiu/loading_host/solid_lists.rs
++++ b/wiiu/loading_host/solid_lists.rs
+@@ -17,6 +17,7 @@ pub(super) struct Uses {
+     queued_after: [i64; 2],
+     receipt: i64,
+     pub(super) recovered: u32,
++    pub(super) check_when_unused: u32,
+ }
+ 
+ impl Uses {
+@@ -169,6 +170,7 @@ pub(super) struct Trial {
+     slots: [Slot; 2],
+     scratch: Vec<ListDraw>,
+     observation: ReplayObservation,
++    retirement: Option<bool>,
+ }
+ 
+ impl Trial {
+@@ -178,10 +180,40 @@ impl Trial {
+         }
+     }
+ 
++    pub(super) fn enabled(&self) -> bool {
++        self.retirement != Some(false)
++    }
++
++    pub(super) fn needs_retirement_check(&self) -> bool {
++        self.retirement.is_none()
++    }
++
++    pub(super) fn reset_retirement_check(&mut self) {
++        self.retirement = None;
++    }
++
++    pub(super) fn finish_retirement_check(
++        &mut self,
++        frame: Option<&Frame>,
++        complete: bool,
++        uses: &Uses,
++    ) -> bool {
++        if self.needs_retirement_check() && complete && uses.check_when_unused != 0
++            && frame.is_some_and(|pair| pair.keys.iter().all(Option::is_some))
++            && uses.sealed([false; 2]) && uses.recovered == 0
++        {
++            let available = uses.receipt > 0;
++            self.retirement = Some(available);
++            return !available;
++        }
++        false
++    }
++
+     pub(super) fn observe(&self, frame: &mut Frame, index: usize, key: Key) -> bool {
+         frame.keys[index] = Some(key);
+         let slot = &self.slots[index];
+-        slot.stable(frame.sequence, key) && !slot.allocation_failed && slot.refused != Some(key)
++        self.retirement == Some(true) && slot.stable(frame.sequence, key)
++            && !slot.allocation_failed && slot.refused != Some(key)
+     }
+ 
+     pub(super) fn finish(
+@@ -210,6 +242,9 @@ impl Trial {
+         draws: &[SolidDraw],
+         sections: &HashMap<SectionKey, TerrainSection>,
+     ) -> Option<(Counts, bool)> {
++        if self.retirement != Some(true) {
++            return None;
++        }
+         let key = frame.keys[index]?;
+         let slot = &mut self.slots[index];
+         let terrain = terrain.as_ptr();
+@@ -295,8 +330,32 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn needs_preceding_complete_output_and_exact_view() {
++    fn qualifies_unused_stock_pair_before_replay_and_retries_after_surface_reset() {
+         let mut trial = Trial::default();
++        let mut uses = Uses { check_when_unused: 1, ..Uses::default() };
++        let mut first = Frame::new(20, &raw mut uses);
++        assert!(!trial.observe(&mut first, 0, key(0.0)));
++        assert!(!trial.finish_retirement_check(Some(&first), true, &uses));
++        assert!(trial.needs_retirement_check());
++        assert!(!trial.observe(&mut first, 1, key(32.0)));
++        assert!(!trial.finish_retirement_check(Some(&first), false, &uses));
++        assert!(trial.finish_retirement_check(Some(&first), true, &uses));
++        assert!(!trial.enabled());
++        trial.invalidate();
++        trial.reset_retirement_check();
++        assert!(trial.enabled() && trial.needs_retirement_check());
++        uses.receipt = 24;
++        assert!(!trial.finish_retirement_check(Some(&first), true, &uses));
++        assert!(trial.enabled() && !trial.needs_retirement_check());
++        trial.finish(Some(first), true, [174; 2]);
++        let mut next = Frame::new(21, &raw mut uses);
++        assert!(trial.observe(&mut next, 0, key(0.0)));
++        assert!(trial.observe(&mut next, 1, key(32.0)));
++    }
++
++    #[test]
++    fn needs_preceding_complete_output_and_exact_view() {
++        let mut trial = Trial { retirement: Some(true), ..Trial::default() };
+         let mut uses = Uses::default();
+         let mut first = Frame::new(20, &raw mut uses);
+         assert!(!trial.observe(&mut first, 0, key(0.0)));
+@@ -377,7 +436,7 @@ mod tests {
+ 
+     #[test]
+     fn seam_invalidation_refuses_same_address_and_sequence_gap() {
+-        let mut trial = Trial::default();
++        let mut trial = Trial { retirement: Some(true), ..Trial::default() };
+         let mut uses = Uses::default();
+         let mut first = Frame::new(3, &raw mut uses);
+         assert!(!trial.observe(&mut first, 0, key(0.0)));
