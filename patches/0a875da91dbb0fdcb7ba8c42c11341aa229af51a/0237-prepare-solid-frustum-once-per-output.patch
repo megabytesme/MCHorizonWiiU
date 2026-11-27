@@ -1,0 +1,269 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index 3120304..d029731 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -311,6 +311,73 @@ impl TerrainClipRows {
+     }
+ }
+ 
++/// CPU-only frustum prepared once for an output. Submitted rows retain the
++/// original GX2 shader ABI and camera-relative f64 translation.
++pub struct PreparedTerrainClip {
++    clip: TerrainClipRows,
++    offsets: [[f64; 4]; 4],
++    axes: [[TerrainClipAxis; 2]; 3],
++}
++
++struct TerrainClipAxis {
++    sign: f32,
++    support: [f32; 3],
++    error: [f32; 3],
++}
++
++impl PreparedTerrainClip {
++    pub fn new(clip: TerrainClipRows) -> Self {
++        let w = clip.rows[3];
++        Self {
++            clip,
++            offsets: clip.rows.map(|row| row.map(f64::from)),
++            axes: core::array::from_fn(|i| {
++                let axis = clip.rows[i];
++                [1.0, -1.0].map(|sign| TerrainClipAxis {
++                    sign,
++                    support: core::array::from_fn(|j| w[j] + sign * axis[j]),
++                    error: core::array::from_fn(|j| w[j].abs() + axis[j].abs()),
++                })
++            }),
++        }
++    }
++
++    pub fn project(&self, [x, y, z]: [f64; 3], bounds: TerrainBounds) -> Option<TerrainClipRows> {
++        let translate = |[a, b, c, d]: [f64; 4]| (a * x + b * y + c * z + d) as f32;
++        let w = translate(self.offsets[3]);
++        let mut offsets = [0.0, 0.0, 0.0, w];
++        let abs: [f32; 3] = core::array::from_fn(|i| bounds.min[i].abs().max(bounds.max[i].abs()));
++        let w_abs = w.abs();
++        for (i, planes) in self.axes.iter().enumerate() {
++            let offset = translate(self.offsets[i]);
++            let initial_error = w_abs + offset.abs();
++            for plane in planes {
++                let mut maximum = w + plane.sign * offset;
++                let mut error = initial_error;
++                for j in 0..3 {
++                    let coefficient = plane.support[j];
++                    let support = if coefficient < 0.0 {
++                        bounds.min[j]
++                    } else {
++                        bounds.max[j]
++                    };
++                    maximum += coefficient * support;
++                    error += plane.error[j] * abs[j];
++                }
++                if maximum.is_finite() && maximum < -8.0 * f32::EPSILON * error.max(1.0) {
++                    return None;
++                }
++            }
++            offsets[i] = offset;
++        }
++        let mut rows = self.clip.rows;
++        for (row, offset) in rows.iter_mut().zip(offsets) {
++            row[3] = offset;
++        }
++        Some(TerrainClipRows { rows })
++    }
++}
++
+ pub fn terrain_clip_rows(
+     camera_relative_origin: [f64; 3],
+     yaw_sin: f32,
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index deb5008..c543548 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -201,6 +201,16 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
+ }
+ 
+ static bool reverse_translucent_quads, atlas_cell_vertices, solid_list_census;
++static bool prepared_solid_frustum;
++
++bool horizon_gx2_profile_prepared_solid_frustum(void)
++{
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (horizon_gx2_profile_near_fog_requested()) return false;
++#endif
++   return prepared_solid_frustum && !atlas_cell_vertices && !mem1_tv_depth &&
++      !reverse_translucent_quads && !tv_terrain_wait_mode && history == &process_history;
++}
+ 
+ bool horizon_gx2_profile_solid_list_census(void)
+ {
+@@ -301,6 +311,9 @@ void horizon_gx2_profile_init(void)
+       FILE *cells = fopen(ROOT "gx2-atlas-cells.enable", "rb");
+       atlas_cell_vertices = cells != NULL;
+       if (cells) fclose(cells);
++      FILE *frustum = fopen(ROOT "gx2-prepared-solid-frustum.enable", "rb");
++      prepared_solid_frustum = frustum != NULL;
++      if (frustum) fclose(frustum);
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 74a2d9a..ff3a331 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -71,6 +71,7 @@ bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_solid_draw_plan(void);
+ bool horizon_gx2_profile_solid_list_census(void);
++bool horizon_gx2_profile_prepared_solid_frustum(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_reverse_translucent_quads(void);
+ bool horizon_gx2_profile_atlas_cells(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index acd4c18..e841761 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -55,7 +55,7 @@ use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_optifine::cit::Factor;
+ use horizon_wiiu_gx2_terrain::{
+     AtlasCellLayout, AtlasCellTerrainVertex, HalfTerrainVertex, IndexedTerrainVertex,
+-    TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
++    PreparedTerrainClip, TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
+ };
+ use horizon_wiiu_platform::hud::{
+     CitSlot,
+@@ -275,6 +275,7 @@ extern "C" {
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
+     fn horizon_gx2_profile_solid_list_census() -> bool;
++    fn horizon_gx2_profile_prepared_solid_frustum() -> bool;
+     fn horizon_gx2_profile_process_history() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+     fn horizon_gx2_profile_atlas_cells() -> bool;
+@@ -876,6 +877,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_camera: SectionKey,
+     terrain_views: [Option<TerrainProjection>; 2],
+     solid_draw_plan_enabled: bool,
++    prepared_solid_frustum: bool,
+     solid_list_census: Option<solid_list_census::Census>,
+     half_position_requested: bool,
+     atlas_cells_requested: bool,
+@@ -965,6 +967,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_camera: (0, 0, 0),
+             terrain_views: [None, None],
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
++            prepared_solid_frustum: false,
+             atlas_cells_requested: false,
+             solid_list_census: None,
+             half_position_requested: std::path::Path::new(
+@@ -1045,6 +1048,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+     /// Admit standalone renderer diagnostics only on the ordinary hosted entry.
+     pub fn enable_ordinary_renderer_trials(&mut self) {
+         self.atlas_cells_requested = unsafe { horizon_gx2_profile_atlas_cells() };
++        self.prepared_solid_frustum = !self.half_position_requested
++            && unsafe { horizon_gx2_profile_prepared_solid_frustum() };
+         self.solid_list_census = unsafe { horizon_gx2_profile_solid_list_census() }
+             .then(solid_list_census::Census::default);
+     }
+@@ -2688,6 +2693,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             profile: Gx2ProfileDelta,
+             cave_sample: Option<cave_visibility::Sample>,
+             solid_list_census: Option<solid_list_census::Pair>,
++            prepared_solid_frustum: bool,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             per_output_terrain_waits: bool,
+             #[cfg(feature = "gx2-screen-overlays")]
+@@ -2990,6 +2996,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     }
+                 }
+                 let cached = plan.ready();
++                let prepared_cull = projection
++                    .filter(|_| draw.prepared_solid_frustum && cached.is_none())
++                    .map(|view| PreparedTerrainClip::new(view.clip));
++                if prepared_cull.is_some() {
++                    static REPORTED: std::sync::Once = std::sync::Once::new();
++                    REPORTED.call_once(|| unsafe {
++                        OSReport(c"Horizon GX2 prepared solid frustum active\n".as_ptr());
++                    });
++                }
+                 let (fog_color, fog_ranges) = horizon_client::gfx::fog_uniform(draw.frame);
+                 if let Some(start) = projection_start {
+                     draw.profile.projection_ns =
+@@ -3081,9 +3096,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let prepared = if let Some(prepared) = prepared {
+                         prepared
+                     } else {
+-                        let Some(parameters) =
+-                            solid_draw_plan::SolidDraw::project(key, section.bounds, projection)
+-                        else {
++                        let parameters = match (prepared_cull.as_ref(), section.bounds) {
++                            (Some(frustum), Some(bounds)) =>
++                                solid_draw_plan::SolidDraw::project_prepared(
++                                    key, bounds, projection, frustum,
++                                ),
++                            _ => solid_draw_plan::SolidDraw::project(key, section.bounds, projection),
++                        };
++                        let Some(parameters) = parameters else {
+                             continue;
+                         };
+                         draw_parameters = parameters;
+@@ -3669,10 +3689,21 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             0
+         };
++        let prepared_solid_frustum = self.prepared_solid_frustum && !frame.title
++            && !screenshot_pending && !grouped_present && !view_hud_requested
++            && !guarded_hud && !scaled_color_only && tv_wait_mode == 0
++            && unsafe {
++                horizon_gx2_profile_process_history()
++                    && horizon_loading_host_guarded_hud_available()
++            }
++            && cafe_profile::playing_frame_sequence().is_some();
++        #[cfg(feature = "gx2-screen-overlays")]
++        let prepared_solid_frustum = prepared_solid_frustum && !screen_trial;
+         let solid_list_census = if let Some(census) = &mut self.solid_list_census {
+             let stock_pair = !frame.title && self.terrain.is_some() && !screenshot_pending
+                 && !grouped_present && !view_hud_requested && !guarded_hud
+                 && !scaled_color_only && !self.half_position_requested && tv_wait_mode == 0
++                && !prepared_solid_frustum
+                 && unsafe {
+                     horizon_gx2_profile_process_history()
+                         && horizon_loading_host_guarded_hud_available()
+@@ -3725,6 +3756,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             profile: Gx2ProfileDelta::default(),
+             cave_sample,
+             solid_list_census,
++            prepared_solid_frustum,
+             uploaded_hud,
+             per_output_terrain_waits,
+             #[cfg(feature = "gx2-screen-overlays")]
+diff --git a/wiiu/loading_host/solid_draw_plan.rs b/wiiu/loading_host/solid_draw_plan.rs
+index f39b6cb..bfe0db5 100644
+--- a/wiiu/loading_host/solid_draw_plan.rs
++++ b/wiiu/loading_host/solid_draw_plan.rs
+@@ -1,6 +1,6 @@
+ //! CPU-only prepared solid draws for an unchanged output projection.
+ use super::{SectionKey, TerrainClipRows, TerrainProjection};
+-use horizon_wiiu_gx2_terrain::TerrainBounds;
++use horizon_wiiu_gx2_terrain::{PreparedTerrainClip, TerrainBounds};
+ 
+ const MAX_DRAWS: usize = 1024;
+ 
+@@ -23,6 +23,17 @@ impl SolidDraw {
+         }
+         Some(Self { key, origin, clip })
+     }
++
++    pub(super) fn project_prepared(
++        key: SectionKey,
++        bounds: TerrainBounds,
++        projection: &TerrainProjection,
++        frustum: &PreparedTerrainClip,
++    ) -> Option<Self> {
++        let origin = projection.section_origin(key);
++        let clip = frustum.project(origin, bounds)?;
++        Some(Self { key, origin, clip })
++    }
+ }
+ 
+ #[derive(Default)]
