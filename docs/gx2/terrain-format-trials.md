@@ -137,3 +137,12 @@ each quad processes its four vertices once. A single layer of the two
 75% render targets contains 1,395,720 pixels. This leaves little margin in a simple
 ALU issue-group estimate. Actual shader invocations and timings remain
 unknown. Keep the stock fragment reciprocal in gameplay.
+
+## Stock solid depth scheduling
+
+A single GFD descriptor byte changes the stock solid shader's fallback
+depth-test order. The vertex and fragment programs, sampler layout and
+shader alpha discard stay identical. Cemu passed all 28 visual checks
+for independent TV and GamePad views across three overdraw levels and
+two draw orders. The fixture's separate bottom-cycle comparison and
+physical depth/alpha parity remain to be measured. [Same-RPX Re-Z fixture](../../wiiu/diagnostics/gx2-rez/README.md)
