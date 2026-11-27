@@ -1,0 +1,175 @@
+diff --git a/crates/horizon-client/src/game/world/world_loading.rs b/crates/horizon-client/src/game/world/world_loading.rs
+index a0d0227e4f89b5d2ce822d4f3741c06c095878e7..228321742dc3e7b85d114cc922d73d05e3308a09 100644
+--- a/crates/horizon-client/src/game/world/world_loading.rs
++++ b/crates/horizon-client/src/game/world/world_loading.rs
+@@ -1003,6 +1003,7 @@ fn mod_terrain(
+     seed: i64,
+     structures: bool,
+     runtime_stem: Option<&serde_json::Value>,
++    saved_settings: Option<&horizon_core::nbt::Tag>,
+ ) -> Option<std::result::Result<ModLevel, String>> {
+     use horizon_world::worldgen::{
+         mod_biome_sources::mod_biome_sources, mod_generators::mod_chunk_generators,
+@@ -1020,9 +1021,9 @@ fn mod_terrain(
+             .find(|(level, _)| *level == dim.id())
+             .and_then(|(_, stem)| serde_json::from_str(stem).ok())
+             .or_else(|| {
+-                horizon_client::save::world_gen_settings(world_root)
+-                    .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
+-                    .map(|stem| horizon_client::scoreboard::tag_to_json(&stem))
++                saved_settings
++                    .and_then(|s| s.get("dimensions")?.get(dim.id()))
++                    .map(horizon_client::scoreboard::tag_to_json)
+             })
+     })?;
+     if let Some(generator) = stem["generator"]["type"]
+@@ -1120,38 +1121,29 @@ pub(super) fn make_streaming(
+         item_data: &res.core.item_data,
+     };
+     let mut locator = None;
+-    let flat = (dim == Dim::Overworld)
+-        .then(|| horizon_client::save::world_gen_settings(world_root))
+-        .flatten()
+-        .and_then(|s| {
+-            horizon_client::flatgen::FlatTerrain::from_settings(
+-                &s,
+-                pack.assets.registry,
+-                res.biomes(),
+-                shape,
+-            )
+-        });
++    // The flat, debug, mod and noise branches all consume the same decoded
++    // settings. Keep this read local to one streaming construction.
++    let saved_settings = horizon_client::save::world_gen_settings(world_root);
++    let overworld_settings = saved_settings.as_ref().filter(|_| dim == Dim::Overworld);
++    let flat = overworld_settings.and_then(|s| {
++        horizon_client::flatgen::FlatTerrain::from_settings(
++            s, pack.assets.registry, res.biomes(), shape,
++        )
++    });
+     // `DebugLevelSource`: the overworld of the Debug preset.
+-    let debug = (dim == Dim::Overworld)
+-        .then(|| horizon_client::save::world_gen_settings(world_root))
+-        .flatten()
+-        .and_then(|s| {
+-            horizon_client::debugworld::DebugTerrain::from_settings(
+-                &s,
+-                pack.assets.registry,
+-                res.biomes(),
+-                shape,
+-            )
+-        });
++    let debug = overworld_settings.and_then(|s| {
++        horizon_client::debugworld::DebugTerrain::from_settings(
++            s, pack.assets.registry, res.biomes(), shape,
++        )
++    });
+     // PlaceCommand.placeJigsaw/placeStructure generate directly, independently
+     // of WorldOptions.generateStructures. Keep their flat locator available
+     // even when automatic structure starts are disabled.
+-    let automatic_structures =
+-        horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
+-    let flat_settings = (dim == Dim::Overworld)
+-        .then(|| horizon_client::save::world_gen_settings(world_root))
+-        .flatten()
+-        .and_then(|s| horizon_client::flatgen::FlatTerrain::pipeline_settings(&s));
++    let automatic_structures = saved_settings
++        .as_ref()
++        .is_none_or(|settings| horizon_client::save::WorldGen::from_settings(settings).structures);
++    let flat_settings =
++        overworld_settings.and_then(horizon_client::flatgen::FlatTerrain::pipeline_settings);
+     // `adjustGenerationSettings`: a superflat world with features or lakes is decorated
+     // whether or not its structures generate.
+     let flat_decorates = flat_settings
+@@ -1290,6 +1282,7 @@ pub(super) fn make_streaming(
+             Some(super::runtime_levels::Generate::Stem(stem)) => Some(stem),
+             _ => None,
+         },
++        saved_settings.as_ref(),
+     )
+     .transpose()?
+     {
+@@ -1327,10 +1320,7 @@ pub(super) fn make_streaming(
+         if runtime.is_some() {
+             return Err(format!("{}: no generator builds this runtime level", dim.id()).into());
+         }
+-        // WorldOptions.generateStructures, from the world's settings.
+-        let structures =
+-            horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
+-        let preset = horizon_client::save::WorldGen::preset(world_root);
++        let preset = horizon_client::save::WorldGen::preset_from_settings(saved_settings.as_ref());
+         let overrides = world_worldgen_overrides(
+             world_root,
+             &options.resources,
+@@ -1338,12 +1328,14 @@ pub(super) fn make_streaming(
+             enabled_features,
+             &pack.additional_data,
+         );
+-        let saved_stem = horizon_client::save::world_gen_settings(world_root)
+-            .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
+-            .map(|stem| horizon_client::scoreboard::tag_to_json(&stem));
++        let saved_stem = saved_settings
++            .as_ref()
++            .and_then(|s| s.get("dimensions")?.get(dim.id()))
++            .map(horizon_client::scoreboard::tag_to_json);
++        drop(saved_settings);
+         let regions = horizon_client::save::biome_regions::layout(world_root, dim.id())
+             .map_err(|e| format!("Failed to read the world's biome regions: {e}"))?;
+-        let mut inner = VanillaTerrain::for_world_with_settings(terrain_resources, &overrides, seed, preset, dim.id(), structures, saved_stem.as_ref(), regions).map_err(|e| {
++        let mut inner = VanillaTerrain::for_world_with_settings(terrain_resources, &overrides, seed, preset, dim.id(), automatic_structures, saved_stem.as_ref(), regions).map_err(|e| {
+                 if overrides.is_empty() {
+                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
+                 } else {
+@@ -1358,7 +1350,7 @@ pub(super) fn make_streaming(
+         if dim != Dim::End {
+             inner.load_structure_mobs_behind();
+         }
+-        if dim == Dim::Overworld && structures {
++        if dim == Dim::Overworld && automatic_structures {
+             inner.search_rings_behind();
+         }
+         // Chunks an older version saved: the new chunks around them blend in.
+diff --git a/crates/horizon-client/src/save.rs b/crates/horizon-client/src/save.rs
+index 9dada9a88819a10cc075372b9080c7d820ca730d..3bf2c4587a2a2f266bf355c5264386dcfc3d9355 100644
+--- a/crates/horizon-client/src/save.rs
++++ b/crates/horizon-client/src/save.rs
+@@ -3503,17 +3503,21 @@ pub struct WorldGen {
+ impl WorldGen {
+     /// A saved world's choices, from its `world_gen_settings`.
+     pub fn read(world: &Path) -> Option<Self> {
+-        let settings = world_gen_settings(world)?;
++        world_gen_settings(world).as_ref().map(Self::from_settings)
++    }
++
++    /// The same saved options, once the caller has read the current settings.
++    pub fn from_settings(settings: &Tag) -> Self {
+         let flag = |key: &str, default: bool| number(settings.get(key)).map_or(default, |v| v != 0);
+         let generator = settings
+             .get("dimensions")
+             .and_then(|d| d.get("minecraft:overworld"))
+             .and_then(|o| o.get("generator"));
+-        Some(Self {
++        Self {
+             preset: generator.map_or(WorldPreset::Normal, WorldPreset::of_generator),
+             structures: flag("generate_structures", true),
+             bonus_chest: flag("bonus_chest", false),
+-        })
++        }
+     }
+     /// The bundled world preset a saved world's overworld was generated
+     /// with, from its generator: `minecraft:amplified` and
+@@ -3521,9 +3525,12 @@ impl WorldGen {
+     /// `minecraft:single_biome_surface` by a fixed biome source. Anything
+     /// else (and any world without settings) is `minecraft:normal`.
+     pub fn preset(world: &Path) -> &'static str {
+-        let settings = world_gen_settings(world);
++        Self::preset_from_settings(world_gen_settings(world).as_ref())
++    }
++
++    /// The bundled noise preset from a settings snapshot.
++    pub fn preset_from_settings(settings: Option<&Tag>) -> &'static str {
+         let generator = settings
+-            .as_ref()
+             .and_then(|s| s.get("dimensions"))
+             .and_then(|d| d.get("minecraft:overworld"))
+             .and_then(|o| o.get("generator"));
