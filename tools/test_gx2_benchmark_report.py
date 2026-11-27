@@ -154,6 +154,35 @@ class BenchmarkReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid Village mesh readiness'):
             audit.village_streaming_samples(rows, [stream, mesh.replace('dirty=[0, 24, 0, 0]', 'dirty=[0, 24]')])
 
+    def test_upload_admission_joins_complete_and_split_records_only(self):
+        rows = [village_frame(100, 0)]
+        stream = (
+            "Cafe Village streaming seq=100 elapsed_ms=12 reason=lost camera=-960.00,151.44"
+            " sections=0/0 columns=108 client_pending=0 uploads=0 remote_pending=0"
+            " forward_resident=3 forward_lit=3"
+        )
+        admission = (
+            "Cafe Village admission seq=100 reason=lost attempts=8 published=6 empty=2"
+            " over_budget=0 rank_refused=0 backoff=0 heap_refused=0 allocation_deferred=0"
+            " invalid=0 victim_bytes=0 victim_without_commit_bytes=0 released_accounted_bytes=2902452"
+            " retry_issued=0 retry_heap_refused=0 resident_bytes=31488468 retired_bytes=0 deferred=0"
+        )
+        first = "[13:40:55.947] [OSConsole] " + admission[:270]
+        last = "[13:40:55.948] [OSConsole] " + admission[270:]
+        row, = audit.village_streaming_samples(rows, [stream, first, last, admission])
+        self.assertEqual(row["upload_admission"]["published"], 6)
+        self.assertEqual(row["upload_admission"]["released_accounted_bytes"], 2902452)
+        self.assertEqual(row["upload_admission"]["resident_bytes"], 31488468)
+        with self.assertRaisesRegex(ValueError, "malformed Village upload admission"):
+            audit.village_streaming_samples(rows, [stream, first, stream, last])
+        with self.assertRaisesRegex(ValueError, "no matching streaming sample"):
+            audit.village_streaming_samples(rows, [stream, admission.replace("reason=lost", "reason=progress")])
+        with self.assertRaisesRegex(ValueError, "conflicting Village upload admission"):
+            changed = admission.replace("resident_bytes=31488468", "resident_bytes=31488469")
+            audit.village_streaming_samples(rows, [stream, admission, changed])
+        with self.assertRaisesRegex(ValueError, "invalid Village upload admission"):
+            audit.village_streaming_samples(rows, [stream, admission.replace("attempts=8", "attempts=9")])
+
     def test_village_profile_rejects_ambiguous_or_mismatched_retained_frames(self):
         result = audit.summarize(benchmark(
             host_frames=3, paired_frames=3, terrain_paired_frames=3,

@@ -51,6 +51,21 @@ VILLAGE_MESH_TRACE = re.compile(re.escape(VILLAGE_MESH_TAG) + (
     r" points=(\[\[.+?\]\]) view=([0-9a-f]) region=([0-9a-f]) stable_light=([0-9a-f])"
     r" dirty=(\[[0-9, ]+\]) ready_unserved=(\[[0-9, ]+\]) active=(\[[0-9, ]+\])$"
 ))
+VILLAGE_ADMISSION_TAG = "Cafe Village admission seq="
+ADMISSION_OUTCOMES = (
+    "published", "empty", "over_budget", "rank_refused", "backoff",
+    "heap_refused", "allocation_deferred", "invalid",
+)
+ADMISSION_FIELDS = (
+    "attempts", *ADMISSION_OUTCOMES, "victim_bytes", "victim_without_commit_bytes",
+    "released_accounted_bytes", "retry_issued", "retry_heap_refused",
+    "resident_bytes", "retired_bytes", "deferred",
+)
+VILLAGE_ADMISSION_TRACE = re.compile(
+    re.escape(VILLAGE_ADMISSION_TAG) + r"(\d+) reason=(progress|lost|recovered) "
+    + " ".join(field + r"=(\d+)" for field in ADMISSION_FIELDS)
+)
+CEMU_OSCONSOLE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\.\d{3}\] \[OSConsole\] (.*)$")
 
 
 def number(value, *, signed=False):
@@ -294,8 +309,38 @@ def village_window(frames, coverage, first_sequence=None):
     return matched
 
 
+def village_admission_samples(lines, frames):
+    """Read complete native upload intervals, including split Cemu OSConsole records."""
+    records = {}
+    for index, line in enumerate(lines):
+        start = line.find(VILLAGE_ADMISSION_TAG)
+        if start == -1:
+            continue
+        payload = line[start:]
+        match = VILLAGE_ADMISSION_TRACE.fullmatch(payload.rstrip())
+        if match is None and CEMU_OSCONSOLE.fullmatch(line) and len(payload) == 270:
+            # Cemu emits longer OSReport text as adjacent OSConsole lines.
+            following = CEMU_OSCONSOLE.fullmatch(lines[index + 1]) if index + 1 < len(lines) else None
+            if following is not None:
+                match = VILLAGE_ADMISSION_TRACE.fullmatch((payload + following[1]).rstrip())
+        if match is None:
+            raise ValueError("malformed Village upload admission record")
+        sequence = int(match[1])
+        if sequence not in frames:
+            continue
+        detail = dict(zip(ADMISSION_FIELDS, map(int, match.groups()[2:])))
+        if (detail["attempts"] != sum(detail[field] for field in ADMISSION_OUTCOMES)
+                or detail["victim_without_commit_bytes"] > detail["victim_bytes"]):
+            raise ValueError(f"invalid Village upload admission values at frame {sequence}")
+        record = (match[2], detail)
+        if records.setdefault(sequence, record) != record:
+            raise ValueError(f"conflicting Village upload admission records at frame {sequence}")
+    return records
+
+
 def village_streaming_samples(rows, lines):
     frames = {row["sequence"]: row for row in rows}
+    lines = list(lines)
     samples = {}
     meshes = {}
     earliest_flight_start = -float_info.max
@@ -368,6 +413,11 @@ def village_streaming_samples(rows, lines):
         if sample is None or sample["reason"] != reason:
             raise ValueError(f"Village mesh readiness has no matching streaming sample at frame {sequence}")
         sample["mesh_readiness"] = detail
+    for sequence, (reason, detail) in village_admission_samples(lines, frames).items():
+        sample = samples.get(sequence)
+        if sample is None or sample["reason"] != reason:
+            raise ValueError(f"Village upload admission has no matching streaming sample at frame {sequence}")
+        sample["upload_admission"] = detail
     return [samples[seq] for seq in sorted(samples)]
 
 

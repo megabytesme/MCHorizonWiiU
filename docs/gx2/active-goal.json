@@ -87,6 +87,15 @@
       "canonical_runner_report_sha256": "22df366b0aaee567b281c2c9551afa9f85494a11c4f99e7d41526e98a89ff567",
       "clean_exit": true
     },
+    "sampled_upload_admission": {
+      "intervals": [7, 7, 8],
+      "attempted": [242, 538, 315],
+      "published": [124, 247, 154],
+      "empty": [118, 291, 161],
+      "published_in_first_loss_interval": [0, 14, 6],
+      "other_outcomes": 0,
+      "canonical_report_sha256": "169b5c8d891a91f64d8ccf7f5139269d7cfd19212df0de54b7f02a827efba24a"
+    },
     "physical": "pending"
   },
   "paired_solid_list_retirement": {

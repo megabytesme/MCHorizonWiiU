@@ -121,6 +121,27 @@ recovered the full bulk heap and exited cleanly. The canonical runner
 receipt has SHA-256
 `22df366b0aaee567b281c2c9551afa9f85494a11c4f99e7d41526e98a89ff567`.
 
+The report also joins native upload admission intervals to their matching
+streaming samples. Each interval covers the work since the previous sample.
+Resident bytes, retired bytes and deferred uploads are read at the endpoint.
+The three logs retained 22 intervals through approximately 10.1 seconds of
+each 12-second flight.
+
+| Launch | Attempted | Published | Empty | Published in first-loss interval |
+| --- | ---: | ---: | ---: | ---: |
+| Local menu | 242 | 124 | 118 | 0 |
+| Automated prototype | 538 | 247 | 291 | 14 |
+| Canonical runner | 315 | 154 | 161 | 6 |
+
+All 1,095 recorded attempts published or returned empty. The intervals
+recorded zero budget, rank, heap or retry refusals and zero allocation
+deferrals. No victims were selected for admission. Retired bytes and
+deferred uploads were zero at all 22 endpoints. The first-loss intervals
+could publish meshes elsewhere while the sampled forward regions lacked
+mesh inputs. Profile generation, dispatch and client arrival before tuning
+GPU residency for this loss. The canonical runner admission report has
+SHA-256 `169b5c8d891a91f64d8ccf7f5139269d7cfd19212df0de54b7f02a827efba24a`.
+
 ## GPU pass boundaries
 
 On a build with the sparse GPU pass sampler, use `gx2-gpu-pass-profile.enable`

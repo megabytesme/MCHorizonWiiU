@@ -100,8 +100,11 @@ before expanding that architecture.
   capture, save, heap recovery and title exit without manual input.
   Terrain coverage ranged from 36.69% to 62.86%. At each first loss
   only one of four forward sample points had a ready region and stable
-  lighting, with no ready or active mesh work at those points. The
-  physical Village baseline remains RC 33. [Village trace](host-stage-profile.md#rc-69-stock-village-replay)
+  lighting, with no ready or active mesh work at those points. All 1,095
+  sampled upload attempts across the three flights published or returned
+  empty. The next streaming measurement covers server generation, dispatch
+  and client arrival. The physical Village baseline remains RC 33.
+  [Village trace](host-stage-profile.md#rc-69-stock-village-replay)
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)
