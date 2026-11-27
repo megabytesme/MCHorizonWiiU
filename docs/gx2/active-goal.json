@@ -100,6 +100,21 @@
     "physical": "queued",
     "receipt": "rc55-qualification.md"
   },
+  "cave_observation_and_load_diagnostics": {
+    "candidate": "0.8.0-rc.56",
+    "engine_tree": "e75e7cd66e1afa3af0e26e0974e592537e2eedb7",
+    "rpx_sha256": "8ae70e01ae47f183abadfc4add17641cf71046fca9ebd3371458e7e68919533b",
+    "wuhb_sha256": "8b267bc72b759c6ce0e70bf467a1e6fc2e13e6355c4b5d3f3b0dfc4d60c8418c",
+    "native_build": "passed",
+    "distant_cave_heuristic": "visible_corridor_false_rejection_reproduced_passive_only",
+    "host_connectivity_only_projected_solid_surface": [234, 128],
+    "host_connectivity_only_projected_solid_cave": [246, 141],
+    "host_connectivity_only_confirmed_clear_rays_per_display": [74, 85],
+    "active_culling": "awaits_native_occluder_proof_and_optical_camera_gate",
+    "cemu_runtime": "queued",
+    "physical": "queued",
+    "receipt": "rc56-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

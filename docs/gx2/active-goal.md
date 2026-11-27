@@ -97,6 +97,11 @@ before expanding that architecture.
 - RC 55 adds physical worker and GX2 queue observations and optional warm
   mob data reuse. The exact native package is staged for supervised testing.
   [RC 55 qualification](rc55-qualification.md)
+- RC 56 adds a passive cave graph, earlier cancellation of mob preparation,
+  and Cemu farmland key checkpoints. The native build passed. The exact
+  cave heuristic can hide a visible corridor. A connectivity-only host
+  variant kept the corridor and reduced projected proxy candidates.
+  Active culling awaits proof of native depth coverage. [RC 56 qualification](rc56-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary
