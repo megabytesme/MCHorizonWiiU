@@ -198,3 +198,45 @@ counters. With the repair, the exact instrumented RC 47 tree
 error in multi-core Cemu and reported an unknown farmland base block.
 The qualified interpreter remains the control for saved-world replay.
 [Formatter patch and fixture](osreport-test/README.md)
+
+## Condition-register liveness
+
+The [CPU-only HUD wrapper fixture](../diagnostics/ppc-hud-wrapper/README.md)
+reproduced an active arena that stayed unsealed after a successful plain
+presentation. The exact original code saves a comparison with `mfcr` at
+a shared branch target, spills it across the call, reloads it, and restores
+CR0 with `mtcrf`. The failure begins after JIT warmup. The interpreter,
+the restructured wrapper, and the other fixture paths passed.
+
+The [CR liveness patch](ppc-cr-liveness-cemu-2.6.patch) records the incoming
+bits used by `mfcr` before any local definition. It also stops using an
+unknown successor as evidence of a clobber. Known dead updates are still
+eliminated. The [offline host regression](cr-liveness-test/README.md)
+checks both cases against the original and patched optimizer. Run
+`git apply --check` before applying the patch in a disposable emulator
+checkout at `a6fb0a48eb437a8a41c13b782ac8ae0433bf8f98`.
+
+The original active-plain path failed 12,224 of 12,288 checks in Single and
+12,160 of 12,288 in Multi. With the patch, the same CPU-only RPX passed all
+eight cases in both modes, with 12,288 checks per case. The private
+emulator was relinked by replacing only the optimizer translation unit
+and reusing the identical remaining inputs.
+
+| Input | SHA-256 |
+| --- | --- |
+| CPU-only HUD wrapper RPX | `3c589f086839274407ef744633d32078bc77768e33f2e47042bb889bd5c994af` |
+| Baseline Cemu | `8cf988a9ce8b2fb9f3a42eea04b4eef911e80f6cc38749da93e2d3e2c86383dd` |
+| Cemu with the CR liveness patch | `4d0a48852a9f02ef3a49412834e77c874d4a1888d452eff2cf0c0f23a8922c41` |
+
+These CPU results qualify the targeted wrapper edge. Emulator-wide
+performance and physical Wii U behavior require separate evidence.
+
+The unchanged RC 59 RPX also passed the grouped offline lifecycle on the
+patched multicore emulator. The matched baseline reached paired gameplay
+and then refused HUD arena destruction in its active state. The patched
+run reached paired terrain in 75.049 s and captured both displays through
+a 30-second dwell. It saved after 8.526 blocks of backward movement,
+restored 234,880,920 free GX2 bulk bytes, drained all 24,595 audio queue
+entries and exited with `coreinit.exit(0)`. The two runs used the same
+RPX `d613296a83fa3e3b99a3974603d8e40948836dd941ba69cd916d27efa611276e`
+and stock Full Performance settings.

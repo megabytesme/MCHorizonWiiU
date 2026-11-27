@@ -1,0 +1,42 @@
+diff --git a/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerImlOptimizer.cpp b/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerImlOptimizer.cpp
+index 45e27664179ff99440873576a6e099924f431772..7c67138efc0b729d12e3ef13aeb12fad41123cdf 100644
+--- a/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerImlOptimizer.cpp
++++ b/src/Cafe/HW/Espresso/Recompiler/PPCRecompilerImlOptimizer.cpp
+@@ -1508,11 +1508,14 @@ bool PPCRecompiler_trackRedundantFPRNameStoreInstruction(ppcImlGenContext_t* ppc
+ 
+ uint32 _PPCRecompiler_getCROverwriteMask(ppcImlGenContext_t* ppcImlGenContext, PPCRecImlSegment_t* imlSegment, uint32 currentOverwriteMask, uint32 currentReadMask, uint32 scanDepth)
+ {
++	// An unknown successor may consume the incoming condition register.
++	if (imlSegment->nextSegmentIsUncertain)
++		return 0;
+ 	// is any bit overwritten but not read?
+ 	uint32 overwriteMask = imlSegment->crBitsWritten&~imlSegment->crBitsInput;
+ 	currentOverwriteMask |= overwriteMask;
+ 	// next segment
+-	if( imlSegment->nextSegmentIsUncertain == false && scanDepth < 3 )
++	if (scanDepth < 3)
+ 	{
+ 		uint32 nextSegmentOverwriteMask = 0;
+ 		if( imlSegment->nextSegmentBranchTaken && imlSegment->nextSegmentBranchNotTaken )
+@@ -1528,13 +1531,6 @@ uint32 _PPCRecompiler_getCROverwriteMask(ppcImlGenContext_t* ppcImlGenContext, P
+ 		nextSegmentOverwriteMask &= ~imlSegment->crBitsRead;
+ 		currentOverwriteMask |= nextSegmentOverwriteMask;
+ 	}
+-	else if (imlSegment->nextSegmentIsUncertain)
+-	{
+-		if (ppcImlGenContext->segmentListCount >= 5)
+-		{
+-			return 7; // for more complex functions we assume that CR is not passed on
+-		}
+-	}
+ 	return currentOverwriteMask;
+ }
+ 
+@@ -1592,6 +1588,7 @@ void PPCRecompiler_removeRedundantCRUpdates(ppcImlGenContext_t* ppcImlGenContext
+ 			}
+ 			else if (imlInstruction->type == PPCREC_IML_TYPE_R_S32 && imlInstruction->operation == PPCREC_IML_OP_MFCR)
+ 			{
++				imlSegment->crBitsInput |= ~imlSegment->crBitsWritten;
+ 				imlSegment->crBitsRead |= 0xFFFFFFFF;
+ 			}
+ 			else if (imlInstruction->type == PPCREC_IML_TYPE_R_S32 && imlInstruction->operation == PPCREC_IML_OP_MTCRF)
