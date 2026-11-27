@@ -325,6 +325,17 @@
     "physical_replay": "pending_updated_recorder_guard_and_active_cohort_observation",
     "receipt": "rc66-qualification.md"
   },
+  "terrain_light_packing": {
+    "rpx_sha256": "a9013d7153619d7c94675145256294f63c0925c108736c948103603b8b25a701",
+    "wuhb_sha256": "a9bf760c8803c9adb0bf1c2085bd69bb1f5a9dd4e813c009db43a6ac57005b13",
+    "cemu_independent_output_rows_passed": 20,
+    "exhaustive_packed_light_pairs_matched": 65536,
+    "vertex_alu_groups_stock_and_combined": [18, 17],
+    "smooth_parameters_stock_and_combined": [4, 3],
+    "pixel_registers_stock_and_combined": [5, 4],
+    "physical": "fixture_queued_supervised, gameplay_pending",
+    "receipt": "../../wiiu/diagnostics/gx2-light-packing/README.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

@@ -169,6 +169,12 @@ before expanding that architecture.
   arm and 0.027–0.031 ms on the replay arm. Both lifecycle runs saved,
   resumed Night and recovered the full GX2 bulk heap. Physical cadence
   and active-frame coverage remain open. [RC 66 evidence](rc66-qualification.md)
+- The standalone stock-fog light-packing fixture preserved all pixels on
+  both outputs for opaque and cutout terrain, including a second scene
+  with sorted translucency. The combined program reduces vertex ALU
+  groups from 18 to 17, smooth parameters from four to three and pixel
+  registers from five to four. Native efficiency and gameplay coverage
+  remain open. [Light-packing fixture](../../wiiu/diagnostics/gx2-light-packing/README.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary
