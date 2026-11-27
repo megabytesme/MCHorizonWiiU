@@ -8,6 +8,22 @@ RC 38, assembled tree `8ecf49ba0a2c12da512ccc803730d79ece8aeb61`, Horizon
 Both local package hashes match the build receipt. RC 35 is the physical
 fallback. [Machine-readable status](active-goal.json) Â· [RC 38 evidence](rc38-validation.md)
 
+## Single-player qualification comes first
+
+Prioritise ordinary single-player gameplay with stock Full Performance,
+fixed 75%, separately rendered TV and GamePad views, and the original
+settled saved-camera workload. Qualification requires repeated
+physical 60 FPS-equivalent windows, correct native shaders and applicable
+stock passes, meaningful terrain coverage and stable memory. Keep
+optimising when throughput exceeds 60.
+
+Consolidate the major experiments into a small stock and trial package
+set. Compare HUD storage, grouped presentation, verified retirement and
+terrain bandwidth at matched settings before changing defaults. Measure
+loading, traversal and automatic resolution separately. Physical
+qualification remains supervised while host, Cemu and source work
+continues. [Physical A/B queue](post-rc35-queue.md)
+
 ## Independent views and local players
 
 The primary 60 FPS workload requires separately rendered world views on
@@ -21,8 +37,12 @@ The local multiplayer architecture targets four TV seats and one GamePad
 seat in a shared world, each with its own camera, controls, player state,
 inventory and HUD. Establish independent dual-output performance first,
 then qualify two independent local views, two TV seats, four TV seats,
-and the fifth GamePad seat. Thirty FPS is an intermediate milestone.
-Continue toward sustained 60 and measure useful throughput above it.
+and the fifth GamePad seat. Retain the existing native viewport and
+separate sort-order fixtures. After physical single-player qualification,
+adapt the smallest practical two-player path from upstream Horizon's
+player clients, controller routing and integrated-server connections.
+Measure the incremental CPU, GPU, memory, streaming and simulation costs
+before expanding that architecture.
 [Independent rendering and splitscreen roadmap](independent-views.md)
 
 ## Acceptance and current evidence

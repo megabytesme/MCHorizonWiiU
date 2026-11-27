@@ -9,6 +9,28 @@ depth, composition and HUD. Record the package and active submission
 path with each capture. Report mirrored final-world color separately.
 [Saved-view procedure](benchmarks.md#physical-fixed-75-saved-view)
 
+## Development order and targets
+
+Finish ordinary single-player renderer optimisation and physical
+qualification before investing in splitscreen-exclusive implementation.
+The existing viewport, shared residency and independent translucency
+fixtures establish the starting point. Keep them available for changes
+that affect multiple independent views.
+
+| Local players | Future sustained target |
+| --- | --- |
+| 1 | 60 FPS with independently rendered TV and GamePad world views |
+| 2 | At least 30 FPS |
+| 3 | Aim for 30 FPS |
+| 4 | At least 20 FPS |
+| 5 | At least 20 FPS with four TV quadrants and an independent GamePad player |
+
+The first gameplay adaptation uses upstream's player clients, profiles,
+controller routing and in-memory server connections. Start with two
+players and measure the additional CPU, GPU, memory, streaming and
+simulation work. Use those measurements to decide whether broader
+client or shared-world changes are needed.
+
 ## Local player milestones
 
 | Milestone | Layout and ownership | Evidence to keep |
@@ -19,10 +41,10 @@ path with each capture. Report mirrored final-world color separately.
 | 4. Four TV seats | Four independent TV quadrants and an independently rendered companion GamePad view. | Test nearby and distant seats, joins and disconnects, separate view coverage and GPU memory high-water. Check isolation when one player opens a menu or crosses a chunk boundary. |
 | 5. Four TV seats and one GamePad seat | Five independent local players in one world. | Exercise all five cameras, controls, inventories and HUDs simultaneously. Save and reopen players and terrain. Measure paired display cadence, per-view work, server TPS and memory recovery. |
 
-Thirty FPS is an intermediate engineering milestone. Continue toward 60
-and record higher achieved throughput where the workload and display
-permit it. A multi-camera fixture qualifies renderer work. Full player
-support also requires the gameplay and lifecycle checks in the table.
+Thirty FPS is an intermediate single-player engineering milestone.
+Continue toward 60 and record higher throughput where the workload and
+displays permit. The camera fixtures qualify renderer behavior. Player
+integration also needs the lifecycle checks in the table.
 
 ## Shared resources and per-view work
 

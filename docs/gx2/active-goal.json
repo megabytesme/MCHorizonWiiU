@@ -21,6 +21,19 @@
     "bulk_heap_free_after_each_round_bytes": 234880920,
     "receipt": "warm-hud-replay.md"
   },
+  "development_order": {
+    "physical_single_player_first": true,
+    "splitscreen_exclusive_work": "deferred_until_single_player_qualified",
+    "next_local_player_integration": "smallest_upstream_two_player_adaptation",
+    "measure_before_client_architecture_changes": ["cpu", "gpu", "memory", "streaming", "simulation"],
+    "local_player_fps_targets": {
+      "1": {"sustained": 60},
+      "2": {"minimum_sustained": 30},
+      "3": {"aim": 30},
+      "4": {"minimum_sustained": 20},
+      "5": {"minimum_sustained": 20, "tv": 4, "gamepad": 1}
+    }
+  },
   "baseline": {
     "branch": "main",
     "programme_start_commit": "deb2e4dcb73976abcc432ab6986ebceb647c2619",

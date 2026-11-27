@@ -30,11 +30,28 @@ Capture its light, heavy and light transitions. The original package
 (`512ecdfb30a52c29d5164e23547426ce9331532fc52b1205f70be9b2f3d480e2`)
 failed with error 160-2203 before entry and is retired. [Build and hardware procedure](../../wiiu/diagnostics/gx2-drs60/README.md)
 
-## Next supervised application run
+## Physical qualification order
 
-Use the verified RC 48 package for the authenticated lifecycle and save
-checks. Keep the RC 38 saved-camera reference for the fixed 75% workload.
-The RC 48 build record gives the RPX, WUHB and pinned source identities.
+Focus first on the independent fixed-75% single-player reference.
+Keep the current RC 38 saved pose and capture settings. Use verified
+RC 49 as the stock build comparison. The grouped HUD and retirement
+trials require their own package and clear marker receipts.
+
+| Order | Comparison | Evidence |
+| --- | --- | --- |
+| 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
+| 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
+| 3 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
+| 4 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
+
+Keep screenshots outside the timing windows. Preserve stock view distances,
+materials and per-output world rendering in the reference. The viewport and
+blend diagnostics remain available as separate correctness checks.
+
+## Additional supervised checks
+
+Keep the RC 38 saved-camera reference for the fixed 75% workload.
+The earlier RC 48 lifecycle receipt remains part of the separate review.
 [RC 48 qualification](rc48-qualification.md)
 
 - Record at least two separate 60-second-or-longer settled HZP3 windows
@@ -42,9 +59,9 @@ The RC 48 build record gives the RPX, WUHB and pinned source identities.
   simulation 5. Verify independent TV and GamePad terrain draws and depth
   work. Compare with the 98.593-second RC 38 reference.
   [Window procedure](benchmarks.md#physical-fixed-75-saved-view)
-- Reuse the approved four-scope grant through Night, live settings, an
-  isolated save and reopen, and a console restart. Use the same client
-  profile through paired transitions. [Disposable-world runner](benchmarks.md#disposable-world-lifecycle)
+- Record an offline save and reopen, including the save barrier, return
+  to Night and GX2 bulk heap recovery. Authentication and permission
+  qualification remain pending separate review.
 - Run the checked standalone readback on both 720p and 1080p TV setups
   before enabling physical staged MCP screenshots. Confirm the readback
   fence and clean menu return on the serial capture. [Readback fixture](../../wiiu/diagnostics/gx2-explicit-readback/README.md)
