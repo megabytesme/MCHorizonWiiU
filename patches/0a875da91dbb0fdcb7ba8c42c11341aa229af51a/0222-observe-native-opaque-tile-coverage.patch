@@ -1,0 +1,616 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 4b9a289610dabbf3951fe22dcbc67136d7718069..87ec66e0c284fa03d6486e2fbe75b0a9b3f47c26 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -8,6 +8,7 @@
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
+ mod cave_visibility;
++mod opaque_tiles;
+ #[cfg(feature = "gx2-clear-fog")]
+ mod clear_fog;
+ mod crumbling;
+@@ -798,6 +799,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     resident_animations: Option<terrain_animation::ResidentAnimations>,
+     terrain_min_y: Option<i32>,
+     cave_visibility: cave_visibility::Probe,
++    opaque_tiles: Option<opaque_tiles::Probe>,
+     sections: HashMap<SectionKey, TerrainSection>,
+     block_entity_sections: Arc<CafeBlockEntitySections>,
+     block_entity_models_partial: bool,
+@@ -884,6 +886,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             resident_animations: None,
+             terrain_min_y: None,
+             cave_visibility: cave_visibility::Probe::new(),
++            opaque_tiles: opaque_tiles::Probe::from_marker(),
+             sections: HashMap::new(),
+             block_entity_sections: Arc::default(),
+             block_entity_models_partial: false,
+@@ -2014,6 +2017,9 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        if let Some(probe) = &mut self.opaque_tiles {
++            probe.forget(key);
++        }
+         self.cave_visibility.forget(key);
+         if self.solid_draw_plan_enabled {
+             for plan in &mut self.solid_draw_plans {
+@@ -2057,6 +2063,9 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn clear_native_sections(&mut self) {
++        if let Some(probe) = &mut self.opaque_tiles {
++            probe.clear();
++        }
+         self.cave_visibility.clear();
+         self.retired_pair = 0;
+         self.block_entity_sections = Arc::default();
+@@ -2098,6 +2107,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         // A failed or deferred attempt cannot leave an older diagnostic
+         // barrier closing a portal. Publish the new mask only after upload.
+         self.cave_visibility.forget(key);
++        if let Some(probe) = &mut self.opaque_tiles {
++            probe.forget(key);
++        }
+         if ![&mesh.solid, &mesh.translucent]
+             .iter()
+             .all(|vertices| vertices.len().is_multiple_of(4))
+@@ -2229,6 +2241,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        if let Some(probe) = self.opaque_tiles.as_mut().filter(|_| self.terrain_min_y == Some(-64)) {
++            probe.capture(key, self.terrain_generation, &mesh.solid);
++        }
+         self.cave_visibility.publish(key, mesh.visibility);
+         if self.solid_draw_plan_enabled {
+             for plan in &mut self.solid_draw_plans {
+@@ -2243,6 +2258,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn prepare_section_uploads(&mut self, camera: SectionKey, retry: &mut dyn FnMut(SectionKey)) {
++        if let Some(probe) = &mut self.opaque_tiles {
++            probe.advance(camera);
++        }
+         if self.terrain_camera != camera {
+             self.terrain_camera = camera;
+             self.terrain_ranks = None;
+@@ -3435,6 +3453,25 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 .add_present(profile, elapsed.as_nanos().min(u64::MAX as u128) as u64);
+             self.profile.report_if_due();
+         }
++        if let Some(probe) = self.opaque_tiles.as_mut().filter(|_| {
++            host == 0 && outputs == 3 && draw_result.is_ok()
++        }) {
++            if !frame.title && self.screenshot_requested.is_none()
++                && self.world_scale.resolution().is_some_and(|r| r.effective_scale == 75)
++                && self.frame_work.terrain_sections.iter().all(|&n| n > 0)
++                && unsafe {
++                    !horizon_gx2_profile_solid_back_culling()
++                        && !horizon_gx2_profile_solid_axis_ranges()
++                }
++            {
++                probe.paired(
++                    frame.camera.to_array(),
++                    self.terrain_generation,
++                    &self.terrain_views,
++                    &self.sections,
++                );
++            }
++        }
+         if let Err(error) = draw_result {
+             self.screenshot_result = None;
+             return Err(error.into());
+diff --git a/wiiu/loading_host/opaque_tiles.rs b/wiiu/loading_host/opaque_tiles.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..04526d97adb19c24472bc62d0635ea5dbb3caa89
+--- /dev/null
++++ b/wiiu/loading_host/opaque_tiles.rs
+@@ -0,0 +1,506 @@
++//! Passive screen-space depth samples from the actual uploaded solid stream.
++use super::{solid_draw_plan::SolidDraw, OSReport, TerrainProjection, TerrainSection};
++use horizon_client::{
++    gfx::SectionKey,
++    mesher::{TerrainVertex, OPAQUE_LAYER},
++};
++use horizon_wiiu_gx2_terrain::{TerrainBounds, TerrainClipRows};
++use std::{collections::HashMap, fs::File, io::Read, path::Path, time::Instant};
++
++const APP: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
++const SLOTS: usize = 48;
++const AXES: [[usize; 2]; 3] = [[1, 2], [0, 2], [0, 1]];
++const UPLOAD_QUADS: usize = 6_144;
++const SECTION_QUADS: usize = 2_048;
++const RESIDENT_LIMIT: usize = 2_048;
++const RESIDENT_CAPACITY: usize = 4_096;
++const TILE_VISITS: usize = 16_384;
++const PROJECTED_FACES: usize = 8_192;
++const COLUMNS: usize = 64;
++const ROWS: usize = 36;
++const TILE_COUNT: usize = COLUMNS * ROWS;
++const EDGE_GUARD: f64 = 0.005;
++const DEPTH_GUARD: f64 = 8.0 * f32::EPSILON as f64;
++
++#[derive(Clone)]
++struct Footprint {
++    key: Option<SectionKey>,
++    // One nearest certified quad per unit cell in each axial projection.
++    // Zero is empty. Other bytes are the integer plane coordinate plus one.
++    planes: [[u8; 256]; 3],
++}
++
++const _: () = assert!(
++    SLOTS * std::mem::size_of::<Footprint>() + TILE_COUNT * std::mem::size_of::<f64>() <= 64 * 1024
++);
++
++#[derive(Default)]
++struct Counts {
++    faces: usize,
++    witness_tiles: usize,
++    sections: u32,
++    hidden_sections: u32,
++    indices: u64,
++    hidden_indices: u64,
++}
++
++pub(super) struct Probe {
++    slots: Vec<Footprint>,
++    depth: Vec<f64>,
++    origin: Option<SectionKey>,
++    generation: Option<u64>,
++    upload_quads: usize,
++    skipped_uploads: u32,
++    pairs: u32,
++}
++
++impl Probe {
++    pub(super) fn from_marker() -> Option<Self> {
++        if !Path::new(APP).join("gx2-opaque-tiles.enable").is_file() {
++            return None;
++        }
++        let mut profile = Vec::new();
++        File::open(Path::new(APP).join("gx2-profile.enable"))
++            .ok()?
++            .take(4)
++            .read_to_end(&mut profile)
++            .ok()?;
++        if !matches!(profile.as_slice(), b"4" | b"4\n" | b"4\r\n") {
++            return None;
++        }
++        let probe = Self::new()?;
++        unsafe { OSReport(c"Horizon GX2 opaque tile observer requested\n".as_ptr()) };
++        Some(probe)
++    }
++
++    fn new() -> Option<Self> {
++        let mut slots = Vec::new();
++        slots.try_reserve_exact(SLOTS).ok()?;
++        slots.resize(
++            SLOTS,
++            Footprint {
++                key: None,
++                planes: [[0; 256]; 3],
++            },
++        );
++        let mut depth = Vec::new();
++        depth.try_reserve_exact(TILE_COUNT).ok()?;
++        depth.resize(TILE_COUNT, f64::INFINITY);
++        Some(Self {
++            slots,
++            depth,
++            origin: None,
++            generation: None,
++            upload_quads: 0,
++            skipped_uploads: 0,
++            pairs: 0,
++        })
++    }
++
++    pub(super) fn advance(&mut self, origin: SectionKey) {
++        self.upload_quads = UPLOAD_QUADS;
++        if self.origin == Some(origin) {
++            return;
++        }
++        self.origin = Some(origin);
++        for slot in &mut self.slots {
++            if slot.key.is_some_and(|key| priority(key, origin).0 > 2) {
++                slot.key = None;
++            }
++        }
++    }
++
++    pub(super) fn clear(&mut self) {
++        self.generation = None;
++        self.origin = None;
++        self.upload_quads = 0;
++        for slot in &mut self.slots {
++            slot.key = None;
++        }
++    }
++
++    pub(super) fn forget(&mut self, key: SectionKey) {
++        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.key == Some(key)) {
++            slot.key = None;
++        }
++    }
++
++    pub(super) fn capture(
++        &mut self,
++        key: SectionKey,
++        generation: Option<u64>,
++        solid: &[TerrainVertex],
++    ) {
++        self.forget(key);
++        let Some(origin) = self.origin else { return };
++        let rank = priority(key, origin);
++        if generation.is_none() || solid.is_empty() || rank.0 > 2 {
++            return;
++        }
++        if self.generation != generation {
++            self.generation = generation;
++            for slot in &mut self.slots {
++                slot.key = None;
++            }
++        }
++        let Some(quads) = (solid.len().is_multiple_of(4)).then_some(solid.len() / 4) else {
++            return;
++        };
++        if quads > SECTION_QUADS || quads > self.upload_quads {
++            self.skipped_uploads = self.skipped_uploads.saturating_add(1);
++            return;
++        }
++        let slot = self
++            .slots
++            .iter()
++            .position(|slot| slot.key.is_none())
++            .or_else(|| {
++                self.slots
++                    .iter()
++                    .enumerate()
++                    .filter_map(|(index, slot)| slot.key.map(|old| (priority(old, origin), index)))
++                    .max()
++                    .filter(|(old, _)| *old > rank)
++                    .map(|(_, index)| index)
++            });
++        let Some(slot) = slot else {
++            self.skipped_uploads = self.skipped_uploads.saturating_add(1);
++            return;
++        };
++        self.upload_quads -= quads;
++        let mut planes = [[0u8; 256]; 3];
++        let relative = [
++            (origin.0 - key.0) * 16 + 8,
++            (origin.1 - key.1) * 16 + 8,
++            (origin.2 - key.2) * 16 + 8,
++        ];
++        for quad in solid.chunks_exact(4) {
++            let [a, b, c, d] = [quad[0], quad[1], quad[2], quad[3]];
++            let Some((axis, position)) = unit_depth_quad(
++                [a.pos, b.pos, c.pos, d.pos],
++                [a.layer, b.layer, c.layer, d.layer],
++            ) else {
++                continue;
++            };
++            let [u, v] = AXES[axis];
++            let cell = usize::from(position[u]) + usize::from(position[v]) * 16;
++            let at = &mut planes[axis][cell];
++            let plane = i32::from(position[axis]);
++            let here = relative[axis];
++            if *at == 0 || (plane - here).abs() < (i32::from(*at) - 1 - here).abs() {
++                *at = position[axis] + 1;
++            }
++        }
++        if planes.iter().flatten().any(|&plane| plane != 0) {
++            self.slots[slot] = Footprint {
++                key: Some(key),
++                planes,
++            };
++        }
++    }
++
++    pub(super) fn paired(
++        &mut self,
++        camera: [f64; 3],
++        generation: Option<u64>,
++        projections: &[Option<TerrainProjection>; 2],
++        sections: &HashMap<SectionKey, TerrainSection>,
++    ) {
++        self.pairs = self.pairs.wrapping_add(1);
++        if !self.pairs.is_multiple_of(120) {
++            return;
++        }
++        let [Some(tv), Some(drc)] = projections.each_ref() else {
++            return;
++        };
++        if generation.is_none()
++            || self.generation != generation
++            || (!camera
++                .iter()
++                .all(|v| (-30_000_000.0..=30_000_000.0).contains(v)))
++            || tv.camera != camera
++            || drc.camera != camera
++            || tv.min_y != -64
++            || tv.min_y != drc.min_y
++            || self.origin
++                != Some((
++                    (camera[0].floor() as i32).div_euclid(16),
++                    (camera[1].floor() as i32 - tv.min_y).div_euclid(16),
++                    (camera[2].floor() as i32).div_euclid(16),
++                ))
++            || self.slots.iter().all(|slot| slot.key.is_none())
++        {
++            return;
++        }
++        let start = Instant::now();
++        let Some(tv) = self.measure(tv, sections) else {
++            self.report_limit();
++            return;
++        };
++        let tv_us = start.elapsed().as_micros().min(u32::MAX as u128) as u32;
++        let start = Instant::now();
++        let Some(drc) = self.measure(drc, sections) else {
++            self.report_limit();
++            return;
++        };
++        let drc_us = start.elapsed().as_micros().min(u32::MAX as u128) as u32;
++        for (output, (counts, elapsed)) in [(tv, tv_us), (drc, drc_us)].iter().enumerate() {
++            unsafe {
++                OSReport(
++                    c"Horizon GX2 opaque tiles pair=%u output=%u wall_us=%u faces=%u tiles=%u sections=%u hidden=%u indices=%llu hidden_indices=%llu skipped_uploads=%u\n".as_ptr(),
++                    self.pairs, output as u32, *elapsed, counts.faces as u32, counts.witness_tiles as u32,
++                    counts.sections, counts.hidden_sections, counts.indices, counts.hidden_indices,
++                    self.skipped_uploads,
++                );
++            }
++        }
++    }
++
++    fn report_limit(&self) {
++        unsafe {
++            OSReport(
++                c"Horizon GX2 opaque tiles pair=%u incomplete=work-or-projection-limit\n".as_ptr(),
++                self.pairs,
++            );
++        }
++    }
++
++    fn measure(
++        &mut self,
++        projection: &TerrainProjection,
++        sections: &HashMap<SectionKey, TerrainSection>,
++    ) -> Option<Counts> {
++        if sections.len() > RESIDENT_LIMIT
++            || sections.capacity() > RESIDENT_CAPACITY
++            || projection.axis_eye.is_some()
++            || !projection.clip.rows.iter().flatten().all(|v| v.is_finite())
++        {
++            return None;
++        }
++        self.depth.fill(f64::INFINITY);
++        let mut budget = TILE_VISITS;
++        let mut counts = Counts::default();
++        for slot in &self.slots {
++            let Some(key) = slot.key else { continue };
++            let surface = sections.get(&key)?.solid.as_ref()?;
++            let Some(draw) = SolidDraw::project(key, surface.bounds, projection) else {
++                continue;
++            };
++            for (axis, planes) in slot.planes.iter().enumerate() {
++                let [u, v] = AXES[axis];
++                for (index, &plane) in planes.iter().enumerate() {
++                    if plane == 0 {
++                        continue;
++                    }
++                    if counts.faces == PROJECTED_FACES {
++                        return None;
++                    }
++                    counts.faces += 1;
++                    let mut base = [0.0; 3];
++                    base[axis] = f64::from(plane - 1);
++                    base[u] = (index & 15) as f64;
++                    base[v] = (index >> 4) as f64;
++                    let points = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|[s, t]| {
++                        let mut p = base;
++                        p[u] += s;
++                        p[v] += t;
++                        projected_point(&draw.clip, p)
++                    });
++                    if let [Some(a), Some(b), Some(c), Some(d)] = points {
++                        add_opaque_face(&mut self.depth, [a, b, c, d], &mut budget)?;
++                    }
++                }
++            }
++        }
++        counts.witness_tiles = self.depth.iter().filter(|v| v.is_finite()).count();
++        for (&key, section) in sections {
++            let Some(solid) = &section.solid else {
++                continue;
++            };
++            let Some(draw) = SolidDraw::project(key, solid.bounds, projection) else {
++                continue;
++            };
++            counts.sections += 1;
++            let indices = u64::from(solid.vertex_count / 4) * 6;
++            counts.indices += indices;
++            if let Some(bounds) = solid.bounds {
++                if target_behind(&self.depth, &draw.clip, bounds, &mut budget)? {
++                    counts.hidden_sections += 1;
++                    counts.hidden_indices += indices;
++                }
++            }
++        }
++        Some(counts)
++    }
++}
++
++fn priority(key: SectionKey, origin: SectionKey) -> (i64, i64, SectionKey) {
++    let d = [
++        (i64::from(key.0) - i64::from(origin.0)).abs(),
++        (i64::from(key.1) - i64::from(origin.1)).abs(),
++        (i64::from(key.2) - i64::from(origin.2)).abs(),
++    ];
++    (d[0].max(d[1]).max(d[2]), d.iter().sum(), key)
++}
++
++/// Exact stock-quad shape witness. The caller supplies the native solid
++/// stream, and stock two-sided depth-writing state must be in force.
++fn unit_depth_quad(points: [[f32; 3]; 4], layers: [u16; 4]) -> Option<(usize, [u8; 3])> {
++    if layers.iter().any(|layer| layer & OPAQUE_LAYER == 0) {
++        return None;
++    }
++    let min = std::array::from_fn::<_, 3, _>(|axis| {
++        points.iter().map(|v| v[axis]).fold(f32::INFINITY, f32::min)
++    });
++    let max = std::array::from_fn::<_, 3, _>(|axis| {
++        points
++            .iter()
++            .map(|v| v[axis])
++            .fold(f32::NEG_INFINITY, f32::max)
++    });
++    let axis = (0..3).find(|&axis| min[axis] == max[axis])?;
++    if !(0..3).all(|a| max[a] - min[a] == if a == axis { 0.0 } else { 1.0 }) {
++        return None;
++    }
++    let mut corners = [0u8; 4];
++    for (i, point) in points.iter().enumerate() {
++        let mut corner = 0u8;
++        let mut bit = 1;
++        for a in 0..3 {
++            let p = point[a];
++            if !(0.0..=16.0).contains(&p) || p.fract() != 0.0 {
++                return None;
++            }
++            if a == axis {
++                continue;
++            }
++            if p == max[a] {
++                corner |= bit;
++            } else if p != min[a] {
++                return None;
++            }
++            bit <<= 1;
++        }
++        corners[i] = corner;
++    }
++    // Stock fixed indices are 0,1,2;0,2,3. Opposite corners and exactly
++    // one edge step per consecutive vertex reject bow-ties and duplicates.
++    if corners[0] ^ corners[2] != 3
++        || (0..4).any(|i| (corners[i] ^ corners[(i + 1) % 4]).count_ones() != 1)
++    {
++        return None;
++    }
++    Some((axis, min.map(|x| x as u8)))
++}
++
++fn projected_point(clip: &TerrainClipRows, p: [f64; 3]) -> Option<[f64; 3]> {
++    let [x, y, z, w] = clip
++        .rows
++        .map(|r| (0..3).map(|i| f64::from(r[i]) * p[i]).sum::<f64>() + f64::from(r[3]));
++    if w <= 0.0 || z <= 0.0 || z >= w {
++        return None;
++    }
++    let v = [x / w, y / w, z / w];
++    v.iter().all(|n| n.is_finite()).then_some(v)
++}
++
++fn tile_span(min: f64, max: f64, n: usize) -> std::ops::RangeInclusive<usize> {
++    let tile = |v: f64| ((v.clamp(-1.0, 1.0) * 0.5 + 0.5) * n as f64).floor() as usize;
++    tile(min).min(n - 1)..=tile(max).min(n - 1)
++}
++
++fn min_max(points: &[[f64; 3]], axis: usize) -> (f64, f64) {
++    points
++        .iter()
++        .map(|v| v[axis])
++        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
++            (lo.min(v), hi.max(v))
++        })
++}
++
++fn add_opaque_face(depth: &mut [f64], points: [[f64; 3]; 4], budget: &mut usize) -> Option<()> {
++    let x = min_max(&points, 0);
++    let y = min_max(&points, 1);
++    if x.1 - x.0 <= 2.0 / COLUMNS as f64
++        || y.1 - y.0 <= 2.0 / ROWS as f64
++        || x.1 < -1.0
++        || x.0 > 1.0
++        || y.1 < -1.0
++        || y.0 > 1.0
++    {
++        return Some(());
++    }
++    let cross = |(x, y): (f64, f64), a: [f64; 3], b: [f64; 3]| {
++        (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])
++    };
++    let winding = cross((points[2][0], points[2][1]), points[0], points[1]).signum();
++    if winding == 0.0
++        || (0..4).any(|i| {
++            cross(
++                (points[(i + 2) % 4][0], points[(i + 2) % 4][1]),
++                points[i],
++                points[(i + 1) % 4],
++            ) * winding
++                <= 0.0
++        })
++    {
++        return Some(());
++    }
++    let far = min_max(&points, 2).1 + DEPTH_GUARD;
++    let xs = tile_span(x.0, x.1, COLUMNS);
++    let ys = tile_span(y.0, y.1, ROWS);
++    let visits = (xs.end() - xs.start() + 1) * (ys.end() - ys.start() + 1);
++    *budget = budget.checked_sub(visits)?;
++    for iy in ys {
++        let bottom = iy as f64 * 2.0 / ROWS as f64 - 1.0 - EDGE_GUARD;
++        let top = (iy + 1) as f64 * 2.0 / ROWS as f64 - 1.0 + EDGE_GUARD;
++        for ix in xs.clone() {
++            let left = ix as f64 * 2.0 / COLUMNS as f64 - 1.0 - EDGE_GUARD;
++            let right = (ix + 1) as f64 * 2.0 / COLUMNS as f64 - 1.0 + EDGE_GUARD;
++            if [(left, bottom), (left, top), (right, bottom), (right, top)]
++                .into_iter()
++                .all(|p| (0..4).all(|i| cross(p, points[i], points[(i + 1) % 4]) * winding > 0.0))
++            {
++                let at = &mut depth[iy * COLUMNS + ix];
++                *at = at.min(far);
++            }
++        }
++    }
++    Some(())
++}
++
++fn target_behind(
++    depth: &[f64],
++    clip: &TerrainClipRows,
++    bounds: TerrainBounds,
++    budget: &mut usize,
++) -> Option<bool> {
++    let extents = bounds.extents();
++    if !extents.iter().flatten().all(|v| (0.0..=16.0).contains(v)) {
++        return Some(false);
++    }
++    let mut points = [[0.0; 3]; 8];
++    for (i, out) in points.iter_mut().enumerate() {
++        let p = std::array::from_fn(|axis| f64::from(extents[(i >> axis) & 1][axis]));
++        let Some(v) = projected_point(clip, p) else {
++            return Some(false);
++        };
++        *out = v;
++    }
++    let (left, right) = min_max(&points, 0);
++    let (bottom, top) = min_max(&points, 1);
++    let near = min_max(&points, 2).0 - DEPTH_GUARD;
++    if right < -1.0 || left > 1.0 || top < -1.0 || bottom > 1.0 {
++        return Some(false);
++    }
++    let xs = tile_span(left - EDGE_GUARD, right + EDGE_GUARD, COLUMNS);
++    for y in tile_span(bottom - EDGE_GUARD, top + EDGE_GUARD, ROWS) {
++        for x in xs.clone() {
++            *budget = budget.checked_sub(1)?;
++            if depth[y * COLUMNS + x] >= near {
++                return Some(false);
++            }
++        }
++    }
++    Some(true)
++}
