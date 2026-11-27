@@ -1,0 +1,93 @@
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index 84ba3bc0164d43617c066427deb461eeb0535616..aa98c408ceebb891e524b347832b218a8421960b 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -699,7 +699,20 @@ static bool is_retired_pair(uint64_t expected, OSTime floor)
+ bool horizon_gx2_hud_view_lanes_destroy(HorizonHudViewLanes *lanes)
+ {
+    if (!lanes) return true;
+-   if (lanes->state != VIEW_IDLE) return false;
++   if (lanes->state != VIEW_IDLE) {
++      const bool active = lanes->state == VIEW_ACTIVE;
++      const bool pending = lanes->state == VIEW_PENDING;
++      const char *state = active ? "active" : pending ? "pending" : "invalid";
++      OSTime last = 0;
++      if ((active || pending) && lanes->prior_pair > 0 &&
++          lanes->after_last_draw >= lanes->prior_pair) {
++         last = lanes->after_last_draw;
++         if (pending && lanes->recovery_submission > last) last = lanes->recovery_submission;
++      }
++      OSReport("Horizon GX2 HUD arena destroy refused state=%s observed_token=%llu token_valid=%u\n",
++               state, (unsigned long long)last, (unsigned)(last > 0));
++      return false;
++   }
+    for (uint32_t i = 0; i < lanes->count; ++i) {
+       if (GX2RBufferExists(&lanes->buffers[i])) GX2RDestroyBufferEx(&lanes->buffers[i], 0);
+    }
+@@ -707,6 +720,13 @@ bool horizon_gx2_hud_view_lanes_destroy(HorizonHudViewLanes *lanes)
+    return true;
+ }
+ 
++bool horizon_gx2_hud_view_lanes_destroy_with_receipt(HorizonHudViewLanes *lanes, uint32_t *receipt)
++{
++   const bool destroyed = horizon_gx2_hud_view_lanes_destroy(lanes);
++   if (receipt) *receipt = destroyed ? 2u : 1u;
++   return destroyed;
++}
++
+ HorizonHudViewLanes *horizon_gx2_hud_view_lanes_create(uint32_t views, uint32_t vertices_per_view)
+ {
+    if (views < MIN_VIEW_LANES || views > MAX_VIEW_LANES ||
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index 58520619d78c3db830e7dbd091fc468e88ee5ae2..118b6ce4e1357dacd7a2bb9a40b910854315dba1 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -157,6 +157,9 @@ HorizonHudResult horizon_gx2_hud_draw_verified_to_output(
+ bool horizon_gx2_hud_view_lanes_seal(HorizonHudViewLanes *lanes, uint64_t retired_pair);
+ bool horizon_gx2_hud_view_lanes_recover(HorizonHudViewLanes *lanes, bool foreground);
+ bool horizon_gx2_hud_view_lanes_destroy(HorizonHudViewLanes *lanes);
++/* Diagnostic receipt: native destruction completed (2) or was refused (1).
++ * A caller's initial zero remains unavailable if the native write is missed. */
++bool horizon_gx2_hud_view_lanes_destroy_with_receipt(HorizonHudViewLanes *lanes, uint32_t *receipt);
+ /* Native host only. The current GX2 thread has positively drained all
+  * callbacks, including aborted pairs, and issued no new lane commands. */
+ void horizon_gx2_hud_view_lanes_finish_verified(HorizonHudViewLanes *lanes);
+diff --git a/wiiu/loading_host/hud_views.rs b/wiiu/loading_host/hud_views.rs
+index 88c75bc947d42670558656f99df8094bea9de01a..e2bce7f092a8623c22f171b8b40322e5a296702d 100644
+--- a/wiiu/loading_host/hud_views.rs
++++ b/wiiu/loading_host/hud_views.rs
+@@ -21,7 +21,7 @@ unsafe extern "C" {
+     fn horizon_gx2_hud_view_lanes_create(views: u32, capacity: u32) -> *mut c_void;
+     fn horizon_gx2_hud_view_lanes_bytes(lanes: *const c_void) -> u32;
+     fn horizon_gx2_hud_view_lanes_begin(lanes: *mut c_void, prior_pair: u64) -> bool;
+-    fn horizon_gx2_hud_view_lanes_destroy(lanes: *mut c_void) -> bool;
++    fn horizon_gx2_hud_view_lanes_destroy_with_receipt(lanes: *mut c_void, receipt: *mut u32) -> bool;
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -67,7 +67,24 @@ impl Drop for Arena {
+     fn drop(&mut self) {
+         // The synchronous host always seals an opened arena before returning,
+         // including callback failure. Never destroy an allocation it still owns.
+-        assert!(unsafe { horizon_gx2_hud_view_lanes_destroy(self.0.as_ptr()) });
++        let mut receipt = 0;
++        let destroyed = unsafe {
++            horizon_gx2_hud_view_lanes_destroy_with_receipt(self.0.as_ptr(), &mut receipt)
++        };
++        if !destroyed {
++            let native = match receipt {
++                1 => c"refused",
++                2 => c"completed",
++                _ => c"unavailable",
++            };
++            unsafe {
++                OSReport(
++                    c"Horizon GX2 HUD arena destroy returned false native_receipt=%s\n".as_ptr(),
++                    native.as_ptr(),
++                );
++            }
++        }
++        assert!(destroyed, "GX2 HUD view lane destruction failed");
+     }
+ }
+ 
