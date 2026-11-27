@@ -1,4 +1,5 @@
 #include "terrain.h"
+#include "world_scale.h"
 #include "../gx2-explicit-readback/retire.h"
 #include <coreinit/memdefaultheap.h>
 #include <gx2/clear.h>
@@ -21,6 +22,7 @@ enum {
 
 typedef struct {
    unsigned output, epoch, revision, width, height;
+   unsigned world_width, world_height;
    HorizonGx2Terrain *terrain;
    HorizonGx2TerrainSection *section[DRAWS];
    _Alignas(16) float clip[16];
@@ -129,6 +131,7 @@ static bool same_view(const View *a, const View *b)
 {
    return a->output == b->output && a->epoch == b->epoch &&
       a->revision == b->revision && a->width == b->width && a->height == b->height &&
+      a->world_width == b->world_width && a->world_height == b->world_height &&
       a->terrain == b->terrain && !memcmp(a->section,b->section,sizeof(a->section)) &&
       !memcmp(a->clip,b->clip,sizeof(a->clip)) && !memcmp(a->origin,b->origin,sizeof(a->origin));
 }
@@ -329,16 +332,23 @@ static bool negatives(List *list, const View *view, const View *other)
    ++wrong.revision;
    if (queue_list(list,&wrong)) return false;
    wrong = *view;
+   --wrong.world_width;
+   if (queue_list(list,&wrong)) return false;
+   wrong = *view;
    wrong.section[2] = other->section[2];
    return !queue_list(list,&wrong);
 }
 
 static bool render(View views[2], List lists[2], const Tail *tail, Stage *stage,
-                   uint8_t *rgba, uint8_t *stock[2], enum Arm arm)
+                   uint8_t *rgba, uint8_t *stock[2], enum Arm arm,
+                   HorizonGx2WorldScale *scale, const uint32_t world_sizes[4])
 {
    const float fog[4] = {0.125f,0.35f,0.75f,1};
    const float ranges[4] = {0,1024,86.40000152587890625f,96};
+   const float clear[4] = {0,0,0,1};
    bool ok = true;
+   GX2ColorBuffer *colors[2];
+   unsigned queued_mask = 0;
    WHBGfxBeginRender();
    for (unsigned i = 0; i < 2; ++i) {
       View *view = &views[i];
@@ -347,19 +357,26 @@ static bool render(View views[2], List lists[2], const Tail *tail, Stage *stage,
       else WHBGfxBeginRenderDRC();
       GX2ColorBuffer *color = i == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer();
       GX2DepthBuffer *depth = i == 0 ? WHBGfxGetTVDepthBuffer() : WHBGfxGetDRCDepthBuffer();
+      colors[i] = color;
       view->width = color->surface.width;
       view->height = color->surface.height;
-      GX2ClearBuffersEx(color,depth,0,0,0,1,1,0,GX2_CLEAR_FLAGS_DEPTH);
-      GX2SetContextState(i == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
-      GX2SetColorBuffer(color,GX2_RENDER_TARGET_0);
-      GX2SetDepthBuffer(depth);
-      GX2SetViewport(0,0,view->width,view->height,0,1);
-      GX2SetScissor(0,0,view->width,view->height);
+      view->world_width = scale ? world_sizes[2*i] : view->width;
+      view->world_height = scale ? world_sizes[2*i+1] : view->height;
+      if (scale) {
+         horizon_gx2_world_scale_begin(scale,i,clear,false);
+      } else {
+         GX2ClearBuffersEx(color,depth,0,0,0,1,1,0,GX2_CLEAR_FLAGS_DEPTH);
+         GX2SetContextState(i == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
+         GX2SetColorBuffer(color,GX2_RENDER_TARGET_0);
+         GX2SetDepthBuffer(depth);
+         GX2SetViewport(0,0,view->width,view->height,0,1);
+         GX2SetScissor(0,0,view->width,view->height);
+      }
       GX2SetRasterizerClipControlEx(TRUE,TRUE,TRUE);
       GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA,0,0,0,0,0,0,0);
       tail_draw(tail,view,0,false);
-      if (horizon_gx2_terrain_bind(view->terrain,view->width,view->height,0,0,
-                                   view->width,view->height,fog,ranges,false) != 0)
+      if (horizon_gx2_terrain_bind(view->terrain,view->world_width,view->world_height,0,0,
+                                   view->world_width,view->world_height,fog,ranges,false) != 0)
          return false;
       bool queued = false;
       if (arm == LIST_REPLAY || arm == LIST_AGAIN || arm == RERECORD) {
@@ -367,9 +384,11 @@ static bool render(View views[2], List lists[2], const Tail *tail, Stage *stage,
          if (!queued)
             OSReport("GX2 solid list fixture output=%u uses ordinary fallback after recording failure\n",i);
          ok &= queued;
-         if (queued)
+         if (queued) {
+            queued_mask |= 1u << i;
             ok &= !can_record(list,GX2GetRetiredTimeStamp()) &&
                   !retire_use(list,list->before_use,list->before_use);
+         }
       } else if (arm == REJECT_AND_DRAW) {
          ok &= negatives(list,view,&views[1-i]);
       } else if (arm == CLOSED_RECORD_ABORT) {
@@ -389,24 +408,43 @@ static bool render(View views[2], List lists[2], const Tail *tail, Stage *stage,
       // No context reset, flush or fence between the solids and the tail.
       tail_draw(tail,view,1,false);
       tail_draw(tail,view,2,arm == WRONG_TAIL_DEPTH);
-      const enum ReadStatus status = stage_read(stage,color,rgba,RGBA_CAP);
+      if (scale)
+         horizon_gx2_world_scale_end(scale,i,(const uint32_t[]){0,0,view->width,view->height},true);
+      if (i == 0) WHBGfxFinishRenderTV();
+      else WHBGfxFinishRenderDRC();
+   }
+
+   // Both independent views and their scan copies are queued before the
+   // first read. Its fence must retire every list in the pair.
+   const unsigned held_mask = (lists[0].unsubmitted ? 1u : 0u) |
+                              (lists[1].unsubmitted ? 2u : 0u);
+   ok &= held_mask == queued_mask;
+   for (unsigned i = 0; i < 2; ++i) {
+      OSTime receipt;
+      const enum ReadStatus status = stage_read_with_receipt(stage,colors[i],rgba,RGBA_CAP,&receipt);
       if (status != READ_OK) {
          OSReport("GX2 solid list fixture output=%u arm=%u readback=%u\n",i,arm,status);
          return false;
       }
-      if (queued) {
-         const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+      if (i == 0 && queued_mask) {
          const OSTime retired = GX2GetRetiredTimeStamp();
-         const bool verified = retire_use(list,submitted,retired);
-         const bool no_early_write = verified &&
-            !can_record(list,list->last_use-1) && can_record(list,retired);
-         ok &= no_early_write;
-         OSReport("GX2 solid list fixture retirement output=%u submitted=%lld retired=%lld result=%s\n",
-                  i,(long long)submitted,(long long)retired,no_early_write?"PASS":"FAIL");
+         unsigned verified_mask = 0;
+         for (unsigned j = 0; j < 2; ++j) {
+            List *list = &lists[j];
+            if (!(queued_mask & (1u << j))) continue;
+            const bool verified = retire_use(list,receipt,retired);
+            const bool no_early_write = verified &&
+               !can_record(list,list->last_use-1) && can_record(list,retired);
+            if (no_early_write) verified_mask |= 1u << j;
+            OSReport("GX2 solid list fixture retirement output=%u submitted=%lld retired=%lld result=%s\n",
+                     j,(long long)receipt,(long long)retired,no_early_write?"PASS":"FAIL");
+         }
+         const bool paired = held_mask == 3 && queued_mask == 3 && verified_mask == 3;
+         ok &= paired;
+         OSReport("GX2 solid list pair retirement scaled=%u arm=%u held=%u retired=%u result=%s\n",
+                  (unsigned)(scale != NULL),arm,held_mask,verified_mask,paired?"PASS":"FAIL");
       }
-      ok &= pixels(rgba,view,arm,&stock[i]);
-      if (i == 0) WHBGfxFinishRenderTV();
-      else WHBGfxFinishRenderDRC();
+      ok &= pixels(rgba,&views[i],arm,&stock[i]);
    }
    WHBGfxFinishRender();
    return ok;
@@ -479,8 +517,24 @@ int main(void)
       ok = stage.storage && rgba;
    }
    if (ok) OSReport("GX2 solid list fixture geometry unique_tv=%u unique_drc=%u disjoint=1\n",DRAWS,DRAWS);
+   const uint32_t world_sizes[4] = {1440,809,641,360};
    for (enum Arm arm = STOCK; ok && arm <= WRONG_TAIL_DEPTH; ++arm)
-      ok = render(views,lists,&tail,&stage,rgba,stock,arm);
+      ok = render(views,lists,&tail,&stage,rgba,stock,arm,NULL,world_sizes);
+
+   uint32_t surface_bytes = 0;
+   HorizonGx2WorldScale *scale = NULL;
+   if (ok) {
+      scale = horizon_gx2_world_scale_create(world_sizes,&surface_bytes);
+      ok = scale && surface_bytes;
+      OSReport("GX2 solid list fixture scaled tv=%ux%u drc=%ux%u bytes=%u result=%s\n",
+               world_sizes[0],world_sizes[1],world_sizes[2],world_sizes[3],surface_bytes,ok?"PASS":"FAIL");
+   }
+   for (unsigned i = 0; i < 2; ++i) {
+      free(stock[i]);
+      stock[i] = NULL;
+   }
+   for (enum Arm arm = STOCK; ok && arm <= WRONG_TAIL_DEPTH; ++arm)
+      ok = render(views,lists,&tail,&stage,rgba,stock,arm,scale,world_sizes);
 
    // A driver timeout or missing submission timestamp cannot free any of the
    // command, texture, color, depth or index memory still owned by a GPU packet.
@@ -498,6 +552,7 @@ int main(void)
    if (stage.storage) MEMFreeToDefaultHeap(stage.storage);
    if (tail.vertices) MEMFreeToDefaultHeap(tail.vertices);
    if (tail.shader.vertexShader) WHBGfxFreeShaderGroup(&tail.shader);
+   if (scale) horizon_gx2_world_scale_destroy(scale);
    if (terrain) horizon_gx2_terrain_destroy(terrain);
    if (gfx) WHBGfxShutdown();
    WHBProcShutdown();
