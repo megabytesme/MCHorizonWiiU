@@ -79,10 +79,10 @@ before expanding that architecture.
   GamePad capture because the Cemu test profile selected it as primary. The
   harness now opens the TV in the main window. The three matched physical
   arms are staged. [Grouped HUD trial](grouped-hud-trial.md)
-- The warm HUD seed completed a paired cold and warm interpreter replay.
-  It saved and returned twice with the same restored GX2 bulk heap.
-  The cold run exposed two full digests of the same archive.
-  [Cemu warm replay](warm-hud-replay.md)
+- The verified archive trial shares one freshly checked descriptor across
+  ordinary resource and HUD preparation. The Cemu warm round reached
+  gameplay 80.766 seconds sooner and both rounds restored the original
+  saved pose and GX2 bulk heap. [Verified archive replay](verified-archive-reopen.md)
 
 - Prioritise bounded CPU/GPU pipelining, verified retirement, independent
   viewport submission, geometry and visibility work, shaders and memory

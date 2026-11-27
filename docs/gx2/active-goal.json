@@ -30,6 +30,16 @@
     "bulk_heap_free_after_each_round_bytes": 234880920,
     "receipt": "warm-hud-replay.md"
   },
+  "verified_archive_reopen": {
+    "engine_tree": "d34bbfc72083d0d0708ae3354f151b6610481de3",
+    "validation": "cemu_interpreter",
+    "first_ready_game_ms": [616214, 535448],
+    "seed_preparation_ms": [60013, 3604],
+    "first_paired_terrain_wall_ms": [645587, 561680],
+    "durable_camera_unchanged": true,
+    "bulk_heap_free_after_each_round_bytes": 234880920,
+    "receipt": "verified-archive-reopen.md"
+  },
   "development_order": {
     "physical_single_player_first": true,
     "splitscreen_exclusive_work": "deferred_until_single_player_qualified",
