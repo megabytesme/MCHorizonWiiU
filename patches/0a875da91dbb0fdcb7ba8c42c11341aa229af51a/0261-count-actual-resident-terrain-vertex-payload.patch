@@ -1,0 +1,15 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 16b7950..75656e9 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1868,9 +1868,9 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     (buffer.gpu_bytes - buffer.vertex_bytes) as usize;
+             }
+             census.translucent_center_bytes += section.center_bytes();
++            census.vertex_payload_bytes += section.uploaded_vertex_bytes();
+         }
+         census.quads = census.vertices / 4;
+-        census.vertex_payload_bytes = census.vertices * std::mem::size_of::<IndexedTerrainVertex>();
+         Some(census)
+     }
+ 
