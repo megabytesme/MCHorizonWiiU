@@ -31,3 +31,22 @@ are documented in [WUT's GFD shader support](https://github.com/devkitPro/wut/bl
 The `gx2r` and `coreinit/cache.h` headers describe available controls, but a
 header alone cannot prove a cache hazard is fixed. Validate real display and
 texture behavior before moving storage or removing waits.
+
+## Retirement evidence in Cemu
+
+In the pinned Cemu 2.6 build, `GX2WaitTimeStamp` waits for the retirement
+marker that the emulated Latte command processor publishes. The handler
+publishes the value when it processes the marker. `GX2DrawDone` also
+queues a separate asynchronous-readback and occlusion-query sync command
+in the Vulkan renderer. Removing a draw drain can therefore change both
+submission pacing and which Vulkan readbacks have completed when the
+test reads them. [Cemu GX2 event implementation](https://github.com/cemu-project/Cemu/blob/a6fb0a48eb437a8a41c13b782ac8ae0433bf8f98/src/Cafe/OS/libs/gx2/GX2_Event.cpp) ·
+[Cemu command processor](https://github.com/cemu-project/Cemu/blob/a6fb0a48eb437a8a41c13b782ac8ae0433bf8f98/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp)
+
+Qualify a deferred finish in ordinary independent-output gameplay with
+readback disabled in the timing window. Track the advancing command
+watermark, the paired scan publication and a changing per-output sentinel.
+Exercise readback and foreground release in separate runs and keep their
+existing completion path. Resource reuse still needs the physical check
+that the oldest submitted work has finished reading each reused slot.
+[Physical queue boundaries](../../wiiu/diagnostics/gx2-queue-trace/README.md)
