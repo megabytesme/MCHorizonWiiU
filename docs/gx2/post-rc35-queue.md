@@ -87,15 +87,18 @@ retirement, compact terrain, signed atlas and depth experiments. Record
 cold and warm loading, the original Village route and 30/60 DRS on their
 own runs.
 
-The RC 69 comparison uses the same package for stock, guarded recorded
-solid terrain, back-face culling and conservative axis-facing ranges.
-Compare plain `4` with `4` plus `gx2-solid-list-replay.enable` to check
-the recorded path. Compare plain `4` with `4b` for back-face parity,
-then `4b` with `4r` to isolate the facing ranges. The two culling arms
-require independent output parity and the normal save lifecycle before
-physical performance comparisons. Use paired HZP3 for all arms. Run
-the sparse GPU pass sampler separately when needed. The section-gated
-deadline observer is available only in plain `4`.
+The RC 69 physical comparison uses the same package for stock and
+guarded solid terrain replay. Compare plain `4` with `4` plus
+`gx2-solid-list-replay.enable` to check the recorded path. Both culling
+variants are held from physical timing pending corrected output parity.
+In the same-package Cemu test, `4b` removed visible terrain from both
+displays, and `4r` reproduced every changed pixel from `4b`. The
+axis-range run also changed an additional strip at the left edge. At
+124 sections per display, `4r` reduced reported frame indices from
+524,208 to 308,736, with higher host solid submission time. Each arm
+completed movement, save and full heap recovery. Cemu supplied no
+physical GPU timing. The section-gated deadline observer is available
+only in plain `4`.
 
 Keep screenshots outside the timing windows. Preserve stock view distances,
 materials and per-output world rendering in the reference. The viewport and
@@ -132,6 +135,14 @@ then a fixed-50% control. Keep DRS off and check paired sections, indices,
 output shapes and stock passes at each setting. Use the actual scale in
 the reducer. The 65 and 50 runs measure the response to changes in world
 resolution. The primary qualification uses the stock fixed-75% workload.
+
+Reduce the retained fixed-scale windows in capture order with
+`tools/gx2_fixed_scale_response.py`. Repeat `--window SCALE HZP3 FIRST_SEQ
+LAST_SEQ` for each supervised window. The reducer checks both display
+dimensions and the requested and effective scale. It retains wall time,
+partial pairs, index counts and frame-time tails. The recorded changes
+describe the whole loop. Native GPU attribution uses the separate
+timing probes.
 
 ## Additional supervised checks
 

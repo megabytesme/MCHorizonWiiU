@@ -43,6 +43,26 @@
     "verified_report_sha256": "1d237ae721026ce2d576e300d0895ded77982afe3a0b76970d30a2f3de6fe076",
     "physical": "pending"
   },
+  "solid_culling_parity": {
+    "candidate": "0.8.0-rc.69",
+    "profile_variants": ["4", "4b", "4r"],
+    "backface_changed_tv_gamepad_pixels": [9703, 2108],
+    "axis_inherited_all_backface_changes": true,
+    "axis_additional_tv_gamepad_pixels": [218, 50],
+    "matched_sections_per_display": 124,
+    "backface_axis_median_indices": [524208, 308736],
+    "verified_report_sha256": "3d39ae4fa9c78d2ef9fab8445161d73e9e04c2ff0a34ef77bdd064da24c5e131",
+    "physical": "held_for_geometry_parity"
+  },
+  "opaque_terrain_shader_draw": {
+    "candidate": "0.8.0-rc.69",
+    "profile_variant": "4o",
+    "scanouts_match_by_output": true,
+    "exact_no_kill_shader_draw_path": "verified_on_tv_in_cemu",
+    "gamepad_activation": "pending_per_output_evidence",
+    "native_fragment_shader_sha256": "99b44c68716a6dd209cfdb3cd7096afd7bf540baf961259a9052a47ef37f6605",
+    "cache_report_sha256": "22c5c3eb19addb5de8f36307218ac25e2117adc934daa1e96968b8a5beb5180e"
+  },
   "paired_solid_list_retirement": {
     "validation": "cemu_interpreter_native_and_separate_fixed_75_targets",
     "rpx_sha256": "29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860",

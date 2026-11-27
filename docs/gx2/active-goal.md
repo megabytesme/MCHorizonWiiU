@@ -85,6 +85,15 @@ before expanding that architecture.
   the control with vignette disabled were complete. The trial had one
   opening retirement frame with no terrain, followed by a complete
   pair. The scaled route awaits physical qualification.
+- The RC 69 back-face and axis-range arms saved and exited cleanly in
+  Cemu. They both removed visible terrain on TV and GamePad. The axis
+  variant submitted 41% fewer indices in the matched 124-section cohort
+  and raised host solid submission time. Both arms are held from physical
+  timing while the geometry is corrected. [Physical queue](post-rc35-queue.md#physical-qualification-order)
+- The RC 69 opaque no-kill trial retained byte-identical stationary
+  captures on both displays. Its fresh Cemu cache proves the exact
+  native no-kill shader reached the TV draw path with culling disabled.
+  GamePad shader activation and physical cost remain pending.
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)
