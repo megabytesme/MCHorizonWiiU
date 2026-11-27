@@ -1,0 +1,246 @@
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 67bcc147cc6f47d3c714a211628067bea14cb8d8..d105b983fe2a3f0712b9e09a959da43d2b86d7dd 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -793,6 +793,7 @@ impl<'a> LoadingHost<'a> {
+             return focused;
+         }
+         self.focused = focused;
++        self.presenter.invalidate_tv_terrain_wait_ticket();
+         self.button_history.clear();
+         if focused {
+             self.pad_blocked_until_neutral = true;
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 6af152c6292b5aa09d0d6e7e923f96b925c9dd37..d793adc349b1f52ee2defdca3c8cd0e9f140aabd 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -81,7 +81,7 @@ static int marker_mode = EOF, marker_variant = EOF;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+ static bool shared_model_uploads, guarded_shared_hud;
+-static uint32_t hud_patch_mode;
++static uint32_t hud_patch_mode, tv_terrain_wait_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
+ 
+@@ -144,15 +144,44 @@ static void select_mode(int mode, int variant)
+    solid_back_culling = variant == 'b' || solid_axis_ranges;
+ }
+ 
++static bool marker_end(FILE *file, int next)
++{
++   const bool ended = next == EOF || (next == '\n' && fgetc(file) == EOF) ||
++      (next == '\r' && fgetc(file) == '\n' && fgetc(file) == EOF);
++   return ended && !ferror(file);
++}
++
++static void init_tv_terrain_wait_trial(void)
++{
++   FILE *marker = fopen(ROOT "gx2-tv-terrain-wait.enable", "rb");
++   if (!marker) return;
++   const int mode = fgetc(marker), tail = fgetc(marker);
++   if ((mode == '0' || mode == '1') && marker_end(marker, tail)) {
++      tv_terrain_wait_mode = mode == '0' ? 1 : 2;
++      OSReport("Horizon GX2 TV terrain wait trial: %s\n",
++               mode == '0' ? "forced slow" : "verified skip");
++   }
++   fclose(marker);
++}
++
++uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
++{
++   if (playing_only && (history != &process_history || !recording || current.phase != PLAYING_PHASE))
++      return 0;
++   return tv_terrain_wait_mode;
++}
++
+ void horizon_gx2_profile_init(void)
+ {
+    FILE *marker = fopen(ROOT "gx2-profile.enable", "rb");
+    if (!marker) return;
+    marker_mode = fgetc(marker);
+    marker_variant = marker_mode == '4' ? fgetc(marker) : EOF;
++   const bool plain_profile = marker_mode == '4' && marker_end(marker, marker_variant);
+    fclose(marker);
+    marker_enabled = true;
+    select_mode(marker_mode, marker_variant);
++   if (plain_profile) init_tv_terrain_wait_trial();
+    process_history.epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 196edce40ba1c6d50cf0bccc921119a5c8faf8d0..13c8c4f864d4a1ced1070ec376b77eee2d5a2041 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -48,6 +48,8 @@ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
++/* 0 is off, 1 forces both waits, 2 permits the verified TV-only skip. */
++uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+ bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_solid_draw_plan(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 41b6352f8be42472923fc313ef44060ceba2394e..d65bdc150892e6fd2a3e2724d3da28a9fa3ea596 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -229,6 +229,7 @@ extern "C" {
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_profile_defer_flip() -> bool;
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
++    fn horizon_gx2_profile_tv_terrain_wait(playing_only: bool) -> u32;
+     fn horizon_gx2_profile_solid_back_culling() -> bool;
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
+@@ -829,6 +830,13 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         unsafe { Gx2LoadingPresenter::new(hud, panorama, terrain, capacity) }
+     }
+ 
++    /// A new foreground can recreate render targets at the same dimensions.
++    pub fn invalidate_tv_terrain_wait_ticket(&mut self) {
++        if self.retired_pair != 0 && unsafe { horizon_gx2_profile_tv_terrain_wait(false) } != 0 {
++            self.retired_pair = 0;
++        }
++    }
++
+     /// Trace the next loading frame's preparation and presentation phases.
+     /// The request is consumed by `prepare_loading` and remains active through
+     /// that frame's synchronous TV/DRC presentation callbacks.
+@@ -837,7 +845,11 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+     }
+ 
+     fn prepare(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<(), &'static str> {
+-        self.outputs = output_dimensions()?;
++        let outputs = output_dimensions();
++        if outputs.as_ref() != Ok(&self.outputs) {
++            self.invalidate_tv_terrain_wait_ticket();
++        }
++        self.outputs = outputs?;
+         self.layout = self.outputs[1];
+         if self
+             .target_viewports()
+@@ -854,6 +866,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             || self.atlas_revision != Some(atlas.revision)
+             || self.hud.is_none();
+         if new_hud {
++            self.invalidate_tv_terrain_wait_ticket();
+             // Create before layout: HorizonPresenter resets the original font
+             // and UI-theme caches so this frame's new batch has valid glyph
+             // and transient UI-texture UVs.
+@@ -1980,8 +1993,14 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.layout
+     }
+     fn resize(&mut self, _width: u32, _height: u32) {
+-        self.retired_pair = 0;
+-        if let Ok(outputs) = output_dimensions() {
++        let outputs = output_dimensions();
++        if self.retired_pair != 0
++            && (outputs.as_ref() != Ok(&self.outputs)
++                || unsafe { horizon_gx2_profile_tv_terrain_wait(false) } == 0)
++        {
++            self.retired_pair = 0;
++        }
++        if let Ok(outputs) = outputs {
+             self.outputs = outputs;
+             self.layout = outputs[1];
+         }
+@@ -2028,6 +2047,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+ 
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         let prior_pair = std::mem::take(&mut self.retired_pair);
++        let old_resolution = self.world_scale.resolution();
+         let guarded_hud = !frame.title && self.terrain.is_some()
+             && unsafe {
+                 horizon_gx2_profile_guarded_shared_hud()
+@@ -2102,6 +2122,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             atlas_patches_prepared: bool,
+             skip_terrain_waits: bool,
++            tv_terrain_wait_ticket: u64,
+         }
+         unsafe extern "C" fn draw_target(
+             context: *mut c_void,
+@@ -2122,19 +2143,33 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 && !draw.frame.title
+                 && draw.presenter.terrain.is_some()
+             {
+-                // The comparison path retains the original per-output waits.
+-                let wait_start = Instant::now();
+-                {
+-                    let _wait = Span::new(Stage::TerrainWait);
+-                    unsafe { horizon_gx2_terrain_wait_idle() };
+-                    if index == 0 {
+-                        draw.presenter.finish_retired_after_wait()
++                // Before the first world callback, the host has only bound
++                // and cleared WHB's own TV targets. A still-current final
++                // ticket covers earlier terrain consumers, including the
++                // backing reclaimed below. The DRC retains its own wait.
++                let skip_tv_wait = index == 0
++                    && draw.tv_terrain_wait_ticket != 0
++                    && unsafe { horizon_loading_host_guarded_hud_reuse(draw.tv_terrain_wait_ticket) };
++                if skip_tv_wait {
++                    static REPORTED: std::sync::Once = std::sync::Once::new();
++                    REPORTED.call_once(|| unsafe {
++                        OSReport(c"Horizon GX2 TV terrain wait skipped with verified retirement\n".as_ptr());
++                    });
++                    draw.presenter.finish_retired_after_wait();
++                } else {
++                    let wait_start = Instant::now();
++                    {
++                        let _wait = Span::new(Stage::TerrainWait);
++                        unsafe { horizon_gx2_terrain_wait_idle() };
++                        if index == 0 {
++                            draw.presenter.finish_retired_after_wait()
++                        }
+                     }
++                    draw.profile.terrain_wait_ns = draw
++                        .profile
++                        .terrain_wait_ns
++                        .saturating_add(elapsed_ns(wait_start));
+                 }
+-                draw.profile.terrain_wait_ns = draw
+-                    .profile
+-                    .terrain_wait_ns
+-                    .saturating_add(elapsed_ns(wait_start));
+             }
+             let world_target = {
+                 let _span = Span::new([Stage::WorldSetupTv, Stage::WorldSetupDrc][index]);
+@@ -2649,6 +2684,23 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             horizon_loading_host_present_with_clear
+         };
++        let tv_wait_mode = if !frame.title && self.terrain.is_some()
++            && self.screenshot_requested.is_none()
++            && unsafe { horizon_loading_host_guarded_hud_available() }
++        {
++            unsafe { horizon_gx2_profile_tv_terrain_wait(true) }
++        } else {
++            0
++        };
++        let tv_terrain_wait_ticket = if tv_wait_mode == 2
++            && frame.hud.patches.is_empty()
++            && old_resolution.is_some()
++            && old_resolution == self.world_scale.resolution()
++        {
++            prior_pair
++        } else {
++            0
++        };
+         let terrain_min_y = self.terrain_min_y;
+         let mut draw = Draw {
+             presenter: self,
+@@ -2661,11 +2713,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             uploaded_hud,
+             atlas_patches_prepared,
+             skip_terrain_waits,
++            tv_terrain_wait_ticket,
+         };
+         let mut retired_pair = 0;
+         let context = (&mut draw as *mut Draw<'_, '_, '_>).cast();
+         let host = unsafe {
+-            if guarded_hud {
++            if guarded_hud || tv_wait_mode != 0 {
+                 horizon_loading_host_present_guarded_hud(
+                     draw_target, context, clear.as_ptr(), use_guarded_upload, &mut retired_pair,
+                 )

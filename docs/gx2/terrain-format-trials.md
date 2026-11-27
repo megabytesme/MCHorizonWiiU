@@ -41,9 +41,11 @@ ALU operations. The fixed solid and translucent variants use 110 and 108
 dwords and move fog calculations earlier. All retained the same stock
 vertex code and texture lookup count. Solid output matched in the initial
 fixture. In the translucent pass, both trial shaders matched the TV and
-differed at 85,508 GamePad pixels. A repeat with explicit per-output clear
-isolates prior target contents from the shader comparison. Initial RPX
-SHA-256 `4d755971603b216c6a57c0630c2c8f6e18fd0e237a9e92f58b8353ff08690276`.
+differed at 85,508 GamePad pixels. A repeat with explicit per-output color
+and depth clears returned the same difference count. Initial RPX SHA-256
+`4d755971603b216c6a57c0630c2c8f6e18fd0e237a9e92f58b8353ff08690276`.
+Explicit-clear RPX SHA-256
+`8f9f23cc1c4003882f6ca2bafe036d81ae9b78eb19e423f8119ce3a08f95d20f`.
 
 ## Reversed water quad reuse
 

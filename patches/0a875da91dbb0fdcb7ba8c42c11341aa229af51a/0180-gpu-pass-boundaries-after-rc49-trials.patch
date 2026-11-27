@@ -1,0 +1,227 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 771651fb2527a8abb6ac8abe493ecc2983e6c6ef..33e082f307df67a5046f7ff735ff71f0170b3c22 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -56,6 +56,13 @@ static GpuCycleSlot gpu_slots[2][2];
+ static bool gpu_cycle_probe, gpu_cycle_rejected;
+ static OSTime gpu_before;
+ 
++// These are bottom-of-pipe boundaries within the existing top/bottom pair.
++// Separate cache lines keep a CPU sentinel store from touching another sample.
++enum { GPU_PASS_COUNT = 7, GPU_PASS_SAMPLE_PERIOD = 120 };
++static GpuCycleSlot gpu_pass_slots[2][GPU_PASS_COUNT];
++static uint32_t gpu_pass_masks[2];
++static bool gpu_pass_enabled, gpu_pass_active;
++
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+ typedef struct {
+@@ -183,6 +190,13 @@ void horizon_gx2_profile_init(void)
+    marker_enabled = true;
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) init_tv_terrain_wait_trial();
++   if (gpu_cycle_probe) {
++      FILE *passes = fopen(ROOT "gx2-gpu-pass-profile.enable", "rb");
++      if (passes) {
++         gpu_pass_enabled = true;
++         fclose(passes);
++      }
++   }
+    process_history.epoch = (uint64_t)OSGetSystemTime();
+    atomic_store_explicit(&enabled, true, memory_order_release);
+    OSReport("Horizon GX2 capture enabled, clock_hz=%u\n", OSTimerClockSpeed);
+@@ -294,8 +308,13 @@ bool horizon_gx2_profile_opaque_terrain_shader(void)
+ bool horizon_gx2_profile_gpu_begin(void)
+ {
+    history->gpu_sample.status = GX2_GPU_NO_SAMPLE;
++   gpu_pass_active = false;
+    if (!gpu_cycle_probe || !recording || current.phase != PLAYING_PHASE) return false;
+    gpu_before = GX2GetLastSubmittedTimeStamp();
++   if (gpu_pass_enabled && history->total % GPU_PASS_SAMPLE_PERIOD == 0) {
++      gpu_pass_masks[0] = gpu_pass_masks[1] = 0;
++      gpu_pass_active = true;
++   }
+    return true;
+ }
+ 
+@@ -308,6 +327,23 @@ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end)
+    else GX2SampleTopGPUCycle(&slot->value);
+ }
+ 
++bool horizon_gx2_profile_gpu_pass_active(void)
++{
++   return gpu_pass_active;
++}
++
++void horizon_gx2_profile_gpu_pass_boundary(uint32_t target, uint32_t boundary)
++{
++   if (!gpu_pass_active || target > 1 || boundary >= GPU_PASS_COUNT) return;
++   uint32_t bit = 1u << boundary;
++   if (gpu_pass_masks[target] & bit) return;
++   gpu_pass_masks[target] |= bit;
++   GpuCycleSlot *slot = &gpu_pass_slots[target][boundary];
++   slot->value = UINT64_MAX;
++   DCFlushRange(slot, sizeof(*slot));
++   GX2SampleBottomGPUCycle(&slot->value);
++}
++
+ static uint64_t gpu_slot_read(GpuCycleSlot *slot)
+ {
+    DCInvalidateRange(slot, sizeof(*slot));
+@@ -320,8 +356,34 @@ static void gpu_reject(uint32_t status)
+    ++history->gpu_sample.rejected;
+ }
+ 
++static bool gpu_report_passes(const HorizonGx2GpuSample *sample)
++{
++   uint64_t times[2][GPU_PASS_COUNT];
++   for (unsigned target = 0; target < 2; ++target) {
++      if (gpu_pass_masks[target] != (1u << GPU_PASS_COUNT) - 1) return false;
++      uint64_t prior = sample->endpoints[target][0];
++      const uint64_t end = sample->endpoints[target][1];
++      for (unsigned boundary = 0; boundary < GPU_PASS_COUNT; ++boundary) {
++         uint64_t value = gpu_slot_read(&gpu_pass_slots[target][boundary]);
++         if (value == UINT64_MAX || value < prior || value > end) return false;
++         times[target][boundary] = prior = value;
++      }
++   }
++   for (unsigned target = 0; target < 2; ++target) {
++      const uint64_t *t = times[target];
++      OSReport("Horizon GX2 GPU passes seq=%u target=%u hz=27000000 cycles=%016llx/%016llx/%016llx/%016llx/%016llx/%016llx/%016llx/%016llx/%016llx\n",
++               sample->sequence, target, (unsigned long long)sample->endpoints[target][0],
++               (unsigned long long)t[0], (unsigned long long)t[1], (unsigned long long)t[2],
++               (unsigned long long)t[3], (unsigned long long)t[4], (unsigned long long)t[5],
++               (unsigned long long)t[6], (unsigned long long)sample->endpoints[target][1]);
++   }
++   return true;
++}
++
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+ {
++   const bool report_passes = gpu_pass_active;
++   gpu_pass_active = false;
+    // WHB has already flushed and called GX2DrawDone for the presented frame.
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+    const OSTime retired = GX2GetRetiredTimeStamp();
+@@ -366,10 +428,13 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs)
+    }
+    history->gpu_sample.status = GX2_GPU_VALID;
+    ++history->gpu_sample.valid;
++   const bool pass_record = report_passes && gpu_report_passes(&history->gpu_sample);
+ 
+    const OSTime now = OSGetSystemTime();
+-   if (now < history->gpu_report_at) return;
+-   history->gpu_report_at = now + OSMillisecondsToTicks(2000);
++   if (now >= history->gpu_report_at)
++      history->gpu_report_at = now + OSMillisecondsToTicks(2000);
++   else if (!pass_record)
++      return;
+    const uint64_t (*endpoints)[2] = history->gpu_sample.endpoints;
+    OSReport("Horizon GX2 GPU span source=gx2-top-bottom hz=27000000 seq=%u tv_ticks=%llu drc_ticks=%llu valid=%u unpaired=%u\n",
+             history->total, (unsigned long long)(endpoints[0][1] - endpoints[0][0]),
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index d51bc007eaa3922bf0a71c6f576662f999577c7b..3649425c71213134c097184fae763a21b7b57514 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -56,6 +56,8 @@ bool horizon_gx2_profile_solid_draw_plan(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
++bool horizon_gx2_profile_gpu_pass_active(void);
++void horizon_gx2_profile_gpu_pass_boundary(uint32_t target, uint32_t boundary);
+ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+ bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index f86d0183b9b54601d6c1e748ab8be7e6db5b5b11..946d60e7d590f344e08638526d606ce1da803a44 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -192,6 +192,8 @@ extern "C" {
+     fn OSReport(format: *const std::ffi::c_char, ...);
+     fn horizon_loading_host_last_outputs() -> u32;
+     fn horizon_gx2_profile_take_gpu_sample(sample: *mut CafeGpuSample) -> bool;
++    fn horizon_gx2_profile_gpu_pass_active() -> bool;
++    fn horizon_gx2_profile_gpu_pass_boundary(target: u32, boundary: u32);
+     fn horizon_loading_host_last_wait_ns() -> u64;
+     fn horizon_loading_host_flip_count() -> u32;
+     fn horizon_loading_host_dimensions(dimensions: *mut u32) -> i32;
+@@ -2152,6 +2154,23 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+             let index = target as usize;
+             let rect = draw.targets[index];
++            #[repr(u32)]
++            enum GpuBoundary {
++                WorldBound,
++                SkyDone,
++                SolidDone,
++                BeforeTranslucent,
++                TranslucentDone,
++                OverlaysDone,
++                CompositeDone,
++            }
++            let profile_gpu_passes =
++                GX2_PROFILE_ENABLED && unsafe { horizon_gx2_profile_gpu_pass_active() };
++            let gpu_boundary = |boundary: GpuBoundary| {
++                if profile_gpu_passes {
++                    unsafe { horizon_gx2_profile_gpu_pass_boundary(target, boundary as u32) };
++                }
++            };
+             let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             if !draw.skip_terrain_waits
+                 && draw.uploaded_hud.is_none()
+@@ -2190,6 +2209,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let _span = Span::new([Stage::WorldSetupTv, Stage::WorldSetupDrc][index]);
+                 draw.presenter.world_scale.bind(target, rect, &draw.clear)
+             };
++            gpu_boundary(GpuBoundary::WorldBound);
+             let (world_width, world_height, world_rect) = match &world_target {
+                 Some(binding) => {
+                     let [w, h] = binding.size;
+@@ -2212,6 +2232,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 draw.result = Err(error);
+                 return -1;
+             }
++            gpu_boundary(GpuBoundary::SkyDone);
+             if draw.frame.title {
+                 if let Some(panorama) = draw.presenter.panorama.as_mut() {
+                     if let Err(error) = unsafe {
+@@ -2414,6 +2435,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+                 drop(terrain_span);
++                gpu_boundary(GpuBoundary::SolidDone);
+ 
+                 let overlays = (|| -> Result<(), &'static str> {
+                     let fallback;
+@@ -2453,6 +2475,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .outline
+                             .draw(draw.frame, projection, target, world_rect, rect[2])?;
+                     }
++                    gpu_boundary(GpuBoundary::BeforeTranslucent);
+                     let [tested, drawn] = draw.presenter.translucent_terrain.draw(
+                         target,
+                         legacy_bindings,
+@@ -2464,6 +2487,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         &fog_color,
+                         &fog_ranges,
+                     )?;
++                    gpu_boundary(GpuBoundary::TranslucentDone);
+                     sections_tested += tested;
+                     sections_drawn += drawn;
+                     {
+@@ -2493,6 +2517,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.result = Err(error);
+                     return -1;
+                 }
++                gpu_boundary(GpuBoundary::OverlaysDone);
+                 cafe_profile::count(
+                     [Counter::TvSectionsTested, Counter::DrcSectionsTested][index],
+                     sections_tested,
+@@ -2507,6 +2532,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let _span = Span::new([Stage::WorldCompositeTv, Stage::WorldCompositeDrc][index]);
+                 world_target.composite();
+             }
++            gpu_boundary(GpuBoundary::CompositeDone);
+             let Some(hud) = draw.presenter.hud.as_mut() else {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;

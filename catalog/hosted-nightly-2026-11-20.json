@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "158a96c50cd0b1187e6783b87fe73dcc0629bc6f",
+  "output_tree": "be10e69dcf76ba2dc473d98da77cad4453ebb1b7",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1064,12 +1064,66 @@
       "input_tree": "525181edcc48d623e3dc21d9f0793044648b3556",
       "output_tree": "158a96c50cd0b1187e6783b87fe73dcc0629bc6f",
       "sha256": "2f38730cfb82cd5c5535583a7df0a00ee3ef6c3aa5c8850ce5c8e0f0f4e3859e"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0176-rc49-skip-verified-tv-terrain-wait.patch",
+      "sha256": "450ed1f3b479fac070c0bc2529b00e5e8af5040e37b70655f5bdf6539de0ac5d",
+      "input_tree": "158a96c50cd0b1187e6783b87fe73dcc0629bc6f",
+      "output_tree": "2fed2626056e061d02bc81ffa3174068d8c311aa"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0177-rc49-gated-gameplay-worker-spans.patch",
+      "sha256": "0ea969fe69455bb36b4eee3a67229accb96d9a80aa6a1a0315b3af50941a20de",
+      "input_tree": "2fed2626056e061d02bc81ffa3174068d8c311aa",
+      "output_tree": "25c29b333544b4a0c3b63213f20a831f2808aab8"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0178-rc49-measure-mem1-placement.patch",
+      "sha256": "f7e0c3cb8028bf425fb16593f4776756588505eca535e61432e7815818993714",
+      "input_tree": "25c29b333544b4a0c3b63213f20a831f2808aab8",
+      "output_tree": "478ac1f49ac4733417faa46ee44722bef696d9de"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0179-rc49-scaled-color-only-output-clear.patch",
+      "sha256": "12e62152ae7480fa60e0b46645a9aab0c290bd23b1c61ddb5b4e53dc9fdb90ed",
+      "input_tree": "478ac1f49ac4733417faa46ee44722bef696d9de",
+      "output_tree": "3736877769d9143f25f02892795eaf7e7bd1b6cc"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0180-gpu-pass-boundaries-after-rc49-trials.patch",
+      "sha256": "89ecc2242f47f227f4f37377700cbc9b8047287789b9e7b384bbdf90534ac683",
+      "input_tree": "3736877769d9143f25f02892795eaf7e7bd1b6cc",
+      "output_tree": "8da32d1c9da4e8e90c490a1a8bd3dac77c7b1f5b"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0181-hosted-hud-view-lanes.patch",
+      "sha256": "c0849767df1e8c49c1b80335b0bd2b8abed4b8627756ee81db9f163a90df24e1",
+      "input_tree": "8da32d1c9da4e8e90c490a1a8bd3dac77c7b1f5b",
+      "output_tree": "e435542624774a4da383d4a504f0a83e0c0a16d7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0182-hosted-hud-viewport-ticket.patch",
+      "sha256": "a3e795314400eb877ceb1c3082d21f41a44a316dd4495997046529097ac5b558",
+      "input_tree": "e435542624774a4da383d4a504f0a83e0c0a16d7",
+      "output_tree": "86ff6e01a5c401fde3d259a90cccea1bab543f14"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0183-grouped-synchronous-present.patch",
+      "sha256": "2f1b6995ee0b6da16f3f9f1e88efc2e30c3c7414a5b3d4271552c6b7eb50ae8d",
+      "input_tree": "86ff6e01a5c401fde3d259a90cccea1bab543f14",
+      "output_tree": "e85fc2c42a6d23906e95ad818b7d91e9f7b55403"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0184-combine-grouped-hud-lanes.patch",
+      "sha256": "8b5ece07b5779d35efee754f8afcec6c196ca6a29146a44f59e0277f77636920",
+      "input_tree": "e85fc2c42a6d23906e95ad818b7d91e9f7b55403",
+      "output_tree": "be10e69dcf76ba2dc473d98da77cad4453ebb1b7"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.50",
-    "patch": "0.5.0-rc.50"
+    "client": "0.8.0-rc.51",
+    "patch": "0.5.0-rc.51"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

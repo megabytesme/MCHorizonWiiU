@@ -1,0 +1,140 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index d8d0c77164ae60d2038ac8c70febdbbb90c22c7a..daf13ccf324221f15844c524756dfafa1a76ba29 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -99,6 +99,7 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_phase(phase: u32);
+     fn horizon_gx2_profile_playing_sequence(sequence: *mut u32) -> bool;
+     fn horizon_gx2_profile_stamp() -> u64;
++    fn horizon_gx2_profile_worker_stamp() -> u64;
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
+     fn horizon_gx2_profile_count(counter: u32, value: u32);
+@@ -176,7 +177,7 @@ impl Drop for Span {
+ pub struct Work(Worker, u64);
+ impl Work {
+     pub fn new(worker: Worker) -> Self {
+-        Self(worker, unsafe { horizon_gx2_profile_stamp() })
++        Self(worker, unsafe { horizon_gx2_profile_worker_stamp() })
+     }
+ }
+ impl Drop for Work {
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 365bcef88b21fdf4706297753f95aaf428bb0eca..35ef050a5ca8bc10e3e67336aeae08c1d973f206 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -1108,6 +1108,11 @@ impl<G: ChunkGenerator> Jobs<G> {
+                 Done::Lit(x, z, light_chunk(&borrow(&region), light, sky), seq)
+             }
+             Job::Mesh(x, sy, z, region, seq, settings) => {
++                #[cfg(target_os = "cafe")]
++                let _work = {
++                    use horizon_client_platform::cafe_profile::{Work, Worker};
++                    Work::new(Worker::Mesh)
++                };
+                 let context = shared.context.read().unwrap().clone();
+                 let recycled = shared.meshes.lock().unwrap().take();
+                 let mesh = mesh_section(
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index 64e01cfee80e7b6eee5345a03aaa7e11cc718ab4..eb5f2d2d8782182ff055f1e65b0471e053f53de5 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -863,7 +863,14 @@ impl Game<'_> {
+                         self.follow_distances(flags);
+                         let cpu = horizon_client::spans::thread_cpu();
+                         let started = Instant::now();
+-                        self.tick_server_measured(false)?;
++                        {
++                            #[cfg(target_os = "cafe")]
++                            let _work = {
++                                use horizon_client_platform::cafe_profile::{Work, Worker};
++                                Work::new(Worker::Integrated)
++                            };
++                            self.tick_server_measured(false)?;
++                        }
+                         #[cfg(target_os = "cafe")]
+                         flags.completed_ticks.fetch_add(1, Ordering::Relaxed);
+                         // MinecraftServer.tickServer's tick times, for /tick query.
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 6af152c6292b5aa09d0d6e7e923f96b925c9dd37..7088cdbd724e91a674f221f9e650c6cb7965d96b 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -72,7 +72,8 @@ typedef struct {
+    uint32_t magic, version, ticks_per_second, frame_size, capacity, count, total;
+ } ProfileHeader;
+ 
+-static _Atomic bool enabled;
++static _Atomic bool enabled, worker_capture_active;
++static bool worker_marker_enabled, worker_playing;
+ static _Atomic uint32_t workers[WORKERS][2];
+ static ProfileFrame current;
+ static uint64_t started;
+@@ -169,6 +170,12 @@ void horizon_gx2_profile_init(void)
+    if (opaque_terrain_shader) OSReport("Horizon GX2 opaque terrain shader trial requested\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
++   FILE *worker_marker = fopen(ROOT "gx2-worker-profile.enable", "rb");
++   if (worker_marker) {
++      fclose(worker_marker);
++      worker_marker_enabled = true;
++      OSReport("Horizon GX2 gameplay worker spans enabled\n");
++   }
+ }
+ 
+ bool horizon_gx2_profile_legacy_pacing(void)
+@@ -370,9 +377,21 @@ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence)
+    return true;
+ }
+ 
++/* The host owns phase changes. Keep the marker gate open between gameplay
++ * loops so worker jobs need no dependency on the frame's recording state. */
++static void update_worker_capture_phase(uint32_t phase)
++{
++   const bool active = worker_marker_enabled && phase == PLAYING_PHASE;
++   if (active == worker_playing) return;
++   worker_playing = active;
++   atomic_store_explicit(&worker_capture_active, active, memory_order_relaxed);
++}
++
+ void horizon_gx2_profile_phase(uint32_t phase)
+ {
+-   if (recording) current.phase = phase;
++   if (!recording) return;
++   current.phase = phase;
++   update_worker_capture_phase(phase);
+ }
+ 
+ uint64_t horizon_gx2_profile_stamp(void)
+@@ -381,6 +400,12 @@ uint64_t horizon_gx2_profile_stamp(void)
+       ? (uint64_t)OSGetSystemTime() : 0;
+ }
+ 
++uint64_t horizon_gx2_profile_worker_stamp(void)
++{
++   return atomic_load_explicit(&worker_capture_active, memory_order_relaxed)
++      ? (uint64_t)OSGetSystemTime() : 0;
++}
++
+ /* A render span is host-thread-only. Worker spans use the separate atomics. */
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin)
+ {
+@@ -536,6 +561,7 @@ void horizon_gx2_profile_finish(void)
+          current.workers[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed)
+                                 - history->worker_base[i][j];
+    history->ring[history->total++ % CAPACITY] = current;
++   update_worker_capture_phase(current.phase);
+    recording = false;
+    if (profile_terrain_animation) report_animation_window(now);
+ 
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 196edce40ba1c6d50cf0bccc921119a5c8faf8d0..08c3942b5039fa133a466cc6b2fa570959f05a2a 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -60,6 +60,7 @@ bool horizon_gx2_profile_begin(uint32_t phase);
+ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
++uint64_t horizon_gx2_profile_worker_stamp(void);
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);
+ void horizon_gx2_profile_worker_end(uint32_t worker, uint64_t begin);
+ void horizon_gx2_profile_count(uint32_t counter, uint32_t value);

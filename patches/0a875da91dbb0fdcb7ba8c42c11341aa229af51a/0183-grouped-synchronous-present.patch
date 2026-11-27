@@ -1,0 +1,271 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 6dda63ea36d63de3b319137287bd274d18a368a6..1ae02ea8ea1d012e6d9beff1c8805e086e5884af 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -295,6 +295,44 @@ bool horizon_gx2_profile_defer_flip(void)
+    return defer_flip;
+ }
+ 
++bool horizon_gx2_profile_grouped_present(bool screenshot)
++{
++   if (!marker_enabled || marker_mode != '4' ||
++       (marker_variant != EOF && marker_variant != '\r' && marker_variant != '\n') ||
++       history != &process_history || !recording || current.phase != PLAYING_PHASE)
++      return false;
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   // Qualify grouping and the view-owned HUD lanes as separate arms.
++   if (horizon_gx2_profile_view_hud()) return false;
++#endif
++
++   static bool checked, requested;
++   if (!checked) {
++      checked = true;
++      FILE *file = fopen(ROOT "gx2-grouped-present.enable", "rb");
++      if (file) {
++         fclose(file);
++         file = fopen(ROOT "gx2-profile.enable", "rb");
++         if (file) {
++            const int mode = fgetc(file), next = fgetc(file);
++            requested = mode == '4' && (next == EOF ||
++               (next == '\n' && fgetc(file) == EOF) ||
++               (next == '\r' && fgetc(file) == '\n' && fgetc(file) == EOF));
++            requested = requested && !ferror(file);
++            fclose(file);
++         }
++      }
++      if (requested) OSReport("Horizon GX2 grouped pair trial requested\n");
++   }
++
++   static bool reported_screenshot;
++   if (requested && screenshot && !reported_screenshot) {
++      reported_screenshot = true;
++      OSReport("Horizon GX2 grouped pair used stock screenshot ordering\n");
++   }
++   return requested && !screenshot;
++}
++
+ bool horizon_gx2_profile_skip_terrain_waits(void)
+ {
+    if (!skip_terrain_waits) return false;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 3649425c71213134c097184fae763a21b7b57514..892befaae5a70c901c61dea08cdb5610bff191f0 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -47,6 +47,7 @@ bool horizon_gx2_profile_shared_model_uploads(void);
+ uint32_t horizon_gx2_profile_hud_patch_mode(void);
+ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
++bool horizon_gx2_profile_grouped_present(bool screenshot);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ /* 0 is off, 1 forces both waits, 2 permits the verified TV-only skip. */
+ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 72aa16483670f77ed57a20309d79ec5c0a05084c..7411705fffc74cd122e4f626ce1ee762487751ab 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -228,6 +228,12 @@ extern "C" {
+         rgba: *const f32,
+         defer_flip: bool,
+     ) -> i32;
++    fn horizon_loading_host_present_grouped(
++        draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
++        context: *mut c_void,
++        rgba: *const f32,
++        opaque_viewports: *const u32,
++    ) -> i32;
+     fn horizon_loading_host_guarded_hud_available() -> bool;
+     fn horizon_loading_host_guarded_hud_reuse(retired_pair: u64) -> bool;
+     fn horizon_loading_host_present_guarded_hud(
+@@ -240,6 +246,7 @@ extern "C" {
+     fn horizon_gx2_profile_guarded_shared_hud() -> bool;
+     fn horizon_gx2_profile_skip_scaled_output_clear() -> bool;
+     fn horizon_gx2_profile_defer_flip() -> bool;
++    fn horizon_gx2_profile_grouped_present(screenshot: bool) -> bool;
+     fn horizon_gx2_profile_skip_terrain_waits() -> bool;
+     fn horizon_gx2_profile_tv_terrain_wait(playing_only: bool) -> u32;
+     fn horizon_gx2_profile_solid_back_culling() -> bool;
+@@ -2836,22 +2843,29 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             std::ptr::null()
+         };
++        let grouped_present = !frame.title
++            && self.terrain.is_some()
++            && unsafe { horizon_gx2_profile_grouped_present(self.screenshot_requested.is_some()) };
+         let scaled_color_only = !frame.title
+             && self.terrain.is_some()
+             && scaled_world
+             && opaque_viewports.is_null()
+             && self.screenshot_requested.is_none()
+             && !guarded_hud
++            && !grouped_present
+             && !view_hud_requested
+             && scaled_color_clear_enabled();
+         let defer_flip = !frame.title && self.terrain.is_some()
+             && unsafe { horizon_gx2_profile_defer_flip() };
+-        let present = if defer_flip {
++        let present = if grouped_present {
++            horizon_loading_host_present_grouped
++        } else if defer_flip {
+             horizon_loading_host_present_deferred_flip
+         } else {
+             horizon_loading_host_present_with_clear
+         };
+         let tv_wait_mode = if !frame.title && self.terrain.is_some()
++            && !grouped_present
+             && !view_hud_requested
+             && self.screenshot_requested.is_none()
+             && unsafe { horizon_loading_host_guarded_hud_available() }
+@@ -2953,8 +2967,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             return Err(error.into());
+         }
+         if host == RETRY_GUARDED_FLIP {
+-            // The timeout path retired any TV draws without touching scanout.
+-            // Leave the previous frame displayed and reacquire a ticket in stock order.
++            // A rejected pair has no accepted outputs and its GPU commands
++            // have retired. Build a fresh frame on the next host iteration.
+             self.screenshot_result = None;
+             return Ok(false);
+         }
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ffefdbdfad5051cc9249997ec6a86ee76f4d82cd..cb87d6f71e22fb58ab36daccce598008ed41eaff 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -223,6 +223,119 @@ static OSTime drain_guarded_commands(void)
+    }
+ }
+ 
++enum GroupedDisposition {
++   GROUPED_KEYBOARD,
++   GROUPED_BACKGROUND,
++   GROUPED_PRIOR_PENDING,
++   GROUPED_CALLBACK_FAILED,
++   GROUPED_SCAN_PENDING,
++   GROUPED_FINISH_UNVERIFIED,
++   GROUPED_ACCEPTED,
++};
++
++static void report_grouped(enum GroupedDisposition disposition, const char *message)
++{
++   static uint32_t reported;
++   const uint32_t bit = 1u << disposition;
++   if (reported & bit) return;
++   reported |= bit;
++   OSReport("Horizon GX2 grouped pair: %s\n", message);
++}
++
++static int reject_grouped(OSTime flip_wait, bool gpu_sample, const uint32_t dimensions[4],
++                          int result)
++{
++   last_wait_ns = OSTicksToNanoseconds(flip_wait + drain_guarded_commands());
++   horizon_gx2_profile_outputs(0, dimensions);
++   if (gpu_sample) horizon_gx2_profile_gpu_finish(0);
++   return result;
++}
++
++int horizon_loading_host_present_grouped(HorizonLoadingDrawTarget draw, void *context,
++                                          const float rgba[4], const uint32_t opaque_viewports[8])
++{
++   last_outputs = 0;
++   last_wait_ns = 0;
++   if (!draw || !rgba) return -1;
++   if (!ProcUIInForeground()) {
++      report_grouped(GROUPED_BACKGROUND, "foreground unavailable, no publication");
++      return HORIZON_LOADING_RETRY_FLIP;
++   }
++   if (horizon_swkbd_is_open()) {
++      report_grouped(GROUPED_KEYBOARD, "using stock keyboard ordering");
++      return horizon_loading_host_present_with_clear(draw, context, rgba, opaque_viewports);
++   }
++
++   uint32_t dimensions[4];
++   if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
++   const OSTime prior = GX2GetLastSubmittedTimeStamp();
++   if (prior <= 0 || GX2GetRetiredTimeStamp() < prior) {
++      report_grouped(GROUPED_PRIOR_PENDING, "prior GPU retirement unverified, no publication");
++      return reject_grouped(0, false, dimensions, HORIZON_LOADING_RETRY_FLIP);
++   }
++
++   uint32_t ticket, swaps, flips;
++   OSTime last_flip, last_vsync;
++   GX2GetSwapStatus(&ticket, &flips, &last_flip, &last_vsync);
++   const bool gpu_sample = horizon_gx2_profile_gpu_begin();
++   int result = 0;
++   for (uint32_t output = 0; output < 2; ++output) {
++      const uint64_t stamp = horizon_gx2_profile_stamp();
++      if (output == 0) WHBGfxBeginRenderTV();
++      else WHBGfxBeginRenderDRC();
++      // Plain marker 4 uses the stock clear and per-output resources.
++      WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      horizon_gx2_profile_end(output == 0 ? GX2_PROFILE_CLEAR_TV : GX2_PROFILE_CLEAR_DRC, stamp);
++      if (gpu_sample) horizon_gx2_profile_gpu_marker(output, false);
++      if (draw(context, output, dimensions[2 * output], dimensions[2 * output + 1]) != 0 ||
++          horizon_swkbd_draw(output) != 0)
++         result = output == 0 ? -2 : -3;
++      if (gpu_sample) horizon_gx2_profile_gpu_marker(output, true);
++      horizon_gx2_profile_end(output == 0 ? GX2_PROFILE_SUBMIT_TV : GX2_PROFILE_SUBMIT_DRC, stamp);
++   }
++   if (result) {
++      report_grouped(GROUPED_CALLBACK_FAILED, "target callback failed, no publication");
++      return reject_grouped(0, gpu_sample, dimensions, result);
++   }
++
++   const OSTime flip_wait = wait_for_previous_flip();
++   GX2GetSwapStatus(&swaps, &flips, &last_flip, &last_vsync);
++   if (swaps != ticket || flips != ticket) {
++      report_grouped(GROUPED_SCAN_PENDING, "scan ticket unconfirmed, no publication");
++      return reject_grouped(flip_wait, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP);
++   }
++
++   uint64_t stamp = horizon_gx2_profile_stamp();
++   WHBGfxFinishRenderTV();
++   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stamp);
++   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_TV, stamp);
++   stamp = horizon_gx2_profile_stamp();
++   WHBGfxFinishRenderDRC();
++   horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stamp);
++   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
++
++   stamp = horizon_gx2_profile_stamp();
++   const OSTime before_finish = GX2GetLastSubmittedTimeStamp();
++   const OSTime finish_start = OSGetTime();
++   WHBGfxFinishRender();
++   const OSTime waited = flip_wait + OSGetTime() - finish_start;
++   horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   if (submitted <= 0 || submitted <= before_finish || GX2GetRetiredTimeStamp() < submitted) {
++      report_grouped(GROUPED_FINISH_UNVERIFIED, "swap issued, final GPU retirement unverified");
++      return reject_grouped(waited, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP);
++   }
++
++   last_wait_ns = OSTicksToNanoseconds(waited);
++   last_outputs = 3;
++   horizon_gx2_profile_outputs(last_outputs, dimensions);
++   if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
++   ++completed_presents;
++   horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
++   report_grouped(GROUPED_ACCEPTED, "both targets presented and retired");
++   return 0;
++}
++
+ static int discard_guarded_pair(OSTime flip_wait, bool gpu_sample, const uint32_t dimensions[4])
+ {
+    static bool reported;
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 7cc8886f08357f31905d3a3d5bd82b36bbbfbf05..0af2676164d818ef5f28da4b5c69316478a32b93 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -28,8 +28,12 @@ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, vo
+ int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], bool defer_flip);
+ 
+-/* Trial-only status. The pair was not published and current GPU consumers
+- * are retired. The next frame may retry without the abandoned ticket. */
++/* Grouped gameplay trial with the same synchronous ownership as stock. */
++int horizon_loading_host_present_grouped(HorizonLoadingDrawTarget draw, void *context,
++                                          const float rgba[4], const uint32_t opaque_viewports[8]);
++
++/* Trial-only status. No successful pair was accepted. Any issued GPU
++ * commands have retired. A late failure may have issued a scan swap. */
+ enum { HORIZON_LOADING_RETRY_FLIP = -5 };
+ 
+ bool horizon_loading_host_guarded_hud_available(void);

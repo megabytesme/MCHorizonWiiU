@@ -1,0 +1,121 @@
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+index 17699c51829c7158a79b1700dcccd3d82997e670..e8325513ffc881060f8b8569448d8543202d45b2 100644
+--- a/wiiu/loading_host/world_scale.c
++++ b/wiiu/loading_host/world_scale.c
+@@ -1,8 +1,11 @@
+ #include "world_scale.h"
+ 
++#include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
+ #include <coreinit/memexpheap.h>
++#include <coreinit/memfrmheap.h>
+ #include <gx2/clear.h>
++#include <gx2/display.h>
+ #include <gx2/draw.h>
+ #include <gx2/mem.h>
+ #include <gx2/registers.h>
+@@ -13,7 +16,9 @@
+ #include <gx2r/buffer.h>
+ #include <gx2r/draw.h>
+ #include <gx2r/surface.h>
++#include <proc_ui/procui.h>
+ #include <stddef.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <whb/gfx.h>
+@@ -104,6 +109,86 @@ static bool preflight_targets(WorldTarget targets[2], const uint32_t dimensions[
+    return true;
+ }
+ 
++static bool world_memory_profile_enabled(void)
++{
++   static bool checked, enabled;
++   if (!checked) {
++      FILE *marker = fopen("/vol/external01/wiiu/apps/HorizonWiiU/gx2-mem1-profile.enable", "rb");
++      checked = true;
++      if (marker) {
++         enabled = true;
++         fclose(marker);
++      }
++   }
++   return enabled;
++}
++
++static uint32_t heap_span(MEMHeapHandle heap)
++{
++   const uintptr_t begin = (uintptr_t)heap->dataStart, end = (uintptr_t)heap->dataEnd;
++   return end >= begin && end - begin <= UINT32_MAX ? (uint32_t)(end - begin) : 0;
++}
++
++/* WHB 1.9.2 selects one of these fixed scan modes for its color buffer. */
++static GX2TVRenderMode whb_tv_scan_mode(const GX2Surface *tv)
++{
++   if (tv->width == 1920 && tv->height == 1080) return GX2_TV_RENDER_MODE_WIDE_1080P;
++   if (tv->width == 1280 && tv->height == 720) return GX2_TV_RENDER_MODE_WIDE_720P;
++   if (tv->width == 854 && tv->height == 480) return GX2_TV_RENDER_MODE_WIDE_480P;
++   if (tv->width == 640 && tv->height == 480) return GX2_TV_RENDER_MODE_STANDARD_480P;
++   return GX2_TV_RENDER_MODE_DISABLED;
++}
++
++/* Called on the presenter thread after the ProcUI pump and a successful
++ * scaled allocation. WHB's unlocked foreground heaps are never cached. */
++static void report_world_memory(const WorldTarget targets[2])
++{
++   if (!world_memory_profile_enabled() || !ProcUIInForeground()) return;
++   const GX2Surface *display[] = {
++      &WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetTVDepthBuffer()->surface,
++      &WHBGfxGetDRCColourBuffer()->surface, &WHBGfxGetDRCDepthBuffer()->surface,
++   };
++   for (uint32_t i = 0; i < 4; ++i)
++      if (!display[i]->image) return;
++
++   MEMHeapHandle mem1 = MEMFindContainHeap(display[0]->image);
++   if (mem1 && (mem1->tag != MEM_EXPANDED_HEAP_TAG || MEMGetArena(mem1) != MEM_BASE_HEAP_MEM1))
++      mem1 = NULL;
++   for (uint32_t i = 1; mem1 && i < 4; ++i)
++      if (MEMFindContainHeap(display[i]->image) != mem1) mem1 = NULL;
++   OSReport("Horizon GX2 MEM1: verified=%u span=%u free=%u whb_tv_color=%u whb_tv_depth=%u whb_drc_color=%u whb_drc_depth=%u\n",
++            mem1 != NULL, mem1 ? heap_span(mem1) : 0, mem1 ? MEMGetTotalFreeSizeForExpHeap(mem1) : 0,
++            display[0]->imageSize, display[1]->imageSize, display[2]->imageSize, display[3]->imageSize);
++
++   const uint32_t scan_align = GX2_SCAN_BUFFER_ALIGNMENT;
++   MEMHeapHandle foreground = MEMGetBaseHeapHandle(MEM_BASE_HEAP_FG);
++   if (foreground && foreground->tag != MEM_FRAME_HEAP_TAG) foreground = NULL;
++   uint32_t tv_scan = 0, drc_scan = 0, ignored = 0;
++   const GX2TVRenderMode tv_mode = whb_tv_scan_mode(display[0]);
++   if (tv_mode != GX2_TV_RENDER_MODE_DISABLED)
++      GX2CalcTVSize(tv_mode, display[0]->format, GX2_BUFFERING_MODE_DOUBLE, &tv_scan, &ignored);
++   const GX2DrcRenderMode drc_mode = GX2GetSystemDRCMode();
++   if (display[2]->width == 854 && display[2]->height == 480 &&
++       (drc_mode == GX2_DRC_RENDER_MODE_SINGLE || drc_mode == GX2_DRC_RENDER_MODE_DOUBLE))
++      GX2CalcDRCSize(drc_mode, display[2]->format, GX2_BUFFERING_MODE_DOUBLE, &drc_scan, &ignored);
++   OSReport("Horizon GX2 foreground: base_known=%u base_span=%u base_unclaimed_aligned=%u scan_align=%u tv_scan_bytes=%u drc_scan_bytes=%u\n",
++            foreground != NULL, foreground ? heap_span(foreground) : 0,
++            foreground ? MEMGetAllocatableSizeForFrmHeapEx(foreground, (int32_t)scan_align) : 0,
++            scan_align, tv_scan, drc_scan);
++
++   const GX2Surface *world[] = {&targets[0].color.surface, &targets[0].depth.surface,
++                               &targets[1].color.surface, &targets[1].depth.surface};
++   for (uint32_t i = 0; i < 4; ++i) {
++      const GX2Surface *surface = world[i];
++      MEMHeapHandle heap = MEMFindContainHeap(surface->image);
++      OSReport("Horizon GX2 world surface: target=%u depth=%u size=%ux%u pitch=%u aa=%u tile=%u bytes=%u align=%u arena=%d mem1_largest_aligned=%u\n",
++               i / 2, i % 2, surface->width, surface->height, surface->pitch,
++               (unsigned)surface->aa, (unsigned)surface->tileMode, surface->imageSize,
++               surface->alignment, heap ? (int)MEMGetArena(heap) : -1,
++               mem1 ? MEMGetAllocatableSizeForExpHeapEx(mem1, (int32_t)surface->alignment) : 0);
++   }
++}
++
+ static bool create_target(WorldTarget *target)
+ {
+    if (!GX2RCreateSurface(&target->color.surface, color_flags)) return false;
+@@ -181,6 +266,7 @@ HorizonGx2WorldScale *horizon_gx2_world_scale_create(const uint32_t dimensions[4
+       const WorldTarget *output = &scale->outputs[i];
+       *surface_bytes += output->color.surface.imageSize + output->depth.surface.imageSize;
+    }
++   report_world_memory(scale->outputs);
+    return scale;
+ 
+ failure:

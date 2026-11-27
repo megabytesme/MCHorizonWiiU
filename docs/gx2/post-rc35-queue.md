@@ -33,9 +33,9 @@ failed with error 160-2203 before entry and is retired. [Build and hardware proc
 ## Physical qualification order
 
 Focus first on the independent fixed-75% single-player reference.
-Keep the current RC 38 saved pose and capture settings. Use verified
-RC 49 as the stock build comparison. The grouped HUD and retirement
-trials require their own package and clear marker receipts.
+Keep the current RC 38 saved pose and capture settings. Use RC 49 as the
+previous stock build comparison and RC 51 for the same-binary renderer
+controls. Record the marker files for each arm. [RC 51 package](rc51-qualification.md)
 
 | Order | Comparison | Evidence |
 | --- | --- | --- |

@@ -1,0 +1,58 @@
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index d105b983fe2a3f0712b9e09a959da43d2b86d7dd..a74dbe2587ce6d801872eb8e1e492b0ef6829db3 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -794,6 +794,9 @@ impl<'a> LoadingHost<'a> {
+         }
+         self.focused = focused;
+         self.presenter.invalidate_tv_terrain_wait_ticket();
++        // WHB can recreate its surfaces on acquire at the same dimensions.
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        self.presenter.invalidate_surface_retirement();
+         self.button_history.clear();
+         if focused {
+             self.pad_blocked_until_neutral = true;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index bd7d8184450fb2fa48c32e8e2f20100a2b5753a2..72aa16483670f77ed57a20309d79ec5c0a05084c 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -862,6 +862,12 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         }
+     }
+ 
++    /// Invalidate a retirement ticket across a ProcUI foreground transition.
++    #[cfg(feature = "gx2-hud-view-lanes")]
++    pub fn invalidate_surface_retirement(&mut self) {
++        self.retired_pair = 0;
++    }
++
+     /// Trace the next loading frame's preparation and presentation phases.
+     /// The request is consumed by `prepare_loading` and remains active through
+     /// that frame's synchronous TV/DRC presentation callbacks.
+@@ -873,6 +879,10 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         let outputs = output_dimensions();
+         if outputs.as_ref() != Ok(&self.outputs) {
+             self.invalidate_tv_terrain_wait_ticket();
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            if HudViewTrial::requested() {
++                self.invalidate_surface_retirement();
++            }
+         }
+         self.outputs = outputs?;
+         self.layout = self.outputs[1];
+@@ -2019,6 +2029,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     }
+     fn resize(&mut self, _width: u32, _height: u32) {
+         let outputs = output_dimensions();
++        // The hosted loop polls the viewport before input and every draw.
++        // Preserve a ticket only when both physical outputs still match.
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        if self.retired_pair != 0
++            && outputs.as_ref() == Ok(&self.outputs)
++            && HudViewTrial::requested()
++        {
++            return;
++        }
+         if self.retired_pair != 0
+             && (outputs.as_ref() != Ok(&self.outputs)
+                 || unsafe { horizon_gx2_profile_tv_terrain_wait(false) } == 0)

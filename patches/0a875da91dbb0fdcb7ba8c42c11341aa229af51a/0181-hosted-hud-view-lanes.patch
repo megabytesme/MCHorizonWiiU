@@ -1,0 +1,1192 @@
+diff --git a/wiiu/gx2_hud/CMakeLists.txt b/wiiu/gx2_hud/CMakeLists.txt
+index ab83cf98f36adb35c6835cd136a17a3159da9c09..dbfd145ea1d031d6c5b042a30a77d8a45dc3cb77 100644
+--- a/wiiu/gx2_hud/CMakeLists.txt
++++ b/wiiu/gx2_hud/CMakeLists.txt
+@@ -6,6 +6,11 @@ add_library(horizon_gx2_hud STATIC hud.c hud_data.c cit_glint.c)
+ target_include_directories(horizon_gx2_hud PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+ target_compile_options(horizon_gx2_hud PRIVATE -Wall -Wextra -Werror)
+ 
++option(HORIZON_GX2_HUD_VIEW_LANES "Build the independent view HUD retirement seam" OFF)
++if(HORIZON_GX2_HUD_VIEW_LANES)
++   target_compile_definitions(horizon_gx2_hud PUBLIC HORIZON_GX2_HUD_VIEW_LANES)
++endif()
++
+ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/hud.gsh
+    COMMAND ${CAFEGLSL_COMPILER_EXECUTABLE} -vs ${CMAKE_CURRENT_SOURCE_DIR}/hud.vert
+            -ps ${CMAKE_CURRENT_SOURCE_DIR}/hud.frag -o ${CMAKE_CURRENT_BINARY_DIR}/hud.gsh
+diff --git a/wiiu/gx2_hud/hud.c b/wiiu/gx2_hud/hud.c
+index 968d7df9dad11255279e4e147832d63783524c5c..84ba3bc0164d43617c066427deb461eeb0535616 100644
+--- a/wiiu/gx2_hud/hud.c
++++ b/wiiu/gx2_hud/hud.c
+@@ -1,5 +1,6 @@
+ #include "hud_data.h"
+ #include "cit_glint.h"
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -16,6 +17,9 @@
+ #include <gx2/registers.h>
+ #include <gx2/sampler.h>
+ #include <gx2/shaders.h>
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++#include <gx2/state.h>
++#endif
+ #include <gx2/texture.h>
+ #include <gx2/utils.h>
+ #include <gx2r/buffer.h>
+@@ -359,7 +363,7 @@ static void bind_glint(HorizonGx2Hud *hud)
+    GX2SetPixelSampler(&hud->glint_sampler, hud->glint_slot);
+ }
+ 
+-static void set_hud_state(HorizonGx2Hud *hud, uint32_t x, uint32_t y,
++static void set_hud_state(HorizonGx2Hud *hud, GX2RBuffer *vertices, uint32_t x, uint32_t y,
+                           uint32_t width, uint32_t height)
+ {
+    GX2SetViewport((float)x, (float)y, (float)width, (float)height, 0, 1);
+@@ -368,7 +372,7 @@ static void set_hud_state(HorizonGx2Hud *hud, uint32_t x, uint32_t y,
+    GX2SetVertexShader(hud->shader.vertexShader);
+    GX2SetPixelShader(hud->shader.pixelShader);
+    GX2SetFetchShader(&hud->shader.fetchShader);
+-   GX2RSetAttributeBuffer(&hud->buffer, 0, sizeof(HorizonHudGpuVertex), 0);
++   GX2RSetAttributeBuffer(vertices, 0, sizeof(HorizonHudGpuVertex), 0);
+    GX2SetPixelTexture(&hud->atlas, hud->atlas_slot);
+    bind_glint(hud);
+    GX2SetPixelUniformReg(hud->glint_offset, 4, hud->glint_style);
+@@ -498,29 +502,35 @@ static HorizonHudResult validate_draw_target(const HorizonHudFrame *f,
+    return HORIZON_HUD_OK;
+ }
+ 
+-static HorizonHudResult upload_frame(HorizonGx2Hud *hud, const HorizonHudFrame *f)
++static HorizonHudResult upload_vertices(GX2RBuffer *vertices, const HorizonHudFrame *f)
+ {
+-   HorizonHudResult result = apply_patches(hud, f);
+-   if (result != HORIZON_HUD_OK || !f->vertex_count) return result;
+-   HorizonHudGpuVertex *out = GX2RLockBufferEx(&hud->buffer, 0);
++   if (!f->vertex_count) return HORIZON_HUD_OK;
++   HorizonHudGpuVertex *out = GX2RLockBufferEx(vertices, 0);
+    if (!out) return HORIZON_HUD_ALLOCATION_FAILED;
+    horizon_hud_encode_vertices(f, out);
+-   GX2RUnlockBufferEx(&hud->buffer, 0);
++   GX2RUnlockBufferEx(vertices, 0);
+    return HORIZON_HUD_OK;
+ }
+ 
++static HorizonHudResult upload_frame(HorizonGx2Hud *hud, const HorizonHudFrame *f)
++{
++   const HorizonHudResult result = apply_patches(hud, f);
++   return result == HORIZON_HUD_OK ? upload_vertices(&hud->buffer, f) : result;
++}
++
+ HorizonHudResult horizon_gx2_hud_upload_after_wait(HorizonGx2Hud *hud, const HorizonHudFrame *f)
+ {
+    HorizonHudResult result = validate_frame(hud, f);
+    return result == HORIZON_HUD_OK ? upload_frame(hud, f) : result;
+ }
+ 
+-static HorizonHudResult draw_uploaded(HorizonGx2Hud *hud, const HorizonHudFrame *f,
++static HorizonHudResult draw_uploaded(HorizonGx2Hud *hud, GX2RBuffer *vertices,
++                                      const HorizonHudFrame *f,
+                                       uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                       const HudOutput *output)
+ {
+    if (!f->vertex_count) return HORIZON_HUD_OK;
+-   set_hud_state(hud, x, y, width, height);
++   set_hud_state(hud, vertices, x, y, width, height);
+    int depth_active = 0;
+    for (uint32_t i = 0; i < f->run_count; ++i) {
+       const uint32_t blend = f->runs[i].blend;
+@@ -534,7 +544,7 @@ static HorizonHudResult draw_uploaded(HorizonGx2Hud *hud, const HorizonHudFrame
+          GX2SetContextState(output->context);
+          GX2SetColorBuffer(output->color, GX2_RENDER_TARGET_0);
+          GX2SetDepthBuffer(output->depth);
+-         set_hud_state(hud, x, y, width, height);
++         set_hud_state(hud, vertices, x, y, width, height);
+          GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
+          GX2SetScissor(clip[0], clip[1], clip[2], clip[3]);
+          depth_active = 1;
+@@ -595,7 +605,7 @@ uint64_t horizon_gx2_hud_last_draw_wait_ns(const HorizonGx2Hud *hud)
+ 
+ static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+                                 uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+-                                const HudOutput *output)
++                                const HudOutput *output, bool verify_retirement)
+ {
+    if (hud) hud->last_draw_wait_ns = 0;
+    HorizonHudResult result = validate_frame(hud, f);
+@@ -603,10 +613,20 @@ static HorizonHudResult draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+    result = validate_draw_target(f, x, y, width, height, output);
+    if (result != HORIZON_HUD_OK) return result;
+    const OSTime wait_start = OSGetTime();
+-   GX2DrawDone();
++   const bool done = GX2DrawDone();
+    hud->last_draw_wait_ns = OSTicksToNanoseconds(OSGetTime() - wait_start);
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   if (verify_retirement) {
++      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (!done || submitted <= 0 || GX2GetRetiredTimeStamp() < submitted)
++         return HORIZON_HUD_VIEW_RETIREMENT_UNAVAILABLE;
++   }
++#else
++   (void)done;
++   (void)verify_retirement;
++#endif
+    result = upload_frame(hud, f);
+-   return result == HORIZON_HUD_OK ? draw_uploaded(hud, f, x, y, width, height, output) : result;
++   return result == HORIZON_HUD_OK ? draw_uploaded(hud, &hud->buffer, f, x, y, width, height, output) : result;
+ }
+ 
+ static HudOutput hud_output(uint32_t output)
+@@ -623,14 +643,14 @@ HorizonHudResult horizon_gx2_hud_draw_uploaded_to_output(HorizonGx2Hud *hud, con
+    if (!hud || output > 1) return HORIZON_HUD_INVALID;
+    const HudOutput target = hud_output(output);
+    HorizonHudResult result = validate_draw_target(f, x, y, width, height, &target);
+-   return result == HORIZON_HUD_OK ? draw_uploaded(hud, f, x, y, width, height, &target) : result;
++   return result == HORIZON_HUD_OK ? draw_uploaded(hud, &hud->buffer, f, x, y, width, height, &target) : result;
+ }
+ 
+ HorizonHudResult horizon_gx2_hud_draw_to(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+                                          uint32_t x, uint32_t y,
+                                          uint32_t width, uint32_t height)
+ {
+-   return draw_to(hud, f, x, y, width, height, NULL);
++   return draw_to(hud, f, x, y, width, height, NULL, false);
+ }
+ 
+ HorizonHudResult horizon_gx2_hud_draw_to_output(HorizonGx2Hud *hud, const HorizonHudFrame *f,
+@@ -640,7 +660,7 @@ HorizonHudResult horizon_gx2_hud_draw_to_output(HorizonGx2Hud *hud, const Horizo
+ {
+    if (output > 1) return HORIZON_HUD_INVALID;
+    const HudOutput target = hud_output(output);
+-   return draw_to(hud, f, x, y, width, height, &target);
++   return draw_to(hud, f, x, y, width, height, &target, false);
+ }
+ 
+ HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame *f)
+@@ -648,3 +668,161 @@ HorizonHudResult horizon_gx2_hud_draw(HorizonGx2Hud *hud, const HorizonHudFrame
+    if (!hud || !f) return HORIZON_HUD_INVALID;
+    return horizon_gx2_hud_draw_to(hud, f, 0, 0, f->viewport_width, f->viewport_height);
+ }
++
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++enum {
++   MIN_VIEW_LANES = 2,
++   MAX_VIEW_LANES = 5,
++   VIEW_VERTEX_LIMIT = 16384,
++   VIEW_ALLOCATION_LIMIT = 4 * 1024 * 1024,
++};
++
++typedef enum { VIEW_IDLE, VIEW_ACTIVE, VIEW_PENDING } ViewLaneState;
++
++struct HorizonHudViewLanes {
++   GX2RBuffer buffers[MAX_VIEW_LANES];
++   OSTime prior_pair, after_last_draw, recovery_submission;
++   uint32_t count, bytes, consumed;
++   bool gpu_used;
++   ViewLaneState state;
++};
++
++_Static_assert(sizeof(HorizonHudGpuVertex) == 48, "Unexpected GPU HUD vertex size");
++
++static bool is_retired_pair(uint64_t expected, OSTime floor)
++{
++   if (expected > INT64_MAX || (OSTime)expected <= floor) return false;
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   return submitted == (OSTime)expected && GX2GetRetiredTimeStamp() >= submitted;
++}
++
++bool horizon_gx2_hud_view_lanes_destroy(HorizonHudViewLanes *lanes)
++{
++   if (!lanes) return true;
++   if (lanes->state != VIEW_IDLE) return false;
++   for (uint32_t i = 0; i < lanes->count; ++i) {
++      if (GX2RBufferExists(&lanes->buffers[i])) GX2RDestroyBufferEx(&lanes->buffers[i], 0);
++   }
++   free(lanes);
++   return true;
++}
++
++HorizonHudViewLanes *horizon_gx2_hud_view_lanes_create(uint32_t views, uint32_t vertices_per_view)
++{
++   if (views < MIN_VIEW_LANES || views > MAX_VIEW_LANES ||
++       !vertices_per_view || vertices_per_view > VIEW_VERTEX_LIMIT) return NULL;
++   HorizonHudViewLanes *lanes = calloc(1, sizeof(*lanes));
++   if (!lanes) return NULL;
++   lanes->count = views;
++   for (uint32_t i = 0; i < views; ++i) {
++      GX2RBuffer *buffer = &lanes->buffers[i];
++      buffer->flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER |
++         GX2R_RESOURCE_USAGE_CPU_WRITE | GX2R_RESOURCE_USAGE_GPU_READ;
++      buffer->elemSize = sizeof(HorizonHudGpuVertex);
++      buffer->elemCount = vertices_per_view;
++      const uint32_t bytes = GX2RGetBufferAllocationSize(buffer);
++      if (bytes < buffer->elemCount * buffer->elemSize ||
++          bytes > VIEW_ALLOCATION_LIMIT - lanes->bytes || !GX2RCreateBuffer(buffer)) {
++         horizon_gx2_hud_view_lanes_destroy(lanes);
++         return NULL;
++      }
++      lanes->bytes += bytes;
++   }
++   return lanes;
++}
++
++uint32_t horizon_gx2_hud_view_lanes_bytes(const HorizonHudViewLanes *lanes)
++{
++   return lanes ? lanes->bytes : 0;
++}
++
++bool horizon_gx2_hud_view_lanes_begin(HorizonHudViewLanes *lanes, uint64_t prior_pair)
++{
++   if (!lanes || lanes->state != VIEW_IDLE || !is_retired_pair(prior_pair, lanes->prior_pair))
++      return false;
++   lanes->state = VIEW_ACTIVE;
++   lanes->prior_pair = (OSTime)prior_pair;
++   lanes->after_last_draw = lanes->prior_pair;
++   lanes->consumed = 0;
++   lanes->gpu_used = false;
++   return true;
++}
++
++HorizonHudResult horizon_gx2_hud_view_lanes_draw(
++   HorizonHudViewLanes *lanes, HorizonGx2Hud *hud, const HorizonHudFrame *frame,
++   uint32_t slot, uint32_t output, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
++{
++   if (!hud || !frame || output > 1) return HORIZON_HUD_INVALID;
++   if (!lanes || lanes->state != VIEW_ACTIVE || slot >= lanes->count ||
++       (lanes->consumed & (1u << slot)) || frame->patch_count) return HORIZON_HUD_VIEW_FALLBACK;
++   GX2RBuffer *vertices = &lanes->buffers[slot];
++   if (frame->vertex_count > vertices->elemCount) return HORIZON_HUD_VIEW_FALLBACK;
++   HorizonHudResult result = validate_frame(hud, frame);
++   if (result != HORIZON_HUD_OK) return result;
++   const HudOutput target = hud_output(output);
++   result = validate_draw_target(frame, x, y, width, height, &target);
++   if (result != HORIZON_HUD_OK) return result;
++   result = upload_vertices(vertices, frame);
++   if (result != HORIZON_HUD_OK) return HORIZON_HUD_VIEW_FALLBACK;
++   lanes->consumed |= 1u << slot;
++   lanes->gpu_used |= frame->vertex_count != 0;
++   hud->last_draw_wait_ns = 0;
++   result = draw_uploaded(hud, vertices, frame, x, y, width, height, &target);
++   if (frame->vertex_count) {
++      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (submitted > lanes->after_last_draw) lanes->after_last_draw = submitted;
++   }
++   return result;
++}
++
++HorizonHudResult horizon_gx2_hud_draw_verified_to_output(
++   HorizonGx2Hud *hud, const HorizonHudFrame *frame,
++   uint32_t output, uint32_t x, uint32_t y, uint32_t width, uint32_t height)
++{
++   if (output > 1) return HORIZON_HUD_INVALID;
++   const HudOutput target = hud_output(output);
++   return draw_to(hud, frame, x, y, width, height, &target, true);
++}
++
++bool horizon_gx2_hud_view_lanes_seal(HorizonHudViewLanes *lanes, uint64_t retired_pair)
++{
++   if (!lanes || lanes->state != VIEW_ACTIVE) return false;
++   if (!lanes->gpu_used || is_retired_pair(retired_pair, lanes->after_last_draw)) {
++      lanes->state = VIEW_IDLE;
++      return true;
++   }
++   lanes->state = VIEW_PENDING;
++   lanes->recovery_submission = 0;
++   return false;
++}
++
++void horizon_gx2_hud_view_lanes_finish_verified(HorizonHudViewLanes *lanes)
++{
++   lanes->state = VIEW_IDLE;
++}
++
++bool horizon_gx2_hud_view_lanes_recover(HorizonHudViewLanes *lanes, bool foreground)
++{
++   if (!lanes) return false;
++   if (lanes->state != VIEW_PENDING) return lanes->state == VIEW_IDLE;
++   if (!foreground) return false;
++   if (!lanes->recovery_submission) {
++      // Explicit recovery only. The guarded normal host has already flushed
++      // and drained the pair before returning its verified token.
++      const OSTime before = GX2GetLastSubmittedTimeStamp();
++      GX2Flush();
++      OSTime submitted = GX2GetLastSubmittedTimeStamp();
++      if (submitted <= before || submitted <= lanes->after_last_draw) {
++         // A void flush with a stationary watermark is not fresh proof.
++         // Only the exceptional recovery path may perform a full drain.
++         if (!GX2DrawDone()) return false;
++         submitted = GX2GetLastSubmittedTimeStamp();
++         if (submitted < lanes->after_last_draw) return false;
++      }
++      lanes->recovery_submission = submitted;
++   }
++   if (GX2GetRetiredTimeStamp() < lanes->recovery_submission) return false;
++   lanes->state = VIEW_IDLE;
++   return true;
++}
++#endif
+diff --git a/wiiu/gx2_hud/hud.h b/wiiu/gx2_hud/hud.h
+index 4c10d8013bb60f95e1250f25b89722009b79a038..58520619d78c3db830e7dbd091fc468e88ee5ae2 100644
+--- a/wiiu/gx2_hud/hud.h
++++ b/wiiu/gx2_hud/hud.h
+@@ -48,6 +48,10 @@ typedef struct HorizonHudFrame {
+ 
+ typedef enum HorizonHudResult {
+    HORIZON_HUD_OK = 0,
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   HORIZON_HUD_VIEW_FALLBACK = 1,
++   HORIZON_HUD_VIEW_RETIREMENT_UNAVAILABLE = 2,
++#endif
+    HORIZON_HUD_INVALID = -1,
+    HORIZON_HUD_UNSUPPORTED = -2,
+    HORIZON_HUD_ALLOCATION_FAILED = -3,
+@@ -117,3 +121,43 @@ enum {
+ };
+ void horizon_gx2_hud_set_patch_mode(HorizonGx2Hud *hud, uint32_t mode);
+ void horizon_gx2_hud_destroy(HorizonGx2Hud *hud);
++
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++#include <stdbool.h>
++
++/* Optional, separately owned vertex slots for two through five logical views.
++ * Prepare at a frame boundary and keep the owner on the foreground GX2 thread.
++ * The normal HUD texture and fallback buffer remain owned by HorizonGx2Hud. */
++typedef struct HorizonHudViewLanes HorizonHudViewLanes;
++HorizonHudViewLanes *horizon_gx2_hud_view_lanes_create(uint32_t views, uint32_t vertices_per_view);
++uint32_t horizon_gx2_hud_view_lanes_bytes(const HorizonHudViewLanes *lanes);
++
++/* The token is the last known positive completion from the guarded host. */
++bool horizon_gx2_hud_view_lanes_begin(HorizonHudViewLanes *lanes, uint64_t prior_pair);
++
++/* Bind the specified WHB output first and set this view's style. A slot accepts
++ * one draw per pair; a frame with any atlas patch returns VIEW_FALLBACK before
++ * an upload. Use the verified direct entry below for that fallback.
++ * No borrowed descriptor survives the call. Finish each view's world before
++ * depth HUD runs, which retain their original target-wide depth clear. */
++HorizonHudResult horizon_gx2_hud_view_lanes_draw(
++   HorizonHudViewLanes *lanes, HorizonGx2Hud *hud, const HorizonHudFrame *frame,
++   uint32_t slot, uint32_t output, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
++
++/* The ordinary HUD buffer and atlas, with explicit drain verification. A
++ * timed-out/unverified drain changes no atlas, vertex, or drawing state. */
++HorizonHudResult horizon_gx2_hud_draw_verified_to_output(
++   HorizonGx2Hud *hud, const HorizonHudFrame *frame,
++   uint32_t output, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
++
++/* Always seal after the host returns, including callback error and retry. A
++ * nonzero token must come from that host call's positive final retirement.
++ * A false result pins the owner until recovery. Recovery may drain when
++ * an explicit flush produces no fresh watermark. Do not tear down the HUD atlas, GX2 context or native stream on failure. */
++bool horizon_gx2_hud_view_lanes_seal(HorizonHudViewLanes *lanes, uint64_t retired_pair);
++bool horizon_gx2_hud_view_lanes_recover(HorizonHudViewLanes *lanes, bool foreground);
++bool horizon_gx2_hud_view_lanes_destroy(HorizonHudViewLanes *lanes);
++/* Native host only. The current GX2 thread has positively drained all
++ * callbacks, including aborted pairs, and issued no new lane commands. */
++void horizon_gx2_hud_view_lanes_finish_verified(HorizonHudViewLanes *lanes);
++#endif
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index cdc50472af4e895e05ba7f142056961cf18dfcd9..7a9c67361e47859d56d348d5e564704106fb88d8 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -7,6 +7,9 @@ publish = false
+ [lib]
+ crate-type = ["staticlib"]
+ 
++[features]
++gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]
++
+ [dependencies]
+ horizon-wiiu-mcp = { path = "../mcp" }
+ zeroize = "1"
+diff --git a/wiiu/loading_host/Cargo.toml b/wiiu/loading_host/Cargo.toml
+index 42ce7f0bcf4b9a1809229e59bdb1d7e9cde3543d..0e8a3fd61fc73d1072d94336a51e835ec0858b3f 100644
+--- a/wiiu/loading_host/Cargo.toml
++++ b/wiiu/loading_host/Cargo.toml
+@@ -7,6 +7,9 @@ publish = false
+ [lib]
+ path = "lib.rs"
+ 
++[features]
++gx2-hud-view-lanes = ["horizon-wiiu-platform/gx2-hud-view-lanes"]
++
+ [dependencies]
+ horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+ horizon-client = { path = "../../crates/horizon-client", default-features = false }
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 33e082f307df67a5046f7ff735ff71f0170b3c22..6dda63ea36d63de3b319137287bd274d18a368a6 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -92,6 +92,9 @@ static bool shared_model_uploads, guarded_shared_hud;
+ static uint32_t hud_patch_mode, tv_terrain_wait_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++static bool hud_view_lanes_marker, hud_view_lanes;
++#endif
+ 
+ typedef struct {
+    uint64_t phases[3];
+@@ -150,6 +153,10 @@ static void select_mode(int mode, int variant)
+    solid_draw_plan = variant == 'v';
+    opaque_terrain_shader = variant == 'o';
+    solid_back_culling = variant == 'b' || solid_axis_ranges;
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   hud_view_lanes = hud_view_lanes_marker && mode == '4' &&
++      (variant == EOF || variant == '\r' || variant == '\n');
++#endif
+ }
+ 
+ static bool marker_end(FILE *file, int next)
+@@ -188,6 +195,13 @@ void horizon_gx2_profile_init(void)
+    const bool plain_profile = marker_mode == '4' && marker_end(marker, marker_variant);
+    fclose(marker);
+    marker_enabled = true;
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   marker = fopen(ROOT "gx2-hud-view-lanes.enable", "rb");
++   if (marker) {
++      hud_view_lanes_marker = true;
++      fclose(marker);
++   }
++#endif
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) init_tv_terrain_wait_trial();
+    if (gpu_cycle_probe) {
+@@ -205,6 +219,9 @@ void horizon_gx2_profile_init(void)
+    if (legacy_terrain_uniforms) OSReport("Horizon GX2 capture terrain uniforms: legacy\n");
+    if (profile_terrain_animation) OSReport("Horizon GX2 capture terrain animation split enabled\n");
+    if (guarded_shared_hud) OSReport("Horizon GX2 deferred flip with guarded shared HUD requested\n");
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++   if (hud_view_lanes) OSReport("Horizon GX2 independent HUD upload trial requested\n");
++#endif
+    if (shared_model_uploads) OSReport("Horizon GX2 shared model uploads enabled\n");
+    if (skip_terrain_waits) OSReport("Horizon GX2 frame-boundary terrain retirement requested\n");
+    if (solid_back_culling) OSReport("Horizon GX2 solid terrain back-face culling trial enabled\n");
+@@ -241,6 +258,13 @@ bool horizon_gx2_profile_legacy_terrain_uniforms(void)
+    return legacy_terrain_uniforms;
+ }
+ 
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++bool horizon_gx2_profile_view_hud(void)
++{
++   return hud_view_lanes;
++}
++#endif
++
+ bool horizon_gx2_profile_shared_hud_upload(void)
+ {
+    return shared_hud_upload;
+diff --git a/wiiu/loading_host/hud_views.rs b/wiiu/loading_host/hud_views.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b686f143d358ba7d4ce6aceb08d09cebdf23dd67
+--- /dev/null
++++ b/wiiu/loading_host/hud_views.rs
+@@ -0,0 +1,193 @@
++//! Lifecycle for the ordinary-profile, non-deferred independent HUD buffers.
++
++use super::{OSReport, RETRY_GUARDED_FLIP};
++use std::ffi::{c_char, c_void};
++use std::ptr::NonNull;
++
++type DrawTarget = unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32;
++
++unsafe extern "C" {
++    fn horizon_gx2_profile_view_hud() -> bool;
++    fn horizon_loading_host_prepare_view_hud(prior_pair: u64) -> i32;
++    fn horizon_loading_host_present_view_hud(
++        draw: DrawTarget,
++        context: *mut c_void,
++        clear: *const f32,
++        retired_pair: *mut u64,
++        active_lanes: *mut c_void,
++    ) -> i32;
++    fn horizon_gx2_hud_view_lanes_create(views: u32, capacity: u32) -> *mut c_void;
++    fn horizon_gx2_hud_view_lanes_bytes(lanes: *const c_void) -> u32;
++    fn horizon_gx2_hud_view_lanes_begin(lanes: *mut c_void, prior_pair: u64) -> bool;
++    fn horizon_gx2_hud_view_lanes_destroy(lanes: *mut c_void) -> bool;
++}
++
++#[derive(Clone, Copy)]
++#[repr(u8)]
++pub(super) enum Reason {
++    Bootstrap,
++    ForegroundOrRetirement,
++    TitleOrNoTerrain,
++    Capture,
++    Keyboard,
++    FramePatches,
++    Allocation,
++    LaneToken,
++    AtlasAnimation,
++    LaneDeclined,
++    TargetDrain,
++    AtlasDrain,
++}
++
++impl Reason {
++    fn label(self) -> *const c_char {
++        match self {
++            Self::Bootstrap => c"bootstrap",
++            Self::ForegroundOrRetirement => c"foreground-or-prior-retirement",
++            Self::TitleOrNoTerrain => c"title-or-no-terrain",
++            Self::Capture => c"capture",
++            Self::Keyboard => c"keyboard",
++            Self::FramePatches => c"frame-atlas-patches",
++            Self::Allocation => c"lane-allocation",
++            Self::LaneToken => c"lane-token",
++            Self::AtlasAnimation => c"hud-atlas-animation",
++            Self::LaneDeclined => c"native-lane-declined",
++            Self::TargetDrain => c"target-retirement",
++            Self::AtlasDrain => c"prepatch-retirement",
++        }
++        .as_ptr()
++    }
++}
++
++struct Arena(NonNull<c_void>);
++
++impl Drop for Arena {
++    fn drop(&mut self) {
++        // The synchronous host always seals an opened arena before returning,
++        // including callback failure. Never destroy an allocation it still owns.
++        assert!(unsafe { horizon_gx2_hud_view_lanes_destroy(self.0.as_ptr()) });
++    }
++}
++
++#[derive(Default)]
++pub(super) struct Trial {
++    arena: Option<Arena>,
++    allocation_failed: bool,
++    reasons: u16,
++    accepted: [u32; 2],
++    direct: [u32; 2],
++    waits_ns: [u64; 2],
++    pairs: u32,
++}
++
++impl Trial {
++    pub(super) fn requested() -> bool {
++        unsafe { horizon_gx2_profile_view_hud() }
++    }
++
++    pub(super) fn verify_before_frame(prior_pair: u64) -> Result<bool, ()> {
++        match unsafe { horizon_loading_host_prepare_view_hud(prior_pair) } {
++            1 => Ok(true),
++            0 => Ok(false),
++            RETRY_GUARDED_FLIP => Err(()),
++            _ => unreachable!("invalid native HUD retirement status"),
++        }
++    }
++
++    pub(super) fn drain_before_mutation() -> bool {
++        Self::verify_before_frame(0).is_ok()
++    }
++
++    pub(super) fn release_surface(&mut self) {
++        self.arena = None;
++        self.allocation_failed = false;
++    }
++
++    pub(super) fn activate(&mut self, prior: u64, capacity: u32) -> Option<NonNull<c_void>> {
++        if self.arena.is_none() && !self.allocation_failed {
++            let ptr = unsafe { horizon_gx2_hud_view_lanes_create(2, capacity.min(16_384)) };
++            self.arena = NonNull::new(ptr).map(Arena);
++            if self.arena.is_none() {
++                self.allocation_failed = true;
++            } else {
++                unsafe {
++                    OSReport(
++                        c"Horizon GX2 HUD lanes allocated bytes=%u views=2\n".as_ptr(),
++                        horizon_gx2_hud_view_lanes_bytes(ptr),
++                    );
++                }
++            }
++        }
++        let Some(arena) = &self.arena else {
++            self.reason(Reason::Allocation);
++            return None;
++        };
++        let lanes = arena.0;
++        if unsafe { horizon_gx2_hud_view_lanes_begin(lanes.as_ptr(), prior) } {
++            Some(lanes)
++        } else {
++            self.reason(Reason::LaneToken);
++            None
++        }
++    }
++
++    pub(super) unsafe fn present(
++        draw: DrawTarget,
++        context: *mut c_void,
++        clear: &[f32; 4],
++        ticket: &mut u64,
++        lanes: Option<NonNull<c_void>>,
++    ) -> i32 {
++        unsafe {
++            horizon_loading_host_present_view_hud(
++                draw,
++                context,
++                clear.as_ptr(),
++                ticket,
++                lanes.map_or(std::ptr::null_mut(), NonNull::as_ptr),
++            )
++        }
++    }
++
++    pub(super) fn reason(&mut self, reason: Reason) {
++        let mask = 1 << reason as u8;
++        if self.reasons & mask == 0 {
++            self.reasons |= mask;
++            unsafe {
++                OSReport(
++                    c"Horizon GX2 HUD lanes fallback reason=%s\n".as_ptr(),
++                    reason.label(),
++                );
++            }
++        }
++    }
++
++    pub(super) fn draw(&mut self, target: usize, lane: bool, wait_ns: u64) {
++        if lane {
++            self.accepted[target] += 1;
++        } else {
++            self.direct[target] += 1;
++        }
++        self.waits_ns[target] = self.waits_ns[target].saturating_add(wait_ns);
++    }
++
++    pub(super) fn finish(&mut self, completed: bool) {
++        self.pairs += u32::from(completed);
++        if self.pairs >= 300
++            || self.accepted.iter().sum::<u32>() + self.direct.iter().sum::<u32>() >= 610
++        {
++            unsafe {
++                OSReport(
++                    c"Horizon GX2 HUD lanes pairs=%u tv_slots=%u drc_slots=%u tv_direct=%u drc_direct=%u tv_hud_wait_us=%u drc_hud_wait_us=%u\n".as_ptr(),
++                    self.pairs, self.accepted[0], self.accepted[1], self.direct[0], self.direct[1],
++                    (self.waits_ns[0] / 1000).min(u64::from(u32::MAX)) as u32,
++                    (self.waits_ns[1] / 1000).min(u64::from(u32::MAX)) as u32,
++                );
++            }
++            self.pairs = 0;
++            self.accepted = [0; 2];
++            self.direct = [0; 2];
++            self.waits_ns = [0; 2];
++        }
++    }
++}
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 946d60e7d590f344e08638526d606ce1da803a44..bd7d8184450fb2fa48c32e8e2f20100a2b5753a2 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -10,6 +10,10 @@
+ mod crumbling;
+ mod end_sky;
+ mod hand;
++#[cfg(feature = "gx2-hud-view-lanes")]
++mod hud_views;
++#[cfg(feature = "gx2-hud-view-lanes")]
++use hud_views::{Reason as HudViewReason, Trial as HudViewTrial};
+ mod lightning;
+ mod world_border;
+ mod outline;
+@@ -709,6 +713,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
+     retired_pair: u64,
++    #[cfg(feature = "gx2-hud-view-lanes")]
++    hud_views: HudViewTrial,
+     world_scale: WorldScale,
+     requested_world_scale: u32,
+     terrain_ranks: Option<std::collections::BTreeMap<terrain_residency::Priority, usize>>,
+@@ -785,6 +791,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             solid_draw_plans: Default::default(),
+             frame_work: CafeFrameWork::default(),
+             retired_pair: 0,
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            hud_views: HudViewTrial::default(),
+             world_scale: WorldScale::default(),
+             requested_world_scale: 100,
+             terrain_ranks: None,
+@@ -2024,6 +2032,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     }
+     fn release_surface(&mut self) {
+         self.retired_pair = 0;
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        self.hud_views.release_surface();
+         self.world_scale.release();
+         self.clear_native_sections();
+         self.terrain = None;
+@@ -2065,6 +2075,43 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
+         let prior_pair = std::mem::take(&mut self.retired_pair);
+         let old_resolution = self.world_scale.resolution();
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        let view_hud_requested = HudViewTrial::requested();
++        #[cfg(not(feature = "gx2-hud-view-lanes"))]
++        let view_hud_requested = false;
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        let view_hud = {
++            if !view_hud_requested {
++                None
++            } else if frame.title || self.terrain.is_none() {
++                self.hud_views.reason(HudViewReason::TitleOrNoTerrain);
++                None
++            } else if self.screenshot_requested.is_some() {
++                // The stock capture callback owns its readback surface.
++                // Its callback never borrows a lane.
++                self.hud_views.reason(HudViewReason::Capture);
++                None
++            } else {
++                let retired = match HudViewTrial::verify_before_frame(prior_pair) {
++                    Ok(retired) => retired,
++                    Err(()) => {
++                        self.hud_views.reason(HudViewReason::ForegroundOrRetirement);
++                        self.last_frame_partial = false;
++                        self.frame_work = CafeFrameWork::default();
++                        return Ok(false);
++                    }
++                };
++                Some(if !retired {
++                    Some(HudViewReason::Bootstrap)
++                } else if !unsafe { horizon_loading_host_guarded_hud_available() } {
++                    Some(HudViewReason::Keyboard)
++                } else if !frame.hud.patches.is_empty() {
++                    Some(HudViewReason::FramePatches)
++                } else {
++                    None
++                })
++            }
++        };
+         let guarded_hud = !frame.title && self.terrain.is_some()
+             && unsafe {
+                 horizon_gx2_profile_guarded_shared_hud()
+@@ -2140,6 +2187,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared: bool,
+             skip_terrain_waits: bool,
+             tv_terrain_wait_ticket: u64,
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            view_hud: bool,
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            hud_lanes: Option<NonNull<c_void>>,
+         }
+         unsafe extern "C" fn draw_target(
+             context: *mut c_void,
+@@ -2194,6 +2245,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let wait_start = Instant::now();
+                     {
+                         let _wait = Span::new(Stage::TerrainWait);
++                        #[cfg(feature = "gx2-hud-view-lanes")]
++                        if draw.view_hud {
++                            if !HudViewTrial::drain_before_mutation() {
++                                draw.presenter.hud_views.reason(HudViewReason::TargetDrain);
++                                draw.result = Err("GX2 view HUD could not verify terrain retirement");
++                                return -1;
++                            }
++                        } else {
++                            unsafe { horizon_gx2_terrain_wait_idle() };
++                        }
++                        #[cfg(not(feature = "gx2-hud-view-lanes"))]
+                         unsafe { horizon_gx2_terrain_wait_idle() };
+                         if index == 0 {
+                             draw.presenter.finish_retired_after_wait()
+@@ -2260,6 +2322,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     };
+                     // The existing wait has completed every use of this shared atlas.
+                     // Publish dynamic atlas texels before either output samples them.
++                    #[cfg(feature = "gx2-hud-view-lanes")]
++                    if draw.view_hud && !HudViewTrial::drain_before_mutation() {
++                        draw.presenter.hud_views.reason(HudViewReason::AtlasDrain);
++                        draw.result = Err("GX2 view HUD could not verify atlas retirement");
++                        return -1;
++                    }
+                     if let Err(error) =
+                         unsafe { hud.apply_atlas_patches_after_wait(draw.frame.hud) }
+                     {
+@@ -2539,25 +2607,55 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             };
+             cafe_profile::count(Counter::HudVertices, draw.frame.hud.vertices.len());
+             let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
++            let stock_hud = |hud: &mut HorizonPresenter<'_>, atlas_updates| unsafe {
++                if let Some(uploaded) = &draw.uploaded_hud {
++                    hud.draw_uploaded_batch_to(uploaded, rect, target)
++                } else {
++                    hud.draw_batch_to(
++                        draw.frame.hud,
++                        draw.presenter.layout,
++                        rect,
++                        target,
++                        draw.frame.ticks,
++                        atlas_updates,
++                    )
++                }
++            };
+             let hud_result = {
+                 let _hud_span = Span::new([Stage::HudSubmitTv, Stage::HudSubmitDrc][index]);
+-                unsafe {
+-                    if let Some(uploaded) = &draw.uploaded_hud {
+-                        hud.draw_uploaded_batch_to(uploaded, rect, target)
+-                    } else {
+-                        hud.draw_batch_to(
+-                            draw.frame.hud,
+-                            draw.presenter.layout,
+-                            rect,
+-                            target,
+-                            draw.frame.ticks,
+-                            AtlasUpdates {
+-                                animated: true,
+-                                frame_patches_prepared: draw.atlas_patches_prepared,
+-                            },
++                let atlas_updates = AtlasUpdates {
++                    animated: true,
++                    frame_patches_prepared: draw.atlas_patches_prepared,
++                };
++                #[cfg(feature = "gx2-hud-view-lanes")]
++                if draw.view_hud {
++                    let result = unsafe {
++                        hud.draw_view_batch_to(
++                            draw.frame.hud, draw.presenter.layout, rect, target, draw.frame.ticks,
++                            atlas_updates, draw.hud_lanes.map(|lanes| (lanes.as_ptr(), target)),
+                         )
++                    };
++                    use horizon_wiiu_platform::hud::horizon::ViewHudDraw;
++                    if let Ok(path) = result {
++                        match path {
++                            ViewHudDraw::AtlasFallback => {
++                                draw.presenter.hud_views.reason(HudViewReason::AtlasAnimation);
++                            }
++                            ViewHudDraw::NativeFallback => {
++                                draw.presenter.hud_views.reason(HudViewReason::LaneDeclined);
++                            }
++                            ViewHudDraw::Direct | ViewHudDraw::Lane => {}
++                        }
++                        draw.presenter.hud_views.draw(
++                            index, path == ViewHudDraw::Lane, hud.last_draw_wait_ns(),
++                        );
+                     }
++                    result.map(|_| ())
++                } else {
++                    stock_hud(hud, atlas_updates)
+                 }
++                #[cfg(not(feature = "gx2-hud-view-lanes"))]
++                stock_hud(hud, atlas_updates)
+             };
+             if let Err(error) = hud_result {
+                 let code = match error {
+@@ -2725,6 +2823,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             && opaque_viewports.is_null()
+             && self.screenshot_requested.is_none()
+             && !guarded_hud
++            && !view_hud_requested
+             && scaled_color_clear_enabled();
+         let defer_flip = !frame.title && self.terrain.is_some()
+             && unsafe { horizon_gx2_profile_defer_flip() };
+@@ -2734,6 +2833,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             horizon_loading_host_present_with_clear
+         };
+         let tv_wait_mode = if !frame.title && self.terrain.is_some()
++            && !view_hud_requested
+             && self.screenshot_requested.is_none()
+             && unsafe { horizon_loading_host_guarded_hud_available() }
+         {
+@@ -2751,6 +2851,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             0
+         };
+         let terrain_min_y = self.terrain_min_y;
++        // Open the batch immediately before the synchronous native call so
++        // ordinary preparation errors cannot strand an active arena.
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        let hud_lanes = match view_hud {
++            Some(None) => self.hud_views.activate(prior_pair, self.capacity),
++            Some(Some(reason)) => {
++                self.hud_views.reason(reason);
++                None
++            }
++            None => None,
++        };
+         let mut draw = Draw {
+             presenter: self,
+             frame,
+@@ -2763,13 +2874,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared,
+             skip_terrain_waits,
+             tv_terrain_wait_ticket,
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            view_hud: view_hud.is_some(),
++            #[cfg(feature = "gx2-hud-view-lanes")]
++            hud_lanes,
+         };
+         let mut retired_pair = 0;
+         let context = (&mut draw as *mut Draw<'_, '_, '_>).cast();
+-        let host = unsafe {
++        let stock_present = |retired_pair: &mut u64| unsafe {
+             if guarded_hud || tv_wait_mode != 0 {
+                 horizon_loading_host_present_guarded_hud(
+-                    draw_target, context, clear.as_ptr(), use_guarded_upload, &mut retired_pair,
++                    draw_target, context, clear.as_ptr(), use_guarded_upload, retired_pair,
+                 )
+             } else if scaled_color_only {
+                 horizon_loading_host_present_scaled_color(
+@@ -2779,12 +2894,24 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 present(draw_target, context, clear.as_ptr(), opaque_viewports)
+             }
+         };
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        let host = if view_hud.is_some() {
++            unsafe { HudViewTrial::present(draw_target, context, &clear, &mut retired_pair, hud_lanes) }
++        } else {
++            stock_present(&mut retired_pair)
++        };
++        #[cfg(not(feature = "gx2-hud-view-lanes"))]
++        let host = stock_present(&mut retired_pair);
+         let profile = draw.profile;
+         let draw_result = draw.result;
+         drop(draw);
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        if view_hud.is_some() {
++            self.hud_views.finish(host == 0 && outputs == 3);
++        }
+         self.frame_work.presented = [outputs & 1 != 0, outputs & 2 != 0];
+         let mut gpu_sample = CafeGpuSample::default();
+         self.frame_work.gpu_sample =
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 65797e633423628f34a663c554bda69bb22bd6a1..ffefdbdfad5051cc9249997ec6a86ee76f4d82cd 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -1,6 +1,9 @@
+ #include "loading_host.h"
+ #include "swkbd_bridge.h"
+ #include "gx2_profile.h"
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++#include "hud.h"
++#endif
+ 
+ #include <whb/gfx.h>
+ #include <gx2/clear.h>
+@@ -248,7 +251,8 @@ static void clear_display(const float rgba[4], uint32_t output, bool omit, bool
+ 
+ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+                               const uint32_t opaque_viewports[8], bool defer_flip,
+-                              uint64_t *retired_pair, bool scaled_color_only)
++                              uint64_t *retired_pair, bool *verified_finish,
++                              bool scaled_color_only)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+@@ -334,6 +338,7 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+       } else if (!result) {
+          *retired_pair = (uint64_t)submitted;
+       }
++      if (verified_finish) *verified_finish = true;
+    }
+    horizon_gx2_profile_outputs(last_outputs, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
+@@ -368,19 +373,19 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL, false);
++   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL, NULL, false);
+ }
+ 
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL, false);
++   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL, NULL, false);
+ }
+ 
+ int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], bool defer_flip)
+ {
+-   return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, true);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, NULL, true);
+ }
+ 
+ int horizon_loading_host_present_guarded_hud(
+@@ -390,6 +395,45 @@ int horizon_loading_host_present_guarded_hud(
+    if (!retired_pair) return -1;
+    *retired_pair = 0;
+    if (!horizon_loading_host_guarded_hud_available())
+-      return present_with_clear(draw, context, rgba, NULL, false, NULL, false);
+-   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair, false);
++      return present_with_clear(draw, context, rgba, NULL, false, NULL, NULL, false);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair, NULL, false);
+ }
++
++#ifdef HORIZON_GX2_HUD_VIEW_LANES
++/* First gameplay frame, a surface transition, or a discarded previous pair.
++ * Requalify prior work before Rust can update any shared backing. */
++int horizon_loading_host_prepare_view_hud(uint64_t prior_pair)
++{
++   if (!ProcUIInForeground()) return HORIZON_LOADING_RETRY_FLIP;
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   if (prior_pair && submitted > 0 && (uint64_t)submitted == prior_pair &&
++       GX2GetRetiredTimeStamp() >= submitted) return 1;
++   if (!GX2DrawDone()) return HORIZON_LOADING_RETRY_FLIP;
++   const OSTime drained = GX2GetLastSubmittedTimeStamp();
++   if (drained < 0 || GX2GetRetiredTimeStamp() < drained)
++      return HORIZON_LOADING_RETRY_FLIP;
++   return 0;
++}
++
++int horizon_loading_host_present_view_hud(
++   HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
++   uint64_t *retired_pair, HorizonHudViewLanes *active_lanes)
++{
++   *retired_pair = 0;
++   last_outputs = 0;
++   last_wait_ns = 0;
++   bool verified_finish = false;
++   // Keep WHB flip wait, both target copies and keyboard ordering. In contrast
++   // to the guarded shared HUD, this entry cannot fall through to an
++   // unverified finish when the keyboard is active or the foreground is lost.
++   const int result = ProcUIInForeground()
++      ? present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false)
++      : HORIZON_LOADING_RETRY_FLIP;
++   if (active_lanes &&
++       !horizon_gx2_hud_view_lanes_seal(active_lanes, *retired_pair)) {
++      if (!verified_finish) drain_guarded_commands();
++      horizon_gx2_hud_view_lanes_finish_verified(active_lanes);
++   }
++   return result;
++}
++#endif
+diff --git a/wiiu/platform/Cargo.toml b/wiiu/platform/Cargo.toml
+index 8a82a8bc76d48d7de5437ba5c3bd493daaffc897..47a67dcad28f6d062d5480b9f004b6041d0b785a 100644
+--- a/wiiu/platform/Cargo.toml
++++ b/wiiu/platform/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ default = []
+ cafe = ["horizon-client-platform/cafe"]
+ horizon-hud = ["dep:horizon-client-render"]
++gx2-hud-view-lanes = ["horizon-hud"]
+ 
+ [dependencies]
+ horizon-client-input = { path = "../../crates/horizon-client-input", default-features = false }
+diff --git a/wiiu/platform/src/hud.rs b/wiiu/platform/src/hud.rs
+index e66cddc9849c2747c643c0b4cf72fb3b51deb1ff..f139a91a6ce854145aae119810c33614e6aa0981 100644
+--- a/wiiu/platform/src/hud.rs
++++ b/wiiu/platform/src/hud.rs
+@@ -309,6 +309,18 @@ mod cafe {
+         ) -> i32;
+     }
+ 
++    #[cfg(feature = "gx2-hud-view-lanes")]
++    unsafe extern "C" {
++        fn horizon_gx2_hud_view_lanes_draw(
++            lanes: *mut c_void, hud: *mut c_void, frame: *const RawFrame,
++            slot: u32, output: u32, x: u32, y: u32, width: u32, height: u32,
++        ) -> i32;
++        fn horizon_gx2_hud_draw_verified_to_output(
++            hud: *mut c_void, frame: *const RawFrame,
++            output: u32, x: u32, y: u32, width: u32, height: u32,
++        ) -> i32;
++    }
++
+     fn result(code: i32) -> Result<(), Error> {
+         match code {
+             0 => Ok(()),
+@@ -570,6 +582,46 @@ mod cafe {
+             result(horizon_gx2_hud_draw(self.hud.as_ptr(), &prepared.raw()))
+         }
+ 
++        #[cfg(feature = "gx2-hud-view-lanes")]
++        pub(super) unsafe fn draw_guarded_view(
++            &mut self,
++            frame: &Frame<'_>,
++            extra: &[Patch],
++            target: [u32; 4],
++            output: u32,
++            slot: Option<(*mut c_void, u32)>,
++        ) -> Result<horizon::ViewHudDraw, Error> {
++            use horizon::ViewHudDraw;
++            let prepared = Prepared::with_extra_patches(frame, extra)?;
++            validate_target_viewport(frame.viewport, target)?;
++            let raw = prepared.raw();
++            let [x, y, width, height] = target;
++            let path = if let Some((lanes, slot)) = slot {
++                if raw.patch_count == 0 {
++                    let code = unsafe {
++                        horizon_gx2_hud_view_lanes_draw(
++                            lanes, self.hud.as_ptr(), &raw, slot, output, x, y, width, height,
++                        )
++                    };
++                    // HORIZON_HUD_VIEW_FALLBACK means no upload or command was submitted.
++                    if code != 1 {
++                        return result(code).map(|()| ViewHudDraw::Lane);
++                    }
++                    ViewHudDraw::NativeFallback
++                } else {
++                    ViewHudDraw::AtlasFallback
++                }
++            } else {
++                ViewHudDraw::Direct
++            };
++            let code = unsafe {
++                horizon_gx2_hud_draw_verified_to_output(
++                    self.hud.as_ptr(), &raw, output, x, y, width, height,
++                )
++            };
++            result(code).map(|()| path)
++        }
++
+         #[cfg(feature = "horizon-hud")]
+         pub(super) unsafe fn draw_with_patches_to_output(
+             &mut self,
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index 5a371f623cda5b750a8b4fcc2fd70f91ecc6aa14..68bdad4de8bd28eab3ad0c618c3d5ef5af11b380 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -180,6 +180,15 @@ pub struct AtlasUpdates {
+     pub frame_patches_prepared: bool,
+ }
+ 
++#[cfg(all(feature = "cafe", target_arch = "powerpc", feature = "gx2-hud-view-lanes"))]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ViewHudDraw {
++    Lane,
++    AtlasFallback,
++    NativeFallback,
++    Direct,
++}
++
+ /// A batch already uploaded into the presenter's GPU buffer for both outputs.
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ pub struct UploadedBatch<'a> {
+@@ -348,6 +357,33 @@ impl<'shader> HorizonPresenter<'shader> {
+         )
+     }
+ 
++    /// Draw this view's batch in an independent slot or use a verified direct upload.
++    ///
++    /// # Safety
++    /// The output and viewport must already be bound, after the view's world passes.
++    /// The optional pointer must borrow an active arena for this guarded host call.
++    #[cfg(feature = "gx2-hud-view-lanes")]
++    pub unsafe fn draw_view_batch_to(
++        &mut self,
++        batch: &HudBatch,
++        layout_viewport: [u32; 2],
++        target: [u32; 4],
++        output: u32,
++        tick: u64,
++        atlas_updates: AtlasUpdates,
++        slot: Option<(*mut std::ffi::c_void, u32)>,
++    ) -> Result<ViewHudDraw, Error> {
++        self.with_batch(
++            batch,
++            layout_viewport,
++            tick,
++            atlas_updates,
++            |presenter, frame, extra| unsafe {
++                presenter.draw_guarded_view(frame, extra, target, output, slot)
++            },
++        )
++    }
++
+     /// Upload a frame before either output draws. Both outputs borrow the same
+     /// encoded geometry and use the published atlas updates.
+     ///

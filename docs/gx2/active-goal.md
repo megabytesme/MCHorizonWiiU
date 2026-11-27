@@ -74,11 +74,13 @@ before expanding that architecture.
   area. In the host traversal fixture, one chunk of camera motion admitted
   20 newly visible sections from a full queue. The exact native build passed.
   Village coverage still needs measurement. [RC 50 qualification](rc50-qualification.md)
-- The grouped HUD trial reached a verified retired pair in offline Cemu and
-  recovered its GX2 bulk heap after saving. The first replay duplicated the
-  GamePad capture because the Cemu test profile selected it as primary. The
-  harness now opens the TV in the main window. The three matched physical
-  arms are staged. [Grouped HUD trial](grouped-hud-trial.md)
+- The grouped HUD trial reached a verified retired pair in offline Cemu.
+  The corrected harness captured TV and GamePad independently before and
+  after the dwell, then verified movement, save and GX2 bulk heap recovery.
+  The three matched physical arms are staged. [Grouped HUD trial](grouped-hud-trial.md)
+- RC 51 consolidates the opt-in renderer arms, memory inventory and GPU/CPU
+  profiling into one native package for matched comparison. Its native
+  package and combined host checks passed. [RC 51 qualification](rc51-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

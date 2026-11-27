@@ -27,18 +27,19 @@ absorb work previously handled by the direct HUD waits.
 
 ## Offline gameplay replay
 
-Cemu's interpreter reported a 1,572,864-byte HUD arena and an accepted grouped
-pair with verified retirement. At fixed 75%, the first paired terrain sample
-was one section per output. The test dwelled for 65 seconds, moved the player
-2.334 blocks, saved the world, and returned to Night. The GX2 bulk heap
-recovered 234,880,920 free bytes with a largest block of 234,880,896 bytes.
-The audio queue drained and the title exited normally.
+The first Cemu replay reached an accepted grouped pair, saved and exited.
+Its primary-window setting duplicated the GamePad captures. The offline
+harness now selects TV in the main window, and a fresh lab using the same
+exact RPX loaded the corrected profile.
 
-The Cemu profile selected GamePad as the primary window, so its F12 captures
-duplicated the GamePad in both files. This affected Night before gameplay as
-well. The offline harness now selects TV in the main window. A repeat on
-the grouped package needs distinct gameplay captures. The current run
-establishes the grouped branch and lifecycle behavior.
+The repeat reported a 1,572,864-byte HUD arena and an accepted grouped pair
+with verified retirement. It reached the first ready frame at 507.768 s and
+the first paired terrain sample at 533.460 s, one section per output. Cemu
+captured distinct 1920×1080 TV and 854×480 GamePad images before and after the
+65-second stationary dwell. The player moved 4.096 blocks, saved and returned
+to Night. The audio queue drained and the title exited normally. After the
+save, the GX2 bulk heap recovered 234,880,920 free bytes with a largest block
+of 234,880,896 bytes.
 
 ## Matched physical comparison
 

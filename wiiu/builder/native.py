@@ -310,6 +310,8 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     })
     cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
              "--lib", "--manifest-path", str(manifest), "--target", TARGET, "--jobs", jobs]
+    if embedded and embedded.get("HORIZON_WIIU_HUD_VIEW_LANES") == "1":
+        cargo.extend(["--features", "gx2-hud-view-lanes"])
     run(cargo, env)
     build_commands = [cargo]
     archive = target / TARGET / "release/libhorizon_wiiu_loading_app.a"
@@ -346,6 +348,8 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
             f"-DHORIZON_WIIU_HOSTED_CORE={core}",
         ])
     link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
+    if embedded and embedded.get("HORIZON_WIIU_HUD_VIEW_LANES") == "1":
+        configure.append("-DHORIZON_GX2_HUD_VIEW_LANES=ON")
     run(configure, env)
     run(link, env)
     imports = subprocess.check_output(

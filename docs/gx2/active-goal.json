@@ -24,6 +24,16 @@
     "runtime": "queued",
     "receipt": "rc50-qualification.md"
   },
+  "renderer_ab_package": {
+    "candidate": "0.8.0-rc.51",
+    "engine_tree": "be10e69dcf76ba2dc473d98da77cad4453ebb1b7",
+    "wuhb_sha256": "1dcb518ff0a168755086084c4efdd71671a1d19522512f2e563128f228ee17ca",
+    "native_build": "passed",
+    "host_drains_direct_hud_lanes_grouped": [5, 3, 3],
+    "runtime": "queued",
+    "physical": "queued",
+    "receipt": "rc51-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

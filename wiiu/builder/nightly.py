@@ -142,6 +142,7 @@ def assemble(upstream, inputs, output, base, base_fingerprint, build=False, reso
                                      sort_keys=True).encode())
         embedded = {
             "HORIZON_NIGHT_UPSTREAM": spec["upstream"]["commit"],
+            "HORIZON_WIIU_HUD_VIEW_LANES": "1",
             "HORIZON_NIGHT_CLIENT": versions["client"],
             "HORIZON_NIGHT_PATCH": versions["patch"],
             "HORIZON_NIGHT_BUILDER": versions["builder"],

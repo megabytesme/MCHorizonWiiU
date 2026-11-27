@@ -1,0 +1,216 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 41b6352f8be42472923fc313ef44060ceba2394e..ac52e702265dfb3958b09f601adaf54e9b981527 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -216,6 +216,12 @@ extern "C" {
+         rgba: *const f32,
+         opaque_viewports: *const u32,
+     ) -> i32;
++    fn horizon_loading_host_present_scaled_color(
++        draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
++        context: *mut c_void,
++        rgba: *const f32,
++        defer_flip: bool,
++    ) -> i32;
+     fn horizon_loading_host_guarded_hud_available() -> bool;
+     fn horizon_loading_host_guarded_hud_reuse(retired_pair: u64) -> bool;
+     fn horizon_loading_host_present_guarded_hud(
+@@ -399,6 +405,15 @@ fn fit_viewport(source: [u32; 2], output: [u32; 2]) -> Option<[u32; 4]> {
+     ])
+ }
+ 
++fn scaled_color_clear_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        std::path::Path::new(
++            "/vol/external01/wiiu/apps/HorizonWiiU/gx2-scaled-color-clear.enable",
++        ).is_file()
++    })
++}
++
+ fn hud_error_message(error: horizon_wiiu_platform::hud::Error) -> &'static str {
+     match error {
+         horizon_wiiu_platform::hud::Error::Unsupported => {
+@@ -2632,19 +2647,27 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         // A scaled composite fully writes its rectangle before the HUD. Only
+         // the actual native allocation, rather than the requested scale, can
+         // promise that overwrite. The host validates it against each output.
++        let scaled_world = self
++            .world_scale
++            .resolution()
++            .is_some_and(|resolution| resolution.effective_scale < 100);
+         let opaque_viewports = if unsafe { horizon_gx2_profile_skip_scaled_output_clear() }
+-            && self
+-                .world_scale
+-                .resolution()
+-                .is_some_and(|resolution| resolution.effective_scale < 100)
++            && scaled_world
+         {
+             targets.as_flattened().as_ptr()
+         } else {
+             std::ptr::null()
+         };
+-        let present = if !frame.title && self.terrain.is_some()
+-            && unsafe { horizon_gx2_profile_defer_flip() }
+-        {
++        let scaled_color_only = !frame.title
++            && self.terrain.is_some()
++            && scaled_world
++            && opaque_viewports.is_null()
++            && self.screenshot_requested.is_none()
++            && !guarded_hud
++            && scaled_color_clear_enabled();
++        let defer_flip = !frame.title && self.terrain.is_some()
++            && unsafe { horizon_gx2_profile_defer_flip() };
++        let present = if defer_flip {
+             horizon_loading_host_present_deferred_flip
+         } else {
+             horizon_loading_host_present_with_clear
+@@ -2669,6 +2692,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 horizon_loading_host_present_guarded_hud(
+                     draw_target, context, clear.as_ptr(), use_guarded_upload, &mut retired_pair,
+                 )
++            } else if scaled_color_only {
++                horizon_loading_host_present_scaled_color(
++                    draw_target, context, clear.as_ptr(), defer_flip,
++                )
+             } else {
+                 present(draw_target, context, clear.as_ptr(), opaque_viewports)
+             }
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 5f4475e8f80825b6290c2361109e5183669f5106..65797e633423628f34a663c554bda69bb22bd6a1 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -3,6 +3,8 @@
+ #include "gx2_profile.h"
+ 
+ #include <whb/gfx.h>
++#include <gx2/clear.h>
++#include <gx2/context.h>
+ #include <gx2/event.h>
+ #include <gx2/state.h>
+ #include <coreinit/debug.h>
+@@ -232,18 +234,33 @@ static int discard_guarded_pair(OSTime flip_wait, bool gpu_sample, const uint32_
+    return HORIZON_LOADING_RETRY_FLIP;
+ }
+ 
++static void clear_display(const float rgba[4], uint32_t output, bool omit, bool color_only)
++{
++   if (omit) return;
++   if (!color_only) {
++      WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      return;
++   }
++   GX2ColorBuffer *color = output == 0 ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer();
++   GX2ClearColor(color, rgba[0], rgba[1], rgba[2], rgba[3]);
++   GX2SetContextState(output == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
++}
++
+ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+                               const uint32_t opaque_viewports[8], bool defer_flip,
+-                              uint64_t *retired_pair)
++                              uint64_t *retired_pair, bool scaled_color_only)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+    if (!draw || !rgba) return -1;
++   if (scaled_color_only && !ProcUIInForeground()) return HORIZON_LOADING_RETRY_FLIP;
+    uint32_t dimensions[4];
+    if (horizon_loading_host_dimensions(dimensions) != 0) return -4;
+    // The SDK keyboard owns a separate overlay pipeline. Keep its established
+    // presentation ordering and depth/stencil setup while it is open.
+-   const bool keyboard_open = (opaque_viewports || defer_flip) && horizon_swkbd_is_open();
++   const bool keyboard_open = (opaque_viewports || defer_flip || scaled_color_only)
++      && horizon_swkbd_is_open();
++   const bool color_only = scaled_color_only && !keyboard_open;
+    defer_flip = defer_flip && !keyboard_open && ProcUIInForeground();
+    const bool may_omit_clear = opaque_viewports && !keyboard_open;
+    const bool omit_tv = may_omit_clear && output_is_overwritten(opaque_viewports, dimensions);
+@@ -258,12 +275,12 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ 
+    uint64_t stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderTV();
+-   if (!omit_tv) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   clear_display(rgba, 0, omit_tv, color_only);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_TV, stage_stamp);
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(0, false);
+    if (draw(context, 0, dimensions[0], dimensions[1]) != 0 || horizon_swkbd_draw(0) != 0) {
+       // A failed callback may leave the output only partly overwritten.
+-      if (omit_tv) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      if (omit_tv || color_only) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+       result = -2;
+    } else {
+       last_outputs |= 1u;
+@@ -288,11 +305,11 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ 
+    stage_stamp = horizon_gx2_profile_stamp();
+    WHBGfxBeginRenderDRC();
+-   if (!omit_drc) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++   clear_display(rgba, 1, omit_drc, color_only);
+    horizon_gx2_profile_end(GX2_PROFILE_CLEAR_DRC, stage_stamp);
+    if (gpu_sample) horizon_gx2_profile_gpu_marker(1, false);
+    if (draw(context, 1, dimensions[2], dimensions[3]) != 0 || horizon_swkbd_draw(1) != 0) {
+-      if (omit_drc) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
++      if (omit_drc || color_only) WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+       result = -3;
+    } else {
+       last_outputs |= 2u;
+@@ -337,6 +354,11 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+       OSReport("Horizon GX2 scaled output clear omission mask=%u\n", omitted_outputs);
+    }
+    if (result == 0) {
++      static bool reported_color_only;
++      if (color_only && !reported_color_only) {
++         reported_color_only = true;
++         OSReport("Horizon GX2 scaled world used color-only output clears\n");
++      }
+       ++completed_presents;
+       horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+    }
+@@ -346,13 +368,19 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL);
++   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL, false);
+ }
+ 
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL);
++   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL, false);
++}
++
++int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, void *context,
++                                               const float rgba[4], bool defer_flip)
++{
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, true);
+ }
+ 
+ int horizon_loading_host_present_guarded_hud(
+@@ -362,6 +390,6 @@ int horizon_loading_host_present_guarded_hud(
+    if (!retired_pair) return -1;
+    *retired_pair = 0;
+    if (!horizon_loading_host_guarded_hud_available())
+-      return present_with_clear(draw, context, rgba, NULL, false, NULL);
+-   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair);
++      return present_with_clear(draw, context, rgba, NULL, false, NULL, false);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair, false);
+ }
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 2d176c945770ed49a5be4392a2aa2643801bccd8..7cc8886f08357f31905d3a3d5bd82b36bbbfbf05 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -23,6 +23,11 @@ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8]);
+ 
++/* Both callbacks must draw through their initialized scaled depth surfaces.
++ * The native keyboard keeps the ordinary color and depth clears. */
++int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, void *context,
++                                               const float rgba[4], bool defer_flip);
++
+ /* Trial-only status. The pair was not published and current GPU consumers
+  * are retired. The next frame may retry without the abandoned ticket. */
+ enum { HORIZON_LOADING_RETRY_FLIP = -5 };
