@@ -1,0 +1,1097 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 4b07850..daf11a3 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -1,10 +1,13 @@
+ #include "terrain.h"
++#include <math.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/memdefaultheap.h>
+ #include <coreinit/time.h>
++#include <coreinit/thread.h>
++#include <gx2/displaylist.h>
+ #include <gx2/draw.h>
+ #include <gx2/event.h>
+ #include <gx2/mem.h>
+@@ -855,6 +858,131 @@ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSectio
+    return 0;
+ }
+ 
++enum {
++   SOLID_LIST_MAX_DRAWS = 174,
++   SOLID_LIST_MAX_DRAW_BYTES = 256,
++   SOLID_LIST_CAP = 64 * 1024,
++   SOLID_LIST_ALIGN = 256,
++   SOLID_LIST_LINE = 32,
++   SOLID_LIST_GUARD = 0x6b,
++};
++_Static_assert(SOLID_LIST_MAX_DRAWS * SOLID_LIST_MAX_DRAW_BYTES <= SOLID_LIST_CAP,
++               "solid list draw budget exceeds its arena");
++
++struct HorizonGx2SolidList {
++   _Alignas(SOLID_LIST_ALIGN) uint8_t initial_guard[SOLID_LIST_ALIGN];
++   uint8_t commands[SOLID_LIST_CAP];
++   uint8_t final_guard[SOLID_LIST_ALIGN];
++   uint32_t bytes;
++};
++
++HorizonGx2SolidList *horizon_gx2_solid_list_create(void)
++{
++   HorizonGx2SolidList *list = MEMAllocFromDefaultHeapEx(sizeof(*list), SOLID_LIST_ALIGN);
++   if (list) list->bytes = 0;
++   return list;
++}
++
++void horizon_gx2_solid_list_destroy(HorizonGx2SolidList *list)
++{
++   if (list) MEMFreeToDefaultHeap(list);
++}
++
++bool horizon_gx2_solid_list_eligible(HorizonGx2Terrain *t)
++{
++   return t && t->bound && t->shader.vertexShader &&
++          t->shader.vertexShader->mode == GX2_SHADER_MODE_UNIFORM_REGISTER &&
++          t->section_uniform_words >= 16 && !t->legacy_attributes && !t->legacy_uniforms &&
++          !t->half_active && !t->half_allowed && !t->atlas_cells && !t->solid_back_culling &&
++          !t->opaque_pixel.shader &&
++#ifdef HORIZON_GX2_CLEAR_FOG
++          !t->near_fog_pixel && !t->clear_fog_bound && !t->opaque_bound &&
++#endif
++          GX2RBufferExists(&t->quad_indices);
++}
++
++static void hold_solid_recorder(const char *reason)
++{
++   OSReport("Horizon GX2 solid list retaining ownership: %s\n", reason);
++   for (;;) OSSleepTicks(OSMillisecondsToTicks(16));
++}
++
++static void require_solid_recorder_closed(void)
++{
++   if (GX2GetDisplayListWriteStatus()) hold_solid_recorder("recorder did not close");
++}
++
++static bool solid_list_guard_ok(const uint8_t *guard)
++{
++   for (unsigned i = 0; i < SOLID_LIST_LINE; ++i)
++      if (guard[i] != SOLID_LIST_GUARD) return false;
++   return true;
++}
++
++bool horizon_gx2_solid_list_record(HorizonGx2SolidList *list, HorizonGx2Terrain *t,
++                                   const HorizonGx2SolidListDraw *draws, uint32_t count)
++{
++   if (!list) return false;
++   list->bytes = 0;
++   if (!draws || !count || count > SOLID_LIST_MAX_DRAWS ||
++       !horizon_gx2_solid_list_eligible(t)) return false;
++   for (uint32_t i = 0; i < count; ++i) {
++      HorizonGx2TerrainSection *section = draws[i].section;
++      if (!section || !draws[i].clip_rows || section->atlas_cells ||
++          section->buffer.elemSize != sizeof(HorizonTerrainVertex) ||
++          !section->vertex_count || section->vertex_count % 4 || section->vertex_count > 65536 ||
++          GX2RBufferExists(&section->sorted_indices) || !GX2RBufferExists(&section->buffer))
++         return false;
++      for (unsigned j = 0; j < 16; ++j)
++         if (!isfinite(draws[i].clip_rows[j])) return false;
++      for (unsigned j = 0; j < 4; ++j)
++         if (!isfinite(draws[i].origin[j])) return false;
++   }
++
++   require_solid_recorder_closed();
++   uint8_t *head = list->initial_guard + SOLID_LIST_ALIGN - SOLID_LIST_LINE;
++   uint8_t *tail = list->final_guard;
++   memset(head, SOLID_LIST_GUARD, SOLID_LIST_LINE);
++   memset(tail, SOLID_LIST_GUARD, SOLID_LIST_LINE);
++   DCFlushRange(head, SOLID_LIST_LINE);
++   DCFlushRange(tail, SOLID_LIST_LINE);
++   DCInvalidateRange(list->commands, SOLID_LIST_CAP);
++   GX2BeginDisplayListEx(list->commands, SOLID_LIST_CAP, FALSE);
++   if (!GX2GetDisplayListWriteStatus()) return false;
++   bool ok = true;
++   for (uint32_t i = 0; i < count; ++i) {
++      if (horizon_gx2_terrain_draw_bound(t, draws[i].section,
++                                        draws[i].clip_rows, draws[i].origin) != 0) {
++         ok = false;
++         break;
++      }
++   }
++   const uint32_t bytes = GX2EndDisplayList(list->commands);
++   require_solid_recorder_closed();
++   DCInvalidateRange(head, SOLID_LIST_LINE);
++   DCInvalidateRange(tail, SOLID_LIST_LINE);
++   if (bytes > SOLID_LIST_CAP || !solid_list_guard_ok(head) || !solid_list_guard_ok(tail))
++      hold_solid_recorder("recording exceeded the arena");
++   if (!ok || !bytes || bytes % SOLID_LIST_LINE || bytes > count * SOLID_LIST_MAX_DRAW_BYTES)
++      return false;
++   DCFlushRange(list->commands, bytes);
++   OSMemoryBarrier();
++   list->bytes = bytes;
++   return true;
++}
++
++bool horizon_gx2_solid_list_queue(const HorizonGx2SolidList *list,
++                                  HorizonGx2SolidListUses *uses, uint32_t target)
++{
++   if (!list || !list->bytes || !uses || target > 1 || uses->queued_after[target]) return false;
++   require_solid_recorder_closed();
++   const OSTime floor = GX2GetLastSubmittedTimeStamp();
++   if (floor <= 0) return false;
++   uses->queued_after[target] = floor;
++   GX2CallDisplayList(list->commands, list->bytes);
++   return true;
++}
++
+ int horizon_gx2_terrain_draw_bound_solid_ranges(
+    HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    const float clip_rows[16], const float section_origin[4],
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index e31ea8c..482126d 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -23,6 +23,30 @@ typedef struct HorizonTerrainAtlasCellVertex {
+ } HorizonTerrainAtlasCellVertex;
+ typedef struct HorizonGx2Terrain HorizonGx2Terrain;
+ typedef struct HorizonGx2TerrainSection HorizonGx2TerrainSection;
++typedef struct HorizonGx2SolidList HorizonGx2SolidList;
++
++typedef struct {
++   HorizonGx2TerrainSection *section;
++   const float *clip_rows;
++   float origin[4];
++} HorizonGx2SolidListDraw;
++
++/* Pair-local and synchronous. A positive receipt covers all listed calls,
++ * including a call made before a later output callback rejected the frame. */
++typedef struct HorizonGx2SolidListUses {
++   int64_t queued_after[2];
++   int64_t receipt;
++   uint32_t recovered;
++} HorizonGx2SolidListUses;
++
++HorizonGx2SolidList *horizon_gx2_solid_list_create(void);
++void horizon_gx2_solid_list_destroy(HorizonGx2SolidList *list);
++bool horizon_gx2_solid_list_eligible(HorizonGx2Terrain *terrain);
++bool horizon_gx2_solid_list_record(HorizonGx2SolidList *list, HorizonGx2Terrain *terrain,
++                                   const HorizonGx2SolidListDraw *draws, uint32_t count);
++bool horizon_gx2_solid_list_queue(const HorizonGx2SolidList *list,
++                                  HorizonGx2SolidListUses *uses, uint32_t target);
++
+ /* The callback fills the mapped vertices synchronously and does not retain
+  * the pointer. A nonzero result discards the new section. */
+ typedef int (*HorizonTerrainFillVertices)(void *context, HorizonTerrainVertex *vertices,
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index ca750c4..57985c2 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -319,7 +319,7 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
+ }
+ 
+ static bool reverse_translucent_quads, atlas_cell_vertices, solid_list_census;
+-static bool prepared_solid_frustum;
++static bool prepared_solid_frustum, solid_list_replay;
+ 
+ bool horizon_gx2_profile_prepared_solid_frustum(void)
+ {
+@@ -330,6 +330,16 @@ bool horizon_gx2_profile_prepared_solid_frustum(void)
+       !reverse_translucent_quads && !tv_terrain_wait_mode && history == &process_history;
+ }
+ 
++bool horizon_gx2_profile_solid_list_replay(void)
++{
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (horizon_gx2_profile_near_fog_requested()) return false;
++#endif
++   return solid_list_replay && !deadline_enabled && !solid_list_census && !prepared_solid_frustum &&
++          !atlas_cell_vertices && !mem1_tv_depth && !reverse_translucent_quads &&
++          history == &process_history;
++}
++
+ bool horizon_gx2_profile_solid_list_census(void)
+ {
+ #ifdef HORIZON_GX2_CLEAR_FOG
+@@ -420,6 +430,11 @@ void horizon_gx2_profile_init(void)
+       FILE *census = fopen(ROOT "gx2-solid-list-census.enable", "rb");
+       solid_list_census = census != NULL;
+       if (census) fclose(census);
++      FILE *list = fopen(ROOT "gx2-solid-list-replay.enable", "rb");
++      solid_list_replay = list != NULL;
++      if (list) fclose(list);
++      if (solid_list_replay && deadline_enabled)
++         OSReport("Horizon GX2 solid list replay skipped during present-deadline capture\n");
+       init_tv_terrain_wait_trial();
+       init_mem1_tv_depth();
+ #ifdef HORIZON_GX2_CLEAR_FOG
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index a8e19cf..46b31c8 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -82,6 +82,7 @@ bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_solid_draw_plan(void);
+ bool horizon_gx2_profile_solid_list_census(void);
++bool horizon_gx2_profile_solid_list_replay(void);
+ bool horizon_gx2_profile_prepared_solid_frustum(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_reverse_translucent_quads(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 616f6c6..f7c0e31 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -10,6 +10,7 @@
+ mod cave_visibility;
+ mod opaque_tiles;
+ mod solid_list_census;
++mod solid_lists;
+ #[cfg(feature = "gx2-clear-fog")]
+ mod clear_fog;
+ mod crumbling;
+@@ -236,6 +237,13 @@ extern "C" {
+         rgba: *const f32,
+         opaque_viewports: *const u32,
+     ) -> i32;
++    fn horizon_loading_host_present_solid_lists(
++        draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
++        context: *mut c_void,
++        clear: *const f32,
++        uses: *mut solid_lists::Uses,
++    ) -> i32;
++    fn horizon_loading_host_recover_solid_lists(uses: *mut solid_lists::Uses);
+     fn horizon_loading_host_present_deferred_flip(
+         draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
+         context: *mut c_void,
+@@ -275,6 +283,7 @@ extern "C" {
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
+     fn horizon_gx2_profile_solid_list_census() -> bool;
++    fn horizon_gx2_profile_solid_list_replay() -> bool;
+     fn horizon_gx2_profile_prepared_solid_frustum() -> bool;
+     fn horizon_gx2_profile_process_history() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+@@ -879,6 +888,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     solid_draw_plan_enabled: bool,
+     prepared_solid_frustum: bool,
+     solid_list_census: Option<solid_list_census::Census>,
++    solid_lists: Option<solid_lists::Trial>,
+     half_position_requested: bool,
+     atlas_cells_requested: bool,
+     reverse_translucent_quads: bool,
+@@ -971,6 +981,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             prepared_solid_frustum: false,
+             atlas_cells_requested: false,
+             solid_list_census: None,
++            solid_lists: None,
+             half_position_requested: std::path::Path::new(
+                 "/vol/external01/wiiu/apps/HorizonWiiU/gx2-half-position.enable",
+             )
+@@ -1054,10 +1065,25 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             && unsafe { horizon_gx2_profile_prepared_solid_frustum() };
+         self.solid_list_census = unsafe { horizon_gx2_profile_solid_list_census() }
+             .then(solid_list_census::Census::default);
++        // Keep the DRS timing arm separate even on a frame already at 75%
++        // or during a transition where scaled-target retry is suspended.
++        self.solid_lists = (unsafe { horizon_gx2_profile_solid_list_replay() }
++            && !horizon_client::graphics::cafe_dynamic_resolution_trial())
++            .then(solid_lists::Trial::default);
++    }
++
++    fn invalidate_solid_lists(&mut self) {
++        if let Some(lists) = &mut self.solid_lists {
++            lists.invalidate();
++            for plan in &mut self.solid_draw_plans {
++                plan.invalidate();
++            }
++        }
+     }
+ 
+     /// A new foreground can recreate render targets at the same dimensions.
+     pub fn invalidate_tv_terrain_wait_ticket(&mut self) {
++        self.invalidate_solid_lists();
+         if let Some(census) = &mut self.solid_list_census {
+             census.invalidate();
+         }
+@@ -2058,6 +2084,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     });
+                 }
+             }
++            self.invalidate_solid_lists();
+             self.terrain = Some(terrain);
+             self.resident_animations =
+                 terrain_animation::ResidentAnimations::new(&layout, artwork.terrain_animations);
+@@ -2151,6 +2178,7 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        self.invalidate_solid_lists();
+         if let Some(census) = &mut self.solid_list_census {
+             census.resident_changed();
+         }
+@@ -2203,6 +2231,7 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn clear_native_sections(&mut self) {
++        self.invalidate_solid_lists();
+         if let Some(probe) = &mut self.opaque_tiles {
+             probe.clear();
+         }
+@@ -2420,6 +2449,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        self.invalidate_solid_lists();
+         if let Some(census) = &mut self.solid_list_census {
+             census.resident_changed();
+         }
+@@ -2533,6 +2563,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     }
+     fn resize(&mut self, _width: u32, _height: u32) {
+         let outputs = output_dimensions();
++        if outputs.as_ref() != Ok(&self.outputs) {
++            self.invalidate_solid_lists();
++        }
+         // The hosted loop polls the viewport before input and every draw.
+         // Preserve a ticket only when both physical outputs still match.
+         #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -2590,6 +2623,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.cit_generation = None;
+     }
+     fn recreate_surface(&mut self) -> horizon_client::Result<()> {
++        self.invalidate_solid_lists();
+         if let Some(census) = &mut self.solid_list_census {
+             census.invalidate();
+         }
+@@ -2746,6 +2780,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             profile: Gx2ProfileDelta,
+             cave_sample: Option<cave_visibility::Sample>,
+             solid_list_census: Option<solid_list_census::Pair>,
++            solid_lists: Option<solid_lists::Frame>,
+             prepared_solid_frustum: bool,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             per_output_terrain_waits: bool,
+@@ -3028,6 +3063,27 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 }
+                 let projection = draw.presenter.terrain_views[index].as_ref();
+                 let sections = &draw.presenter.sections;
++                let list_stable = match (
++                    draw.solid_lists.as_mut(),
++                    draw.presenter.solid_lists.as_ref(),
++                    projection,
++                    world_target.as_ref(),
++                ) {
++                    (Some(frame), Some(trial), Some(view), Some(world))
++                        if !opaque_shader && view.axis_eye.is_none()
++                            && unsafe { horizon_loading_host_guarded_hud_available() } =>
++                    {
++                        solid_list_census::ViewKey::new(
++                            view.camera, view.clip.rows, view.min_y, [width, height], world_rect, true,
++                        ).is_some_and(|view| trial.observe(frame, index, solid_lists::Key {
++                            view,
++                            terrain,
++                            world_targets: world.identity(),
++                            output_viewport: rect,
++                        }))
++                    }
++                    _ => false,
++                };
+                 let plan_enabled = draw.presenter.solid_draw_plan_enabled && same_view;
+                 if let Some(projection) = projection.filter(|_| plan_enabled) {
+                     if GX2_PROFILE_ENABLED && plan.ready().is_some() {
+@@ -3048,7 +3104,16 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         }
+                     }
+                 }
+-                let cached = plan.ready();
++                if let Some(projection) = projection.filter(|_| list_stable) {
++                    plan.prepare_limited(
++                        sections.iter().filter_map(|(&key, entry)| {
++                            entry.solid.as_ref().map(|section| (key, section.bounds))
++                        }),
++                        projection,
++                        solid_lists::MAX_DRAWS,
++                    );
++                }
++                let cached = (plan_enabled || list_stable).then(|| plan.ready()).flatten();
+                 let prepared_cull = projection
+                     .filter(|_| draw.prepared_solid_frustum && cached.is_none())
+                     .map(|view| PreparedTerrainClip::new(view.clip));
+@@ -3121,12 +3186,50 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 if near_run.is_some() || clear_run.is_some() {
+                     census_view = None;
+                 }
++                #[cfg(feature = "gx2-clear-fog")]
++                let list_stable = list_stable && clear_run.is_none() && near_run.is_none();
++                let mut replay = None;
++                if list_stable {
++                    if let Some((tested, solid)) = cached.filter(|(_, solid)| !solid.is_empty()) {
++                        let list_start = GX2_PROFILE_ENABLED.then(Instant::now);
++                        if !bind_opaque_state(false) {
++                            draw.result = Err("GX2 solid terrain state failed");
++                            return -1;
++                        }
++                        if let (Some(trial), Some(frame)) =
++                            (draw.presenter.solid_lists.as_mut(), draw.solid_lists.as_mut())
++                        {
++                            replay = trial.draw(frame, index, terrain, tested, solid, sections);
++                        }
++                        if let Some((counts, warm)) = replay {
++                            const NEW: std::sync::Once = std::sync::Once::new();
++                            static REPORTED: [[std::sync::Once; 2]; 2] = [[NEW, NEW], [NEW, NEW]];
++                            REPORTED[index][usize::from(warm)].call_once(|| unsafe {
++                                OSReport(c"Horizon GX2 solid list queued target=%u draws=%u warm=%u\n".as_ptr(),
++                                         target, counts.drawn as u32, u32::from(warm));
++                            });
++                            if let Some(start) = list_start {
++                                draw.profile.section_draws =
++                                    draw.profile.section_draws.saturating_add(counts.drawn as u32);
++                                draw.profile.vertex_draws =
++                                    draw.profile.vertex_draws.saturating_add(counts.indices as u32);
++                                draw.profile.draw_submit_ns =
++                                    draw.profile.draw_submit_ns.saturating_add(elapsed_ns(start));
++                            }
++                        }
++                    }
++                }
+                 let mut bound = None;
+-                let mut indices = 0usize;
+-                let mut sections_drawn = 0usize;
+-                let mut sections_tested = cached.map_or(0, |(tested, _)| tested);
++                let mut indices = replay.map_or(0, |(counts, _)| counts.indices);
++                let mut sections_drawn = replay.map_or(0, |(counts, _)| counts.drawn);
++                let mut sections_tested =
++                    replay.map_or(cached.map_or(0, |(tested, _)| tested), |(counts, _)| counts.tested);
+                 let mut all = sections.iter();
+-                let mut prepared = cached.map(|(_, draws)| draws.iter());
++                let mut prepared = cached.map(|(_, draws)| {
++                    // A queued list already consumed this exact ordered plan.
++                    let recorded = if replay.is_some() { &draws[..0] } else { draws };
++                    recorded.iter()
++                });
+                 let candidates = std::iter::from_fn(|| {
+                     if let Some(prepared) = &mut prepared {
+                         let draw = prepared.next()?;
+@@ -3782,6 +3885,27 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             None
+         };
++        let mut list_uses = solid_lists::Uses::default();
++        let list_uses_ptr = &raw mut list_uses;
++        let solid_lists_allowed = self.solid_lists.is_some()
++            && !frame.title && !screenshot_pending && !grouped_present && !defer_flip
++            && !view_hud_requested && !guarded_hud && !scaled_color_only && tv_wait_mode == 0
++            && per_output_terrain_waits && !skip_terrain_waits && opaque_viewports.is_null()
++            && !prepared_solid_frustum && !self.solid_draw_plan_enabled && !self.half_position_requested
++            && !self.retry_world_scale && self.opaque_tiles.is_none() && cave_sample.is_none()
++            && self.world_scale.resolution().is_some_and(|resolution| {
++                resolution.requested_scale == 75 && resolution.effective_scale == 75
++            })
++            && unsafe {
++                horizon_gx2_profile_solid_list_replay() && horizon_loading_host_guarded_hud_available()
++            }
++            && !cafe_profile::legacy_terrain_bindings();
++        #[cfg(feature = "gx2-screen-overlays")]
++        let solid_lists_allowed = solid_lists_allowed && !screen_trial;
++        let solid_lists = solid_lists_allowed
++            .then(cafe_profile::playing_frame_sequence).flatten()
++            .map(|sequence| solid_lists::Frame::new(sequence, list_uses_ptr));
++        let solid_lists_active = solid_lists.is_some();
+         let terrain_min_y = self.terrain_min_y;
+         let prepare_drc = (grouped_present && per_output_terrain_waits && !skip_terrain_waits)
+             .then_some(prepare_drc as PrepareDrc);
+@@ -3820,6 +3944,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             profile: Gx2ProfileDelta::default(),
+             cave_sample,
+             solid_list_census,
++            solid_lists,
+             prepared_solid_frustum,
+             uploaded_hud,
+             per_output_terrain_waits,
+@@ -3851,7 +3976,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw_target, context, &clear, retired_pair, screen_can_preupload,
+                 );
+             }
+-            if guarded_hud || tv_wait_mode != 0 {
++            if solid_lists_active {
++                horizon_loading_host_present_solid_lists(draw_target, context, clear.as_ptr(), list_uses_ptr)
++            } else if guarded_hud || tv_wait_mode != 0 {
+                 horizon_loading_host_present_guarded_hud(
+                     draw_target, context, clear.as_ptr(), use_guarded_upload, retired_pair,
+                 )
+@@ -3893,6 +4020,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let draw_result = draw.result;
+         let cave_sample = draw.cave_sample.take();
+         let solid_list_sample = draw.solid_list_census.take();
++        let solid_lists = draw.solid_lists.take();
++        if let Some(lists) = &solid_lists {
++            if !list_uses.sealed(lists.called) {
++                unsafe { horizon_loading_host_recover_solid_lists(list_uses_ptr) };
++                while !list_uses.sealed(lists.called) {
++                    std::thread::sleep(Duration::from_millis(16));
++                }
++            }
++        }
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_drawn = draw.screen_drawn;
+         #[cfg(feature = "gx2-clear-fog")]
+@@ -3903,6 +4039,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
++        if list_uses.recovered != 0 {
++            self.invalidate_solid_lists();
++            self.solid_lists = None;
++        } else if (host != 0 || outputs != 3 || draw_result.is_err()) && self.solid_lists.is_some() {
++            self.invalidate_solid_lists();
++        }
+         if host == 0 && outputs == 3 && draw_result.is_ok() {
+             self.cave_visibility.paired(cave_sample);
+             if let (Some(census), Some(pair)) = (&mut self.solid_list_census, solid_list_sample) {
+@@ -4025,6 +4167,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+         }
+         self.last_frame_partial = self.frame_work.omitted_pass_mask != 0;
++        if let Some(trial) = &mut self.solid_lists {
++            trial.finish(solid_lists, !self.last_frame_partial && outputs == 3);
++        }
+         if self.last_frame_partial {
+             cafe_profile::count(Counter::Partial, 1);
+         }
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 2ba454a..2c80d79 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -1,6 +1,7 @@
+ #include "loading_host.h"
+ #include "swkbd_bridge.h"
+ #include "gx2_profile.h"
++#include "terrain.h"
+ #ifdef HORIZON_GX2_HUD_VIEW_LANES
+ #include "hud.h"
+ #endif
+@@ -12,6 +13,8 @@
+ #include <gx2/event.h>
+ #include <gx2/state.h>
+ #include <gx2/swap.h>
++#include <gx2/semaphore.h>
++#include <coreinit/cache.h>
+ #include <coreinit/debug.h>
+ #include <coreinit/time.h>
+ #include <coreinit/thread.h>
+@@ -581,10 +584,59 @@ static void clear_display(const float rgba[4], uint32_t output, bool omit, bool
+    GX2SetContextState(output == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
+ }
+ 
++static OSTime max_submitted(OSTime a, OSTime b)
++{
++   return a > b ? a : b;
++}
++
++static OSTime recover_solid_lists(HorizonGx2SolidListUses *uses, OSTime prior)
++{
++   /* Submit a known nonvisual command. An empty flush need not advance a
++    * timestamp. No callback, resource release or ProcUI pump during recovery. */
++   uses->recovered = 1;
++   static _Alignas(32) GX2Semaphore fence[32 / sizeof(GX2Semaphore)];
++   const OSTime start = OSGetTime();
++   const OSTime list_floor = max_submitted(uses->queued_after[0], uses->queued_after[1]);
++   const OSTime floor = max_submitted(max_submitted(list_floor, prior),
++                                     GX2GetLastSubmittedTimeStamp());
++   DCFlushRange(fence, sizeof(fence));
++   GX2SetSemaphore(fence, GX2_SEMAPHORE_ACTION_SIGNAL);
++   GX2Flush();
++   OSTime latest = GX2GetLastSubmittedTimeStamp();
++   GX2DrawDone();
++   OSReport("Horizon GX2 solid list retaining ownership until recovery retires\n");
++   for (;;) {
++      const OSTime current = GX2GetLastSubmittedTimeStamp();
++      if (current > floor && current >= latest && GX2GetRetiredTimeStamp() >= current) {
++         uses->receipt = current;
++         return OSGetTime() - start;
++      }
++      latest = max_submitted(latest, current);
++      OSSleepTicks(OSMillisecondsToTicks(16));
++   }
++}
++
++void horizon_loading_host_recover_solid_lists(HorizonGx2SolidListUses *uses)
++{
++   recover_solid_lists(uses, uses->receipt);
++}
++
++static OSTime retire_solid_lists(HorizonGx2SolidListUses *uses, OSTime before_finish)
++{
++   const OSTime list_floor = max_submitted(uses->queued_after[0], uses->queued_after[1]);
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   const OSTime retired = GX2GetRetiredTimeStamp();
++   if (before_finish >= list_floor && submitted > before_finish && retired >= submitted) {
++      uses->receipt = submitted;
++      return 0;
++   }
++   return recover_solid_lists(uses, max_submitted(before_finish, submitted));
++}
++
+ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+                               const uint32_t opaque_viewports[8], bool defer_flip,
+                               uint64_t *retired_pair, bool *verified_finish,
+-                              bool scaled_color_only)
++                              bool scaled_color_only, HorizonGx2SolidListUses *solid_lists)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+@@ -659,11 +711,14 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+    stamp = horizon_gx2_profile_stamp();
+ 
+    horizon_gx2_profile_deadline_ready(false);
+-   const OSTime before_finish = retired_pair ? GX2GetLastSubmittedTimeStamp() : 0;
++   const bool has_list_use = solid_lists && (solid_lists->queued_after[0] || solid_lists->queued_after[1]);
++   const OSTime before_finish = (retired_pair || has_list_use) ? GX2GetLastSubmittedTimeStamp() : 0;
+    const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
+    last_wait_ns = OSTicksToNanoseconds(flip_wait + OSGetTime() - finish_start);
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
++   if (has_list_use)
++      last_wait_ns += OSTicksToNanoseconds(retire_solid_lists(solid_lists, before_finish));
+    if (retired_pair) {
+       const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+       if (submitted <= 0 || submitted <= before_finish || GX2GetRetiredTimeStamp() < submitted) {
+@@ -706,19 +761,27 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ int horizon_loading_host_present_with_clear(HorizonLoadingDrawTarget draw, void *context,
+                                             const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL, NULL, false);
++   return present_with_clear(draw, context, rgba, opaque_viewports, false, NULL, NULL, false, NULL);
++}
++
++int horizon_loading_host_present_solid_lists(HorizonLoadingDrawTarget draw, void *context,
++                                              const float rgba[4], HorizonGx2SolidListUses *uses)
++{
++   if (!uses) return -1;
++   *uses = (HorizonGx2SolidListUses){0};
++   return present_with_clear(draw, context, rgba, NULL, false, NULL, NULL, false, uses);
+ }
+ 
+ int horizon_loading_host_present_deferred_flip(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], const uint32_t opaque_viewports[8])
+ {
+-   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL, NULL, false);
++   return present_with_clear(draw, context, rgba, opaque_viewports, true, NULL, NULL, false, NULL);
+ }
+ 
+ int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, void *context,
+                                                const float rgba[4], bool defer_flip)
+ {
+-   return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, NULL, true);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, NULL, true, NULL);
+ }
+ 
+ #ifdef HORIZON_GX2_SCREEN_OVERLAYS
+@@ -735,7 +798,7 @@ int horizon_loading_host_present_screen_overlays(
+    }
+    bool verified_finish = false;
+    const int result =
+-      present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
++      present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false, NULL);
+    // A scan wait timeout already drained through discard_guarded_pair. An
+    // early error still must retire any pre-frame atlas/geometry invalidation.
+    if (prepublished && !verified_finish && result != HORIZON_LOADING_RETRY_FLIP)
+@@ -751,8 +814,8 @@ int horizon_loading_host_present_guarded_hud(
+    if (!retired_pair) return -1;
+    *retired_pair = 0;
+    if (!horizon_loading_host_guarded_hud_available())
+-      return present_with_clear(draw, context, rgba, NULL, false, NULL, NULL, false);
+-   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair, NULL, false);
++      return present_with_clear(draw, context, rgba, NULL, false, NULL, NULL, false, NULL);
++   return present_with_clear(draw, context, rgba, NULL, defer_flip, retired_pair, NULL, false, NULL);
+ }
+ 
+ #ifdef HORIZON_GX2_HUD_VIEW_LANES
+@@ -783,7 +846,7 @@ int horizon_loading_host_present_view_hud(
+    if (!active_lanes) {
+       // No lane owner needs a retirement handoff on the direct path.
+       return foreground
+-         ? present_with_clear(draw, context, rgba, NULL, false, retired_pair, NULL, false)
++         ? present_with_clear(draw, context, rgba, NULL, false, retired_pair, NULL, false, NULL)
+          : HORIZON_LOADING_RETRY_FLIP;
+    }
+ 
+@@ -791,7 +854,7 @@ int horizon_loading_host_present_view_hud(
+    bool verified_finish = false;
+    const int result = !foreground ? HORIZON_LOADING_RETRY_FLIP : grouped
+       ? present_grouped(draw, context, rgba, NULL, retired_pair, &verified_finish, prepare_drc, drc_overlap)
+-      : present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
++      : present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false, NULL);
+    if (!horizon_gx2_hud_view_lanes_seal(active_lanes, *retired_pair)) {
+       if (!verified_finish) drain_guarded_commands();
+       horizon_gx2_hud_view_lanes_finish_verified(active_lanes);
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 64ad3ab..5cda82d 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -3,6 +3,8 @@
+ #include <stdint.h>
+ #include <stdbool.h>
+ 
++typedef struct HorizonGx2SolidListUses HorizonGx2SolidListUses;
++
+ typedef int (*HorizonLoadingDrawTarget)(void *context, uint32_t target,
+                                        uint32_t width, uint32_t height);
+ /* CPU-only, synchronous and called once before the GamePad draw.
+@@ -12,6 +14,9 @@ typedef bool (*HorizonLoadingPrepareDrc)(void *context, uint64_t tv_submitted);
+ /* Begin a WHB frame, bind/clear TV then DRC, call draw for each while its GX2
+  * target is active, and finish both. This is synchronous on the GX2 thread. */
+ int horizon_loading_host_present(HorizonLoadingDrawTarget draw, void *context);
++int horizon_loading_host_present_solid_lists(HorizonLoadingDrawTarget draw, void *context,
++                                              const float rgba[4], HorizonGx2SolidListUses *uses);
++void horizon_loading_host_recover_solid_lists(HorizonGx2SolidListUses *uses);
+ uint32_t horizon_loading_host_completed_presents(void);
+ uint32_t horizon_loading_host_last_outputs(void);
+ uint64_t horizon_loading_host_last_wait_ns(void);
+diff --git a/wiiu/loading_host/solid_draw_plan.rs b/wiiu/loading_host/solid_draw_plan.rs
+index bfe0db5..ae3752d 100644
+--- a/wiiu/loading_host/solid_draw_plan.rs
++++ b/wiiu/loading_host/solid_draw_plan.rs
+@@ -61,11 +61,20 @@ impl SolidDrawPlan {
+         &mut self,
+         sections: impl Iterator<Item = (SectionKey, Option<TerrainBounds>)>,
+         projection: &TerrainProjection,
++    ) {
++        self.prepare_limited(sections, projection, MAX_DRAWS);
++    }
++
++    pub(super) fn prepare_limited(
++        &mut self,
++        sections: impl Iterator<Item = (SectionKey, Option<TerrainBounds>)>,
++        projection: &TerrainProjection,
++        limit: usize,
+     ) {
+         if !matches!(self.state, PlanState::Unbuilt) {
+             return;
+         }
+-        if self.draws.try_reserve_exact(MAX_DRAWS).is_err() {
++        if self.draws.try_reserve_exact(limit).is_err() {
+             self.state = PlanState::Unavailable;
+             return;
+         }
+@@ -73,7 +82,7 @@ impl SolidDrawPlan {
+         for (key, bounds) in sections {
+             tested += 1;
+             if let Some(draw) = SolidDraw::project(key, bounds, projection) {
+-                if self.draws.len() == MAX_DRAWS {
++                if self.draws.len() == limit {
+                     self.draws.clear();
+                     self.state = PlanState::Unavailable;
+                     return;
+diff --git a/wiiu/loading_host/solid_list_census.rs b/wiiu/loading_host/solid_list_census.rs
+index 016dc25..2baf33f 100644
+--- a/wiiu/loading_host/solid_list_census.rs
++++ b/wiiu/loading_host/solid_list_census.rs
+@@ -4,7 +4,7 @@ const QUADS_PER_DRAW: u32 = 16_384;
+ const FIXTURE_SECTIONS: u32 = 174;
+ const PAIRS_PER_WINDOW: u32 = 120;
+ 
+-#[derive(PartialEq, Eq)]
++#[derive(Clone, Copy, PartialEq, Eq)]
+ pub(super) struct ViewKey {
+     camera: [u64; 3],
+     clip: [[u32; 4]; 4],
+diff --git a/wiiu/loading_host/solid_lists.rs b/wiiu/loading_host/solid_lists.rs
+new file mode 100644
+index 0000000..66f6798
+--- /dev/null
++++ b/wiiu/loading_host/solid_lists.rs
+@@ -0,0 +1,278 @@
++//! Optional two-output cache of the exact ordinary solid draw sequence.
++use super::{solid_draw_plan::SolidDraw, solid_list_census::ViewKey, SectionKey, TerrainSection};
++use std::{collections::HashMap, ffi::c_void, ptr::NonNull};
++
++pub(super) const MAX_DRAWS: usize = 174;
++
++#[repr(C)]
++pub(super) struct ListDraw {
++    section: *mut c_void,
++    clip_rows: *const f32,
++    origin: [f32; 4],
++}
++
++#[repr(C)]
++#[derive(Default)]
++pub(super) struct Uses {
++    queued_after: [i64; 2],
++    receipt: i64,
++    pub(super) recovered: u32,
++}
++
++impl Uses {
++    pub(super) fn sealed(&self, called: [bool; 2]) -> bool {
++        let queued = self.queued_after.map(|floor| floor > 0);
++        if self.queued_after == [0; 2] && called == [false; 2] {
++            return true;
++        }
++        self.receipt > self.queued_after[0].max(self.queued_after[1]).max(0)
++            && ((queued == called && self.queued_after.iter().all(|&floor| floor >= 0))
++                || self.recovered != 0)
++    }
++}
++
++unsafe extern "C" {
++    fn horizon_gx2_solid_list_create() -> *mut c_void;
++    fn horizon_gx2_solid_list_destroy(list: *mut c_void);
++    fn horizon_gx2_solid_list_eligible(terrain: *mut c_void) -> bool;
++    fn horizon_gx2_solid_list_record(
++        list: *mut c_void,
++        terrain: *mut c_void,
++        draws: *const ListDraw,
++        count: u32,
++    ) -> bool;
++    fn horizon_gx2_solid_list_queue(list: *const c_void, uses: *mut Uses, target: u32) -> bool;
++}
++
++struct Arena(NonNull<c_void>);
++impl Drop for Arena {
++    fn drop(&mut self) {
++        // The synchronous host has already sealed every queued use.
++        unsafe { horizon_gx2_solid_list_destroy(self.0.as_ptr()) };
++    }
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(super) struct Key {
++    pub(super) view: ViewKey,
++    pub(super) terrain: NonNull<c_void>,
++    pub(super) world_targets: NonNull<c_void>,
++    pub(super) output_viewport: [u32; 4],
++}
++
++#[derive(Clone, Copy)]
++pub(super) struct Counts {
++    pub(super) tested: usize,
++    pub(super) drawn: usize,
++    pub(super) indices: usize,
++}
++
++pub(super) struct Frame {
++    sequence: u32,
++    keys: [Option<Key>; 2],
++    pub(super) uses: *mut Uses,
++    pub(super) called: [bool; 2],
++}
++
++impl Frame {
++    pub(super) fn new(sequence: u32, uses: *mut Uses) -> Self {
++        Self {
++            sequence,
++            keys: [None; 2],
++            called: [false; 2],
++            uses,
++        }
++    }
++}
++
++#[derive(Default)]
++struct Slot {
++    recent: Option<(u32, Key)>,
++    cached: Option<(Key, Counts)>,
++    refused: Option<Key>,
++    arena: Option<Arena>,
++    allocation_failed: bool,
++}
++
++impl Slot {
++    fn stable(&self, now: u32, key: Key) -> bool {
++        self.recent
++            .is_some_and(|(prior, existing)| prior.checked_add(1) == Some(now) && key == existing)
++    }
++
++    fn invalidate(&mut self) {
++        self.recent = None;
++        self.cached = None;
++        self.refused = None;
++    }
++}
++
++#[derive(Default)]
++pub(super) struct Trial {
++    slots: [Slot; 2],
++    scratch: Vec<ListDraw>,
++}
++
++impl Trial {
++    pub(super) fn invalidate(&mut self) {
++        for slot in &mut self.slots {
++            slot.invalidate();
++        }
++    }
++
++    pub(super) fn observe(&self, frame: &mut Frame, index: usize, key: Key) -> bool {
++        frame.keys[index] = Some(key);
++        let slot = &self.slots[index];
++        slot.stable(frame.sequence, key) && !slot.allocation_failed && slot.refused != Some(key)
++    }
++
++    pub(super) fn finish(&mut self, frame: Option<Frame>, complete: bool) {
++        if let Some(frame) = frame.filter(|_| complete) {
++            for (slot, key) in self.slots.iter_mut().zip(frame.keys) {
++                slot.recent = key.map(|key| (frame.sequence, key));
++            }
++        } else {
++            self.invalidate();
++        }
++    }
++
++    pub(super) fn draw(
++        &mut self,
++        frame: &mut Frame,
++        index: usize,
++        terrain: NonNull<c_void>,
++        tested: usize,
++        draws: &[SolidDraw],
++        sections: &HashMap<SectionKey, TerrainSection>,
++    ) -> Option<(Counts, bool)> {
++        let key = frame.keys[index]?;
++        let slot = &mut self.slots[index];
++        let terrain = terrain.as_ptr();
++        if !unsafe { horizon_gx2_solid_list_eligible(terrain) } || draws.is_empty() {
++            slot.refused = Some(key);
++            return None;
++        }
++        if slot.arena.is_none() {
++            slot.arena = unsafe { NonNull::new(horizon_gx2_solid_list_create()) }.map(Arena);
++            slot.allocation_failed = slot.arena.is_none();
++        }
++        let arena = slot.arena.as_ref()?.0.as_ptr();
++        let (counts, warm) = match slot.cached {
++            Some((cached, counts)) if cached == key => (counts, true),
++            _ => {
++                slot.cached = None;
++                let scratch = &mut self.scratch;
++                scratch.clear();
++                if draws.len() > MAX_DRAWS || scratch.try_reserve_exact(draws.len()).is_err() {
++                    slot.refused = Some(key);
++                    return None;
++                }
++                let mut indices = 0;
++                for draw in draws {
++                    let section = sections.get(&draw.key)?.solid.as_ref()?;
++                    let [x, y, z] = draw.origin.map(|value| value as f32);
++                    scratch.push(ListDraw {
++                        section: section.native.as_ptr(),
++                        clip_rows: draw.clip.rows.as_ptr().cast(),
++                        origin: [x, y, z, 0.0],
++                    });
++                    indices += section.vertex_count as usize / 4 * 6;
++                }
++                // Pointers into the ordered plan only live through this call.
++                let recorded = unsafe {
++                    horizon_gx2_solid_list_record(
++                        arena,
++                        terrain,
++                        scratch.as_ptr(),
++                        draws.len() as u32,
++                    )
++                };
++                scratch.clear();
++                if !recorded {
++                    slot.refused = Some(key);
++                    return None;
++                }
++                let counts = Counts {
++                    tested,
++                    drawn: draws.len(),
++                    indices,
++                };
++                slot.cached = Some((key, counts));
++                (counts, false)
++            }
++        };
++        frame.called[index] =
++            unsafe { horizon_gx2_solid_list_queue(arena, frame.uses, index as u32) };
++        frame.called[index].then_some((counts, warm))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn key(x: f64) -> Key {
++        Key {
++            view: ViewKey::new(
++                [x, 1.0, 2.0],
++                [[1.0; 4]; 4],
++                -64,
++                [1280, 720],
++                [0, 0, 960, 540],
++                true,
++            )
++            .unwrap(),
++            terrain: NonNull::dangling(),
++            world_targets: NonNull::dangling(),
++            output_viewport: [0, 0, 1280, 720],
++        }
++    }
++
++    #[test]
++    fn needs_preceding_complete_output_and_exact_view() {
++        let mut trial = Trial::default();
++        let mut uses = Uses::default();
++        let mut first = Frame::new(20, &raw mut uses);
++        assert!(!trial.observe(&mut first, 0, key(0.0)));
++        assert!(!trial.observe(&mut first, 1, key(32.)));
++        trial.finish(Some(first), true);
++        let mut next = Frame::new(21, &raw mut uses);
++        assert!(!trial.observe(&mut next, 0, key(-0.0)));
++        assert!(trial.observe(&mut next, 1, key(32.)));
++        trial.finish(Some(next), false);
++        let mut after = Frame::new(22, &raw mut uses);
++        assert!(!trial.observe(&mut after, 1, key(32.)));
++    }
++
++    #[test]
++    fn receipt_must_cover_every_observed_call() {
++        let mut uses = Uses::default();
++        assert!(uses.sealed([false; 2]));
++        assert!(!uses.sealed([true, false]));
++        uses.queued_after = [10, 15];
++        uses.receipt = 15;
++        assert!(!uses.sealed([true; 2]));
++        uses.receipt = 16;
++        assert!(uses.sealed([true; 2]));
++        assert!(!uses.sealed([true, false]));
++        uses.queued_after = [10, -3];
++        assert!(!uses.sealed([true, false]));
++        uses.recovered = 1;
++        assert!(uses.sealed([true; 2]));
++    }
++
++    #[test]
++    fn seam_invalidation_refuses_same_address_and_sequence_gap() {
++        let mut trial = Trial::default();
++        let mut uses = Uses::default();
++        let mut first = Frame::new(3, &raw mut uses);
++        assert!(!trial.observe(&mut first, 0, key(0.0)));
++        trial.finish(Some(first), true);
++        let mut after_gap = Frame::new(5, &raw mut uses);
++        assert!(!trial.observe(&mut after_gap, 0, key(0.0)));
++        trial.finish(Some(after_gap), true);
++        trial.invalidate();
++        let mut next = Frame::new(6, &raw mut uses);
++        assert!(!trial.observe(&mut next, 0, key(0.0)));
++    }
++}
+diff --git a/wiiu/loading_host/world_scale.rs b/wiiu/loading_host/world_scale.rs
+index a7f1179..f54a983 100644
+--- a/wiiu/loading_host/world_scale.rs
++++ b/wiiu/loading_host/world_scale.rs
+@@ -172,6 +172,10 @@ pub(super) struct WorldTarget<'a> {
+ }
+ 
+ impl WorldTarget<'_> {
++    pub(super) fn identity(&self) -> NonNull<c_void> {
++        self.native
++    }
++
+     pub(super) fn composite(mut self) {
+         self.composite = true;
+     }
