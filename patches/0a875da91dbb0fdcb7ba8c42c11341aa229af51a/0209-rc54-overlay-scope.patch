@@ -1,0 +1,15 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 5505be402d19394e1a8850423183cae3e1df35be..5684d9ec1e42138584e3912af73b03016f4a8e80 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -294,7 +294,9 @@ bool horizon_gx2_profile_view_hud(void)
+ #ifdef HORIZON_GX2_SCREEN_OVERLAYS
+ bool horizon_gx2_profile_screen_overlays(void)
+ {
+-   return screen_overlays && tv_terrain_wait_mode == 0;
++   // The ordinary foreground may query between frame records during resize.
++   // An isolated benchmark always keeps its selected stock overlay behavior.
++   return history == &process_history && screen_overlays && tv_terrain_wait_mode == 0;
+ }
+ #endif
+ 
