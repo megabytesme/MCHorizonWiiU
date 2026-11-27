@@ -1,0 +1,52 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 05ef71c..441d14b 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -1144,14 +1144,20 @@ impl CafeGameSession<'_> {
+             let frame_ms = frame.as_secs_f32() * 1000.0;
+             let floor = graphics.resolution_scale;
+             let target = graphics.target_fps;
+-            let timing = if phase == performance::Phase::Gameplay {
+-                work.drs_pipeline_ms(frame, target)
+-            } else {
++            let controller = &mut self.game.dynamic_resolution;
++            let previous = controller.scale(floor);
++            let timing = if phase != performance::Phase::Gameplay {
+                 Err("outside_gameplay")
++            } else if work.drs_elevated_allocation_failed(previous, floor) {
++                // Retry from the floor with a fresh settle window. Repeating
++                // the failed quality step can otherwise hold direct 100%.
++                controller.reset();
++                log::info!("Horizon Cafe DRS allocation fallback requested={previous} recovering_floor={floor}");
++                Err("scale_fallback")
++            } else {
++                work.drs_pipeline_ms(frame, target)
+             };
+-            let controller = &mut self.game.dynamic_resolution;
+             let transition = if let Ok(pipeline_ms) = timing {
+-                let previous = controller.scale(floor);
+                 controller
+                     .observe(
+                         Some(pipeline_ms),
+diff --git a/crates/horizon-client/src/platform/cafe_performance.rs b/crates/horizon-client/src/platform/cafe_performance.rs
+index df2a631..a864403 100644
+--- a/crates/horizon-client/src/platform/cafe_performance.rs
++++ b/crates/horizon-client/src/platform/cafe_performance.rs
+@@ -92,6 +92,17 @@ pub struct CafeFrameWork {
+ }
+ 
+ impl CafeFrameWork {
++    /// An above-floor request failed to allocate its pair and presented directly.
++    pub(super) fn drs_elevated_allocation_failed(&self, requested: u32, floor: u32) -> bool {
++        self.presented == [true; 2]
++            && (floor < requested && requested < 100)
++            && self.world_resolution.is_some_and(|resolution| {
++                resolution.requested_scale == requested
++                    && resolution.effective_scale == 100
++                    && resolution.surface_bytes == 0
++            })
++    }
++
+     /// Use the sum of the output callback spans for the opt-in trial. The gap
+     /// between callbacks can contain CPU submission or a GPU drain. A callback
+     /// span can also contain starvation, so require headroom after subtracting
