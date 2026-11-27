@@ -1,0 +1,348 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index d0c2b18d80dd782e7c5cdb10c821c61aec0f6d70..fb24741cb020f9bb5f4bdff0890cd856174ba364 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -70,6 +70,19 @@ pub trait CafeLoadingPresenter {
+     ) -> Result<bool> {
+         Ok(false)
+     }
++    /// Restore a stock plan directly into native memory before its first layout.
++    /// The caller supplies the current boot atlas revision and publishes the
++    /// returned artwork before the next regular prepare or layout. A decline
++    /// or error leaves the ordinary loading preparation path available.
++    #[cfg(feature = "stock-hud-seed")]
++    fn prepare_planned_stock_hud(
++        &mut self,
++        _plan: horizon_client::hud::stock_seed::PlannedStockHud,
++        _boot_revision: u64,
++        _cancel: &std::sync::atomic::AtomicBool,
++    ) -> Result<Option<horizon_client::hud::stock_seed::CompleteStockHud>> {
++        Ok(None)
++    }
+     /// Draw both target views synchronously. `Ok(true)` means both were accepted.
+     fn present_loading(
+         &mut self,
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index 76a2f9ef13a905b1a749e5e3ee490b5d1e8498fa..e8b813cd8afc8ae134466364ecf9c07e8243345b 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -9,7 +9,7 @@ crate-type = ["staticlib"]
+ 
+ [features]
+ gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]
+-stock-hud-seed = ["horizon-client/stock-hud-seed"]
++stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-loading-host/stock-hud-seed"]
+ 
+ [dependencies]
+ horizon-wiiu-mcp = { path = "../mcp" }
+diff --git a/wiiu/loading_host/Cargo.toml b/wiiu/loading_host/Cargo.toml
+index 0e8a3fd61fc73d1072d94336a51e835ec0858b3f..74d1325bdcd013b9e44db06f62dfa459a71c5b25 100644
+--- a/wiiu/loading_host/Cargo.toml
++++ b/wiiu/loading_host/Cargo.toml
+@@ -9,6 +9,7 @@ path = "lib.rs"
+ 
+ [features]
+ gx2-hud-view-lanes = ["horizon-wiiu-platform/gx2-hud-view-lanes"]
++stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-platform/stock-hud-seed"]
+ 
+ [dependencies]
+ horizon-client-platform = { path = "../../crates/horizon-client-platform" }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 3cd8617b118d5312c59317e8d5ae1c7d8fc14b50..8c4e1f51ba597aabe9c92605c2dbfd4562bfd13b 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -25,6 +25,10 @@ use horizon_client::chunk::ColumnLayout;
+ use horizon_client::gfx::SectionKey;
+ use horizon_client::graphics::PresentMode;
+ use horizon_client::hud::{Rect, cit_glint::GlintTextures};
++#[cfg(feature = "stock-hud-seed")]
++use horizon_client::hud::stock_seed::{CompleteStockHud, PlannedStockHud};
++#[cfg(feature = "stock-hud-seed")]
++use std::sync::atomic::{AtomicBool, Ordering};
+ use horizon_client::mesher::{SectionMesh, TerrainVertex};
+ use horizon_client::sprites::SpriteAnimation;
+ use horizon_client::{
+@@ -1066,6 +1070,99 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+         result
+     }
+ 
++    #[cfg(feature = "stock-hud-seed")]
++    fn prepare_planned_stock_hud(
++        &mut self,
++        plan: PlannedStockHud,
++        boot_revision: u64,
++        cancel: &AtomicBool,
++    ) -> horizon_client::Result<Option<CompleteStockHud>> {
++        // Keep the active ordinary artwork intact. A boot HUD has both
++        // identities equal to its revision, with no panorama or world art.
++        let boot = if self.hud.is_some() {
++            self.generation == Some(boot_revision) && self.atlas_revision == Some(boot_revision)
++        } else {
++            self.generation.is_none() && self.atlas_revision.is_none()
++        };
++        if !boot
++            || self.panorama.is_some()
++            || self.panorama_identity.is_some()
++            || self.terrain.is_some()
++            || self.terrain_generation.is_some()
++            || self.retired_pair != 0
++            || cancel.load(Ordering::Acquire)
++        {
++            return Ok(None);
++        }
++        let outputs = output_dimensions()?;
++        let layout = outputs[1];
++        if outputs
++            .iter()
++            .any(|&output| fit_viewport(layout, output).is_none())
++        {
++            return Err("TV or DRC cannot fit the GamePad layout aspect ratio".into());
++        }
++
++        // The boot HUD's destructor drains GX2 before we allocate the stock
++        // map. Empty identities allow ordinary prepare to recreate boot art
++        // if the upload or the panorama fails.
++        self.hud = None;
++        self.generation = None;
++        self.atlas_revision = None;
++        self.cit_generation = None;
++
++        let _upload = Span::new(Stage::TextureUpload);
++        horizon_client_platform::cafe_memory::report("stock_hud.before_mapped");
++        let start = Instant::now();
++        // SAFETY: GX2 remains active on this render thread, and the shader
++        // outlives the presenter just as it does for ordinary artwork.
++        let Some((mut hud, complete, mapped_bytes)) = (unsafe {
++            HorizonPresenter::new_planned_stock(self.hud_shader, plan, self.capacity, cancel)
++        })
++        .map_err(hud_error_message)?
++        else {
++            return Ok(None);
++        };
++        hud.set_patch_mode(unsafe { horizon_gx2_profile_hud_patch_mode() });
++        let hud_ns = elapsed_ns(start);
++        let faces = complete.panorama();
++        let panorama_start = Instant::now();
++        let panorama = unsafe { Panorama::new(self.panorama_shader, faces) }?;
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++
++        // The Arc allocation backing Faces stays at this address when
++        // CompleteStockHud moves into ordinary UI resources.
++        let revision = complete.atlas().revision;
++        self.outputs = outputs;
++        self.layout = layout;
++        self.generation = Some(revision);
++        self.atlas_revision = Some(revision);
++        self.panorama_identity = Some((
++            revision,
++            revision,
++            std::ptr::from_ref(faces) as usize,
++            faces.size,
++        ));
++        self.hud = Some(hud);
++        self.panorama = Some(panorama);
++        horizon_client::ui_theme::reset_atlas();
++        if GX2_PROFILE_ENABLED {
++            self.profile.hud_create_ns = self.profile.hud_create_ns.saturating_add(hud_ns);
++        }
++        horizon_client_platform::cafe_memory::report("stock_hud.mapped_complete");
++        unsafe {
++            OSReport(
++                c"Horizon GX2 stock HUD mapped_bytes=%u hud_ms=%u panorama_ms=%u\n".as_ptr(),
++                mapped_bytes as u32,
++                (hud_ns / 1_000_000) as u32,
++                (elapsed_ns(panorama_start) / 1_000_000) as u32,
++            );
++        }
++        Ok(Some(complete))
++    }
++
+     fn present_loading(
+         &mut self,
+         artwork: CafeLoadingArtwork<'_>,
+diff --git a/wiiu/platform/Cargo.toml b/wiiu/platform/Cargo.toml
+index 62e1d6e60279ab43f93d7a18ef35af8a72cdcba6..7b2a4f8ccf95b7eb25362d0d5d962de328b6c60e 100644
+--- a/wiiu/platform/Cargo.toml
++++ b/wiiu/platform/Cargo.toml
+@@ -5,10 +5,11 @@ edition = "2021"
+ publish = false
+ 
+ [features]
++gx2-hud-view-lanes = ["horizon-hud"]
+ default = []
+ cafe = ["horizon-client-platform/cafe"]
+ horizon-hud = ["dep:horizon-client-render"]
+-gx2-hud-view-lanes = ["horizon-hud"]
++stock-hud-seed = ["cafe", "horizon-hud", "horizon-client-render/stock-hud-seed"]
+ verified-hud-font-probe = ["cafe", "horizon-hud", "horizon-client-render/verified-prepared-assets"]
+ 
+ [dependencies]
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index 843f49ff54d04a0d9f5c5a78c8bfd328f526fd5a..b65c440aca5f8ef30fca9762c449934cde36bf6d 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -1,6 +1,8 @@
+ //! Adapt Horizon's original CPU HUD to the GX2 presenter.
+ 
+ use horizon_client_render::hud::{HudAtlas, HudBatch};
++#[cfg(all(feature = "stock-hud-seed", target_arch = "powerpc"))]
++use horizon_client_render::hud::stock_seed::{CompleteStockHud, PlannedStockHud};
+ 
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ use super::Error;
+@@ -8,6 +10,11 @@ use super::{Blend, Frame};
+ #[cfg(test)]
+ use std::borrow::Cow;
+ use std::ops::Range;
++#[cfg(all(feature = "stock-hud-seed", target_arch = "powerpc"))]
++use std::{
++    cell::Cell,
++    sync::atomic::{AtomicBool, Ordering},
++};
+ 
+ #[cfg(all(feature = "cafe", target_arch = "powerpc"))]
+ unsafe extern "C" fn fill_gx2_atlas(
+@@ -26,11 +33,29 @@ unsafe fn write_gx2_atlas(
+     pixels: *mut u8,
+     pitch: u32,
+     inspect: impl FnOnce(&[u8], usize),
++) -> std::ffi::c_int {
++    unsafe {
++        with_mapped_rows(atlas.height, pixels, pitch, |target, pitch| {
++            if !atlas.write_mapped_rgba(target, pitch) {
++                return false;
++            }
++            inspect(target, pitch);
++            true
++        })
++    }
++}
++
++#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
++unsafe fn with_mapped_rows(
++    height: u32,
++    pixels: *mut u8,
++    pitch: u32,
++    fill: impl FnOnce(&mut [u8], usize) -> bool,
+ ) -> std::ffi::c_int {
+     let Some(pitch) = (pitch as usize).checked_mul(4) else {
+         return 0;
+     };
+-    let Some(length) = pitch.checked_mul(atlas.height as usize) else {
++    let Some(length) = pitch.checked_mul(height as usize) else {
+         return 0;
+     };
+     if pixels.is_null() || length > isize::MAX as usize {
+@@ -38,11 +63,37 @@ unsafe fn write_gx2_atlas(
+     }
+     // The native caller verifies the mapped bounds and initializes every byte.
+     let target = unsafe { std::slice::from_raw_parts_mut(pixels, length) };
+-    if !atlas.write_mapped_rgba(target, pitch) {
++    std::ffi::c_int::from(fill(target, pitch))
++}
++
++#[cfg(all(feature = "stock-hud-seed", target_arch = "powerpc"))]
++struct PlannedFill<'a> {
++    height: u32,
++    cancel: &'a AtomicBool,
++    pending: Cell<Option<PlannedStockHud>>,
++    complete: Cell<Option<(CompleteStockHud, usize)>>,
++}
++
++#[cfg(all(feature = "stock-hud-seed", target_arch = "powerpc"))]
++unsafe extern "C" fn fill_planned_gx2_atlas(
++    context: *const std::ffi::c_void,
++    pixels: *mut u8,
++    pitch: u32,
++) -> std::ffi::c_int {
++    // GX2 calls synchronously and never keeps the context or the mapped slice.
++    let context = unsafe { &*context.cast::<PlannedFill<'_>>() };
++    let Some(plan) = context.pending.take() else {
+         return 0;
++    };
++    unsafe {
++        with_mapped_rows(context.height, pixels, pitch, |rgba, pitch| {
++            let Some(complete) = plan.finish_mapped(rgba, pitch, context.cancel) else {
++                return false;
++            };
++            context.complete.set(Some((complete, rgba.len())));
++            true
++        })
+     }
+-    inspect(target, pitch);
+-    1
+ }
+ 
+ #[cfg(all(feature = "verified-hud-font-probe", target_arch = "powerpc"))]
+@@ -333,6 +384,51 @@ impl<'shader> HorizonPresenter<'shader> {
+         Ok((presenter, receipt))
+     }
+ 
++    /// Fill one new GX2 atlas from the stock plan and initialize its owned font.
++    /// The caller may publish the complete CPU artwork after the rest of the
++    /// renderer is ready. The byte count is the full pitched GX2 mapping.
++    ///
++    /// # Safety
++    /// Follow the GX2 and shader lifetime requirements of [`Self::new`].
++    #[cfg(feature = "stock-hud-seed")]
++    pub unsafe fn new_planned_stock(
++        gfd: &'shader [u8],
++        plan: PlannedStockHud,
++        capacity: u32,
++        cancel: &AtomicBool,
++    ) -> Result<Option<(Self, CompleteStockHud, usize)>, Error> {
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        let (width, height) = plan.dimensions();
++        let context = PlannedFill {
++            height,
++            cancel,
++            pending: Cell::new(Some(plan)),
++            complete: Cell::new(None),
++        };
++        let presenter = unsafe {
++            super::Presenter::new_mapped(
++                gfd,
++                width,
++                height,
++                capacity,
++                fill_planned_gx2_atlas,
++                std::ptr::from_ref(&context).cast(),
++            )
++        };
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        let presenter = presenter?;
++        let (complete, mapped_bytes) = context.complete.into_inner().ok_or(Error::Invalid)?;
++        let presenter = Self::finish_with_atlas(presenter, complete.atlas())?;
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        Ok(Some((presenter, complete, mapped_bytes)))
++    }
++
+     unsafe fn new_with_fill(
+         gfd: &'shader [u8],
+         atlas: &HudAtlas,
+@@ -340,9 +436,16 @@ impl<'shader> HorizonPresenter<'shader> {
+         fill: unsafe extern "C" fn(*const std::ffi::c_void, *mut u8, u32) -> std::ffi::c_int,
+         context: *const std::ffi::c_void,
+     ) -> Result<Self, Error> {
+-        let mut presenter = unsafe {
++        let presenter = unsafe {
+             super::Presenter::new_mapped(gfd, atlas.width, atlas.height, capacity, fill, context)
+         }?;
++        Self::finish_with_atlas(presenter, atlas)
++    }
++
++    fn finish_with_atlas(
++        mut presenter: super::Presenter<'shader>,
++        atlas: &HudAtlas,
++    ) -> Result<Self, Error> {
+         let (rgba, width, height) = &atlas.glint;
+         if !rgba.is_empty() {
+             presenter.set_glint_texture(*width, *height, rgba)?;

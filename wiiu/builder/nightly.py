@@ -17,8 +17,12 @@ def validate(spec):
     if not isinstance(spec, dict) or type(spec.get("schema")) is not int or spec["schema"] not in (1, 2):
         raise ValueError("unsupported hosted Nightly source recipe")
     toolchain_field = ("toolchain",) if spec["schema"] == 2 else ()
+    feature_field = ("cargo_features",) if "cargo_features" in spec else ()
+    if feature_field and spec["cargo_features"] != ["stock-hud-seed"]:
+        raise ValueError("unsupported hosted Nightly Cargo features")
     fields(spec, "schema", "kind", "target", "upstream", "base_recipe_sha256",
-           "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin", *toolchain_field)
+           "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin",
+           *toolchain_field, *feature_field)
     if spec["kind"] != "wiiu-hosted-nightly-source" or spec["target"] != TARGET:
         raise ValueError("unsupported hosted Nightly source recipe")
     if spec["schema"] == 2:
@@ -158,7 +162,8 @@ def assemble(upstream, inputs, output, base, base_fingerprint, build=False, reso
         discard_unverified_outputs(directory, record, packages)
         record.unlink(missing_ok=True)
         commands = native.compile_game(directory, staged, manifest, tools, sysroot, packages, embedded,
-                                       settings=native.BUILD_SETTINGS)
+                                       settings=native.BUILD_SETTINGS,
+                                       cargo_features=spec.get("cargo_features", ()))
         code_heap = rpx.read_code_heap(directory / packages[0])
         write_record(directory / "code-heap.json", code_heap)
         rpx.require_aroma_fit(code_heap)

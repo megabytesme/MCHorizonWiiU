@@ -1,0 +1,593 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index a6d1776ffcbf99afc93ba431b357ae4a8e7bb281..f9e95a528c28c847ce6bb0d2e1c6694774a360c9 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -387,6 +387,12 @@ impl ResourceSource {
+         Self(Arc::new(Storage::Directory(root)))
+     }
+ 
++    /// The resolved launch is the stock directory itself, with no overlay.
++    #[cfg(feature = "verified-prepared-assets")]
++    pub fn is_direct_directory(&self, root: &Path) -> bool {
++        matches!(self.0.as_ref(), Storage::Directory(path) if path == root)
++    }
++
+     /// Descriptor-backed stock asset view. Everything outside `assets/`
+     /// is excluded, including ordinary loose fallbacks.
+     #[cfg(feature = "verified-prepared-assets")]
+diff --git a/crates/horizon-client-lib/Cargo.toml b/crates/horizon-client-lib/Cargo.toml
+index 7eda574f7c2563e27046f0777175c9ef216a9823..602112da3dd53b47e737ac5d4ce4f427a4937ec7 100644
+--- a/crates/horizon-client-lib/Cargo.toml
++++ b/crates/horizon-client-lib/Cargo.toml
+@@ -127,6 +127,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++stock-hud-seed = ["horizon-client-render/stock-hud-seed"]
+ # Scoped observations for compiled-guest executor tests only.
+ test-payload-probe = []
+ # Isolated server-publication slots for resource-backed game fixtures only.
+diff --git a/crates/horizon-client-render/src/hud/stock_hud_launch.rs b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5fad4e6d9550b3eb11ae13c7f6dc11c15a02f611
+--- /dev/null
++++ b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+@@ -0,0 +1,224 @@
++//! Park immutable stock art in Night and lend it to one hosted launch.
++
++use super::{
++    CompleteStockHud, HudAtlas, InstalledStockAssets, PlannedStockHud, ResourceSource, StockHudSlot,
++};
++use std::{
++    io,
++    path::Path,
++    sync::{
++        Mutex, MutexGuard, PoisonError,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++
++enum NightSlot {
++    Parked(StockHudSlot),
++    InUse,
++    Closed,
++}
++
++pub struct NightStockHudOwner(Mutex<NightSlot>);
++
++impl Default for NightStockHudOwner {
++    fn default() -> Self {
++        Self(Mutex::new(NightSlot::Parked(StockHudSlot::default())))
++    }
++}
++
++impl NightStockHudOwner {
++    fn state(&self) -> MutexGuard<'_, NightSlot> {
++        self.0.lock().unwrap_or_else(PoisonError::into_inner)
++    }
++
++    /// Close at Night shutdown, even if a hosted launch still has the lease.
++    pub fn shutdown(&self) {
++        *self.state() = NightSlot::Closed;
++    }
++
++    /// Verify the installation selected by the resolved load. A pack, mod
++    /// mirror or generated texture layer must remain on the ordinary path.
++    pub fn begin_launch(
++        &self,
++        resolved: &ResourceSource,
++        stock_root: &Path,
++        installer_receipt: &Path,
++        cancel: &AtomicBool,
++    ) -> io::Result<Option<StockHudLaunch<'_>>> {
++        let Some(lease) = self.checkout() else {
++            return Ok(None);
++        };
++        if !resolved.is_direct_directory(stock_root) || super::sprites::labpbr_maps() {
++            return Ok(None);
++        }
++        let Some(assets) = InstalledStockAssets::reopen(stock_root, installer_receipt, cancel)?
++        else {
++            return Ok(None);
++        };
++        if cancel.load(Ordering::Acquire) || !lease.active() {
++            return Ok(None);
++        }
++        Ok(Some(StockHudLaunch {
++            assets,
++            lease,
++            stage: LaunchStage::New,
++        }))
++    }
++
++    fn checkout(&self) -> Option<Lease<'_>> {
++        let mut state = self.state();
++        if !matches!(*state, NightSlot::Parked(_)) {
++            return None;
++        }
++        let NightSlot::Parked(slot) = std::mem::replace(&mut *state, NightSlot::InUse) else {
++            unreachable!("only a parked slot can be loaned")
++        };
++        Some(Lease {
++            owner: self,
++            slot: Some(slot),
++        })
++    }
++}
++
++struct Lease<'a> {
++    owner: &'a NightStockHudOwner,
++    slot: Option<StockHudSlot>,
++}
++
++impl Lease<'_> {
++    fn active(&self) -> bool {
++        matches!(*self.owner.state(), NightSlot::InUse)
++    }
++
++    fn slot(&mut self) -> &mut StockHudSlot {
++        self.slot.as_mut().expect("live launch retains its slot")
++    }
++
++    fn return_to_night(&mut self, keep: bool) {
++        let Some(mut slot) = self.slot.take() else {
++            return;
++        };
++        if !keep {
++            slot.clear();
++        }
++        let mut state = self.owner.state();
++        if matches!(*state, NightSlot::InUse) {
++            *state = NightSlot::Parked(slot);
++        }
++    }
++}
++
++impl Drop for Lease<'_> {
++    fn drop(&mut self) {
++        self.return_to_night(false);
++    }
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum LaunchStage {
++    New,
++    Warm,
++    Cold,
++    Presented,
++}
++
++/// One installed generation serves both the warm plan and its cold fallback.
++/// Drain the hosted session before parking its successfully uploaded art.
++pub struct StockHudLaunch<'a> {
++    assets: InstalledStockAssets,
++    lease: Lease<'a>,
++    stage: LaunchStage,
++}
++
++impl StockHudLaunch<'_> {
++    pub fn assets(&self) -> &ResourceSource {
++        self.assets.assets()
++    }
++
++    pub fn try_warm(&mut self, cancel: &AtomicBool) -> Option<PlannedStockHud> {
++        if self.stage != LaunchStage::New || !self.lease.active() {
++            return None;
++        }
++        self.stage = LaunchStage::Warm;
++        // Both owners point to the same freshly verified descriptor.
++        self.lease
++            .slot()
++            .prepare(Some(InstalledStockAssets(self.assets.0.clone())), cancel)
++    }
++
++    /// Build the complete ordinary stock HUD on the pinned descriptor. A
++    /// failed warm upload can take this path once, without reopening a path.
++    pub fn build_cold(&mut self, cancel: &AtomicBool) -> crate::Result<Option<CompleteStockHud>> {
++        if matches!(self.stage, LaunchStage::Cold | LaunchStage::Presented) || !self.lease.active()
++        {
++            return Ok(None);
++        }
++        self.stage = LaunchStage::Cold;
++        self.lease.slot().clear();
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        let source = self.assets.0.clone();
++        let (atlas, panorama) = std::thread::scope(|scope| {
++            let panorama = horizon_guest_stack::builder()
++                .name("load-panorama".into())
++                .spawn_scoped(scope, || self.assets.load_panorama())?;
++            let atlas =
++                HudAtlas::build_over_with_image_cancel(&source, &source, false, Some(cancel));
++            Ok::<_, io::Error>((
++                atlas,
++                panorama
++                    .join()
++                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
++            ))
++        })?;
++        if cancel.load(Ordering::Acquire) || !self.lease.active() {
++            return Ok(None);
++        }
++        let mut atlas = atlas?;
++        // An over-budget seed still gives an ordinary usable atlas.
++        let _ = self
++            .lease
++            .slot()
++            .capture(&mut atlas, &self.assets, &panorama, cancel);
++        if cancel.load(Ordering::Acquire) || !self.lease.active() {
++            return Ok(None);
++        }
++        Ok(Some(CompleteStockHud {
++            atlas,
++            panorama: panorama.faces,
++            source,
++        }))
++    }
++
++    /// Confirm that this generation's atlas and panorama reached the renderer.
++    pub fn mark_presented(&mut self, product: &CompleteStockHud, cancel: &AtomicBool) -> bool {
++        if !matches!(self.stage, LaunchStage::Warm | LaunchStage::Cold)
++            || cancel.load(Ordering::Acquire)
++            || !self.lease.active()
++            || !self.assets().same_generation(product.assets())
++        {
++            return false;
++        }
++        self.stage = LaunchStage::Presented;
++        true
++    }
++
++    /// Return only source-free reusable art after the hosted loop and workers
++    /// have released all UI state. Failures and actual exits discard it.
++    pub fn park_after_drain(self, successful_return: bool, cancel: &AtomicBool) {
++        let Self {
++            assets,
++            mut lease,
++            stage,
++        } = self;
++        drop(assets);
++        lease.return_to_night(
++            successful_return && stage == LaunchStage::Presented && !cancel.load(Ordering::Acquire),
++        );
++    }
++}
++
++#[cfg(test)]
++#[path = "stock_hud_launch_tests.rs"]
++mod tests;
+diff --git a/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs b/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d2ec68ad6a693e130397248ff8868dd11a9cd38
+--- /dev/null
++++ b/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs
+@@ -0,0 +1,193 @@
++use super::*;
++use sha2::{Digest, Sha256};
++use std::{fs, path::PathBuf};
++
++struct Installation {
++    _root: tempfile::TempDir,
++    resources: PathBuf,
++    receipt: PathBuf,
++}
++
++impl Installation {
++    fn new() -> crate::Result<Self> {
++        let root = tempfile::tempdir()?;
++        let resources = root.path().join("stock");
++        let receipt = root.path().join("installed-stock.json");
++        fs::create_dir_all(resources.join("assets/minecraft/font"))?;
++        fs::write(resources.join("horizon-resources.json"), b"{}")?;
++        Ok(Self {
++            _root: root,
++            resources,
++            receipt,
++        })
++    }
++
++    fn publish(&self, advance: u32) -> crate::Result<()> {
++        let definition =
++            serde_json::json!({"providers": [{"type": "space", "advances": {"A": advance}}]});
++        fs::write(
++            self.resources.join("assets/minecraft/font/default.json"),
++            serde_json::to_vec(&definition)?,
++        )?;
++        horizon_core::prepared_files::write(&self.resources)?;
++        let bytes = fs::read(self.resources.join(horizon_core::prepared_files::FILE_NAME))?;
++        let expected = format!("{:x}", Sha256::digest(bytes));
++        let receipt = serde_json::json!({"archive_version": 2, "archive_sha256": expected, "guest_root": &self.resources});
++        let next = self.receipt.with_extension("new");
++        fs::write(&next, serde_json::to_vec(&receipt)?)?;
++        fs::rename(next, &self.receipt)?;
++        Ok(())
++    }
++
++    fn open<'a>(
++        &self,
++        night: &'a NightStockHudOwner,
++        cancel: &AtomicBool,
++    ) -> crate::Result<Option<StockHudLaunch<'a>>> {
++        let resolved = ResourceSource::directory(self.resources.clone());
++        Ok(night.begin_launch(&resolved, &self.resources, &self.receipt, cancel)?)
++    }
++}
++
++#[test]
++#[cfg(unix)]
++fn warm_failure_uses_one_cold_build_from_the_same_open_generation() -> crate::Result<()> {
++    let installation = Installation::new()?;
++    installation.publish(2)?;
++    let night = NightStockHudOwner::default();
++    let cancel = AtomicBool::new(false);
++    let mut first = installation
++        .open(&night, &cancel)?
++        .ok_or("first open failed")?;
++    assert!(installation.open(&night, &cancel)?.is_none());
++    assert!(first.try_warm(&cancel).is_none());
++    let ui = first.build_cold(&cancel)?.ok_or("cold plan missing")?;
++    assert_eq!(ui.atlas().font.glyph('A').advance, 2.0);
++    assert!(first.mark_presented(&ui, &cancel));
++    let first_source = first.assets().liveness();
++    drop(ui);
++    first.park_after_drain(true, &cancel);
++    assert!(!first_source());
++
++    let mut next = installation
++        .open(&night, &cancel)?
++        .ok_or("next open failed")?;
++    let warm = next.try_warm(&cancel).ok_or("expected warm seed")?;
++    assert!(next.try_warm(&cancel).is_none());
++    let old_snapshot = next.assets().clone();
++    installation.publish(4)?;
++    assert!(warm.finish_mapped(&mut [], 0, &cancel).is_none());
++    let fallback = next
++        .build_cold(&cancel)?
++        .ok_or("verified cold fallback missing")?;
++    assert!(next.build_cold(&cancel)?.is_none());
++    assert!(old_snapshot.same_generation(fallback.assets()));
++    assert_eq!(fallback.atlas().font.glyph('A').advance, 2.0);
++    assert!(next.mark_presented(&fallback, &cancel));
++    drop(fallback);
++    next.park_after_drain(true, &cancel);
++
++    let mut replaced = installation
++        .open(&night, &cancel)?
++        .ok_or("replacement open failed")?;
++    assert!(replaced.try_warm(&cancel).is_none());
++    let fresh = replaced
++        .build_cold(&cancel)?
++        .ok_or("new cold atlas missing")?;
++    assert!(!old_snapshot.same_generation(fresh.assets()));
++    assert_eq!(fresh.atlas().font.glyph('A').advance, 4.0);
++    Ok(())
++}
++
++#[test]
++fn unpresented_failed_and_shutdown_launches_cannot_park_art() -> crate::Result<()> {
++    let installation = Installation::new()?;
++    installation.publish(2)?;
++    let night = NightStockHudOwner::default();
++    let cancel = AtomicBool::new(false);
++    let mut unpresented = installation
++        .open(&night, &cancel)?
++        .ok_or("launch missing")?;
++    let ui = unpresented.build_cold(&cancel)?.ok_or("cold UI missing")?;
++    drop(ui);
++    unpresented.park_after_drain(true, &cancel);
++    let mut failed = installation
++        .open(&night, &cancel)?
++        .ok_or("next launch missing")?;
++    assert!(failed.try_warm(&cancel).is_none());
++    let ui = failed.build_cold(&cancel)?.ok_or("cold UI missing")?;
++    assert!(failed.mark_presented(&ui, &cancel));
++    drop(ui);
++    failed.park_after_drain(false, &cancel);
++    let mut canceled = installation
++        .open(&night, &cancel)?
++        .ok_or("cancel candidate missing")?;
++    assert!(canceled.try_warm(&cancel).is_none());
++    cancel.store(true, Ordering::Release);
++    assert!(canceled.build_cold(&cancel)?.is_none());
++    drop(canceled);
++    cancel.store(false, Ordering::Release);
++    let mut late_cancel = installation
++        .open(&night, &cancel)?
++        .ok_or("late cancel candidate missing")?;
++    let ui = late_cancel.build_cold(&cancel)?.ok_or("cold UI missing")?;
++    assert!(late_cancel.mark_presented(&ui, &cancel));
++    drop(ui);
++    cancel.store(true, Ordering::Release);
++    late_cancel.park_after_drain(true, &cancel);
++    cancel.store(false, Ordering::Release);
++    let mut closing = installation
++        .open(&night, &cancel)?
++        .ok_or("close candidate missing")?;
++    assert!(closing.try_warm(&cancel).is_none());
++    let ui = closing.build_cold(&cancel)?.ok_or("cold UI missing")?;
++    assert!(closing.mark_presented(&ui, &cancel));
++    night.shutdown();
++    drop(ui);
++    closing.park_after_drain(true, &cancel);
++    assert!(installation.open(&night, &cancel)?.is_none());
++    Ok(())
++}
++
++#[test]
++fn resolved_overlays_and_unavailable_receipts_evict_previous_seed() -> crate::Result<()> {
++    let installation = Installation::new()?;
++    installation.publish(2)?;
++    let night = NightStockHudOwner::default();
++    let cancel = AtomicBool::new(false);
++    let mut first = installation
++        .open(&night, &cancel)?
++        .ok_or("first open failed")?;
++    let ui = first.build_cold(&cancel)?.ok_or("cold UI missing")?;
++    assert!(first.mark_presented(&ui, &cancel));
++    drop(ui);
++    first.park_after_drain(true, &cancel);
++    let overlay = ResourceSource::indexed(Default::default());
++    assert!(
++        night
++            .begin_launch(
++                &overlay,
++                &installation.resources,
++                &installation.receipt,
++                &cancel
++            )?
++            .is_none()
++    );
++    let mut stock = installation
++        .open(&night, &cancel)?
++        .ok_or("stock open failed")?;
++    assert!(stock.try_warm(&cancel).is_none());
++    let ui = stock.build_cold(&cancel)?.ok_or("new cold UI missing")?;
++    assert!(stock.mark_presented(&ui, &cancel));
++    drop(ui);
++    stock.park_after_drain(true, &cancel);
++    let receipt = fs::read(&installation.receipt)?;
++    fs::remove_file(&installation.receipt)?;
++    assert!(installation.open(&night, &cancel)?.is_none());
++    fs::write(&installation.receipt, receipt)?;
++    let mut back = installation
++        .open(&night, &cancel)?
++        .ok_or("restored receipt missing")?;
++    assert!(back.try_warm(&cancel).is_none());
++    Ok(())
++}
+diff --git a/crates/horizon-client-render/src/hud/stock_seed.rs b/crates/horizon-client-render/src/hud/stock_seed.rs
+index c192b6f0110e28182010a792116800d9c96636fc..ea656b20039164646eeee68c81d1d369cedb30fc 100644
+--- a/crates/horizon-client-render/src/hud/stock_seed.rs
++++ b/crates/horizon-client-render/src/hud/stock_seed.rs
+@@ -325,8 +325,27 @@ pub struct PlannedStockHud {
+ }
+ 
+ pub struct CompleteStockHud {
+-    pub atlas: HudAtlas,
+-    pub panorama: Arc<Faces>,
++    atlas: HudAtlas,
++    panorama: Arc<Faces>,
++    source: ResourceSource,
++}
++
++impl CompleteStockHud {
++    pub fn atlas(&self) -> &HudAtlas {
++        &self.atlas
++    }
++
++    pub fn panorama(&self) -> &Faces {
++        &self.panorama
++    }
++
++    pub fn assets(&self) -> &ResourceSource {
++        &self.source
++    }
++
++    pub fn into_parts(self) -> (HudAtlas, Arc<Faces>) {
++        (self.atlas, self.panorama)
++    }
+ }
+ 
+ impl PlannedStockHud {
+@@ -452,10 +471,15 @@ impl PlannedStockHud {
+         Some(CompleteStockHud {
+             atlas,
+             panorama: self.panorama,
++            source: self.source,
+         })
+     }
+ }
+ 
++#[path = "stock_hud_launch.rs"]
++mod stock_hud_launch;
++pub use stock_hud_launch::{NightStockHudOwner, StockHudLaunch};
++
+ #[cfg(test)]
+ #[path = "stock_seed_tests.rs"]
+ mod tests;
+diff --git a/crates/horizon-client/Cargo.toml b/crates/horizon-client/Cargo.toml
+index b69e627971717bd378995a7c2eb3468acbcb2bdc..ffb39d42c7f739cd36c00802c7b2511b91aa0f24 100644
+--- a/crates/horizon-client/Cargo.toml
++++ b/crates/horizon-client/Cargo.toml
+@@ -138,6 +138,7 @@ winit = { version = "0.30.13", features = ["android-native-activity"] }
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++stock-hud-seed = ["horizon-client-render/stock-hud-seed", "horizon-client-lib/stock-hud-seed"]
+ # Source retention only: not compiled/tested on the fork; incompatible with typed residency.
+ # Do not enable (including via --all-features); integration is tracked in arismoko/horizon#3491.
+ upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
+diff --git a/crates/horizon-client/src/game/runtime/resource_tables.rs b/crates/horizon-client/src/game/runtime/resource_tables.rs
+index ba0e591b01d12970b1d692a546981cbbec138706..dd3c681dfd3f0711633d4b6a2f2cbb15278d94dc 100644
+--- a/crates/horizon-client/src/game/runtime/resource_tables.rs
++++ b/crates/horizon-client/src/game/runtime/resource_tables.rs
+@@ -153,6 +153,19 @@ pub(in crate::game) fn mod_image_slot() -> bool {
+ }
+ 
+ impl UiResources {
++    /// Publish only the complete product from a stock transaction. Splash
++    /// provenance comes from its verified descriptor, without a folder probe.
++    #[cfg(all(feature = "stock-hud-seed", target_os = "cafe"))]
++    pub fn from_verified_stock(stock: horizon_client::hud::stock_seed::CompleteStockHud) -> Self {
++        let splashes = horizon_client::splashes::verified_stock_pool(&stock).into();
++        let (atlas, panorama) = stock.into_parts();
++        Self {
++            atlas,
++            panorama,
++            splashes,
++        }
++    }
++
+     /// The resolved resource generation, including the base layer and pack filters.
+     /// Its splash pool is empty until `with_splashes`.
+     pub fn load(root: &horizon_assets::resource_source::ResourceSource) -> Result<Self> {
+diff --git a/crates/horizon-client/src/splashes.rs b/crates/horizon-client/src/splashes.rs
+index 663110b1dd276b0f965711ab20793214c3870478..e4a0e896126b28f363b2d6a020ab2e9d0d7fb579 100644
+--- a/crates/horizon-client/src/splashes.rs
++++ b/crates/horizon-client/src/splashes.rs
+@@ -14,10 +14,22 @@ const VANILLA: &str = "assets/minecraft/texts/splashes.txt";
+ /// that file is read (NeoForge's `skipModdedSplashesIfVanillaModified`). Empty
+ /// when no pack has the `minecraft` file, as `getResourceOrThrow` fails then.
+ pub fn pool(stack: &ResourceSource, vanilla: &Path, skip_if_modified: bool) -> String {
++    pool_with_source(stack, || skip_if_modified && !from_vanilla(stack, vanilla))
++}
++
++/// A CPU-complete stock product carries the descriptor that built its atlas.
++#[cfg(all(feature = "stock-hud-seed", target_os = "cafe"))]
++pub fn verified_stock_pool(
++    stock: &horizon_client_render::hud::stock_seed::CompleteStockHud,
++) -> String {
++    pool_with_source(stock.assets(), || false)
++}
++
++fn pool_with_source(stack: &ResourceSource, prefer_top: impl FnOnce() -> bool) -> String {
+     let Ok(top) = stack.read_to_string(VANILLA) else {
+         return String::new();
+     };
+-    if skip_if_modified && !from_vanilla(stack, vanilla) {
++    if prefer_top() {
+         return top;
+     }
+     // `listResources("texts", ...)`: each namespace's winning file, by id.
+@@ -102,6 +114,20 @@ mod tests {
+         assert_eq!(picks, expected.map(|line| Some(line.to_owned())));
+     }
+ 
++    #[test]
++    fn verified_vanilla_keeps_the_namespace_pool_without_a_loose_folder_origin() {
++        let (vanilla, source) = stack(
++            Some("Stock line!"),
++            &[("assets/testmod/texts/splashes.txt", "Extra line!")],
++        );
++        assert!(source.folder_of(VANILLA).is_none());
++        assert_eq!(pool(&source, vanilla.path(), true), "Stock line!");
++        assert_eq!(
++            pool_with_source(&source, || false),
++            "Stock line!\nExtra line!\n"
++        );
++    }
++
+     #[test]
+     fn a_packs_own_minecraft_splashes_replace_the_pool() {
+         let (vanilla, stack) = stack(

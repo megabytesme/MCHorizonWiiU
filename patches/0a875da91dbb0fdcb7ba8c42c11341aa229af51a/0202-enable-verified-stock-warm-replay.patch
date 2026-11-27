@@ -1,0 +1,386 @@
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index a2e713c5a722f15ba701ce258722a080c94e25e6..8fe1c9a66f672d119af1d4f78e8aa191b0f41313 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -696,17 +696,9 @@ pub(super) fn load_resources(
+     // A dedicated server builds only the font (UiResources::server), as the
+     // integrated server's game does: the full atlas and panorama are 144 MB.
+     let load_ui = |source: &horizon_assets::resource_source::ResourceSource| {
+-        let _step = startup::step("ui.load");
+         if headless {
+             UiResources::server(source)
+         } else {
+-            #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
+-            if !super::resource_tables::mod_image_slot()
+-                && let Some(request) = progress.stock_hud()
+-                && let Some(ui) = request.cold_ui(source, progress.cancel_flag())
+-            {
+-                return Ok(ui);
+-            }
+             #[cfg(not(target_os = "cafe"))]
+             let ui = UiResources::load(source);
+             #[cfg(target_os = "cafe")]
+@@ -739,13 +731,13 @@ pub(super) fn load_resources(
+     };
+     let mut can_rollback = true;
+     let (core, loaded_gui, resolved) = loop {
+-        let (ui, core) = std::thread::scope(|scope| {
++        let (ui, core) = std::thread::scope(|scope| -> Result<_> {
+             progress.checkpoint()?;
+             // Cafe keeps the large initial HUD raster and core tables from
+             // reaching their allocation peaks together. Core still uses its
+             // configured workers, and the server only builds a font atlas.
+             let overlap_ui_and_core = parallel && (!cfg!(target_os = "cafe") || headless);
+-            let core = Step::spawn(scope, overlap_ui_and_core, "core", || {
++            let load_core = || {
+                 // A failed pack starts core again from the game's own
+                 // resources, which the world's preload must read: with packs
+                 // it waits for the core that loaded.
+@@ -760,15 +752,54 @@ pub(super) fn load_resources(
+                         early,
+                     )
+                 })
+-            });
++            };
++            let core = Step::spawn(scope, overlap_ui_and_core, "core", load_core);
++            let ui_step = startup::step("ui.load");
++            #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++            let ui = if !headless
++                && !super::resource_tables::mod_image_slot()
++                && let Some(request) = progress.stock_hud()
++            {
++                let allow_warm = menu && launch_world.is_some() && additional_data.is_empty()
++                    && root == vanilla_root && can_rollback;
++                match request.prepare_ui(resolved.source(), allow_warm, progress.cancel_flag()) {
++                    Some(super::StockHudCandidate::Cold(ui)) => Ok(ui),
++                    Some(super::StockHudCandidate::Warm(plan)) => {
++                        drop(ui_step);
++                        let core = core.join_if_loading(progress)?;
++                        progress.checkpoint()?;
++                        let Ok(Ok(core)) = core else {
++                            return Ok((Ok(None), core));
++                        };
++                        horizon_client_platform::cafe_memory::report("stock_hud.post_core_wait");
++                        return request
++                            .finish_warm_after_core((Ok(None), Ok(Ok(core))), plan, || -> Result<_> {
++                                progress.checkpoint()?;
++                                horizon_client_platform::cafe_memory::report("stock_hud.before_cold_fallback");
++                                let ui = startup::time("ui.cold_fallback", || {
++                                    request
++                                        .cold_after_decline(progress.cancel_flag())?
++                                        .ok_or_else(|| "verified stock HUD fallback unavailable".into())
++                                });
++                                progress.checkpoint()?;
++                                let ui = ui.map(|ui| offer(ui, &root));
++                                horizon_client_platform::cafe_memory::report("stock_hud.before_core_retry");
++                                Ok((ui, load_core()))
++                            })?
++                            .ok_or_else(|| LoadCancelled.into());
++                    }
++                    None => load_ui(resolved.source()),
++                }
++            } else {
++                load_ui(resolved.source())
++            };
++            #[cfg(not(all(target_os = "cafe", feature = "stock-hud-seed")))]
+             let ui = load_ui(resolved.source());
++            drop(ui_step);
+             // On Cafe core is a deferred Step. Do not start it once the
+             // atlas reports cancellation. A running scoped worker still joins.
+             progress.checkpoint()?;
+-            Ok::<_, LoadCancelled>((
+-                ui.map(|ui| offer(ui, &root)),
+-                core.join_if_loading(progress)?,
+-            ))
++            Ok((ui.map(|ui| offer(ui, &root)), core.join_if_loading(progress)?))
+         })?;
+         progress.checkpoint()?;
+         let failure = match (ui, core) {
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 01ee0127150e4d51c3bbf4507d06ca42173a6986..4b462930e85f51d36948d710be3ff9be47f856f3 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -10,14 +10,14 @@ mod cafe_ui_publication;
+ use cafe_ui_publication::FirstUiPublication;
+ #[cfg(feature = "stock-hud-seed")]
+ #[path = "cafe_stock_handoff.rs"]
+-// Resource workers do not offer a plan until native peak qualification.
+-#[cfg_attr(not(test), allow(dead_code))]
+ mod cafe_stock_handoff;
+ #[cfg(feature = "stock-hud-seed")]
+ #[path = "cafe_stock_hud.rs"]
+ mod cafe_stock_hud;
+ #[cfg(feature = "stock-hud-seed")]
+ pub use cafe_stock_hud::CafeStockHudRequest;
++#[cfg(feature = "stock-hud-seed")]
++pub(in crate::game) use cafe_stock_hud::StockHudCandidate;
+ 
+ pub struct CafeLoadingArtwork<'a> {
+     pub atlas: &'a HudAtlas,
+diff --git a/crates/horizon-client/src/platform/cafe_stock_hud.rs b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+index cf8742b6d255bc2320b2d528e508241bf9f632d5..98300c600d3440e2cd98714ef7443c996808b0e1 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_hud.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+@@ -15,14 +15,23 @@ use std::{
+ enum Attempt {
+     Unused,
+     Building,
+-    Prepared(StockHudLaunch<'static>),
++    Prepared {
++        launch: StockHudLaunch<'static>,
++        allow_cold_fallback: bool,
++    },
+     Spent,
+ }
+ 
++pub(in crate::game) enum StockHudCandidate {
++    Cold(UiResources),
++    Warm(PlannedStockHud),
++}
++
+ pub struct CafeStockHudRequest {
+     owner: &'static NightStockHudOwner,
+     resource_root: PathBuf,
+     installed_receipt: PathBuf,
++    warm_replay: bool,
+     attempt: Mutex<Attempt>,
+     post_core: PostCoreStockHud<PlannedStockHud>,
+     canceled: AtomicBool,
+@@ -38,23 +47,30 @@ impl CafeStockHudRequest {
+             owner,
+             resource_root,
+             installed_receipt,
++            warm_replay: false,
+             attempt: Mutex::new(Attempt::Unused),
+             post_core: PostCoreStockHud::default(),
+             canceled: AtomicBool::new(false),
+         }
+     }
+ 
++    pub fn with_warm_replay(mut self, enabled: bool) -> Self {
++        self.warm_replay = enabled;
++        self
++    }
++
+     fn state(&self) -> MutexGuard<'_, Attempt> {
+         self.attempt.lock().unwrap_or_else(PoisonError::into_inner)
+     }
+ 
+-    /// The current renderer accepts complete CPU artwork. Capture a cold
+-    /// candidate here until the planned warm GX2 completion path is enabled.
+-    pub(in crate::game) fn cold_ui(
++    /// Settle the installed source once. A missing or ineligible warm seed
++    /// can build cold on that same descriptor before starting core.
++    pub(in crate::game) fn prepare_ui(
+         &self,
+         source: &ResourceSource,
++        allow_warm: bool,
+         cancel: &AtomicBool,
+-    ) -> Option<UiResources> {
++    ) -> Option<StockHudCandidate> {
+         {
+             let mut state = self.state();
+             if !matches!(*state, Attempt::Unused) {
+@@ -85,34 +101,32 @@ impl CafeStockHudRequest {
+                 return Ok(None);
+             }
+             let ordinary = start.elapsed() - verify;
+-            let cold = Instant::now();
+-            let Some(ui) = launch.build_cold(cancel)? else {
+-                return Ok(None);
++            let prepare = Instant::now();
++            let candidate = if self.warm_replay && allow_warm
++                && let Some(plan) = launch.try_warm(cancel)
++            {
++                StockHudCandidate::Warm(plan)
++            } else {
++                let Some(ui) = Self::build_cold(&mut launch, cancel)? else {
++                    return Ok(None);
++                };
++                StockHudCandidate::Cold(ui)
+             };
+             log::info!(
+-                "Horizon stock HUD cold candidate: verify_ms={} ordinary_verify_ms={} cold_capture_ms={} retained_bytes={}",
++                "Horizon stock HUD candidate: warm={} verify_ms={} ordinary_verify_ms={} prepare_ms={} retained_bytes={}",
++                matches!(candidate, StockHudCandidate::Warm(_)),
+                 verify.as_millis(),
+                 ordinary.as_millis(),
+-                cold.elapsed().as_millis(),
+-                launch
+-                    .retained_capacity()
+-                    .map_or(0, |capacity| capacity.retained_bytes)
++                prepare.elapsed().as_millis(),
++                launch.retained_capacity().map_or(0, |capacity| capacity.retained_bytes)
+             );
+-            Ok(Some((launch, UiResources::from_verified_stock(ui))))
++            let allow_cold_fallback = matches!(candidate, StockHudCandidate::Warm(_));
++            Ok(self.retain_candidate(launch, candidate, allow_cold_fallback, cancel))
+         })();
+-        let mut state = self.state();
+         match result {
+-            Ok(Some((launch, ui)))
+-                if matches!(*state, Attempt::Building)
+-                    && !cancel.load(Ordering::Acquire)
+-                    && !self.canceled.load(Ordering::Acquire) =>
+-            {
+-                *state = Attempt::Prepared(launch);
+-                Some(ui)
+-            }
++            Ok(Some(candidate)) => Some(candidate),
+             result => {
+-                *state = Attempt::Spent;
+-                drop(state);
++                *self.state() = Attempt::Spent;
+                 if let Err(error) = result {
+                     log::warn!("Horizon stock HUD uses the ordinary loader: {error}");
+                 }
+@@ -121,6 +135,62 @@ impl CafeStockHudRequest {
+         }
+     }
+ 
++    fn retain_candidate<T>(
++        &self,
++        launch: StockHudLaunch<'static>,
++        candidate: T,
++        allow_cold_fallback: bool,
++        cancel: &AtomicBool,
++    ) -> Option<T> {
++        let mut state = self.state();
++        if !matches!(*state, Attempt::Building)
++            || cancel.load(Ordering::Acquire)
++            || self.canceled.load(Ordering::Acquire)
++        {
++            return None;
++        }
++        *state = Attempt::Prepared { launch, allow_cold_fallback };
++        Some(candidate)
++    }
++
++    fn build_cold(
++        launch: &mut StockHudLaunch<'_>,
++        cancel: &AtomicBool,
++    ) -> crate::Result<Option<UiResources>> {
++        Ok(launch.build_cold(cancel)?.map(UiResources::from_verified_stock))
++    }
++
++    pub(in crate::game) fn finish_warm_after_core<C, E>(
++        &self,
++        core: C,
++        plan: PlannedStockHud,
++        rebuild_cold: impl FnOnce() -> Result<C, E>,
++    ) -> Result<Option<C>, E> {
++        self.post_core.complete_after_core(core, plan, rebuild_cold)
++    }
++
++    /// Only the same verified lease can take the post-core cold fallback.
++    pub(in crate::game) fn cold_after_decline(&self, cancel: &AtomicBool) -> crate::Result<Option<UiResources>> {
++        let mut launch = {
++            let mut state = self.state();
++            if !matches!(*state, Attempt::Prepared { allow_cold_fallback: true, .. })
++                || cancel.load(Ordering::Acquire) {
++                return Ok(None);
++            }
++            let Attempt::Prepared { launch, .. } = std::mem::replace(&mut *state, Attempt::Building) else {
++                unreachable!("only the approved stock launch can rebuild cold");
++            };
++            launch
++        };
++        match Self::build_cold(&mut launch, cancel) {
++            Ok(Some(ui)) => Ok(self.retain_candidate(launch, ui, false, cancel)),
++            result => {
++                *self.state() = Attempt::Spent;
++                result
++            }
++        }
++    }
++
+     pub(super) fn warm_blocks_foreground(&self) -> bool {
+         self.post_core.blocks_foreground()
+     }
+@@ -145,7 +215,7 @@ impl CafeStockHudRequest {
+             drop(plan);
+             return None;
+         };
+-        if !matches!(*self.state(), Attempt::Prepared(_)) {
++        if !matches!(*self.state(), Attempt::Prepared { .. }) {
+             drop(plan);
+             return None;
+         }
+@@ -176,11 +246,11 @@ impl CafeStockHudRequest {
+     }
+ 
+     pub(super) fn owns_atlas(&self, atlas: &HudAtlas) -> bool {
+-        matches!(&*self.state(), Attempt::Prepared(launch) if launch.owns_atlas(atlas))
++        matches!(&*self.state(), Attempt::Prepared { launch, .. } if launch.owns_atlas(atlas))
+     }
+ 
+     pub(super) fn after_present(&self, atlas: &HudAtlas, cancel: &AtomicBool) {
+-        if let Attempt::Prepared(launch) = &mut *self.state() {
++        if let Attempt::Prepared { launch, .. } = &mut *self.state() {
+             if launch.mark_atlas_presented(atlas, cancel) {
+                 log::info!("Horizon stock HUD candidate presented");
+             }
+@@ -200,7 +270,7 @@ impl CafeStockHudRequest {
+         self.post_core.close();
+         let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
+         match previous {
+-            Attempt::Prepared(launch) => launch.park_after_drain(saved_return, &self.canceled),
++            Attempt::Prepared { launch, .. } => launch.park_after_drain(saved_return, &self.canceled),
+             _ => self.owner.clear_parked(),
+         }
+     }
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index f3db26493862de60e0f6222a4605a0a2a97c12b3..03fd19dcccdccd8545b04ed3f714ca10c2c8a1ca 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -53,9 +53,13 @@ fn stock_hud_request(launch: &night_menu::Launch) -> Option<Arc<horizon_client::
+         clear_parked_stock_hud();
+         return None;
+     }
+-    Some(Arc::new(horizon_client::game::CafeStockHudRequest::new(
+-        STOCK_HUD.get_or_init(Default::default), launch.resources.clone(), receipt,
+-    )))
++    let request = horizon_client::game::CafeStockHudRequest::new(
++        STOCK_HUD.get_or_init(Default::default),
++        launch.resources.clone(),
++        receipt,
++    )
++    .with_warm_replay(app.join("stock-hud-warm.enable").is_file());
++    Some(Arc::new(request))
+ }
+ 
+ // Optional command and reply bit shared with pregame/src/cafe.rs. The
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index b65c440aca5f8ef30fca9762c449934cde36bf6d..a00f2fb927b25c633e22e13128c2f80afc3f488f 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -422,7 +422,7 @@ impl<'shader> HorizonPresenter<'shader> {
+         }
+         let presenter = presenter?;
+         let (complete, mapped_bytes) = context.complete.into_inner().ok_or(Error::Invalid)?;
+-        let presenter = Self::finish_with_atlas(presenter, complete.atlas())?;
++        let presenter = unsafe { Self::finish_with_atlas(presenter, complete.atlas()) }?;
+         if cancel.load(Ordering::Acquire) {
+             return Ok(None);
+         }
+@@ -439,16 +439,17 @@ impl<'shader> HorizonPresenter<'shader> {
+         let presenter = unsafe {
+             super::Presenter::new_mapped(gfd, atlas.width, atlas.height, capacity, fill, context)
+         }?;
+-        Self::finish_with_atlas(presenter, atlas)
++        unsafe { Self::finish_with_atlas(presenter, atlas) }
+     }
+ 
+-    fn finish_with_atlas(
++    unsafe fn finish_with_atlas(
+         mut presenter: super::Presenter<'shader>,
+         atlas: &HudAtlas,
+     ) -> Result<Self, Error> {
+         let (rgba, width, height) = &atlas.glint;
+         if !rgba.is_empty() {
+-            presenter.set_glint_texture(*width, *height, rgba)?;
++            // The caller keeps GX2 active on the owning render thread.
++            unsafe { presenter.set_glint_texture(*width, *height, rgba) }?;
+         }
+         Ok(Self {
+             presenter,

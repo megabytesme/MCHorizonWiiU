@@ -1,0 +1,1074 @@
+diff --git a/crates/horizon-client-render/Cargo.toml b/crates/horizon-client-render/Cargo.toml
+index 3527de9572cac1ce0c7899c1d4e70b1e57dd721c..99db6edf659b415b7a3d84921147aa6053952300 100644
+--- a/crates/horizon-client-render/Cargo.toml
++++ b/crates/horizon-client-render/Cargo.toml
+@@ -86,6 +86,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++stock-hud-seed = ["verified-prepared-assets"]
+ verified-prepared-assets = ["horizon-assets/verified-prepared-assets"]
+ # Sound output: horizon-client's `audio` feature.
+ audio = ["dep:cpal"]
+diff --git a/crates/horizon-client-render/src/cafe_pixels.rs b/crates/horizon-client-render/src/cafe_pixels.rs
+index 1a367e1939f65e3a762c4a6077cf2296f301b4bf..d7e6788349e2e77f88919be5754175888e30bd55 100644
+--- a/crates/horizon-client-render/src/cafe_pixels.rs
++++ b/crates/horizon-client-render/src/cafe_pixels.rs
+@@ -12,7 +12,11 @@ impl PackedPixels {
+     /// Retain the original if the packed copy would cost over half its size
+     /// or the heap can't provide a block's workspace.
+     pub(crate) fn compress(pixels: &[u8]) -> Option<Self> {
+-        let mut budget = pixels.len() / 2;
++        Self::compress_with_budget(pixels, pixels.len() / 2)
++    }
++
++    pub(crate) fn compress_with_budget(pixels: &[u8], budget: usize) -> Option<Self> {
++        let mut budget = budget.min(pixels.len() / 2);
+         let mut blocks = Vec::new();
+         blocks
+             .try_reserve_exact(pixels.len().div_ceil(BLOCK_BYTES))
+@@ -32,11 +36,16 @@ impl PackedPixels {
+         Some(Self(blocks))
+     }
+ 
+-    #[cfg(target_os = "cafe")]
++    #[cfg(any(test, target_os = "cafe"))]
+     pub(crate) fn encoded_len(&self) -> usize {
+         self.0.iter().map(|block| block.len()).sum()
+     }
+ 
++    #[cfg(any(test, all(feature = "stock-hud-seed", target_os = "cafe")))]
++    pub(crate) fn retained_bytes(&self) -> usize {
++        self.encoded_len() + self.0.capacity() * size_of::<Box<[u8]>>()
++    }
++
+     /// Fill GX2's mapped texture directly. A padded surface needs at most
+     /// one block of scratch, even when an atlas block spans several rows.
+     pub(crate) fn write_pitched(
+@@ -159,6 +168,19 @@ mod tests {
+         assert!(packed.decompress(pixels.len() - 1).is_none());
+     }
+ 
++    #[test]
++    fn bounded_compression_rejects_a_copy_beyond_its_byte_budget() {
++        let pixels = vec![0u8; BLOCK_BYTES];
++        let packed = PackedPixels::compress(&pixels).unwrap();
++        assert!(PackedPixels::compress_with_budget(&pixels, packed.encoded_len() - 1).is_none());
++        assert_eq!(
++            PackedPixels::compress_with_budget(&pixels, packed.encoded_len())
++                .unwrap()
++                .encoded_len(),
++            packed.encoded_len()
++        );
++    }
++
+     #[test]
+     fn mapped_decode_keeps_padded_rows_and_cross_block_pixels() {
+         let row_bytes = 1304;
+diff --git a/crates/horizon-client-render/src/font.rs b/crates/horizon-client-render/src/font.rs
+index ca378ba8fea5c8508e2fb917507b22971d9f37ee..e212824452eb1956857ddb7d452df37774de513f 100644
+--- a/crates/horizon-client-render/src/font.rs
++++ b/crates/horizon-client-render/src/font.rs
+@@ -791,6 +791,16 @@ impl Font {
+         Some(font)
+     }
+ 
++    #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++    pub(crate) fn stock_glyph_region(
++        &self,
++        verified_source: &ResourceSource,
++    ) -> Option<(u32, u32)> {
++        self.source
++            .same_generation(verified_source)
++            .then_some(self.region)
++    }
++
+     /// Resolve provider files against the game's resources when an overlay lacks them.
+     /// Definitions remain the overlay's so pack filters still hide lower definitions.
+     #[allow(clippy::too_many_arguments)]
+diff --git a/crates/horizon-client-render/src/gfx/panorama.rs b/crates/horizon-client-render/src/gfx/panorama.rs
+index d505e13373b4418d64cccfc275430b6c687a5f00..78e40dbb7384eff9714051ec64f8e8f53055ec83 100644
+--- a/crates/horizon-client-render/src/gfx/panorama.rs
++++ b/crates/horizon-client-render/src/gfx/panorama.rs
+@@ -23,7 +23,65 @@ pub struct Faces {
+     decoded: Mutex<Option<Vec<u8>>>,
+ }
+ 
++#[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++#[derive(Clone, Copy)]
++pub(crate) struct VerifiedFaceLayout {
++    size: u32,
++    lengths: [u32; 6],
++    colour: [u8; 4],
++}
++
++#[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++impl VerifiedFaceLayout {
++    /// The cold load already decoded and validated these exact PNGs. The
++    /// caller must hold a newly verified descriptor of the same installation.
++    pub(crate) fn reopen(
++        self,
++        source: &ResourceSource,
++        cancel: &std::sync::atomic::AtomicBool,
++    ) -> Option<Faces> {
++        if self.lengths == [0; 6] {
++            return Some(Faces::colour(self.colour));
++        }
++        let mut files = Vec::with_capacity(FACE_ORDER.len());
++        for (face, length) in FACE_ORDER.into_iter().zip(self.lengths) {
++            if cancel.load(std::sync::atomic::Ordering::Acquire) {
++                return None;
++            }
++            let file = source
++                .read_limited(&format!("{BACKGROUND}/panorama_{face}.png"), length.into())
++                .ok()?;
++            if file.len() != length as usize {
++                return None;
++            }
++            files.push(file);
++        }
++        Some(Faces {
++            size: self.size,
++            files,
++            colour: self.colour,
++            decoded: Mutex::new(None),
++        })
++    }
++}
++
+ impl Faces {
++    #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++    pub(crate) fn verified_layout(&self) -> Option<VerifiedFaceLayout> {
++        let mut lengths = [0; 6];
++        if !self.files.is_empty() && self.files.len() != lengths.len() {
++            return None;
++        }
++        for (length, file) in lengths.iter_mut().zip(&self.files) {
++            *length = u32::try_from(file.len()).ok()?;
++        }
++        Some(VerifiedFaceLayout {
++            size: self.size,
++            lengths,
++            colour: self.colour,
++        })
++    }
++
+     /// The title artwork of `root` (the active resource source) over `defaults` (the
+     /// game's own resources). `CubeMapTexture` registers each face with the
+     /// resource manager, which takes the topmost pack that has it: a pack that
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index 028804a3c7631740d07efa0fff86ab8a95731416..11aa1c67c89db8e4b401e0855b5c0e969817d99c 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -4,14 +4,14 @@
+ use crate::{Result, resource_source::ResourceSource};
+ use horizon_assets::animation::AnimationMetadata;
+ use smallvec::SmallVec;
++#[cfg(not(target_os = "cafe"))]
++use std::sync::OnceLock;
+ use std::{
+     collections::{HashMap, HashSet},
+     fs,
+     path::{Path, PathBuf},
+     sync::Arc,
+ };
+-#[cfg(not(target_os = "cafe"))]
+-use std::sync::OnceLock;
+ use wgpu::util::DeviceExt;
+ 
+ pub use model_reducing::set_mod_namespaces;
+@@ -24,6 +24,8 @@ mod gui_sprite;
+ mod menu_pictures;
+ mod model_reducing;
+ mod pack_text;
++#[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++pub mod stock_seed;
+ #[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
+ mod verified_mapped_font;
+ #[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
+@@ -89,6 +91,8 @@ pub struct HudAtlas {
+     packed: Option<Arc<OnceLock<Vec<u8>>>>,
+     #[cfg(target_os = "cafe")]
+     packed: Option<crate::cafe_pixels::PackedPixels>,
++    #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++    stock_packed: Option<Arc<crate::cafe_pixels::PackedPixels>>,
+     /// The width each Standard Galactic letter uses in `font/ascii_sga`'s
+     /// cell, by ASCII code (the enchanting table's text), read when built.
+     pub galactic_widths: [u16; 128],
+@@ -906,6 +910,13 @@ impl HudAtlas {
+     /// The atlas's pixels: as built, or uncompressed again after
+     /// `pack_pixels` (a renderer being rebuilt).
+     pub fn pixels(&self) -> std::borrow::Cow<'_, [u8]> {
++        #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++        if let Some(packed) = &self.stock_packed {
++            let size = (self.width * self.height * 4) as usize;
++            return std::borrow::Cow::Owned(
++                packed.decompress(size).unwrap_or_else(|| vec![0; size]),
++            );
++        }
+         let Some(packed) = self.packed.as_ref().filter(|_| self.pixels.is_empty()) else {
+             return std::borrow::Cow::Borrowed(&self.pixels);
+         };
+@@ -918,7 +929,7 @@ impl HudAtlas {
+             .filter(|p| p.len() == size);
+         std::borrow::Cow::Owned(pixels.unwrap_or_else(|| vec![0; size]))
+     }
+-    #[cfg(target_os = "cafe")]
++    #[cfg(any(target_os = "cafe", all(test, feature = "stock-hud-seed")))]
+     pub fn write_mapped_rgba(&self, target: &mut [u8], pitch: usize) -> bool {
+         let row_bytes = self.width as usize * 4;
+         let height = self.height as usize;
+@@ -926,9 +937,20 @@ impl HudAtlas {
+             return false;
+         }
+         if self.pixels.is_empty() {
++            #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++            if let Some(packed) = &self.stock_packed {
++                return packed
++                    .write_pitched(target, row_bytes, pitch, height)
++                    .is_some();
++            }
++            #[cfg(target_os = "cafe")]
+             return self.packed.as_ref().is_some_and(|packed| {
+-                packed.write_pitched(target, row_bytes, pitch, height).is_some()
++                packed
++                    .write_pitched(target, row_bytes, pitch, height)
++                    .is_some()
+             });
++            #[cfg(not(target_os = "cafe"))]
++            return false;
+         }
+         if self.pixels.len() != row_bytes * height {
+             return false;
+@@ -1130,6 +1152,8 @@ impl HudAtlas {
+             revision: Self::next_revision(),
+             pixels: Vec::new(),
+             packed: None,
++            #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++            stock_packed: None,
+             material_maps: Default::default(),
+             galactic_widths: [0; 128],
+             width: 1,
+@@ -1201,6 +1225,8 @@ impl HudAtlas {
+             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
+             pixels,
+             packed: None,
++            #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++            stock_packed: None,
+             width,
+             height,
+             sprites,
+@@ -1340,23 +1366,11 @@ impl HudAtlas {
+         files.retain(|p| !menu_pictures::menu_picture_only(p));
+         // OptiFine random entity variants and custom entity models' textures, under the names
+         // their scans give them (those outside `textures/` are `<ns>:optifine/...`).
+-        let random_textures = if folders.contains(&"entity") {
+-            horizon_optifine::random_textures::RandomTextures::scan(root)
++        let (random_textures, blinks, emissive) = if folders.contains(&"entity") {
++            atlas_entity_variants(root)
+         } else {
+             Default::default()
+         };
+-        let blinks = if folders.contains(&"entity") {
+-            horizon_optifine::blink::Blinks::scan(root, &random_textures)
+-        } else {
+-            Default::default()
+-        };
+-        let emissive = std::sync::Arc::new(if folders.contains(&"entity") {
+-            let mut e = horizon_optifine::emissive::Emissive::scan(root, &random_textures);
+-            e.pair_beside(root, blinks.files());
+-            e
+-        } else {
+-            Default::default()
+-        });
+         let mut named: HashMap<String, String> = HashMap::new();
+         let extra = random_textures
+             .files()
+@@ -1798,6 +1812,8 @@ impl HudAtlas {
+             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
+             pixels,
+             packed: None,
++            #[cfg(all(feature = "stock-hud-seed", any(test, target_os = "cafe")))]
++            stock_packed: None,
+             width,
+             height,
+             sprites,
+@@ -1837,6 +1853,20 @@ impl HudAtlas {
+             .map_or((vec![0; 4], 1, 1), |(w, h, pixels)| (pixels, w, h))
+     }
+ }
++fn atlas_entity_variants(
++    root: &ResourceSource,
++) -> (
++    horizon_optifine::random_textures::RandomTextures,
++    horizon_optifine::blink::Blinks,
++    Arc<horizon_optifine::emissive::Emissive>,
++) {
++    let random = horizon_optifine::random_textures::RandomTextures::scan(root);
++    let blinks = horizon_optifine::blink::Blinks::scan(root, &random);
++    let mut emissive = horizon_optifine::emissive::Emissive::scan(root, &random);
++    emissive.pair_beside(root, blinks.files());
++    (random, blinks, Arc::new(emissive))
++}
++
+ pub use horizon_hud_data::HudVertex;
+ /// Sutherland-Hodgman against one half plane, interpolating every attribute.
+ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -> Vec<HudVertex> {
+diff --git a/crates/horizon-client-render/src/hud/stock_seed.rs b/crates/horizon-client-render/src/hud/stock_seed.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c192b6f0110e28182010a792116800d9c96636fc
+--- /dev/null
++++ b/crates/horizon-client-render/src/hud/stock_seed.rs
+@@ -0,0 +1,461 @@
++//! Opt-in stock HUD preparation. Night can retain one source-free seed.
++
++use super::{HudAtlas, Rect, TextureFlags, atlas_entity_variants, pictures, sprite_modifiers};
++use crate::{
++    cafe_pixels::PackedPixels,
++    font::Font,
++    gfx::panorama::{Faces, VerifiedFaceLayout},
++    resource_source::ResourceSource,
++    sprites,
++};
++use std::{
++    collections::HashMap,
++    fs::File,
++    io::{self, Read},
++    mem::size_of,
++    path::Path,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++    },
++};
++
++const SLOT_CAP: usize = 16 * 1024 * 1024;
++const RECEIPT_CAP: u64 = 16 * 1024;
++
++/// Constructed from the trusted installer's receipt and a fresh archive open.
++/// The caller selects the installer-owned receipt path, outside user packs.
++pub struct InstalledStockAssets(ResourceSource);
++
++#[derive(serde::Deserialize)]
++struct Receipt {
++    archive_version: u32,
++    archive_sha256: String,
++    guest_root: String,
++}
++
++impl InstalledStockAssets {
++    pub fn reopen(
++        resource_root: &Path,
++        installed_receipt: &Path,
++        cancel: &AtomicBool,
++    ) -> io::Result<Option<Self>> {
++        if cancel.load(Ordering::Acquire) || std::env::var_os("HORIZON_NO_DATA_FILE").is_some() {
++            return Ok(None);
++        }
++        let file = match File::open(installed_receipt) {
++            Ok(file) => file,
++            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
++            Err(error) => return Err(error),
++        };
++        let mut bytes = Vec::new();
++        file.take(RECEIPT_CAP + 1).read_to_end(&mut bytes)?;
++        let malformed = || {
++            io::Error::new(
++                io::ErrorKind::InvalidData,
++                "invalid installed stock archive receipt",
++            )
++        };
++        if bytes.len() as u64 > RECEIPT_CAP {
++            return Err(malformed());
++        }
++        let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
++        let text = receipt.archive_sha256.as_bytes();
++        if receipt.archive_version != 2
++            || !resource_root.is_absolute()
++            || resource_root.to_str() != Some(receipt.guest_root.as_str())
++            || text.len() != 64
++            || !text.iter().all(u8::is_ascii_hexdigit)
++        {
++            return Err(malformed());
++        }
++        let mut expected = [0; 32];
++        for (i, slot) in expected.iter_mut().enumerate() {
++            *slot = u8::from_str_radix(&receipt.archive_sha256[2 * i..2 * i + 2], 16)
++                .map_err(|_| malformed())?;
++        }
++        ResourceSource::reopen_verified_assets(resource_root, expected, cancel)
++            .map(|source| source.map(Self))
++    }
++
++    pub fn assets(&self) -> &ResourceSource {
++        &self.0
++    }
++
++    pub fn load_panorama(&self) -> InstalledStockPanorama {
++        InstalledStockPanorama {
++            generation: self
++                .0
++                .verified_assets_generation()
++                .expect("installed assets are verified"),
++            faces: Arc::new(Faces::load(&self.0, &self.0)),
++        }
++    }
++}
++
++/// The decoded and validated cold title art, branded to the verified source.
++pub struct InstalledStockPanorama {
++    generation: [u8; 32],
++    faces: Arc<Faces>,
++}
++
++impl InstalledStockPanorama {
++    pub fn faces(&self) -> &Arc<Faces> {
++        &self.faces
++    }
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct StockHudCapacity {
++    pub retained_bytes: usize,
++    pub encoded_bytes: usize,
++    pub layout_bytes: usize,
++}
++
++type Layout = Vec<(String, Rect)>;
++type Glint = (Vec<u8>, u32, u32);
++
++struct StockHudSeed {
++    generation: [u8; 32],
++    packed: Arc<PackedPixels>,
++    dimensions: (u32, u32),
++    glyph_region: (u32, u32),
++    panorama: VerifiedFaceLayout,
++    white: Rect,
++    galactic_widths: [u16; 128],
++    sprites: Layout,
++    translucent: Vec<String>,
++    flags: Vec<(String, TextureFlags)>,
++    animation_names: Vec<String>,
++    capacity: StockHudCapacity,
++}
++
++/// Fixed-capacity, single-generation storage. Neither a resource handle nor
++/// mutable glyph, picture, object-skin, or GPU state survives in this slot.
++#[derive(Default)]
++pub struct StockHudSlot(Option<Arc<StockHudSeed>>);
++
++impl StockHudSlot {
++    pub fn clear(&mut self) {
++        self.0 = None;
++    }
++
++    /// Called once with the verified cold atlas, before it is ordinarily packed.
++    /// Success shares the compact pixel backing with that whole atlas.
++    pub fn capture(
++        &mut self,
++        atlas: &mut HudAtlas,
++        source: &InstalledStockAssets,
++        panorama: &InstalledStockPanorama,
++        cancel: &AtomicBool,
++    ) -> Option<StockHudCapacity> {
++        self.capture_bounded(atlas, source, panorama, cancel, SLOT_CAP)
++    }
++
++    fn capture_bounded(
++        &mut self,
++        atlas: &mut HudAtlas,
++        source: &InstalledStockAssets,
++        panorama: &InstalledStockPanorama,
++        cancel: &AtomicBool,
++        cap: usize,
++    ) -> Option<StockHudCapacity> {
++        self.clear();
++        let seed = StockHudSeed::capture(atlas, source, panorama, cancel, cap)?;
++        let retained = seed.capacity;
++        self.0 = Some(Arc::new(seed));
++        Some(retained)
++    }
++
++    /// A mismatch, missing receipt/source or canceled launch evicts this slot.
++    /// An unsuccessful preparation leaves the ordinary loader available.
++    pub fn prepare(
++        &mut self,
++        source: Option<InstalledStockAssets>,
++        cancel: &AtomicBool,
++    ) -> Option<PlannedStockHud> {
++        let ready = self.0.as_ref().and_then(|seed| {
++            let source = source?;
++            let generation = source.0.verified_assets_generation()?;
++            if generation != seed.generation
++                || cancel.load(Ordering::Acquire)
++                || sprites::labpbr_maps()
++            {
++                return None;
++            }
++            PlannedStockHud::prepare(Arc::clone(seed), source.0, cancel)
++        });
++        if ready.is_none() {
++            self.clear();
++        }
++        ready
++    }
++}
++
++fn rect_key(rect: Rect) -> [u32; 6] {
++    [
++        rect.u0.to_bits(),
++        rect.v0.to_bits(),
++        rect.u1.to_bits(),
++        rect.v1.to_bits(),
++        rect.w,
++        rect.h,
++    ]
++}
++
++fn named_capacity<T>(entries: &Vec<(String, T)>) -> usize {
++    entries.capacity() * size_of::<(String, T)>()
++        + entries
++            .iter()
++            .map(|(name, _)| name.capacity())
++            .sum::<usize>()
++}
++
++fn strings_capacity(entries: &Vec<String>) -> usize {
++    entries.capacity() * size_of::<String>() + entries.iter().map(String::capacity).sum::<usize>()
++}
++
++impl StockHudSeed {
++    fn capture(
++        atlas: &mut HudAtlas,
++        source: &InstalledStockAssets,
++        panorama: &InstalledStockPanorama,
++        cancel: &AtomicBool,
++        cap: usize,
++    ) -> Option<Self> {
++        if cancel.load(Ordering::Acquire)
++            || sprites::labpbr_maps()
++            || atlas.packed.is_some()
++            || atlas.stock_packed.is_some()
++            || atlas.pixels.is_empty()
++            || atlas.material_maps.iter().any(Option::is_some)
++            || atlas.sprites.contains_key("horizon/modimage")
++            || atlas.text_shaders.gui.is_some()
++            || atlas.text_shaders.world.is_some()
++            || atlas.text_shaders.see_through.is_some()
++            || atlas.lines_shader.is_some()
++            || atlas.sky_shader.is_some()
++            || atlas.stars_shader.is_some()
++        {
++            return None;
++        }
++        let glyph_region = atlas.font.stock_glyph_region(source.assets())?;
++        let generation = source.0.verified_assets_generation()?;
++        if generation != panorama.generation {
++            return None;
++        }
++        let panorama = panorama.faces.verified_layout()?;
++        let mut regions = HashMap::new();
++        for (name, &rect) in &atlas.sprites {
++            regions
++                .entry(rect_key(rect))
++                .and_modify(|value| *value = None)
++                .or_insert(Some(name));
++        }
++        let animation_names = atlas
++            .sprite_animations
++            .iter()
++            .map(|(rect, _)| regions.get(&rect_key(*rect))?.map(String::clone))
++            .collect::<Option<Vec<_>>>()?;
++        drop(regions);
++        let sprites: Layout = atlas
++            .sprites
++            .iter()
++            .map(|(name, &rect)| (name.clone(), rect))
++            .collect();
++        let translucent: Vec<_> = atlas.translucent.iter().cloned().collect();
++        let flags: Vec<_> = atlas
++            .flags
++            .iter()
++            .map(|(name, &flags)| (name.clone(), flags))
++            .collect();
++        let layout_bytes = named_capacity(&sprites)
++            + named_capacity(&flags)
++            + strings_capacity(&translucent)
++            + strings_capacity(&animation_names);
++        let fixed = size_of::<Self>()
++            + size_of::<StockHudSlot>()
++            + size_of::<PackedPixels>()
++            + 4 * size_of::<usize>();
++        let metadata = layout_bytes.checked_add(fixed)?;
++        let packed = PackedPixels::compress_with_budget(&atlas.pixels, cap.checked_sub(metadata)?)?;
++        let retained_bytes = metadata.checked_add(packed.retained_bytes())?;
++        if retained_bytes > cap || cancel.load(Ordering::Acquire) {
++            return None;
++        }
++        let capacity = StockHudCapacity {
++            retained_bytes,
++            encoded_bytes: packed.encoded_len(),
++            layout_bytes,
++        };
++        let packed = Arc::new(packed);
++        atlas.stock_packed = Some(Arc::clone(&packed));
++        atlas.pixels = Vec::new();
++        Some(Self {
++            generation,
++            packed,
++            glyph_region,
++            panorama,
++            capacity,
++            dimensions: (atlas.width, atlas.height),
++            white: atlas.white,
++            galactic_widths: atlas.galactic_widths,
++            sprites,
++            translucent,
++            flags,
++            animation_names,
++        })
++    }
++}
++
++/// All inputs for a mapped restore, pinned to the newly verified descriptor.
++/// The public complete output has no placeholder font.
++pub struct PlannedStockHud {
++    seed: Arc<StockHudSeed>,
++    source: ResourceSource,
++    sprites: HashMap<String, Rect>,
++    animations: Vec<(Rect, sprites::SpriteAnimation)>,
++    glint: Glint,
++    glint_armor: Glint,
++    panorama: Arc<Faces>,
++    random_textures: horizon_optifine::random_textures::RandomTextures,
++    blinks: horizon_optifine::blink::Blinks,
++    emissive: Arc<horizon_optifine::emissive::Emissive>,
++    sprite_modifiers: Arc<sprite_modifiers::SpriteModifiers>,
++}
++
++pub struct CompleteStockHud {
++    pub atlas: HudAtlas,
++    pub panorama: Arc<Faces>,
++}
++
++impl PlannedStockHud {
++    fn prepare(
++        seed: Arc<StockHudSeed>,
++        source: ResourceSource,
++        cancel: &AtomicBool,
++    ) -> Option<Self> {
++        let layout: HashMap<_, _> = seed.sprites.iter().cloned().collect();
++        let mut sprites = sprites::Sprites::new(source.clone());
++        let mut animations = Vec::new();
++        for name in &seed.animation_names {
++            if cancel.load(Ordering::Acquire) {
++                return None;
++            }
++            let id = if name.contains(':') {
++                name.clone()
++            } else {
++                format!("minecraft:{name}")
++            };
++            let layer = sprites.insert(&id).ok()?;
++            let animation = sprites
++                .animations
++                .iter()
++                .find(|animation| animation.layer == layer)?;
++            animations.push((*layout.get(name)?, animation.clone()));
++        }
++        drop(sprites);
++        let (random_textures, blinks, emissive) = atlas_entity_variants(&source);
++        let sprite_modifiers = Arc::new(sprite_modifiers::SpriteModifiers::read(
++            &source,
++            layout.keys(),
++        ));
++        let glint = HudAtlas::glint_texture(&source, &source, "enchanted_glint_item");
++        let glint_armor = HudAtlas::glint_texture(&source, &source, "enchanted_glint_armor");
++        let panorama = Arc::new(seed.panorama.reopen(&source, cancel)?);
++        if cancel.load(Ordering::Acquire) {
++            return None;
++        }
++        Some(Self {
++            seed,
++            source,
++            sprites: layout,
++            animations,
++            glint,
++            glint_armor,
++            panorama,
++            random_textures,
++            blinks,
++            emissive,
++            sprite_modifiers,
++        })
++    }
++
++    pub fn dimensions(&self) -> (u32, u32) {
++        self.seed.dimensions
++    }
++
++    pub fn glint(&self) -> &(Vec<u8>, u32, u32) {
++        &self.glint
++    }
++
++    pub fn panorama(&self) -> &Faces {
++        &self.panorama
++    }
++
++    /// Construct a CPU-complete atlas with a fresh font using only the existing
++    /// mapped image. The caller publishes it after the native upload succeeds.
++    pub fn finish_mapped(
++        self,
++        rgba: &mut [u8],
++        pitch: usize,
++        cancel: &AtomicBool,
++    ) -> Option<CompleteStockHud> {
++        if cancel.load(Ordering::Acquire) {
++            return None;
++        }
++        let (width, height) = self.seed.dimensions;
++        self.seed
++            .packed
++            .write_pitched(rgba, width as usize * 4, pitch, height as usize)?;
++        let font = Font::load_stock_mapped(
++            &self.source,
++            &self.sprites,
++            rgba,
++            pitch,
++            self.seed.dimensions,
++            self.seed.glyph_region,
++            self.seed.white,
++        )?;
++        if cancel.load(Ordering::Acquire) {
++            return None;
++        }
++        let atlas = HudAtlas {
++            pictures: Mutex::new(pictures::Cache::new(&self.source, &self.source)),
++            revision: HudAtlas::next_revision(),
++            pixels: Vec::new(),
++            packed: None,
++            stock_packed: Some(Arc::clone(&self.seed.packed)),
++            galactic_widths: self.seed.galactic_widths,
++            width,
++            height,
++            sprites: self.sprites,
++            object_skins: HashMap::new(),
++            object_skins_revision: HudAtlas::next_revision(),
++            translucent: self.seed.translucent.iter().cloned().collect(),
++            flags: self.seed.flags.iter().cloned().collect(),
++            sprite_animations: self.animations,
++            font,
++            glint: self.glint,
++            glint_armor: self.glint_armor,
++            text_shaders: Default::default(),
++            lines_shader: None,
++            sky_shader: None,
++            stars_shader: None,
++            sprite_modifiers: self.sprite_modifiers,
++            random_textures: self.random_textures,
++            emissive: self.emissive,
++            blinks: self.blinks,
++            material_maps: Arc::default(),
++            white: self.seed.white,
++        };
++        Some(CompleteStockHud {
++            atlas,
++            panorama: self.panorama,
++        })
++    }
++}
++
++#[cfg(test)]
++#[path = "stock_seed_tests.rs"]
++mod tests;
+diff --git a/crates/horizon-client-render/src/hud/stock_seed_tests.rs b/crates/horizon-client-render/src/hud/stock_seed_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd4ba1e0ebfe1895e806d47f3cf574345cb37386
+--- /dev/null
++++ b/crates/horizon-client-render/src/hud/stock_seed_tests.rs
+@@ -0,0 +1,285 @@
++use super::*;
++use sha2::{Digest, Sha256};
++use std::{fs, path::PathBuf, time::Instant};
++
++fn asset_receipt(root: &Path, digest: &str) -> serde_json::Value {
++    serde_json::json!({"archive_version": 2, "archive_sha256": digest, "guest_root": root})
++}
++
++fn panorama_digest(panorama: &Faces) -> ([u8; 32], usize) {
++    let mut digest = Sha256::new();
++    let mut bytes = 0;
++    panorama
++        .visit_rows(|row| {
++            digest.update(row);
++            bytes += row.len();
++            Some(())
++        })
++        .unwrap();
++    (digest.finalize().into(), bytes)
++}
++
++fn font_digest(font: &Font) -> [u8; 32] {
++    let mut digest = Sha256::new();
++    for id in ["minecraft:default", "minecraft:alt", "minecraft:uniform"] {
++        for ch in (' '..='~').chain(['§', 'Ω', '漢', '\u{301}', '界', '⛏']) {
++            let g = font.glyph_in(id, ch);
++            for metric in [g.left, g.top, g.right, g.bottom, g.advance, g.offset] {
++                digest.update(metric.to_bits().to_le_bytes());
++            }
++            digest.update([u8::from(g.rect.is_some())]);
++            if let Some(rect) = g.rect {
++                for value in rect_key(rect) {
++                    digest.update(value.to_le_bytes());
++                }
++            }
++        }
++    }
++    digest.finalize().into()
++}
++
++fn animation_digest(items: &[(Rect, sprites::SpriteAnimation)]) -> [u8; 32] {
++    let mut digest = Sha256::new();
++    for (rect, animation) in items {
++        for bits in rect_key(*rect) {
++            digest.update(bits.to_le_bytes());
++        }
++        digest.update(animation.layer.to_le_bytes());
++        for tick in [0, 1, 7, 20, 256, 4097] {
++            let blend = animation.blend(tick);
++            digest.update((blend.frame as u32).to_le_bytes());
++            digest.update((blend.next as u32).to_le_bytes());
++            digest.update(blend.millis.to_le_bytes());
++            let rgba = animation.pixels(blend.frame);
++            digest.update((rgba.len() as u32).to_le_bytes());
++            digest.update(rgba);
++        }
++    }
++    digest.finalize().into()
++}
++
++#[test]
++#[ignore = "requires a privately installed archived stock fixture and receipt"]
++fn installed_stock_cached_backing_restores_full_hud_and_panorama() -> crate::Result<()> {
++    fn assert_send<T: Send>() {}
++    assert_send::<StockHudSlot>();
++    assert_send::<PlannedStockHud>();
++    assert_send::<CompleteStockHud>();
++    let root =
++        PathBuf::from(std::env::var_os("HORIZON_VERIFIED_HUD_ROOT").ok_or("stock root missing")?);
++    let receipt = PathBuf::from(
++        std::env::var_os("HORIZON_STOCK_INSTALL_RECEIPT").ok_or("stock receipt missing")?,
++    );
++    let cancel = AtomicBool::new(false);
++    let open = || -> crate::Result<InstalledStockAssets> {
++        InstalledStockAssets::reopen(&root, &receipt, &cancel)?
++            .ok_or("installed source missing".into())
++    };
++    let cold = open()?;
++    let cold_lifetime = cold.assets().liveness();
++    let build_start = Instant::now();
++    let mut original = HudAtlas::build(cold.assets())?;
++    let original_atlas_time = build_start.elapsed();
++    let expected_rgba = Sha256::digest(&original.pixels);
++    assert_eq!(
++        format!("{expected_rgba:x}"),
++        "a4f3e9e48e982b03a68ac752ab4f52d81665feba7259b1ff628d8ced1e96155b"
++    );
++    let expected_sprite_rects: HashMap<_, _> = original
++        .sprites
++        .iter()
++        .map(|(name, &rect)| (name.clone(), rect_key(rect)))
++        .collect();
++    assert_eq!(expected_sprite_rects.len(), 4545);
++    assert_eq!(original.sprite_animations.len(), 63);
++    let expected_animations = animation_digest(&original.sprite_animations);
++    let expected_font = font_digest(&original.font);
++    let panorama_started = Instant::now();
++    let cold_panorama = cold.load_panorama();
++    let cold_panorama_time = panorama_started.elapsed();
++    let expected_cubemap = panorama_digest(cold_panorama.faces());
++    let expected_glint = original.glint.clone();
++    let expected_armor = original.glint_armor.clone();
++    let expected_widths = original.galactic_widths;
++    let expected_translucent = original.translucent.clone();
++    let expected_flags = original.flags.clone();
++    let original_epoch = original.font.epoch();
++    let original_revision = original.revision;
++    let original_skins = original.object_skins_revision;
++    original
++        .object_skins
++        .insert("old-session".into(), "fixture:skin".into());
++
++    let mut slot = StockHudSlot::default();
++    assert!(
++        slot.capture_bounded(&mut original, &cold, &cold_panorama, &cancel, 1024)
++            .is_none()
++    );
++    assert_eq!(original.pixels.len(), 117_440_512);
++    let capture = Instant::now();
++    let capacity = slot
++        .capture(&mut original, &cold, &cold_panorama, &cancel)
++        .ok_or("capture failed")?;
++    let capture = capture.elapsed();
++    assert!(capacity.retained_bytes <= SLOT_CAP);
++    assert!(original.pixels.is_empty());
++    let backing = Arc::downgrade(original.stock_packed.as_ref().unwrap());
++    assert_eq!(backing.strong_count(), 2);
++    drop(original);
++    drop(cold_panorama);
++    drop(cold);
++    assert_eq!(backing.strong_count(), 1);
++    assert!(!cold_lifetime());
++
++    for pad in [0, 128] {
++        let started = Instant::now();
++        let source = open()?;
++        let verify = started.elapsed();
++        let cold_lifetime = source.assets().liveness();
++        let plan = slot
++            .prepare(Some(source), &cancel)
++            .ok_or("stock cache miss")?;
++        let planned_at = started.elapsed();
++        assert_eq!(plan.glint(), &expected_glint);
++        assert_eq!(plan.panorama().size, 1024);
++        let (width, height) = plan.dimensions();
++        assert_eq!((width, height), (4096, 7168));
++        let row_bytes = width as usize * 4;
++        let pitch = row_bytes + pad;
++        let mut surface = vec![0xa5; pitch * height as usize];
++        let restored = plan
++            .finish_mapped(&mut surface, pitch, &cancel)
++            .ok_or("mapped restore failed")?;
++        let restored_at = started.elapsed();
++        let mut digest = Sha256::new();
++        for row in surface.chunks_exact(pitch) {
++            digest.update(&row[..row_bytes]);
++            assert!(row[row_bytes..].iter().all(|&value| value == 0xa5));
++        }
++        assert_eq!(digest.finalize(), expected_rgba);
++        drop(surface);
++        assert!(restored.atlas.pixels.is_empty());
++        assert!(!restored.atlas.font.uniform && !restored.atlas.font.japanese);
++        assert!(restored.atlas.font.take_patches().is_empty());
++        assert_eq!(font_digest(&restored.atlas.font), expected_font);
++        assert_eq!(
++            animation_digest(&restored.atlas.sprite_animations),
++            expected_animations
++        );
++        assert_eq!(restored.atlas.galactic_widths, expected_widths);
++        assert_eq!(restored.atlas.translucent, expected_translucent);
++        assert_eq!(restored.atlas.flags, expected_flags);
++        assert_eq!(
++            restored
++                .atlas
++                .sprites
++                .iter()
++                .map(|(name, &rect)| (name.clone(), rect_key(rect)))
++                .collect::<HashMap<_, _>>(),
++            expected_sprite_rects
++        );
++        assert_eq!(restored.atlas.glint, expected_glint);
++        assert_eq!(restored.atlas.glint_armor, expected_armor);
++        assert_eq!(panorama_digest(&restored.panorama), expected_cubemap);
++        assert_ne!(restored.atlas.revision, original_revision);
++        assert_ne!(restored.atlas.font.epoch(), original_epoch);
++        assert_ne!(restored.atlas.object_skins_revision, original_skins);
++        assert!(restored.atlas.object_skins.is_empty());
++        assert!(cold_lifetime());
++        assert_eq!(backing.strong_count(), 2);
++        // The installed atlas remains independently uploadable after the slot is cleared.
++        if pad != 0 {
++            slot.clear();
++        }
++        let mut reupload = vec![0; row_bytes * height as usize];
++        assert!(restored.atlas.write_mapped_rgba(&mut reupload, row_bytes));
++        assert_eq!(Sha256::digest(reupload), expected_rgba);
++        drop(restored);
++        assert!(!cold_lifetime());
++        assert_eq!(backing.strong_count(), usize::from(pad == 0));
++        println!(
++            "stock hit padding={pad} verify={verify:?} plan={:?} map_font={:?} total={restored_at:?}",
++            planned_at - verify,
++            restored_at - planned_at
++        );
++    }
++    println!(
++        "stock slot {capacity:?} capture={capture:?} cold_atlas={original_atlas_time:?} cold_panorama={cold_panorama_time:?} glint_bytes={} armor_glint_bytes={} panorama_streamed_rgba_bytes={}",
++        expected_glint.0.len(),
++        expected_armor.0.len(),
++        expected_cubemap.1
++    );
++    Ok(())
++}
++
++#[cfg(unix)]
++#[test]
++fn replacement_installer_receipt_and_cancel_evict_the_previous_slot() -> crate::Result<()> {
++    const FONT: &str = "assets/minecraft/font/default.json";
++    let temp = tempfile::tempdir()?;
++    let root = temp.path().join("resources");
++    let receipt = temp.path().join("installed-stock.json");
++    fs::create_dir_all(root.join(FONT).parent().unwrap())?;
++    fs::write(root.join("horizon-resources.json"), b"{}")?;
++    let cancel = AtomicBool::new(false);
++    let open = || InstalledStockAssets::reopen(&root, &receipt, &cancel);
++    let publish = |advance| -> crate::Result<String> {
++        fs::write(
++            root.join(FONT),
++            format!(r#"{{"providers":[{{"type":"space","advances":{{"A":{advance}}}}}]}}"#),
++        )?;
++        horizon_core::prepared_files::write(&root)?;
++        let bytes = fs::read(root.join(horizon_core::prepared_files::FILE_NAME))?;
++        Ok(format!("{:x}", Sha256::digest(bytes)))
++    };
++    assert!(open()?.is_none());
++    let first = publish(2)?;
++    fs::write(&receipt, serde_json::to_vec(&asset_receipt(&root, &first))?)?;
++    let old = open()?.ok_or("first receipt open failed")?;
++    let mut cold = HudAtlas::build(old.assets())?;
++    assert_eq!(cold.font.glyph('A').advance, 2.0);
++    let mut slot = StockHudSlot::default();
++    let old_panorama = old.load_panorama();
++    assert!(
++        slot.capture(&mut cold, &old, &old_panorama, &cancel)
++            .is_some()
++    );
++    let old_size = fs::metadata(root.join(horizon_core::prepared_files::FILE_NAME))?.len();
++    let second = publish(4)?;
++    assert_eq!(
++        old_size,
++        fs::metadata(root.join(horizon_core::prepared_files::FILE_NAME))?.len()
++    );
++    assert_ne!(first, second);
++    assert!(open().is_err());
++    fs::write(
++        &receipt,
++        serde_json::to_vec(&asset_receipt(&root, &second))?,
++    )?;
++    let new = open()?.ok_or("second receipt open failed")?;
++    assert!(slot.prepare(Some(new), &cancel).is_none());
++    assert!(slot.0.is_none());
++    assert_eq!(cold.font.glyph('A').advance, 2.0);
++
++    let new = open()?.unwrap();
++    let mut new_atlas = HudAtlas::build(new.assets())?;
++    assert_eq!(new_atlas.font.glyph('A').advance, 4.0);
++    assert!(
++        slot.capture(&mut new_atlas, &new, &old_panorama, &cancel)
++            .is_none()
++    );
++    let new_panorama = new.load_panorama();
++    assert!(
++        slot.capture(&mut new_atlas, &new, &new_panorama, &cancel)
++            .is_some()
++    );
++    cancel.store(true, Ordering::Release);
++    assert!(slot.prepare(open()?, &cancel).is_none());
++    assert!(slot.0.is_none());
++    cancel.store(false, Ordering::Release);
++    fs::remove_file(&receipt)?;
++    assert!(open()?.is_none());
++    fs::write(&receipt, vec![0; RECEIPT_CAP as usize + 1])?;
++    assert!(open().is_err());
++    Ok(())
++}

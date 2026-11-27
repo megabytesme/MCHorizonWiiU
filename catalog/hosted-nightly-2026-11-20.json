@@ -12,8 +12,8 @@
     "version": "1.1.0",
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
-  "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "d1059a546a3487e85d4b3bcffc399d5359b66adb",
+  "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
+  "output_tree": "ed2fcda5e47d2ef158a7d0e86df88d502674a253",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1172,12 +1172,72 @@
       "sha256": "9b50dfee007a707df66c8bef74537932145d39d578c05f1df615f17716642040",
       "input_tree": "e4135f0f77fa6abf26d2bcbe86b135bda3f95fa5",
       "output_tree": "d1059a546a3487e85d4b3bcffc399d5359b66adb"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0194-verified-cafe-hud-mapped-font-seam.patch",
+      "sha256": "91aa3afd6c87be6f51881001e2abb774dc3a5cffeb391e63eb2509341ef6b154",
+      "input_tree": "d1059a546a3487e85d4b3bcffc399d5359b66adb",
+      "output_tree": "eac469c83873309d29a802d3560728a338b227e7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0195-defer-cafe-first-ui.patch",
+      "sha256": "6f79f4242a6213d27b2961020290a2b7b407ed16afbb1d6afbf8f1e1670acda2",
+      "input_tree": "eac469c83873309d29a802d3560728a338b227e7",
+      "output_tree": "2d460c2b96cc889966133cd0ecb6f206ad928e90"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0196-stock-hud-complete-restore.patch",
+      "sha256": "648473605ff363d2937d024e16c8bdde40150e822d3be3d52fd13dd7230e91e6",
+      "input_tree": "2d460c2b96cc889966133cd0ecb6f206ad928e90",
+      "output_tree": "fc62e0c62c8222de835c359b6737e4e4b2f0f925"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0197-night-stock-hud-ownership.patch",
+      "sha256": "01a135b83d412be757a0fa96ac812058890d596962a200bbc00886461f796687",
+      "input_tree": "fc62e0c62c8222de835c359b6737e4e4b2f0f925",
+      "output_tree": "a228c3b54f0ae1145b9553ae1eb80ae964e4ce16"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0198-wire-night-stock-hud-cold-capture.patch",
+      "sha256": "8d11058b2e9c468e7460ce054b6f4ae4f61428ada4dce6abc097d9f7753285d6",
+      "input_tree": "a228c3b54f0ae1145b9553ae1eb80ae964e4ce16",
+      "output_tree": "6537cfa47c1c9033a5c0f14cb765c076a48a3932"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0199-prepare-mapped-stock-gx2-hud.patch",
+      "sha256": "b7f939ac6c5c8c26e2faeb34a479d074c58896ed034a805f9e5b1b587d5ece50",
+      "input_tree": "6537cfa47c1c9033a5c0f14cb765c076a48a3932",
+      "output_tree": "4eb79d2d967614cb4079a794404a1a989267e76a"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0200-stock-hud-post-core-handoff.patch",
+      "sha256": "6ee734fd248c8b12d9525bacb1b383817dff08f8fcd1bb0093668744da4b023c",
+      "input_tree": "4eb79d2d967614cb4079a794404a1a989267e76a",
+      "output_tree": "c44574b6524f7089bead32ee63936b1a738659f7"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0201-rollback-stock-hud-foreground.patch",
+      "sha256": "3790b45cb127bf06dc755153706fa4a03c4d0b7087ccdaaadca588e25fec44f7",
+      "input_tree": "c44574b6524f7089bead32ee63936b1a738659f7",
+      "output_tree": "9e47ab221cfa870c4d7caeca232461bac58f1d2e"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0202-enable-verified-stock-warm-replay.patch",
+      "sha256": "db8d5f9deeb1264bfb303862e1fdb8dd49c08537db793131a11e6bf2e17b6767",
+      "input_tree": "9e47ab221cfa870c4d7caeca232461bac58f1d2e",
+      "output_tree": "df9830bf05b67d41d866cf8fdaf3b0a908b1c707"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0203-pin-one-verified-archive-per-hosted-launch.patch",
+      "sha256": "542e91df1d090267735d0fedad377f9a28e6372995232ba8ab3bb763b8761f9e",
+      "input_tree": "df9830bf05b67d41d866cf8fdaf3b0a908b1c707",
+      "output_tree": "ed2fcda5e47d2ef158a7d0e86df88d502674a253"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.52",
-    "patch": "0.5.0-rc.52"
+    "client": "0.8.0-rc.53",
+    "patch": "0.5.0-rc.53"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
@@ -1185,5 +1245,8 @@
     "minecraft": "26.3",
     "schema": 7,
     "server_sha256": "a362163eec5d1612d520772bc16e5b39c09e3b234fdc045f56bf544284ee8ae6"
-  }
+  },
+  "cargo_features": [
+    "stock-hud-seed"
+  ]
 }

@@ -1,0 +1,1193 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 890b7690102856095a6187c573dc7044d9242e17..7bcd56ed88ca6181fc4e112b91095aec1d4c47b4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2108,6 +2108,7 @@ dependencies = [
+  "portable-atomic",
+  "serde",
+  "serde_json",
++ "sha2",
+  "unicode_names2",
+ ]
+ 
+diff --git a/crates/horizon-assets/Cargo.toml b/crates/horizon-assets/Cargo.toml
+index ee82eafa3a137922d07304ae3e8cf2a873f82e5a..622f0819c348f287dad1ef8d88683f1cbaf3b43f 100644
+--- a/crates/horizon-assets/Cargo.toml
++++ b/crates/horizon-assets/Cargo.toml
+@@ -6,6 +6,9 @@ license.workspace = true
+ rust-version.workspace = true
+ description = "Horizon version-specific model and resource decoding"
+ 
++[features]
++verified-prepared-assets = ["horizon-core/verified-prepared-assets"]
++
+ [dependencies]
+ horizon-core = { path = "../horizon-core" }
+ log = "0.4"
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index 5c68cb83110f0910e591027c88b2fa3cc9790ce6..a6d1776ffcbf99afc93ba431b357ae4a8e7bb281 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -57,6 +57,11 @@ fn copy_resource_bytes(
+ 
+ enum Storage {
+     Directory(PathBuf),
++    #[cfg(feature = "verified-prepared-assets")]
++    VerifiedAssets {
++        archive: horizon_core::prepared_files::PreparedFiles,
++        generation: [u8; 32],
++    },
+     #[cfg(not(target_arch = "wasm32"))]
+     Archive(Zip),
+     Prefix {
+@@ -135,6 +140,8 @@ impl std::fmt::Debug for ResourceSource {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         let kind = match self.0.as_ref() {
+             Storage::Directory(_) => "Directory",
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { .. } => "VerifiedAssets",
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(_) => "Archive",
+             Storage::Prefix { .. } => "Prefix",
+@@ -294,6 +301,18 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, active: &mut BTreeSet<Pa
+     active.remove(&canonical);
+ }
+ 
++#[cfg(feature = "verified-prepared-assets")]
++fn verified_read(
++    archive: &horizon_core::prepared_files::PreparedFiles,
++    name: &str,
++    max: u64,
++) -> io::Result<Vec<u8>> {
++    name.starts_with("assets/")
++        .then(|| archive.read_head(name, max))
++        .flatten()
++        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?
++}
++
+ impl ResourceSource {
+     /// Observe whether any reader still owns this resource generation, without retaining it.
+     pub fn liveness(&self) -> impl Fn() -> bool + Send + Sync + use<> {
+@@ -367,6 +386,32 @@ impl ResourceSource {
+     pub fn directory(root: PathBuf) -> Self {
+         Self(Arc::new(Storage::Directory(root)))
+     }
++
++    /// Descriptor-backed stock asset view. Everything outside `assets/`
++    /// is excluded, including ordinary loose fallbacks.
++    #[cfg(feature = "verified-prepared-assets")]
++    pub fn reopen_verified_assets(
++        root: &Path,
++        generation: [u8; 32],
++        cancel: &std::sync::atomic::AtomicBool,
++    ) -> io::Result<Option<Self>> {
++        let archive =
++            horizon_core::prepared_files::PreparedFiles::reopen_verified(root, generation, cancel)?;
++        Ok(archive.map(|archive| {
++            Self(Arc::new(Storage::VerifiedAssets {
++                archive,
++                generation,
++            }))
++        }))
++    }
++
++    #[cfg(feature = "verified-prepared-assets")]
++    pub fn verified_assets_generation(&self) -> Option<[u8; 32]> {
++        match self.0.as_ref() {
++            Storage::VerifiedAssets { generation, .. } => Some(*generation),
++            _ => None,
++        }
++    }
+     #[cfg(not(target_arch = "wasm32"))]
+     pub fn archive(path: &Path) -> io::Result<Self> {
+         Ok(Self::opened_archive(Zip::open(path)?))
+@@ -402,6 +447,8 @@ impl ResourceSource {
+         }
+         match self.0.as_ref() {
+             Storage::Directory(root) => Some(fs::File::open(root.join(name))),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { .. } => None,
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(_) => None,
+             Storage::Prefix { source, prefix } => source.open_loose_ogg(&format!("{prefix}{name}")),
+@@ -418,6 +465,8 @@ impl ResourceSource {
+         }
+         match self.0.as_ref() {
+             Storage::Directory(root) => horizon_core::prepared_files::read(&root.join(name)),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => verified_read(archive, name, u64::MAX),
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(archive) => archive.read(name),
+             Storage::Prefix { source, prefix } => source.read(&format!("{prefix}{name}")),
+@@ -435,6 +484,8 @@ impl ResourceSource {
+         }
+         match self.0.as_ref() {
+             Storage::Directory(root) => root.join(name).is_file().then(|| root.clone()),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { .. } => None,
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(_) => None,
+             Storage::Prefix { source, prefix } => source.folder_of(&format!("{prefix}{name}")),
+@@ -476,6 +527,10 @@ impl ResourceSource {
+                 out,
+                 budget,
+             ),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => {
++                copy_resource_bytes(&verified_read(archive, name, u64::MAX)?, out, budget)
++            }
+         }
+     }
+     pub fn read_to_string(&self, name: &str) -> io::Result<String> {
+@@ -496,6 +551,8 @@ impl ResourceSource {
+             }
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(archive) => archive.read_head(name, max),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => verified_read(archive, name, max),
+             Storage::Prefix { source, prefix } => source.read_head(&format!("{prefix}{name}"), max),
+             Storage::Index(files, _) => match &files
+                 .get(name)
+@@ -525,6 +582,8 @@ impl ResourceSource {
+             }
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(archive) => archive.contains(name),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => verified_read(archive, name, 0).is_ok(),
+             Storage::Prefix { source, prefix } => source.contains(&format!("{prefix}{name}")),
+             Storage::Index(files, _) => files.contains_key(name),
+         }
+@@ -544,6 +603,10 @@ impl ResourceSource {
+             }
+             #[cfg(not(target_arch = "wasm32"))]
+             Storage::Archive(archive) => return archive.read_limited(name, max),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => {
++                verified_read(archive, name, max.saturating_add(1))?
++            }
+             Storage::Prefix { source, prefix } => {
+                 return source.read_limited(&format!("{prefix}{name}"), max);
+             }
+@@ -578,6 +641,18 @@ impl ResourceSource {
+         if !dir.starts_with("assets/") || !stays_inside(dir) {
+             return None;
+         }
++        #[cfg(feature = "verified-prepared-assets")]
++        if let Storage::VerifiedAssets { archive, .. } = self.0.as_ref() {
++            return Some(
++                archive
++                    .list(dir)
++                    .unwrap_or_default()
++                    .into_iter()
++                    .filter(|name| stays_inside(name))
++                    .map(str::to_owned)
++                    .collect(),
++            );
++        }
+         let Storage::Directory(root) = self.0.as_ref() else {
+             return None;
+         };
+@@ -616,6 +691,14 @@ impl ResourceSource {
+                 .filter(|name| name.starts_with(prefix) && stays_inside(name))
+                 .map(str::to_owned)
+                 .collect(),
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { archive, .. } => archive
++                .list("assets")
++                .unwrap_or_default()
++                .into_iter()
++                .filter(|name| name.starts_with(prefix) && stays_inside(name))
++                .map(str::to_owned)
++                .collect(),
+             Storage::Prefix {
+                 source,
+                 prefix: base,
+@@ -773,6 +856,12 @@ impl ResourceSource {
+                 fingerprint.hash(hash);
+                 name.hash(hash);
+             }
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { generation, .. } => {
++                4u8.hash(hash);
++                generation.hash(hash);
++                name.hash(hash);
++            }
+             Storage::Prefix { source, prefix } => {
+                 source.cafe_texture_file(&format!("{prefix}{name}"), archives, hash)?;
+             }
+@@ -810,6 +899,13 @@ impl ResourceSource {
+                 name.hash(&mut hash);
+                 Some(hash.finish())
+             }
++            #[cfg(feature = "verified-prepared-assets")]
++            Storage::VerifiedAssets { generation, .. } => {
++                let mut hash = DefaultHasher::new();
++                generation.hash(&mut hash);
++                name.hash(&mut hash);
++                Some(hash.finish())
++            }
+             Storage::Prefix { source, prefix } => {
+                 source.file_fingerprint(&format!("{prefix}{name}"), archives)
+             }
+diff --git a/crates/horizon-client-render/Cargo.toml b/crates/horizon-client-render/Cargo.toml
+index 5dfcfeada8229b5d94fc080c8d175116874abda2..3527de9572cac1ce0c7899c1d4e70b1e57dd721c 100644
+--- a/crates/horizon-client-render/Cargo.toml
++++ b/crates/horizon-client-render/Cargo.toml
+@@ -86,6 +86,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+ 
+ [features]
++verified-prepared-assets = ["horizon-assets/verified-prepared-assets"]
+ # Sound output: horizon-client's `audio` feature.
+ audio = ["dep:cpal"]
+ # Helpers horizon-client's tests build their fixtures with.
+diff --git a/crates/horizon-client-render/src/font.rs b/crates/horizon-client-render/src/font.rs
+index a9a08b73179edb49a42729fb96311dd8e04865a3..ca378ba8fea5c8508e2fb917507b22971d9f37ee 100644
+--- a/crates/horizon-client-render/src/font.rs
++++ b/crates/horizon-client-render/src/font.rs
+@@ -328,18 +328,41 @@ fn glyph_rect(x: u32, y: u32, w: u32, h: u32, atlas: (u32, u32)) -> Rect {
+         h,
+     }
+ }
+-/// The unscaled pixel width of a bitmap cell (`BitmapProvider.getActualGlyphWidth`).
+-fn used_width(pixels: &[u8], stride: u32, (cx, cy, cw, ch): (u32, u32, u32, u32)) -> u32 {
+-    (0..cw)
+-        .rev()
+-        .find(|&x| {
+-            (0..ch).any(|y| {
+-                pixels
+-                    .get((((cy + y) * stride + cx + x) * 4 + 3) as usize)
+-                    .is_some_and(|a| *a != 0)
++#[derive(Clone, Copy)]
++struct BitmapPixels<'a> {
++    rgba: &'a [u8],
++    width: u32,
++    row_bytes: usize,
++}
++impl<'a> BitmapPixels<'a> {
++    fn tight(width: u32, rgba: &'a [u8]) -> Self {
++        Self {
++            rgba,
++            width,
++            row_bytes: (width as usize).checked_mul(4).unwrap_or(0),
++        }
++    }
++
++    /// The unscaled width of a bitmap cell (`BitmapProvider.getActualGlyphWidth`).
++    fn used_width(self, (cx, cy, cw, ch): (u32, u32, u32, u32)) -> u32 {
++        if self.row_bytes == 0 {
++            return 0;
++        }
++        let columns = cw.min(self.width.saturating_sub(cx));
++        let rows = self
++            .rgba
++            .chunks(self.row_bytes)
++            .skip(cy as usize)
++            .take(ch as usize);
++        (0..columns)
++            .rev()
++            .find(|&x| {
++                let alpha = (cx + x) as usize * 4 + 3;
++                rows.clone()
++                    .any(|row| row.get(alpha).is_some_and(|a| *a != 0))
+             })
+-        })
+-        .map_or(0, |x| x + 1)
++            .map_or(0, |x| x + 1)
++    }
+ }
+ /// `FontSet.hasFishyAdvance`: an advance under 0 or over 32. Such a glyph is still the one drawn
+ /// (`SelectedGlyphs.any` is the first provider's); only `SelectedGlyphs.nonFishy`, what obfuscated
+@@ -362,7 +385,7 @@ fn load_bitmap(
+     source: &ResourceSource,
+     p: &serde_json::Value,
+     sheets: &HashMap<String, Rect>,
+-    pixels: &[u8],
++    pixels: BitmapPixels<'_>,
+     atlas: (u32, u32),
+     metrics_only: bool,
+ ) -> HashMap<char, BitmapGlyph> {
+@@ -445,12 +468,8 @@ fn load_bitmap(
+             }
+             let (x, y) = (c as u32 * cell_w, r as u32 * cell_h);
+             let used = match &sheet {
+-                Some(s) => used_width(&s.1, s.0, (x, y, cell_w, cell_h)),
+-                None => used_width(
+-                    pixels,
+-                    atlas.0,
+-                    (origin.0 + x, origin.1 + y, cell_w, cell_h),
+-                ),
++                Some(s) => BitmapPixels::tight(s.0, &s.1).used_width((x, y, cell_w, cell_h)),
++                None => pixels.used_width((origin.0 + x, origin.1 + y, cell_w, cell_h)),
+             };
+             let glyph = Glyph {
+                 rect: None,
+@@ -698,8 +717,80 @@ impl Font {
+         region: (u32, u32),
+         white: Rect,
+     ) -> Self {
+-        Self::load_with(source, sprites, pixels, atlas, region, white, false)
++        Self::load_with(
++            source,
++            sprites,
++            BitmapPixels::tight(atlas.0, pixels),
++            atlas,
++            region,
++            white,
++            false,
++        )
++    }
++    /// Build the stock font while the filled atlas surface is mapped. `row_bytes`
++    /// includes padding. Glyph UVs still use the logical atlas dimensions.
++    /// The returned font owns its data and can be used after the map is released.
++    /// Pack and mod callers use the regular replaceable load path.
++    #[cfg(any(test, target_os = "cafe"))]
++    pub fn load_stock_mapped(
++        source: &ResourceSource,
++        sprites: &HashMap<String, Rect>,
++        rgba: &[u8],
++        row_bytes: usize,
++        atlas: (u32, u32),
++        region: (u32, u32),
++        white: Rect,
++    ) -> Option<Self> {
++        let (width, height) = atlas;
++        let logical_bytes = (width as usize).checked_mul(4)?;
++        if logical_bytes == 0
++            || height == 0
++            || row_bytes < logical_bytes
++            || !row_bytes.is_multiple_of(4)
++            || row_bytes.checked_mul(height as usize)? != rgba.len()
++        {
++            return None;
++        }
++        let pixels = BitmapPixels {
++            rgba,
++            width,
++            row_bytes,
++        };
++        Some(Self::load_with(
++            source, sprites, pixels, atlas, region, white, false,
++        ))
++    }
++    #[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
++    pub(crate) fn verified_assets_generation(&self) -> Option<[u8; 32]> {
++        self.source.verified_assets_generation()
++    }
++
++    #[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
++    pub(crate) fn rebuild_verified_mapped(
++        &self,
++        sprites: &HashMap<String, Rect>,
++        rgba: &[u8],
++        pitch: usize,
++        atlas: (u32, u32),
++    ) -> Option<Self> {
++        self.verified_assets_generation()?;
++        if atlas != self.atlas {
++            return None;
++        }
++        let mut font = Self::load_stock_mapped(
++            &self.source,
++            sprites,
++            rgba,
++            pitch,
++            self.atlas,
++            self.region,
++            self.white,
++        )?;
++        font.uniform = self.uniform;
++        font.japanese = self.japanese;
++        Some(font)
+     }
++
+     /// Resolve provider files against the game's resources when an overlay lacks them.
+     /// Definitions remain the overlay's so pack filters still hide lower definitions.
+     #[allow(clippy::too_many_arguments)]
+@@ -748,13 +839,21 @@ impl Font {
+             w: 1,
+             h: 1,
+         };
+-        Self::load_with(source, &HashMap::new(), &[], (1, 1), (0, 0), white, true)
++        Self::load_with(
++            source,
++            &HashMap::new(),
++            BitmapPixels::tight(1, &[]),
++            (1, 1),
++            (0, 0),
++            white,
++            true,
++        )
+     }
+     #[allow(clippy::too_many_arguments)]
+     fn load_with(
+         source: &ResourceSource,
+         sprites: &HashMap<String, Rect>,
+-        pixels: &[u8],
++        pixels: BitmapPixels<'_>,
+         atlas: (u32, u32),
+         region: (u32, u32),
+         white: Rect,
+@@ -806,7 +905,7 @@ impl Font {
+         font
+     }
+     /// `FontManager`: a font's providers with references expanded.
+-    fn load_set(&self, id: &str, pixels: &[u8]) -> FontSet {
++    fn load_set(&self, id: &str, pixels: BitmapPixels<'_>) -> FontSet {
+         let mut all = Vec::new();
+         providers(&self.source, id, 0, &mut all);
+         let providers = all
+@@ -1462,6 +1561,10 @@ fn split_at(parts: &mut Vec<(Vec<char>, Span)>, at: usize, skip: usize, style: &
+     Text::from_spans(line)
+ }
+ 
++#[cfg(test)]
++#[path = "font/mapped_tests.rs"]
++mod mapped_tests;
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/crates/horizon-client-render/src/font/mapped_tests.rs b/crates/horizon-client-render/src/font/mapped_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..38d9f258b658be01bfc203debdbafd688c884b28
+--- /dev/null
++++ b/crates/horizon-client-render/src/font/mapped_tests.rs
+@@ -0,0 +1,189 @@
++use super::*;
++use crate::{cafe_pixels::PackedPixels, hud::HudAtlas};
++use horizon_assets::resource_source::Resource;
++use sha2::{Digest, Sha256};
++use std::{path::PathBuf, time::Instant};
++
++fn glyph_key(glyph: Glyph) -> ([u32; 6], Option<[u32; 6]>) {
++    let metrics = [
++        glyph.left,
++        glyph.top,
++        glyph.right,
++        glyph.bottom,
++        glyph.advance,
++        glyph.offset,
++    ];
++    let rect = glyph.rect.map(|r| {
++        [
++            r.u0.to_bits(),
++            r.v0.to_bits(),
++            r.u1.to_bits(),
++            r.v1.to_bits(),
++            r.w,
++            r.h,
++        ]
++    });
++    (metrics.map(f32::to_bits), rect)
++}
++
++#[test]
++fn reads_pitched_alpha_without_changing_logical_glyph_uvs() {
++    let definition = br#"{"providers":[{"type":"bitmap","file":"minecraft:font/fixture.png","height":2,"ascent":2,"chars":["AB"]}]}"#;
++    let source = ResourceSource::indexed(
++        [(
++            "assets/minecraft/font/default.json".to_owned(),
++            Resource::bytes(definition.to_vec()),
++        )]
++        .into(),
++    );
++    let atlas = (8, 4);
++    let region = (3, 1);
++    let white = Rect {
++        u0: 0.0,
++        v0: 0.0,
++        u1: 0.125,
++        v1: 0.25,
++        w: 1,
++        h: 1,
++    };
++    let sheet = Rect {
++        u0: 0.25,
++        v0: 0.25,
++        u1: 1.0,
++        v1: 0.75,
++        w: 6,
++        h: 2,
++    };
++    let sprites = [("font/fixture".to_owned(), sheet)].into();
++    let mut rgba = [0; 192];
++    for row in rgba.chunks_exact_mut(48) {
++        row[32..].fill(255);
++    }
++    rgba[2 * 48 + 3 * 4 + 3] = 128;
++    let mut tight = [0; 128];
++    for (target, source) in tight.chunks_exact_mut(32).zip(rgba.chunks_exact(48)) {
++        target.copy_from_slice(&source[..32]);
++    }
++    let reference = Font::load(&source, &sprites, &tight, atlas, region, white);
++    let font = Font::load_stock_mapped(&source, &sprites, &rgba, 48, atlas, region, white).unwrap();
++    let first = font.glyph('A');
++    let second = font.glyph('B');
++    assert_eq!(first.advance, 3.0);
++    assert_eq!(second.advance, 1.0);
++    assert_eq!(first.rect.unwrap().u0, (2.0 + 0.01) / 8.0);
++    assert_eq!(second.rect.unwrap().u0, (5.0 + 0.01) / 8.0);
++    assert_eq!(glyph_key(first), glyph_key(reference.glyph('A')));
++    assert_eq!(glyph_key(second), glyph_key(reference.glyph('B')));
++    assert_ne!(font.epoch(), reference.epoch());
++    assert!(font.take_patches().is_empty());
++    assert_eq!(
++        BitmapPixels {
++            rgba: &rgba,
++            width: 8,
++            row_bytes: 48
++        }
++        .used_width((7, 1, 4, 2)),
++        0
++    );
++
++    for (bytes, pitch, dimensions) in [
++        (&rgba[..191], 48, atlas),
++        (&rgba[..], 31, atlas),
++        (&rgba[..], 49, atlas),
++        (&rgba[..], 44, atlas),
++        (&rgba[..], 48, (0, 4)),
++        (&rgba[..], 48, (8, 0)),
++        (&rgba[..], usize::MAX & !3, (8, 2)),
++    ] {
++        assert!(
++            Font::load_stock_mapped(&source, &sprites, bytes, pitch, dimensions, region, white)
++                .is_none()
++        );
++    }
++}
++
++#[test]
++#[ignore = "requires the locally prepared stock assets in HORIZON_STOCK_HUD_FIXTURE"]
++fn prepared_stock_font_matches_after_unmapping_padded_atlas() {
++    let root = std::env::var_os("HORIZON_STOCK_HUD_FIXTURE").unwrap();
++    let source = ResourceSource::directory(PathBuf::from(root));
++    let mut atlas = HudAtlas::build(&source).unwrap();
++    let dimensions = (atlas.width, atlas.height);
++    assert_eq!(dimensions, (4096, 7168));
++    let row_bytes = atlas.width as usize * 4;
++    let height = atlas.height as usize;
++    let pitch = row_bytes + 128;
++    assert_eq!(atlas.pixels.len(), 117_440_512);
++    let packed = PackedPixels::compress(&atlas.pixels).unwrap();
++    drop(std::mem::take(&mut atlas.pixels));
++    let start = Instant::now();
++    let font = {
++        let mut mapped = vec![0xa5; pitch * height];
++        packed
++            .write_pitched(&mut mapped, row_bytes, pitch, height)
++            .unwrap();
++        let filled = start.elapsed();
++        let mut hash = Sha256::new();
++        for row in mapped.chunks_exact(pitch) {
++            hash.update(&row[..row_bytes]);
++            assert!(row[row_bytes..].iter().all(|&byte| byte == 0xa5));
++        }
++        assert_eq!(
++            format!("{:x}", hash.finalize()),
++            "a4f3e9e48e982b03a68ac752ab4f52d81665feba7259b1ff628d8ced1e96155b"
++        );
++        let start_font = Instant::now();
++        let font = Font::load_stock_mapped(
++            &source,
++            &atlas.sprites,
++            &mapped,
++            pitch,
++            dimensions,
++            atlas.font.region,
++            atlas.white,
++        )
++        .unwrap();
++        eprintln!(
++            "stock mapped atlas {}x{} logical_bytes={} pitch_bytes={} surface_bytes={} fill_ms={:.3} font_ms={:.3}",
++            dimensions.0,
++            dimensions.1,
++            row_bytes * height,
++            pitch,
++            mapped.len(),
++            filled.as_secs_f64() * 1000.0,
++            start_font.elapsed().as_secs_f64() * 1000.0
++        );
++        font
++    };
++    assert_ne!(font.epoch(), atlas.font.epoch());
++    assert!(font.take_patches().is_empty());
++    let ids: Vec<_> = atlas
++        .font
++        .cache
++        .borrow()
++        .sets
++        .iter()
++        .map(|(id, _)| id.clone())
++        .collect();
++    assert!(ids.len() >= 3);
++    let actual_ids: Vec<_> = font
++        .cache
++        .borrow()
++        .sets
++        .iter()
++        .map(|(id, _)| id.clone())
++        .collect();
++    assert_eq!(ids, actual_ids);
++    let mut compared = 0;
++    for id in ids {
++        for ch in (' '..='~').chain(['§', 'Ω', '漢', '\u{301}', '界', '⛏']) {
++            assert_eq!(
++                glyph_key(font.glyph_in(&id, ch)),
++                glyph_key(atlas.font.glyph_in(&id, ch)),
++                "{id} {ch}"
++            );
++            compared += 1;
++        }
++    }
++    eprintln!("stock mapped font matches {compared} glyph metrics and UVs");
++}
+diff --git a/crates/horizon-client-render/src/hud.rs b/crates/horizon-client-render/src/hud.rs
+index dce056d0be46a8da4877230033e0c29bce2e6c00..028804a3c7631740d07efa0fff86ab8a95731416 100644
+--- a/crates/horizon-client-render/src/hud.rs
++++ b/crates/horizon-client-render/src/hud.rs
+@@ -24,6 +24,10 @@ mod gui_sprite;
+ mod menu_pictures;
+ mod model_reducing;
+ mod pack_text;
++#[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
++mod verified_mapped_font;
++#[cfg(all(feature = "verified-prepared-assets", any(target_os = "cafe", test)))]
++pub use verified_mapped_font::MappedFontReceipt;
+ pub mod pictures;
+ pub(crate) mod sprite_modifiers;
+ 
+diff --git a/crates/horizon-client-render/src/hud/verified_mapped_font.rs b/crates/horizon-client-render/src/hud/verified_mapped_font.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a490721ccd4347c22c50e50304fb3a1c1ce76e76
+--- /dev/null
++++ b/crates/horizon-client-render/src/hud/verified_mapped_font.rs
+@@ -0,0 +1,259 @@
++use super::HudAtlas;
++use std::{
++    sync::atomic::{AtomicBool, Ordering},
++    time::{Duration, Instant},
++};
++
++/// Storage and elapsed time that this probe measures directly. The mapped
++/// span excludes SDK alignment outside the rows and is not a heap census.
++#[derive(Debug)]
++pub struct MappedFontReceipt {
++    pub mapped_span_bytes: usize,
++    pub tight_rgba_bytes: usize,
++    pub cpu_source_capacity_bytes: usize,
++    pub font_prepare: Duration,
++    pub fill_and_upload: Duration,
++}
++
++impl HudAtlas {
++    /// Rebuild an owned font inside the uploader's mapping. The uploader must
++    /// pass the completed atlas rows synchronously, after fill and before
++    /// unmapping. Commit only after the uploader successfully completes all
++    /// texture setup. Call before laying out batches for the new texture.
++    /// The current font remains usable when the probe declines or is canceled.
++    pub fn upload_with_verified_mapped_font<T, E>(
++        &mut self,
++        cancel: &AtomicBool,
++        upload: impl FnOnce(&Self, &mut dyn FnMut(&[u8], usize)) -> Result<T, E>,
++    ) -> Result<(T, Option<MappedFontReceipt>), E> {
++        let eligible = self.font.verified_assets_generation().is_some()
++            && self.material_maps.iter().all(Option::is_none)
++            && !self.sprites.contains_key("horizon/modimage");
++        let revision = self.revision;
++        let epoch = self.font.epoch();
++        let start = Instant::now();
++        let mut candidate = None;
++        let value = upload(self, &mut |rgba, pitch| {
++            if !eligible || cancel.load(Ordering::Acquire) || candidate.is_some() {
++                return;
++            }
++            let font_started = Instant::now();
++            if let Some(font) = self.font.rebuild_verified_mapped(
++                &self.sprites,
++                rgba,
++                pitch,
++                (self.width, self.height),
++            ) {
++                // The constructor checked row width, height and pitch against
++                // this slice, so the logical byte count also fits usize.
++                candidate = Some((
++                    font,
++                    MappedFontReceipt {
++                        mapped_span_bytes: rgba.len(),
++                        tight_rgba_bytes: self.width as usize * 4 * self.height as usize,
++                        cpu_source_capacity_bytes: self.pixels.capacity(),
++                        font_prepare: font_started.elapsed(),
++                        fill_and_upload: Duration::ZERO,
++                    },
++                ));
++            }
++        })?;
++        let Some((font, mut receipt)) = candidate else {
++            return Ok((value, None));
++        };
++        if cancel.load(Ordering::Acquire) || self.revision != revision || self.font.epoch() != epoch
++        {
++            return Ok((value, None));
++        }
++        receipt.fill_and_upload = start.elapsed();
++        self.font = font;
++        Ok((value, Some(receipt)))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{cafe_pixels::PackedPixels, font::Font, resource_source::ResourceSource};
++    use sha2::{Digest, Sha256};
++    use std::{fs, path::PathBuf};
++
++    fn restore(font: &Font) -> (u32, u32, u32, u32, u32, u32) {
++        let g = font.glyph('A');
++        let r = g.rect.unwrap();
++        (
++            g.advance.to_bits(),
++            g.top.to_bits(),
++            r.u0.to_bits(),
++            r.v0.to_bits(),
++            r.u1.to_bits(),
++            r.v1.to_bits(),
++        )
++    }
++
++    #[test]
++    fn commits_only_after_success_and_preserves_options() -> crate::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let root = temp.path();
++        fs::create_dir_all(root.join("assets/minecraft/font"))?;
++        fs::create_dir_all(root.join("assets/minecraft/textures/font"))?;
++        fs::write(root.join("horizon-resources.json"), b"{}")?;
++        fs::write(root.join("assets/minecraft/font/default.json"), br#"{"providers":[{"type":"bitmap","file":"minecraft:font/fixture.png","height":2,"ascent":2,"chars":["A"]}]}"#)?;
++        let mut encoder = png::Encoder::new(
++            fs::File::create(root.join("assets/minecraft/textures/font/fixture.png"))?,
++            4,
++            2,
++        );
++        encoder.set_color(png::ColorType::Rgba);
++        encoder.set_depth(png::BitDepth::Eight);
++        encoder.write_header()?.write_image_data(&[255; 32])?;
++        horizon_core::prepared_files::write(root)?;
++        let expected = Sha256::digest(fs::read(
++            root.join(horizon_core::prepared_files::FILE_NAME),
++        )?)
++        .into();
++        let cancel = AtomicBool::new(false);
++        let source = ResourceSource::reopen_verified_assets(root, expected, &cancel)?
++            .ok_or("snapshot missing")?;
++        let mut atlas = HudAtlas::build(&source)?;
++        atlas.font.uniform = true;
++        atlas.font.japanese = true;
++        let expected_glyph = restore(&atlas.font);
++        let epoch = atlas.font.epoch();
++        let row_bytes = atlas.width as usize * 4;
++        let pitch = row_bytes + 16;
++        let height = atlas.height as usize;
++        let mut mapped = vec![0xa5; pitch * height];
++        for (target, source) in mapped
++            .chunks_exact_mut(pitch)
++            .zip(atlas.pixels.chunks_exact(row_bytes))
++        {
++            target[..row_bytes].copy_from_slice(source);
++        }
++        let source_live = source.liveness();
++        drop(source);
++        drop(std::mem::take(&mut atlas.pixels));
++        assert!(source_live());
++
++        let failed = atlas.upload_with_verified_mapped_font(&cancel, |_, inspect| {
++            inspect(&mapped, pitch);
++            Err::<(), _>("upload failed after fill")
++        });
++        assert!(matches!(failed, Err("upload failed after fill")));
++        assert_eq!(atlas.font.epoch(), epoch);
++        let ((), receipt) = atlas.upload_with_verified_mapped_font(&cancel, |_, inspect| {
++            inspect(&mapped, pitch);
++            cancel.store(true, Ordering::Release);
++            Ok::<_, std::io::Error>(())
++        })?;
++        assert!(receipt.is_none());
++        assert_eq!(atlas.font.epoch(), epoch);
++        cancel.store(false, Ordering::Release);
++        let ((), receipt) = atlas.upload_with_verified_mapped_font(&cancel, |_, inspect| {
++            inspect(&mapped[..mapped.len() - 1], pitch);
++            Ok::<_, std::io::Error>(())
++        })?;
++        assert!(receipt.is_none());
++        assert_eq!(atlas.font.epoch(), epoch);
++        let ((), receipt) = atlas.upload_with_verified_mapped_font(&cancel, |atlas, inspect| {
++            inspect(&mapped, pitch);
++            atlas.font.reset_cache();
++            Ok::<_, std::io::Error>(())
++        })?;
++        assert!(receipt.is_none());
++        let epoch = atlas.font.epoch();
++        let (reply, receipt) =
++            atlas.upload_with_verified_mapped_font(&cancel, |atlas, inspect| {
++                inspect(&mapped, pitch);
++                assert_eq!(atlas.font.epoch(), epoch);
++                Ok::<_, std::io::Error>("presenter")
++            })?;
++        let receipt = receipt.ok_or("valid mapped font not published")?;
++        assert_eq!(reply, "presenter");
++        assert_eq!(receipt.mapped_span_bytes, mapped.len());
++        assert_eq!(receipt.tight_rgba_bytes, row_bytes * height);
++        assert_eq!(receipt.cpu_source_capacity_bytes, 0);
++        drop(mapped);
++        assert_ne!(atlas.font.epoch(), epoch);
++        assert!(atlas.font.uniform && atlas.font.japanese);
++        assert_eq!(restore(&atlas.font), expected_glyph);
++        assert!(source_live());
++        drop(atlas);
++        assert!(!source_live());
++        Ok(())
++    }
++
++    #[test]
++    fn loose_atlas_keeps_its_original_font() -> crate::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let source = ResourceSource::directory(temp.path().to_owned());
++        let mut atlas = HudAtlas::build(&source)?;
++        let epoch = atlas.font.epoch();
++        let cancel = AtomicBool::new(false);
++        let ((), receipt) = atlas.upload_with_verified_mapped_font(&cancel, |atlas, inspect| {
++            inspect(&atlas.pixels, atlas.width as usize * 4);
++            Ok::<_, std::io::Error>(())
++        })?;
++        assert!(receipt.is_none());
++        assert_eq!(atlas.font.epoch(), epoch);
++        Ok(())
++    }
++
++    #[test]
++    #[ignore = "requires a host-bound stock archive and independent receipt"]
++    fn prepared_stock_publication_matches_the_exact_pixels_and_glyph() -> crate::Result<()> {
++        let root = PathBuf::from(
++            std::env::var_os("HORIZON_VERIFIED_HUD_ROOT").ok_or("stock root missing")?,
++        );
++        let receipt = PathBuf::from(
++            std::env::var_os("HORIZON_VERIFIED_HUD_RECEIPT").ok_or("stock receipt missing")?,
++        );
++        let hash = fs::read_to_string(receipt)?;
++        let hash = hash.trim();
++        assert!(hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
++        let mut expected = [0; 32];
++        for (i, byte) in expected.iter_mut().enumerate() {
++            *byte = u8::from_str_radix(&hash[i * 2..i * 2 + 2], 16)?;
++        }
++        let cancel = AtomicBool::new(false);
++        let verified_started = Instant::now();
++        let source = ResourceSource::reopen_verified_assets(&root, expected, &cancel)?
++            .ok_or("stock snapshot missing")?;
++        let verification = verified_started.elapsed();
++        let mut atlas = HudAtlas::build(&source)?;
++        let expected_glyph = restore(&atlas.font);
++        let packed =
++            PackedPixels::compress(&atlas.pixels).ok_or("stock atlas compression failed")?;
++        assert_eq!(atlas.pixels.len(), 117_440_512);
++        drop(std::mem::take(&mut atlas.pixels));
++        let row_bytes = atlas.width as usize * 4;
++        let height = atlas.height as usize;
++        let pitch = row_bytes + 128;
++        let (map, receipt) = atlas.upload_with_verified_mapped_font(&cancel, |_, inspect| {
++            let mut map = vec![0xa5; pitch * height];
++            packed
++                .write_pitched(&mut map, row_bytes, pitch, height)
++                .ok_or("mapping failed")?;
++            inspect(&map, pitch);
++            Ok::<_, &str>(map)
++        })?;
++        let mut digest = Sha256::new();
++        for row in map.chunks_exact(pitch) {
++            digest.update(&row[..row_bytes]);
++            assert!(row[row_bytes..].iter().all(|&byte| byte == 0xa5));
++        }
++        let pixel_hash = format!("{:x}", digest.finalize());
++        drop(map);
++        let receipt = receipt.ok_or("stock font not published")?;
++        assert_eq!(
++            pixel_hash,
++            "a4f3e9e48e982b03a68ac752ab4f52d81665feba7259b1ff628d8ced1e96155b"
++        );
++        assert_eq!(restore(&atlas.font), expected_glyph);
++        assert_eq!(receipt.cpu_source_capacity_bytes, 0);
++        assert_eq!(receipt.tight_rgba_bytes, 117_440_512);
++        assert_eq!(receipt.mapped_span_bytes, 118_358_016);
++        println!("stock mapped font verify={verification:?} {receipt:?}");
++        Ok(())
++    }
++}
+diff --git a/crates/horizon-core/Cargo.toml b/crates/horizon-core/Cargo.toml
+index aca493334f402446f35908fa27a5ddf89a8f8014..5a2e09d1a8249ef8b3bc663f831d03a1def192c6 100644
+--- a/crates/horizon-core/Cargo.toml
++++ b/crates/horizon-core/Cargo.toml
+@@ -7,10 +7,12 @@ rust-version.workspace = true
+ description = "Horizon simulation foundations for the pinned vanilla Java Edition target"
+ 
+ [features]
++verified-prepared-assets = ["dep:sha2"]
+ # Records the call sites of LegacyRandom draws (mob AI parity debugging).
+ rng-trace = []
+ 
+ [dependencies]
++sha2 = { version = "0.10.9", optional = true }
+ libm = "=0.2.16"
+ serde_json = { version = "1.0.151", features = ["raw_value"] }
+ serde = { version = "1", features = ["derive"] }
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index 8ee17ffcf9ea74cbe450479957b726d707548867..2b216eef39560372b34d4594988334f601f017a5 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -379,7 +379,7 @@ impl PreparedFiles {
+             .take_while(move |n| n.starts_with(&prefix))
+     }
+ 
+-    fn open(root: &Path) -> io::Result<Option<Self>> {
++    fn open_file(root: &Path) -> io::Result<Option<File>> {
+         let path = root.join(FILE_NAME);
+         // A mirror's link to another root's file.
+         prepared_trace!(
+@@ -392,8 +392,19 @@ impl PreparedFiles {
+             return Ok(None);
+         }
+         prepared_trace!("Horizon prepared files: file open begin");
+-        let mut file = File::open(&path)?;
++        let file = File::open(&path)?;
+         prepared_trace!("Horizon prepared files: file open complete");
++        Ok(Some(file))
++    }
++
++    fn open(root: &Path) -> io::Result<Option<Self>> {
++        let Some(file) = Self::open_file(root)? else {
++            return Ok(None);
++        };
++        Self::parse(root, file, u64::MAX)
++    }
++
++    fn parse(root: &Path, mut file: File, index_limit: u64) -> io::Result<Option<Self>> {
+         let size = file.metadata()?.len();
+         prepared_trace!("Horizon prepared files: header read begin size={size}");
+         let mut header = [0; HEADER];
+@@ -418,7 +429,7 @@ impl PreparedFiles {
+             };
+             index_end = end;
+         }
+-        if index_end > size || usize::try_from(index_end).is_err() {
++        if index_end > index_limit || index_end > size || usize::try_from(index_end).is_err() {
+             prepared_trace!(
+                 "Horizon prepared files: index bounds rejected end={index_end} size={size}"
+             );
+@@ -503,6 +514,65 @@ impl PreparedFiles {
+     }
+ }
+ 
++#[cfg(feature = "verified-prepared-assets")]
++impl PreparedFiles {
++    /// The trusted publisher must replace the file
++    /// atomically and keep the opened inode immutable. Verify before parsing.
++    pub fn reopen_verified(
++        root: &Path,
++        expected: [u8; 32],
++        cancel: &std::sync::atomic::AtomicBool,
++    ) -> io::Result<Option<Self>> {
++        use sha2::{Digest, Sha256};
++        use std::io::{Seek, SeekFrom};
++        use std::sync::atomic::Ordering;
++
++        const BUFFER_BYTES: usize = 128 * 1024;
++        const ARCHIVE_LIMIT: u64 = 192 * 1024 * 1024;
++        const INDEX_LIMIT: u64 = 4 * 1024 * 1024;
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        let mut file = match Self::open_file(root) {
++            Ok(Some(file)) => file,
++            Ok(None) => return Ok(None),
++            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
++            Err(error) => return Err(error),
++        };
++        let mut remaining = file.metadata()?.len();
++        if !(HEADER as u64..=ARCHIVE_LIMIT).contains(&remaining) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "archive size out of bounds",
++            ));
++        }
++        let mut digest = Sha256::new();
++        let mut buffer = vec![0; BUFFER_BYTES];
++        while remaining != 0 {
++            if cancel.load(Ordering::Acquire) {
++                return Ok(None);
++            }
++            let count = remaining.min(BUFFER_BYTES as u64) as usize;
++            let chunk = &mut buffer[..count];
++            file.read_exact(chunk)?;
++            digest.update(chunk);
++            remaining -= count as u64;
++        }
++        let actual: [u8; 32] = digest.finalize().into();
++        if actual != expected || file.read(&mut [0])? != 0 {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "archive digest mismatch",
++            ));
++        }
++        if cancel.load(Ordering::Acquire) {
++            return Ok(None);
++        }
++        file.seek(SeekFrom::Start(0))?;
++        Self::parse(root, file, INDEX_LIMIT)
++    }
++}
++
+ /// `root`'s file, opened once per process; `None` when it has no usable one.
+ pub fn open(root: &Path) -> Option<Arc<PreparedFiles>> {
+     open_with_trace(root, false)
+diff --git a/wiiu/platform/Cargo.toml b/wiiu/platform/Cargo.toml
+index 47a67dcad28f6d062d5480b9f004b6041d0b785a..62e1d6e60279ab43f93d7a18ef35af8a72cdcba6 100644
+--- a/wiiu/platform/Cargo.toml
++++ b/wiiu/platform/Cargo.toml
+@@ -9,6 +9,7 @@ default = []
+ cafe = ["horizon-client-platform/cafe"]
+ horizon-hud = ["dep:horizon-client-render"]
+ gx2-hud-view-lanes = ["horizon-hud"]
++verified-hud-font-probe = ["cafe", "horizon-hud", "horizon-client-render/verified-prepared-assets"]
+ 
+ [dependencies]
+ horizon-client-input = { path = "../../crates/horizon-client-input", default-features = false }
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index 68bdad4de8bd28eab3ad0c618c3d5ef5af11b380..843f49ff54d04a0d9f5c5a78c8bfd328f526fd5a 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -17,6 +17,16 @@ unsafe extern "C" fn fill_gx2_atlas(
+ ) -> std::ffi::c_int {
+     // The constructor lends this atlas for the duration of the synchronous call.
+     let atlas = unsafe { &*context.cast::<HudAtlas>() };
++    unsafe { write_gx2_atlas(atlas, pixels, pitch, |_, _| {}) }
++}
++
++#[cfg(all(feature = "cafe", target_arch = "powerpc"))]
++unsafe fn write_gx2_atlas(
++    atlas: &HudAtlas,
++    pixels: *mut u8,
++    pitch: u32,
++    inspect: impl FnOnce(&[u8], usize),
++) -> std::ffi::c_int {
+     let Some(pitch) = (pitch as usize).checked_mul(4) else {
+         return 0;
+     };
+@@ -28,7 +38,34 @@ unsafe extern "C" fn fill_gx2_atlas(
+     }
+     // The native caller verifies the mapped bounds and initializes every byte.
+     let target = unsafe { std::slice::from_raw_parts_mut(pixels, length) };
+-    i32::from(atlas.write_mapped_rgba(target, pitch))
++    if !atlas.write_mapped_rgba(target, pitch) {
++        return 0;
++    }
++    inspect(target, pitch);
++    1
++}
++
++#[cfg(all(feature = "verified-hud-font-probe", target_arch = "powerpc"))]
++struct VerifiedFontFill<'a, 'b> {
++    atlas: &'a HudAtlas,
++    inspect: std::cell::RefCell<&'b mut dyn FnMut(&[u8], usize)>,
++}
++
++#[cfg(all(feature = "verified-hud-font-probe", target_arch = "powerpc"))]
++unsafe extern "C" fn fill_verified_gx2_atlas(
++    context: *const std::ffi::c_void,
++    pixels: *mut u8,
++    pitch: u32,
++) -> std::ffi::c_int {
++    // This context is borrowed only inside Presenter::new_mapped.
++    let context = unsafe { &*context.cast::<VerifiedFontFill<'_, '_>>() };
++    unsafe {
++        write_gx2_atlas(context.atlas, pixels, pitch, |rgba, pitch| {
++            if let Ok(mut inspect) = context.inspect.try_borrow_mut() {
++                inspect(rgba, pitch);
++            }
++        })
++    }
+ }
+ 
+ /// Prepare the original CPU atlas for a new renderer. Horizon's atlas pixels
+@@ -248,14 +285,64 @@ impl<'shader> HorizonPresenter<'shader> {
+     /// and batches from an earlier renderer may contain stale glyph UVs.
+     pub unsafe fn new(gfd: &'shader [u8], atlas: &HudAtlas, capacity: u32) -> Result<Self, Error> {
+         atlas.font.reset_cache();
+-        let mut presenter = super::Presenter::new_mapped(
+-            gfd,
+-            atlas.width,
+-            atlas.height,
+-            capacity,
+-            fill_gx2_atlas,
+-            std::ptr::from_ref(atlas).cast(),
+-        )?;
++        unsafe {
++            Self::new_with_fill(
++                gfd,
++                atlas,
++                capacity,
++                fill_gx2_atlas,
++                std::ptr::from_ref(atlas).cast(),
++            )
++        }
++    }
++
++    /// Prepare and publish a verified stock font after a complete upload.
++    /// Call on a complete atlas and before creating its first GUI batch.
++    /// Declined or canceled probes leave the regular font available.
++    ///
++    /// # Safety
++    /// Follow the GX2 and shader lifetime requirements of [`Self::new`].
++    #[cfg(feature = "verified-hud-font-probe")]
++    pub unsafe fn new_verified_stock_probe(
++        gfd: &'shader [u8],
++        atlas: &mut HudAtlas,
++        capacity: u32,
++        cancel: &std::sync::atomic::AtomicBool,
++    ) -> Result<(Self, Option<horizon_client_render::hud::MappedFontReceipt>), Error> {
++        let (presenter, receipt) =
++            atlas.upload_with_verified_mapped_font(cancel, |atlas, inspect| {
++                let context = VerifiedFontFill {
++                    atlas,
++                    inspect: std::cell::RefCell::new(inspect),
++                };
++                unsafe {
++                    Self::new_with_fill(
++                        gfd,
++                        atlas,
++                        capacity,
++                        fill_verified_gx2_atlas,
++                        std::ptr::from_ref(&context).cast(),
++                    )
++                }
++            })?;
++        if receipt.is_none() {
++            // The upload succeeded with the existing font. Its old dynamic
++            // glyphs are absent from the newly created texture.
++            atlas.font.reset_cache();
++        }
++        Ok((presenter, receipt))
++    }
++
++    unsafe fn new_with_fill(
++        gfd: &'shader [u8],
++        atlas: &HudAtlas,
++        capacity: u32,
++        fill: unsafe extern "C" fn(*const std::ffi::c_void, *mut u8, u32) -> std::ffi::c_int,
++        context: *const std::ffi::c_void,
++    ) -> Result<Self, Error> {
++        let mut presenter = unsafe {
++            super::Presenter::new_mapped(gfd, atlas.width, atlas.height, capacity, fill, context)
++        }?;
+         let (rgba, width, height) = &atlas.glint;
+         if !rgba.is_empty() {
+             presenter.set_glint_texture(*width, *height, rgba)?;

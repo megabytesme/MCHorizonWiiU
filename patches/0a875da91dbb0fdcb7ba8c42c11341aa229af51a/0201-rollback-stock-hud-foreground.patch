@@ -1,0 +1,543 @@
+diff --git a/crates/horizon-client/src/game/runtime/resource_loader.rs b/crates/horizon-client/src/game/runtime/resource_loader.rs
+index 82fcca1a3317ec77758bdf4edd650903348c933e..417df5eb33b7863571b998f30d1467503690f141 100644
+--- a/crates/horizon-client/src/game/runtime/resource_loader.rs
++++ b/crates/horizon-client/src/game/runtime/resource_loader.rs
+@@ -268,6 +268,29 @@ impl WorldRestLoader {
+     }
+ }
+ 
++/// Keep the channel alive until its worker has stopped. A completed load can
++/// still own a world tail in the channel if no Cafe session received it.
++#[cfg(target_os = "cafe")]
++pub(super) fn drain_cafe_resource_worker(
++    worker: Option<JoinHandle<()>>,
++    receiver: &Receiver<LoaderMsg>,
++    loaded_tail: Option<WorldRestLoader>,
++) -> Result<()> {
++    let resources = worker.map(JoinHandle::join);
++    let mut tail = loaded_tail.map(WorldRestLoader::finish).unwrap_or(Ok(()));
++    for message in receiver.try_iter() {
++        if let LoaderMsg::Done(Ok(mut loaded)) = message
++            && let Some(loader) = loaded.rest_loader.take()
++        {
++            tail = tail.and(loader.finish());
++        }
++    }
++    if matches!(resources, Some(Err(_))) {
++        return Err("Cafe resource worker panicked".into());
++    }
++    tail
++}
++
+ pub(super) fn write_report(game: &Game<'_>) -> Result<()> {
+     if let Some(path) = &game.options.report {
+         let report = serde_json::json!({
+@@ -345,7 +368,21 @@ pub(super) fn create_loading_with_progress(
+         started,
+         &progress,
+     )?;
+-    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
++    let menu = match startup_menu::StartupMenu::new(&options, pack_error.as_deref()) {
++        Ok(menu) => menu,
++        Err(error) => {
++            #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++            if progress.stock_hud().is_some() {
++                // The warm worker can be waiting for a foreground that was
++                // never created. Cancel the request before joining its owner.
++                progress.request_cancel();
++                if let Err(cleanup) = drain_cafe_resource_worker(Some(loader), &receiver, None) {
++                    log::warn!("Horizon Cafe resource cleanup after menu failure: {cleanup}");
++                }
++            }
++            return Err(error);
++        }
++    };
+     Ok(Loading {
+         #[cfg(target_os = "cafe")]
+         cafe_viewport: options.window_size,
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 501feb8462f64a1f17bd1195167997204bfa449b..01ee0127150e4d51c3bbf4507d06ca42173a6986 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -10,8 +10,7 @@ mod cafe_ui_publication;
+ use cafe_ui_publication::FirstUiPublication;
+ #[cfg(feature = "stock-hud-seed")]
+ #[path = "cafe_stock_handoff.rs"]
+-// The worker offer and foreground take stay dormant until native peak
+-// qualification. Request invalidation already owns the shutdown boundary.
++// Resource workers do not offer a plan until native peak qualification.
+ #[cfg_attr(not(test), allow(dead_code))]
+ mod cafe_stock_handoff;
+ #[cfg(feature = "stock-hud-seed")]
+@@ -78,8 +77,8 @@ pub trait CafeLoadingPresenter {
+     }
+     /// Restore a stock plan directly into native memory before its first layout.
+     /// The caller supplies the current boot atlas revision and publishes the
+-    /// returned artwork before the next regular prepare or layout. A decline
+-    /// or error leaves the ordinary loading preparation path available.
++    /// returned artwork only after committing the matching provisional upload.
++    /// A decline or error leaves the ordinary preparation path available.
+     #[cfg(feature = "stock-hud-seed")]
+     fn prepare_planned_stock_hud(
+         &mut self,
+@@ -89,6 +88,20 @@ pub trait CafeLoadingPresenter {
+     ) -> Result<Option<horizon_client::hud::stock_seed::CompleteStockHud>> {
+         Ok(None)
+     }
++    /// Publish only the provisional upload matching this complete CPU product.
++    #[cfg(feature = "stock-hud-seed")]
++    fn commit_planned_stock_hud(
++        &mut self,
++        _complete: &horizon_client::hud::stock_seed::CompleteStockHud,
++    ) -> bool {
++        false
++    }
++    /// Release only the provisional upload matching this complete CPU product.
++    #[cfg(feature = "stock-hud-seed")]
++    fn discard_planned_stock_hud(
++        &mut self,
++        _complete: &horizon_client::hud::stock_seed::CompleteStockHud,
++    ) {}
+     /// Draw both target views synchronously. `Ok(true)` means both were accepted.
+     fn present_loading(
+         &mut self,
+@@ -295,23 +308,17 @@ impl<'resources> CafeLoadingSession<'resources> {
+         if self.loading.options.is_some() && self.loading.progress.request_cancel() {
+             log::info!("Horizon Cafe hosted resource cancellation requested");
+         }
+-        let resources = self.loading.handle.take().map(std::thread::JoinHandle::join);
+-        let mut tail = self.loading.loaded.as_mut()
++        let tail = self
++            .loading
++            .loaded
++            .as_mut()
+             .and_then(|loaded| loaded.as_mut().ok())
+-            .and_then(|loaded| loaded.rest_loader.take())
+-            .map(WorldRestLoader::finish)
+-            .unwrap_or(Ok(()));
+-        for message in self.loading.receiver.try_iter() {
+-            if let LoaderMsg::Done(Ok(mut loaded)) = message {
+-                if let Some(loader) = loaded.rest_loader.take() {
+-                    tail = tail.and(loader.finish());
+-                }
+-            }
+-        }
+-        if matches!(resources, Some(Err(_))) {
+-            return Err("Cafe resource worker panicked".into());
+-        }
+-        tail
++            .and_then(|loaded| loaded.rest_loader.take());
++        resource_loader::drain_cafe_resource_worker(
++            self.loading.handle.take(),
++            &self.loading.receiver,
++            tail,
++        )
+     }
+ 
+     pub fn poll(&mut self, event_loop: &dyn horizon_client_platform::EventLoopCtl) -> bool {
+@@ -335,7 +342,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+             self.loading.error = Some(error);
+             return false;
+         }
+-        if !self.first_ui.blocks_frontend() {
++        if !self.blocks_frontend() {
+             self.loading.poll_menu_realms(&Loop(event_loop));
+         }
+         let alive = self.failure_message().is_none();
+@@ -360,9 +367,26 @@ impl<'resources> CafeLoadingSession<'resources> {
+         alive
+     }
+ 
++    fn blocks_frontend(&self) -> bool {
++        #[cfg(feature = "stock-hud-seed")]
++        if self
++            .loading
++            .progress
++            .stock_hud()
++            .is_some_and(CafeStockHudRequest::warm_blocks_foreground)
++        {
++            return true;
++        }
++        self.first_ui.blocks_frontend()
++    }
++
+     /// Cancel the optional presenter attempt and use the ordinary complete UI.
+     /// A host that is leaving the session uses `drain_hosted` instead.
+     pub fn cancel_deferred_first_ui(&mut self) {
++        #[cfg(feature = "stock-hud-seed")]
++        if let Some(request) = self.loading.progress.stock_hud() {
++            request.decline_warm_hud();
++        }
+         let loading = &mut self.loading;
+         let _ = self.first_ui.finish_if_ready(true, |pending| {
+             if let Some((gui, root)) = pending {
+@@ -376,7 +400,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+         event_loop: &dyn horizon_client_platform::EventLoopCtl,
+         event: ClientWindowEvent,
+     ) {
+-        if self.first_ui.blocks_frontend() && !matches!(event, ClientWindowEvent::CloseRequested) {
++        if self.blocks_frontend() && !matches!(event, ClientWindowEvent::CloseRequested) {
+             return;
+         }
+         if let Err(error) = self.loading.menu_event(&Loop(event_loop), input::window_event(event)) {
+@@ -398,7 +422,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+         let settings = &self.loading.settings.controller;
+         let state = settings.map_cafe_face_buttons(state, GlyphStyle::Nintendo);
+         let edges = self.pad_edges.update(&state, settings.trigger_threshold);
+-        if self.first_ui.blocks_frontend() {
++        if self.blocks_frontend() {
+             // A held button must be released before it acts in the new UI.
+             self.pad_edges.cancel();
+             return;
+@@ -434,6 +458,8 @@ impl<'resources> CafeLoadingSession<'resources> {
+         presenter: &mut dyn CafeLoadingPresenter,
+         trace_iteration: Option<u32>,
+     ) -> Result<bool> {
++        #[cfg(feature = "stock-hud-seed")]
++        self.prepare_warm_first_ui(presenter);
+         let size = presenter.layout_viewport();
+         let targets = presenter.target_viewports();
+         if size.contains(&0) || targets.iter().any(|r| r[2] == 0 || r[3] == 0) {
+@@ -482,6 +508,26 @@ impl<'resources> CafeLoadingSession<'resources> {
+         Ok(presented)
+     }
+ 
++    #[cfg(feature = "stock-hud-seed")]
++    fn prepare_warm_first_ui(&mut self, presenter: &mut dyn CafeLoadingPresenter) {
++        let loading = &mut self.loading;
++        let Some(request) = loading.progress.stock_hud() else {
++            return;
++        };
++        let boot_only = loading.gui.is_none()
++            && matches!(
++                self.first_ui,
++                FirstUiPublication::Ordinary | FirstUiPublication::Deferred(None)
++            );
++        let boot = boot_only.then_some(loading.boot.revision);
++        if let Some((gui, root)) =
++            request.prepare_warm_ui(presenter, boot, loading.progress.cancel_flag())
++        {
++            let _ = self.first_ui.finish_if_ready(true, drop);
++            loading.set_ui(gui, root);
++        }
++    }
++
+     fn prepare_deferred_first_ui(
+         &mut self,
+         presenter: &mut dyn CafeLoadingPresenter,
+@@ -572,7 +618,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+     /// In an opted-in Cemu control session, transfer the title as well so
+     /// Horizon's existing Game control and UI paths own it.
+     pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession<'resources>>> {
+-        if self.first_ui.blocks_frontend() {
++        if self.blocks_frontend() {
+             return Ok(None);
+         }
+         let Some(entry_kind) = self.pending_game_kind()? else {
+@@ -732,7 +778,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+             CafeLoadingStatus::RemoteServerStartFailed
+         } else if self.failure_message().is_some() {
+             CafeLoadingStatus::Failed
+-        } else if !self.first_ui.blocks_frontend()
++        } else if !self.blocks_frontend()
+             && self.loading.loaded.is_some()
+             && self.loading.ready_for_handoff()
+         {
+diff --git a/crates/horizon-client/src/platform/cafe_stock_handoff.rs b/crates/horizon-client/src/platform/cafe_stock_handoff.rs
+index f881e865794c1594a2b3e05b1c96e241a479cdad..fafa31a91126076c862759d3078849056a31baf8 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_handoff.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_handoff.rs
+@@ -86,6 +86,10 @@ impl<T> PostCoreStockHud<T> {
+         Some((plan, WarmHudReply(self)))
+     }
+ 
++    pub(super) fn blocks_foreground(&self) -> bool {
++        self.phase().awaiting_render()
++    }
++
+     pub(super) fn close(&self) {
+         let previous = std::mem::replace(&mut *self.phase(), Phase::Closed);
+         self.changed.notify_all();
+@@ -106,11 +110,17 @@ impl<T> PostCoreStockHud<T> {
+ pub(super) struct WarmHudReply<'a, T>(&'a PostCoreStockHud<T>);
+ 
+ impl<T> WarmHudReply<'_, T> {
+-    /// Call after complete CPU art and matching renderer ownership are ready
+-    /// for publication. A false result means close won. The foreground must
+-    /// discard the complete product and release any provisional GPU art.
+-    pub(super) fn rendered(self) -> bool {
+-        self.0.settle(Phase::Rendered)
++    /// Commit matching native ownership before waking the worker. The
++    /// callback only exchanges renderer state and cannot block on the loader.
++    /// A refusal leaves the reply live until the foreground drops its art.
++    pub(super) fn publish(&self, commit: impl FnOnce() -> bool) -> bool {
++        let mut phase = self.0.phase();
++        if !matches!(*phase, Phase::Rendering) || !commit() {
++            return false;
++        }
++        *phase = Phase::Rendered;
++        self.0.changed.notify_one();
++        true
+     }
+ }
+ 
+diff --git a/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs b/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs
+index 9d42be5eb16d9b0a43166ed9b11306e212293758..13eabed5c656e0155593bd737eb06c5f18fa9b16 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs
+@@ -79,10 +79,15 @@ fn foreground_acceptance_keeps_original_core_and_publishes_once() {
+         });
+         let (plan, reply) = take(exchange);
+         assert_eq!(plan, "generation 1");
++        assert!(exchange.blocks_foreground());
+         assert!(exchange.take().is_none());
+         assert!(receiver.try_recv().is_err());
+         assert_eq!(core_drops.count(), 0);
+-        assert!(reply.rendered());
++        assert!(reply.publish(|| {
++            assert!(receiver.try_recv().is_err());
++            true
++        }));
++        assert!(!exchange.blocks_foreground());
+         let core = receiver.recv_timeout(TIMEOUT).unwrap().unwrap();
+         assert_eq!(core.id, 5);
+         assert_eq!(core_drops.count(), 0);
+@@ -116,9 +121,13 @@ fn decline_releases_the_plan_native_candidate_and_core_before_cold() {
+         let (plan, reply) = take(exchange);
+         let native = native_drops.track(11);
+         assert_eq!(plan.id, 9);
++        assert!(!reply.publish(|| false));
++        assert!(exchange.blocks_foreground());
++        assert!(receiver.try_recv().is_err());
+         drop(native);
+         drop(plan);
+         drop(reply);
++        assert!(!exchange.blocks_foreground());
+         assert_eq!(
+             receiver.recv_timeout(TIMEOUT).unwrap().unwrap().unwrap().id,
+             10
+@@ -160,7 +169,7 @@ fn close_queued_or_in_flight_releases_worker_without_cold_and_rejects_old_reply(
+             assert!(exchange.take().is_none());
+             assert_eq!(core_drops.count(), 1);
+             if let Some((plan, reply)) = taken {
+-                assert!(!reply.rendered());
++                assert!(!reply.publish(|| panic!("closed request cannot commit native art")));
+                 drop(plan);
+             }
+             assert_eq!(plan_drops.count(), 1);
+diff --git a/crates/horizon-client/src/platform/cafe_stock_hud.rs b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+index 57ee136e5b68d0ff6638e2260a06c4337212162b..cf8742b6d255bc2320b2d528e508241bf9f632d5 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_hud.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+@@ -1,6 +1,6 @@
+ //! One opt-in Night launch. Keep the candidate private until a clean return.
+ 
+-use super::{HudAtlas, UiResources, cafe_stock_handoff::PostCoreStockHud};
++use super::{CafeLoadingPresenter, HudAtlas, UiResources, cafe_stock_handoff::PostCoreStockHud};
+ use horizon_assets::resource_source::ResourceSource;
+ use horizon_client_render::hud::stock_seed::{NightStockHudOwner, PlannedStockHud, StockHudLaunch};
+ use std::{
+@@ -121,6 +121,60 @@ impl CafeStockHudRequest {
+         }
+     }
+ 
++    pub(super) fn warm_blocks_foreground(&self) -> bool {
++        self.post_core.blocks_foreground()
++    }
++
++    pub(super) fn decline_warm_hud(&self) {
++        if let Some((plan, reply)) = self.post_core.take() {
++            drop(plan);
++            drop(reply);
++        }
++    }
++
++    /// A rejected upload releases both provisional native resources before
++    /// dropping the reply and allowing the worker to start cold fallback.
++    pub(super) fn prepare_warm_ui(
++        &self,
++        presenter: &mut dyn CafeLoadingPresenter,
++        boot_revision: Option<u64>,
++        cancel: &AtomicBool,
++    ) -> Option<(UiResources, PathBuf)> {
++        let (plan, reply) = self.post_core.take()?;
++        let Some(boot_revision) = boot_revision else {
++            drop(plan);
++            return None;
++        };
++        if !matches!(*self.state(), Attempt::Prepared(_)) {
++            drop(plan);
++            return None;
++        }
++        let prepared = presenter.prepare_planned_stock_hud(plan, boot_revision, cancel);
++        let complete = match prepared {
++            Ok(Some(complete)) => complete,
++            Ok(None) => return None,
++            Err(error) => {
++                log::warn!("Horizon stock HUD mapped preparation declined: {error}");
++                return None;
++            }
++        };
++        if self.owns_atlas(complete.atlas())
++            && reply.publish(|| {
++                !cancel.load(Ordering::Acquire)
++                    && !self.canceled.load(Ordering::Acquire)
++                    && presenter.commit_planned_stock_hud(&complete)
++            })
++        {
++            return Some((
++                UiResources::from_verified_stock(complete),
++                self.resource_root.clone(),
++            ));
++        }
++        presenter.discard_planned_stock_hud(&complete);
++        drop(complete);
++        None
++    }
++
+     pub(super) fn owns_atlas(&self, atlas: &HudAtlas) -> bool {
+         matches!(&*self.state(), Attempt::Prepared(launch) if launch.owns_atlas(atlas))
+     }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 8c4e1f51ba597aabe9c92605c2dbfd4562bfd13b..e72fb309eb0e53bfc147abc19cd06865a07b8463 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -748,6 +748,21 @@ impl Drop for Terrain<'_> {
+     }
+ }
+ 
++#[cfg(feature = "stock-hud-seed")]
++struct PlannedStockGpu<'shader> {
++    hud: HorizonPresenter<'shader>,
++    panorama: Panorama<'shader>,
++    identity: (u64, u64, usize, u32),
++    outputs: [[u32; 2]; 2],
++}
++
++#[cfg(feature = "stock-hud-seed")]
++fn planned_stock_identity(complete: &CompleteStockHud) -> (u64, u64, usize, u32) {
++    let revision = complete.atlas().revision;
++    let faces = complete.panorama();
++    (revision, revision, std::ptr::from_ref(faces) as usize, faces.size)
++}
++
+ /// Uses the actual DRC size as Horizon's original source layout and fits that
+ /// layout inside each queried TV/DRC buffer.
+ pub struct Gx2LoadingPresenter<'shader> {
+@@ -756,6 +771,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_shader: &'shader [u8],
+     hud: Option<HorizonPresenter<'shader>>,
+     panorama: Option<Panorama<'shader>>,
++    #[cfg(feature = "stock-hud-seed")]
++    planned_stock_gpu: Option<PlannedStockGpu<'shader>>,
+     terrain: Option<Terrain<'shader>>,
+     outline: outline::Outline,
+     crumbling: crumbling::Crumbling,
+@@ -837,6 +854,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_shader,
+             hud: None,
+             panorama: None,
++            #[cfg(feature = "stock-hud-seed")]
++            planned_stock_gpu: None,
+             terrain: None,
+             outline: outline::Outline::default(),
+             crumbling: crumbling::Crumbling::default(),
+@@ -954,6 +973,11 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+     }
+ 
+     fn prepare(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<(), &'static str> {
++        // Only the matching foreground reply can publish a planned upload.
++        #[cfg(feature = "stock-hud-seed")]
++        {
++            self.planned_stock_gpu = None;
++        }
+         let outputs = output_dimensions();
+         if outputs.as_ref() != Ok(&self.outputs) {
+             self.invalidate_tv_terrain_wait_ticket();
+@@ -1090,6 +1114,7 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+             || self.terrain.is_some()
+             || self.terrain_generation.is_some()
+             || self.retired_pair != 0
++            || self.planned_stock_gpu.is_some()
+             || cancel.load(Ordering::Acquire)
+         {
+             return Ok(None);
+@@ -1134,20 +1159,12 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+ 
+         // The Arc allocation backing Faces stays at this address when
+         // CompleteStockHud moves into ordinary UI resources.
+-        let revision = complete.atlas().revision;
+-        self.outputs = outputs;
+-        self.layout = layout;
+-        self.generation = Some(revision);
+-        self.atlas_revision = Some(revision);
+-        self.panorama_identity = Some((
+-            revision,
+-            revision,
+-            std::ptr::from_ref(faces) as usize,
+-            faces.size,
+-        ));
+-        self.hud = Some(hud);
+-        self.panorama = Some(panorama);
+-        horizon_client::ui_theme::reset_atlas();
++        self.planned_stock_gpu = Some(PlannedStockGpu {
++            hud,
++            panorama,
++            identity: planned_stock_identity(&complete),
++            outputs,
++        });
+         if GX2_PROFILE_ENABLED {
+             self.profile.hud_create_ns = self.profile.hud_create_ns.saturating_add(hud_ns);
+         }
+@@ -1163,6 +1180,40 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+         Ok(Some(complete))
+     }
+ 
++    #[cfg(feature = "stock-hud-seed")]
++    fn commit_planned_stock_hud(&mut self, complete: &CompleteStockHud) -> bool {
++        let identity = planned_stock_identity(complete);
++        if !self
++            .planned_stock_gpu
++            .as_ref()
++            .is_some_and(|pending| pending.identity == identity)
++        {
++            return false;
++        }
++        let pending = self.planned_stock_gpu.take().expect("matching stock GPU upload");
++        self.outputs = pending.outputs;
++        self.layout = pending.outputs[1];
++        self.generation = Some(identity.0);
++        self.atlas_revision = Some(identity.1);
++        self.panorama_identity = Some(identity);
++        self.hud = Some(pending.hud);
++        self.panorama = Some(pending.panorama);
++        true
++    }
++
++    #[cfg(feature = "stock-hud-seed")]
++    fn discard_planned_stock_hud(&mut self, complete: &CompleteStockHud) {
++        let identity = planned_stock_identity(complete);
++        if self
++            .planned_stock_gpu
++            .as_ref()
++            .is_some_and(|pending| pending.identity == identity)
++        {
++            self.planned_stock_gpu = None;
++            horizon_client_platform::cafe_memory::report("stock_hud.mapped_rolled_back");
++        }
++    }
++
+     fn present_loading(
+         &mut self,
+         artwork: CafeLoadingArtwork<'_>,
+@@ -2245,6 +2296,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+     }
+     fn release_surface(&mut self) {
++        #[cfg(feature = "stock-hud-seed")]
++        {
++            self.planned_stock_gpu = None;
++        }
+         self.retired_pair = 0;
+         #[cfg(feature = "gx2-hud-view-lanes")]
+         self.hud_views.release_surface();

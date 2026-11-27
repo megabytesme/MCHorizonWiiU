@@ -1,0 +1,387 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index fb24741cb020f9bb5f4bdff0890cd856174ba364..501feb8462f64a1f17bd1195167997204bfa449b 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -9,6 +9,12 @@ pub use cafe_block_entities::CafeBlockEntitySections;
+ mod cafe_ui_publication;
+ use cafe_ui_publication::FirstUiPublication;
+ #[cfg(feature = "stock-hud-seed")]
++#[path = "cafe_stock_handoff.rs"]
++// The worker offer and foreground take stay dormant until native peak
++// qualification. Request invalidation already owns the shutdown boundary.
++#[cfg_attr(not(test), allow(dead_code))]
++mod cafe_stock_handoff;
++#[cfg(feature = "stock-hud-seed")]
+ #[path = "cafe_stock_hud.rs"]
+ mod cafe_stock_hud;
+ #[cfg(feature = "stock-hud-seed")]
+diff --git a/crates/horizon-client/src/platform/cafe_stock_handoff.rs b/crates/horizon-client/src/platform/cafe_stock_handoff.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f881e865794c1594a2b3e05b1c96e241a479cdad
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_stock_handoff.rs
+@@ -0,0 +1,125 @@
++//! One deferred stock HUD exchange, owned by the existing Cafe loader generation.
++
++use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
++
++enum Phase<T> {
++    Idle,
++    Queued(T),
++    Rendering,
++    Rendered,
++    Declined,
++    Consumed,
++    Closed,
++}
++
++impl<T> Phase<T> {
++    fn awaiting_render(&self) -> bool {
++        matches!(self, Self::Queued(_) | Self::Rendering)
++    }
++}
++
++/// A worker can offer one plan after its core workers have joined. Only the
++/// foreground may take the plan, and closing the request wakes the worker.
++pub(super) struct PostCoreStockHud<T> {
++    phase: Mutex<Phase<T>>,
++    changed: Condvar,
++}
++
++impl<T> Default for PostCoreStockHud<T> {
++    fn default() -> Self {
++        Self {
++            phase: Mutex::new(Phase::Idle),
++            changed: Condvar::new(),
++        }
++    }
++}
++
++impl<T> PostCoreStockHud<T> {
++    fn phase(&self) -> MutexGuard<'_, Phase<T>> {
++        self.phase.lock().unwrap_or_else(PoisonError::into_inner)
++    }
++
++    /// Keep the original core on success. A decline releases that core before
++    /// the caller builds cold UI and reloads core. The caller's cold function
++    /// must checkpoint its loader cancellation flag before allocating.
++    pub(super) fn complete_after_core<C, E>(
++        &self,
++        core: C,
++        plan: T,
++        rebuild_cold: impl FnOnce() -> Result<C, E>,
++    ) -> Result<Option<C>, E> {
++        let mut phase = self.phase();
++        if !matches!(*phase, Phase::Idle) {
++            return Ok(None);
++        }
++        *phase = Phase::Queued(plan);
++        let mut phase = self
++            .changed
++            .wait_while(phase, |phase| phase.awaiting_render())
++            .unwrap_or_else(PoisonError::into_inner);
++        match *phase {
++            Phase::Rendered => {
++                *phase = Phase::Consumed;
++                Ok(Some(core))
++            }
++            Phase::Declined => {
++                *phase = Phase::Consumed;
++                drop(phase);
++                drop(core);
++                rebuild_cold().map(Some)
++            }
++            Phase::Closed => Ok(None),
++            _ => unreachable!("wake requires a foreground decision or close"),
++        }
++    }
++
++    /// Taking the plan is a nonblocking foreground poll. Dropping the reply
++    /// declines unless closing the generation already took precedence.
++    pub(super) fn take(&self) -> Option<(T, WarmHudReply<'_, T>)> {
++        let mut phase = self.phase();
++        if !matches!(*phase, Phase::Queued(_)) {
++            return None;
++        }
++        let Phase::Queued(plan) = std::mem::replace(&mut *phase, Phase::Rendering) else {
++            unreachable!("only queued plans can be transferred");
++        };
++        Some((plan, WarmHudReply(self)))
++    }
++
++    pub(super) fn close(&self) {
++        let previous = std::mem::replace(&mut *self.phase(), Phase::Closed);
++        self.changed.notify_all();
++        drop(previous);
++    }
++
++    fn settle(&self, outcome: Phase<T>) -> bool {
++        let mut phase = self.phase();
++        if !matches!(*phase, Phase::Rendering) {
++            return false;
++        }
++        *phase = outcome;
++        self.changed.notify_one();
++        true
++    }
++}
++
++pub(super) struct WarmHudReply<'a, T>(&'a PostCoreStockHud<T>);
++
++impl<T> WarmHudReply<'_, T> {
++    /// Call after complete CPU art and matching renderer ownership are ready
++    /// for publication. A false result means close won. The foreground must
++    /// discard the complete product and release any provisional GPU art.
++    pub(super) fn rendered(self) -> bool {
++        self.0.settle(Phase::Rendered)
++    }
++}
++
++impl<T> Drop for WarmHudReply<'_, T> {
++    fn drop(&mut self) {
++        self.0.settle(Phase::Declined);
++    }
++}
++
++#[cfg(test)]
++#[path = "cafe_stock_handoff_tests.rs"]
++mod tests;
+diff --git a/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs b/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d42be5eb16d9b0a43166ed9b11306e212293758
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_stock_handoff_tests.rs
+@@ -0,0 +1,186 @@
++use super::*;
++use std::{
++    sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++        mpsc,
++    },
++    thread,
++    time::{Duration, Instant},
++};
++
++const TIMEOUT: Duration = Duration::from_secs(2);
++
++#[derive(Clone, Default)]
++struct Drops(Arc<AtomicUsize>);
++
++impl Drops {
++    fn count(&self) -> usize {
++        self.0.load(Ordering::SeqCst)
++    }
++
++    fn track(&self, id: u32) -> Owner {
++        Owner {
++            id,
++            drops: self.clone(),
++        }
++    }
++}
++
++struct Owner {
++    id: u32,
++    drops: Drops,
++}
++
++impl Drop for Owner {
++    fn drop(&mut self) {
++        self.drops.0.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++struct CloseOnCheckFailure<'a, T>(&'a PostCoreStockHud<T>);
++
++impl<T> Drop for CloseOnCheckFailure<'_, T> {
++    fn drop(&mut self) {
++        self.0.close();
++    }
++}
++
++fn take<T>(exchange: &PostCoreStockHud<T>) -> (T, WarmHudReply<'_, T>) {
++    let timeout = Instant::now() + TIMEOUT;
++    loop {
++        if let Some(job) = exchange.take() {
++            return job;
++        }
++        assert!(
++            Instant::now() < timeout,
++            "worker did not offer the verified plan"
++        );
++        thread::yield_now();
++    }
++}
++
++#[test]
++fn foreground_acceptance_keeps_original_core_and_publishes_once() {
++    let exchange = PostCoreStockHud::default();
++    let core_drops = Drops::default();
++    thread::scope(|scope| {
++        let _cleanup = CloseOnCheckFailure(&exchange);
++        let core = core_drops.track(5);
++        let (sender, receiver) = mpsc::channel();
++        let exchange = &exchange;
++        scope.spawn(move || {
++            let output = exchange
++                .complete_after_core(core, "generation 1", || -> Result<_, ()> {
++                    panic!("successful warm load must reuse its core")
++                })
++                .unwrap();
++            sender.send(output).unwrap();
++        });
++        let (plan, reply) = take(exchange);
++        assert_eq!(plan, "generation 1");
++        assert!(exchange.take().is_none());
++        assert!(receiver.try_recv().is_err());
++        assert_eq!(core_drops.count(), 0);
++        assert!(reply.rendered());
++        let core = receiver.recv_timeout(TIMEOUT).unwrap().unwrap();
++        assert_eq!(core.id, 5);
++        assert_eq!(core_drops.count(), 0);
++        assert!(exchange.take().is_none());
++    });
++    assert_eq!(core_drops.count(), 1);
++}
++
++#[test]
++fn decline_releases_the_plan_native_candidate_and_core_before_cold() {
++    let exchange = PostCoreStockHud::default();
++    let core_drops = Drops::default();
++    let plan_drops = Drops::default();
++    let native_drops = Drops::default();
++    thread::scope(|scope| {
++        let _cleanup = CloseOnCheckFailure(&exchange);
++        let core = core_drops.track(8);
++        let plan = plan_drops.track(9);
++        let (sender, receiver) = mpsc::channel();
++        let exchange = &exchange;
++        let (core_drops, plan_drops, native_drops) = (&core_drops, &plan_drops, &native_drops);
++        scope.spawn(move || {
++            let outcome = exchange.complete_after_core(core, plan, || -> Result<_, ()> {
++                assert_eq!(core_drops.count(), 1);
++                assert_eq!(plan_drops.count(), 1);
++                assert_eq!(native_drops.count(), 1);
++                Ok(core_drops.track(10))
++            });
++            sender.send(outcome).unwrap();
++        });
++        let (plan, reply) = take(exchange);
++        let native = native_drops.track(11);
++        assert_eq!(plan.id, 9);
++        drop(native);
++        drop(plan);
++        drop(reply);
++        assert_eq!(
++            receiver.recv_timeout(TIMEOUT).unwrap().unwrap().unwrap().id,
++            10
++        );
++    });
++    assert_eq!(core_drops.count(), 2);
++}
++
++#[test]
++fn close_queued_or_in_flight_releases_worker_without_cold_and_rejects_old_reply() {
++    for in_flight in [false, true] {
++        let exchange = PostCoreStockHud::default();
++        let core_drops = Drops::default();
++        let plan_drops = Drops::default();
++        thread::scope(|scope| {
++            let _cleanup = CloseOnCheckFailure(&exchange);
++            let core = core_drops.track(1);
++            let plan = plan_drops.track(2);
++            let (sender, receiver) = mpsc::channel();
++            let exchange = &exchange;
++            scope.spawn(move || {
++                let outcome = exchange.complete_after_core(core, plan, || -> Result<_, ()> {
++                    panic!("cancel must not start the cold rebuild")
++                });
++                sender.send(outcome).unwrap();
++            });
++            let taken = if in_flight {
++                Some(take(exchange))
++            } else {
++                let timeout = Instant::now() + TIMEOUT;
++                while !matches!(*exchange.phase(), Phase::Queued(_)) {
++                    assert!(Instant::now() < timeout);
++                    thread::yield_now();
++                }
++                None
++            };
++            exchange.close();
++            assert!(receiver.recv_timeout(TIMEOUT).unwrap().unwrap().is_none());
++            assert!(exchange.take().is_none());
++            assert_eq!(core_drops.count(), 1);
++            if let Some((plan, reply)) = taken {
++                assert!(!reply.rendered());
++                drop(plan);
++            }
++            assert_eq!(plan_drops.count(), 1);
++        });
++    }
++}
++
++#[test]
++fn closed_generation_never_reuses_a_plan_or_starts_cold() {
++    let exchange = PostCoreStockHud::default();
++    exchange.close();
++    let plans = Drops::default();
++    assert!(
++        exchange
++            .complete_after_core(42, plans.track(1), || -> Result<_, ()> {
++                panic!("a stale worker cannot start another generation")
++            })
++            .unwrap()
++            .is_none()
++    );
++    assert_eq!(plans.count(), 1);
++    assert!(exchange.take().is_none());
++}
+diff --git a/crates/horizon-client/src/platform/cafe_stock_hud.rs b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+index 6bedb18bcb914d9f1f46d210a496ce0e2a755d64..57ee136e5b68d0ff6638e2260a06c4337212162b 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_hud.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+@@ -1,8 +1,8 @@
+ //! One opt-in Night launch. Keep the candidate private until a clean return.
+ 
+-use super::{HudAtlas, UiResources};
++use super::{HudAtlas, UiResources, cafe_stock_handoff::PostCoreStockHud};
+ use horizon_assets::resource_source::ResourceSource;
+-use horizon_client_render::hud::stock_seed::{NightStockHudOwner, StockHudLaunch};
++use horizon_client_render::hud::stock_seed::{NightStockHudOwner, PlannedStockHud, StockHudLaunch};
+ use std::{
+     path::PathBuf,
+     sync::{
+@@ -24,6 +24,7 @@ pub struct CafeStockHudRequest {
+     resource_root: PathBuf,
+     installed_receipt: PathBuf,
+     attempt: Mutex<Attempt>,
++    post_core: PostCoreStockHud<PlannedStockHud>,
+     canceled: AtomicBool,
+ }
+ 
+@@ -38,6 +39,7 @@ impl CafeStockHudRequest {
+             resource_root,
+             installed_receipt,
+             attempt: Mutex::new(Attempt::Unused),
++            post_core: PostCoreStockHud::default(),
+             canceled: AtomicBool::new(false),
+         }
+     }
+@@ -133,6 +135,7 @@ impl CafeStockHudRequest {
+ 
+     pub(in crate::game) fn cancel(&self) {
+         self.canceled.store(true, Ordering::Release);
++        self.post_core.close();
+         let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
+         drop(previous);
+     }
+@@ -140,6 +143,7 @@ impl CafeStockHudRequest {
+     /// The Night driver calls this after the presenter and worker drains.
+     /// A raw startup return, failed save or fatal error gives no reuse credit.
+     pub fn finish(&self, saved_return: bool) {
++        self.post_core.close();
+         let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
+         match previous {
+             Attempt::Prepared(launch) => launch.park_after_drain(saved_return, &self.canceled),

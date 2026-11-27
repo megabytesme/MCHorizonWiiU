@@ -1,0 +1,546 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index f9e95a528c28c847ce6bb0d2e1c6694774a360c9..0024c761cd0b055c2aeddcf566c4f47708e1b577 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -59,7 +59,7 @@ enum Storage {
+     Directory(PathBuf),
+     #[cfg(feature = "verified-prepared-assets")]
+     VerifiedAssets {
+-        archive: horizon_core::prepared_files::PreparedFiles,
++        archive: Arc<horizon_core::prepared_files::PreparedFiles>,
+         generation: [u8; 32],
+     },
+     #[cfg(not(target_arch = "wasm32"))]
+@@ -405,12 +405,22 @@ impl ResourceSource {
+             horizon_core::prepared_files::PreparedFiles::reopen_verified(root, generation, cancel)?;
+         Ok(archive.map(|archive| {
+             Self(Arc::new(Storage::VerifiedAssets {
+-                archive,
++                archive: Arc::new(archive),
+                 generation,
+             }))
+         }))
+     }
+ 
++    #[cfg(feature = "verified-prepared-assets")]
++    pub fn pin_verified_prepared(
++        &self,
++    ) -> Option<horizon_core::prepared_files::VerifiedPreparedLease> {
++        match self.0.as_ref() {
++            Storage::VerifiedAssets { archive, .. } => archive.pin_verified(),
++            _ => None,
++        }
++    }
++
+     #[cfg(feature = "verified-prepared-assets")]
+     pub fn verified_assets_generation(&self) -> Option<[u8; 32]> {
+         match self.0.as_ref() {
+diff --git a/crates/horizon-client-render/src/hud/stock_hud_launch.rs b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+index 5e3c31ad690e464b09a34abe544649560158ef7f..144fc8d939abceea4041fe4631cb83b7ccd0e299 100644
+--- a/crates/horizon-client-render/src/hud/stock_hud_launch.rs
++++ b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+@@ -51,6 +51,18 @@ impl NightStockHudOwner {
+         stock_root: &Path,
+         installer_receipt: &Path,
+         cancel: &AtomicBool,
++    ) -> io::Result<Option<StockHudLaunch<'_>>> {
++        self.begin_with_assets(resolved, stock_root, cancel, || {
++            InstalledStockAssets::reopen(stock_root, installer_receipt, cancel)
++        })
++    }
++
++    pub fn begin_with_assets(
++        &self,
++        resolved: &ResourceSource,
++        stock_root: &Path,
++        cancel: &AtomicBool,
++        assets: impl FnOnce() -> io::Result<Option<InstalledStockAssets>>,
+     ) -> io::Result<Option<StockHudLaunch<'_>>> {
+         let Some(lease) = self.checkout() else {
+             return Ok(None);
+@@ -58,7 +70,7 @@ impl NightStockHudOwner {
+         if !resolved.is_direct_directory(stock_root) || super::sprites::labpbr_maps() {
+             return Ok(None);
+         }
+-        let Some(assets) = InstalledStockAssets::reopen(stock_root, installer_receipt, cancel)?
++        let Some(assets) = assets()?
+         else {
+             return Ok(None);
+         };
+@@ -142,18 +154,6 @@ impl StockHudLaunch<'_> {
+         self.assets.assets()
+     }
+ 
+-    /// Ordinary gameplay reads from its memoized archive. Decline this
+-    /// experiment if those bytes belong to a different installed generation.
+-    pub fn matches_ordinary_archive(&self, root: &Path, cancel: &AtomicBool) -> io::Result<bool> {
+-        let Some(expected) = self.assets().verified_assets_generation() else {
+-            return Ok(false);
+-        };
+-        let Some(ordinary) = horizon_core::prepared_files::open(root) else {
+-            return Ok(false);
+-        };
+-        ordinary.matches_verified_content(expected, cancel)
+-    }
+-
+     pub fn retained_capacity(&self) -> Option<super::StockHudCapacity> {
+         self.lease
+             .slot
+diff --git a/crates/horizon-client-render/src/hud/stock_seed.rs b/crates/horizon-client-render/src/hud/stock_seed.rs
+index ea656b20039164646eeee68c81d1d369cedb30fc..45550daf44b7df32ba277666da1fa391c0cb7fcb 100644
+--- a/crates/horizon-client-render/src/hud/stock_seed.rs
++++ b/crates/horizon-client-render/src/hud/stock_seed.rs
+@@ -25,6 +25,7 @@ const RECEIPT_CAP: u64 = 16 * 1024;
+ 
+ /// Constructed from the trusted installer's receipt and a fresh archive open.
+ /// The caller selects the installer-owned receipt path, outside user packs.
++#[derive(Clone)]
+ pub struct InstalledStockAssets(ResourceSource);
+ 
+ #[derive(serde::Deserialize)]
+diff --git a/crates/horizon-client/src/game/interface/startup_menu.rs b/crates/horizon-client/src/game/interface/startup_menu.rs
+index f8d8583c1cd3ed71c39e5412aab7b2320105eda6..22d47fc7f3f2547d668982b7ddb2ea4ba09b23f1 100644
+--- a/crates/horizon-client/src/game/interface/startup_menu.rs
++++ b/crates/horizon-client/src/game/interface/startup_menu.rs
+@@ -420,6 +420,13 @@ pub(super) fn spawn_loader(
+         .spawn(move || {
+             let result = (|| -> Result<_> {
+                 progress.checkpoint()?;
++                #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++                if settings.resource_packs.is_empty()
++                    && let Some(request) = progress.stock_hud()
++                {
++                    request.verify_archive(&vanilla_root, progress.cancel_flag())?;
++                    progress.checkpoint()?;
++                }
+                 let mut pack_error = None;
+                 let root =
+                     packs::startup_root(&vanilla_root, &settings.resource_packs, &[], &mod_sources)
+@@ -1490,6 +1497,7 @@ impl Loading {
+         #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
+         if let Some(request) = self.progress.stock_hud() {
+             request.cancel();
++            request.release_archive_after_drain();
+         }
+         self.progress = Progress::new();
+         let options = self.options.as_ref().ok_or("loading already finished")?;
+diff --git a/crates/horizon-client/src/platform/cafe_stock_hud.rs b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+index 98300c600d3440e2cd98714ef7443c996808b0e1..25fe426f5d1ddc618cb22966cc1c21810c8b29be 100644
+--- a/crates/horizon-client/src/platform/cafe_stock_hud.rs
++++ b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+@@ -2,7 +2,10 @@
+ 
+ use super::{CafeLoadingPresenter, HudAtlas, UiResources, cafe_stock_handoff::PostCoreStockHud};
+ use horizon_assets::resource_source::ResourceSource;
+-use horizon_client_render::hud::stock_seed::{NightStockHudOwner, PlannedStockHud, StockHudLaunch};
++use horizon_client_render::hud::stock_seed::{
++    InstalledStockAssets, NightStockHudOwner, PlannedStockHud, StockHudLaunch,
++};
++use horizon_core::prepared_files::VerifiedPreparedLease;
+ use std::{
+     path::PathBuf,
+     sync::{
+@@ -22,6 +25,16 @@ enum Attempt {
+     Spent,
+ }
+ 
++enum Archive {
++    Unchecked,
++    Checking,
++    Ready {
++        assets: InstalledStockAssets,
++        _lease: VerifiedPreparedLease,
++    },
++    Spent,
++}
++
+ pub(in crate::game) enum StockHudCandidate {
+     Cold(UiResources),
+     Warm(PlannedStockHud),
+@@ -33,6 +46,7 @@ pub struct CafeStockHudRequest {
+     installed_receipt: PathBuf,
+     warm_replay: bool,
+     attempt: Mutex<Attempt>,
++    installed: Mutex<Archive>,
+     post_core: PostCoreStockHud<PlannedStockHud>,
+     canceled: AtomicBool,
+ }
+@@ -49,6 +63,7 @@ impl CafeStockHudRequest {
+             installed_receipt,
+             warm_replay: false,
+             attempt: Mutex::new(Attempt::Unused),
++            installed: Mutex::new(Archive::Unchecked),
+             post_core: PostCoreStockHud::default(),
+             canceled: AtomicBool::new(false),
+         }
+@@ -63,6 +78,60 @@ impl CafeStockHudRequest {
+         self.attempt.lock().unwrap_or_else(PoisonError::into_inner)
+     }
+ 
++    /// Pin a freshly verified archive before pack resolution starts reading
++    /// the ordinary source. Both sources then borrow the same open descriptor.
++    pub(in crate::game) fn verify_archive(
++        &self,
++        root: &std::path::Path,
++        cancel: &AtomicBool,
++    ) -> crate::Result<()> {
++        if root != self.resource_root {
++            return Ok(());
++        }
++        {
++            let mut installed = self.installed.lock().unwrap_or_else(PoisonError::into_inner);
++            if !matches!(*installed, Archive::Unchecked) {
++                return Err("hosted archive verification was already attempted for this launch".into());
++            }
++            if cancel.load(Ordering::Acquire) || self.canceled.load(Ordering::Acquire) {
++                return Ok(());
++            }
++            *installed = Archive::Checking;
++        }
++        let started = Instant::now();
++        let loaded = InstalledStockAssets::reopen(root, &self.installed_receipt, cancel);
++        let mut installed = self.installed.lock().unwrap_or_else(PoisonError::into_inner);
++        if !matches!(*installed, Archive::Checking) {
++            return Ok(());
++        }
++        *installed = Archive::Spent;
++        if cancel.load(Ordering::Acquire) || self.canceled.load(Ordering::Acquire) {
++            return Ok(());
++        }
++        match loaded {
++            Ok(Some(assets)) => {
++                if let Some(lease) = assets.assets().pin_verified_prepared() {
++                    *installed = Archive::Ready { assets, _lease: lease };
++                    log::info!(
++                        "Horizon stock HUD pinned one verified archive in {} ms",
++                        started.elapsed().as_millis()
++                    );
++                    return Ok(());
++                }
++            }
++            Ok(None) => {}
++            Err(error) => log::warn!("Horizon stock HUD uses the ordinary archive: {error}"),
++        }
++        drop(installed);
++        self.owner.clear_parked();
++        Ok(())
++    }
++
++    /// The caller has drained the old resource generation and any tail work.
++    pub(in crate::game) fn release_archive_after_drain(&self) {
++        *self.installed.lock().unwrap_or_else(PoisonError::into_inner) = Archive::Spent;
++    }
++
+     /// Settle the installed source once. A missing or ineligible warm seed
+     /// can build cold on that same descriptor before starting core.
+     pub(in crate::game) fn prepare_ui(
+@@ -82,25 +151,22 @@ impl CafeStockHudRequest {
+             }
+             *state = Attempt::Building;
+         }
+-        let start = Instant::now();
+         let result = (|| -> crate::Result<Option<_>> {
+-            let Some(mut launch) = self.owner.begin_launch(
++            let Some(mut launch) = self.owner.begin_with_assets(
+                 source,
+                 &self.resource_root,
+-                &self.installed_receipt,
+                 cancel,
++                || {
++                    let installed = self.installed.lock().unwrap_or_else(PoisonError::into_inner);
++                    Ok(match &*installed {
++                        Archive::Ready { assets, .. } => Some(assets.clone()),
++                        _ => None,
++                    })
++                },
+             )?
+             else {
+                 return Ok(None);
+             };
+-            let verify = start.elapsed();
+-            if !launch.matches_ordinary_archive(&self.resource_root, cancel)? {
+-                log::info!(
+-                    "Horizon stock HUD declined: the ordinary archive has another generation"
+-                );
+-                return Ok(None);
+-            }
+-            let ordinary = start.elapsed() - verify;
+             let prepare = Instant::now();
+             let candidate = if self.warm_replay && allow_warm
+                 && let Some(plan) = launch.try_warm(cancel)
+@@ -113,10 +179,8 @@ impl CafeStockHudRequest {
+                 StockHudCandidate::Cold(ui)
+             };
+             log::info!(
+-                "Horizon stock HUD candidate: warm={} verify_ms={} ordinary_verify_ms={} prepare_ms={} retained_bytes={}",
++                "Horizon stock HUD candidate: warm={} prepare_ms={} retained_bytes={}",
+                 matches!(candidate, StockHudCandidate::Warm(_)),
+-                verify.as_millis(),
+-                ordinary.as_millis(),
+                 prepare.elapsed().as_millis(),
+                 launch.retained_capacity().map_or(0, |capacity| capacity.retained_bytes)
+             );
+@@ -258,7 +322,10 @@ impl CafeStockHudRequest {
+     }
+ 
+     pub(in crate::game) fn cancel(&self) {
+-        self.canceled.store(true, Ordering::Release);
++        {
++            let _installed = self.installed.lock().unwrap_or_else(PoisonError::into_inner);
++            self.canceled.store(true, Ordering::Release);
++        }
+         self.post_core.close();
+         let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
+         drop(previous);
+@@ -267,6 +334,7 @@ impl CafeStockHudRequest {
+     /// The Night driver calls this after the presenter and worker drains.
+     /// A raw startup return, failed save or fatal error gives no reuse credit.
+     pub fn finish(&self, saved_return: bool) {
++        self.release_archive_after_drain();
+         self.post_core.close();
+         let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
+         match previous {
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index fbbbd2d23a73f286b3df7aa0ed2d622ef6c22628..558b8190b677860d86f97ff0843f95350f68aef4 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -278,7 +278,7 @@ pub struct PreparedFiles {
+     size: u64,
+     texture_identity: Mutex<Option<u64>>,
+     #[cfg(feature = "verified-prepared-assets")]
+-    verified_content: Mutex<Option<[u8; 32]>>,
++    verified_root: Option<PathBuf>,
+     #[cfg(target_os = "cafe")]
+     read_ahead: Mutex<ReadAhead>,
+ }
+@@ -490,7 +490,7 @@ impl PreparedFiles {
+             size,
+             texture_identity: Mutex::new(None),
+             #[cfg(feature = "verified-prepared-assets")]
+-            verified_content: Mutex::new(None),
++            verified_root: None,
+             #[cfg(target_os = "cafe")]
+             read_ahead: Mutex::default(),
+         };
+@@ -520,44 +520,6 @@ impl PreparedFiles {
+ 
+ #[cfg(feature = "verified-prepared-assets")]
+ impl PreparedFiles {
+-    /// Qualify the already-open ordinary snapshot without changing its lookup
+-    /// identity or file position. Installed generations must be immutable.
+-    pub fn matches_verified_content(
+-        &self,
+-        expected: [u8; 32],
+-        cancel: &std::sync::atomic::AtomicBool,
+-    ) -> io::Result<bool> {
+-        use sha2::{Digest, Sha256};
+-        use std::sync::atomic::Ordering;
+-
+-        if cancel.load(Ordering::Acquire) || self.size > 192 * 1024 * 1024 {
+-            return Ok(false);
+-        }
+-        let mut memo = self
+-            .verified_content
+-            .lock()
+-            .unwrap_or_else(PoisonError::into_inner);
+-        if let Some(digest) = *memo {
+-            return Ok(digest == expected);
+-        }
+-        let mut digest = Sha256::new();
+-        let mut buffer = vec![0; 128 * 1024];
+-        let mut offset = 0;
+-        while offset < self.size {
+-            if cancel.load(Ordering::Acquire) {
+-                return Ok(false);
+-            }
+-            let count = (self.size - offset).min(buffer.len() as u64) as usize;
+-            let chunk = &mut buffer[..count];
+-            read_at(&self.file, chunk, offset)?;
+-            digest.update(chunk);
+-            offset += count as u64;
+-        }
+-        let actual: [u8; 32] = digest.finalize().into();
+-        *memo = Some(actual);
+-        Ok(actual == expected && !cancel.load(Ordering::Acquire))
+-    }
+-
+     /// The trusted publisher must replace the file
+     /// atomically and keep the opened inode immutable. Verify before parsing.
+     pub fn reopen_verified(
+@@ -610,19 +572,86 @@ impl PreparedFiles {
+         if cancel.load(Ordering::Acquire) {
+             return Ok(None);
+         }
++        let verified_root = cache_root(root)?;
+         file.seek(SeekFrom::Start(0))?;
+-        Self::parse(root, file, INDEX_LIMIT)
++        Ok(Self::parse(root, file, INDEX_LIMIT)?.map(|mut archive| {
++            archive.verified_root = Some(verified_root);
++            archive
++        }))
+     }
+ }
+ 
+-/// `root`'s file, opened once per process; `None` when it has no usable one.
++struct Opened {
++    ordinary: Vec<(PathBuf, Option<Arc<PreparedFiles>>)>,
++    #[cfg(feature = "verified-prepared-assets")]
++    verified: Option<Arc<PreparedFiles>>,
++}
++
++static OPENED: Mutex<Opened> = Mutex::new(Opened {
++    ordinary: Vec::new(),
++    #[cfg(feature = "verified-prepared-assets")]
++    verified: None,
++});
++
++#[cfg(feature = "verified-prepared-assets")]
++fn same_archive_root(verified: &Path, requested: &Path) -> bool {
++    if requested == verified {
++        return true;
++    }
++    #[cfg(target_os = "cafe")]
++    {
++        if requested.is_absolute() {
++            return false;
++        }
++        let Ok(current) = std::env::current_dir() else {
++            return false;
++        };
++        cafe_cache_root(requested, Some(&current)).is_ok_and(|root| root == verified)
++    }
++    #[cfg(not(target_os = "cafe"))]
++    {
++        cache_root(requested).is_ok_and(|root| root == verified)
++    }
++}
++
++/// Make the verified descriptor the ordinary source for one hosted session.
++/// The previous cache entry can still be read by its existing Arc owners.
++#[cfg(feature = "verified-prepared-assets")]
++pub struct VerifiedPreparedLease(Arc<PreparedFiles>);
++
++#[cfg(feature = "verified-prepared-assets")]
++impl PreparedFiles {
++    pub fn pin_verified(self: &Arc<Self>) -> Option<VerifiedPreparedLease> {
++        let root = self.verified_root.as_ref()?;
++        if std::env::var_os("HORIZON_NO_DATA_FILE").is_some() {
++            return None;
++        }
++        let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
++        if opened.verified.is_some() {
++            return None;
++        }
++        opened.ordinary.retain(|(path, _)| !same_archive_root(root, path));
++        opened.verified = Some(Arc::clone(self));
++        Some(VerifiedPreparedLease(Arc::clone(self)))
++    }
++}
++
++#[cfg(feature = "verified-prepared-assets")]
++impl Drop for VerifiedPreparedLease {
++    fn drop(&mut self) {
++        let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
++        if opened.verified.as_ref().is_some_and(|active| Arc::ptr_eq(active, &self.0)) {
++            opened.verified = None;
++        }
++    }
++}
++
++/// `root`'s prepared reader, or `None` when it has no usable archive.
+ pub fn open(root: &Path) -> Option<Arc<PreparedFiles>> {
+     open_with_trace(root, false)
+ }
+ 
+ fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>> {
+-    type Opened = Vec<(PathBuf, Option<Arc<PreparedFiles>>)>;
+-    static OPENED: Mutex<Opened> = Mutex::new(Vec::new());
+     if trace_lock {
+         prepared_trace!(
+             "Horizon prepared files: cache lock wait begin root={}",
+@@ -633,7 +662,13 @@ fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>>
+     if trace_lock {
+         prepared_trace!("Horizon prepared files: cache lock acquired");
+     }
+-    if let Some((_, files)) = opened.iter().find(|(r, _)| r == root) {
++    #[cfg(feature = "verified-prepared-assets")]
++    if let Some(verified) = &opened.verified
++        && verified.verified_root.as_deref().is_some_and(|active| same_archive_root(active, root))
++    {
++        return std::env::var_os("HORIZON_NO_DATA_FILE").is_none().then(|| Arc::clone(verified));
++    }
++    if let Some((_, files)) = opened.ordinary.iter().find(|(r, _)| r == root) {
+         if trace_lock {
+             prepared_trace!("Horizon prepared files: cache hit");
+         }
+@@ -657,7 +692,7 @@ fn open_with_trace(root: &Path, trace_lock: bool) -> Option<Arc<PreparedFiles>>
+             }
+         }
+     };
+-    opened.push((root.to_owned(), files.clone()));
++    opened.ordinary.push((root.to_owned(), files.clone()));
+     files
+ }
+ 
+@@ -1079,6 +1114,61 @@ fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(all(unix, feature = "verified-prepared-assets"))]
++    #[test]
++    fn hosted_readers_share_one_verified_generation_across_atomic_replacement() {
++        use sha2::{Digest, Sha256};
++        use std::sync::atomic::AtomicBool;
++
++        let temp = std::env::temp_dir().join(format!("horizon-verified-{}", crate::process_id()));
++        fs::create_dir(&temp).unwrap();
++        struct Cleanup(PathBuf);
++        impl Drop for Cleanup {
++            fn drop(&mut self) {
++                let _ = fs::remove_dir_all(&self.0);
++            }
++        }
++        let _cleanup = Cleanup(temp.clone());
++        let root = temp.join("origin");
++        let alias = temp.join("alias");
++        fs::create_dir_all(root.join("assets/fixture")).unwrap();
++        std::os::unix::fs::symlink(&root, &alias).unwrap();
++        fs::write(root.join(SOURCE), b"fixture").unwrap();
++        let name = "assets/fixture/source.json";
++        let write_generation = |bytes: &[u8]| -> [u8; 32] {
++            fs::write(root.join(name), bytes).unwrap();
++            write_with_readers(&root, 1).unwrap();
++            Sha256::digest(fs::read(root.join(FILE_NAME)).unwrap()).into()
++        };
++        let canceled = AtomicBool::new(false);
++        let old = write_generation(b"old");
++        let inherited = open(&alias).unwrap();
++        assert!(inherited.pin_verified().is_none());
++        let original = Arc::new(PreparedFiles::reopen_verified(&root, old, &canceled).unwrap().unwrap());
++        let old_lease = original.pin_verified().unwrap();
++        assert!(Arc::ptr_eq(&open(&root).unwrap(), &original));
++        assert!(Arc::ptr_eq(&open(&alias).unwrap(), &original));
++
++        let new = write_generation(b"new");
++        assert!(PreparedFiles::reopen_verified(&root, old, &canceled).is_err());
++        let replacement = Arc::new(PreparedFiles::reopen_verified(&root, new, &canceled).unwrap().unwrap());
++        assert!(replacement.pin_verified().is_none());
++        assert_eq!(open(&alias).unwrap().read(name).unwrap().unwrap(), b"old");
++        assert_eq!(replacement.read(name).unwrap().unwrap(), b"new");
++
++        drop(old_lease);
++        let fresh = open(&alias).unwrap();
++        assert_eq!(fresh.read(name).unwrap().unwrap(), b"new");
++        assert_eq!(inherited.read(name).unwrap().unwrap(), b"old");
++        assert_eq!(original.read(name).unwrap().unwrap(), b"old");
++        let new_lease = replacement.pin_verified().unwrap();
++        assert!(Arc::ptr_eq(&open(&root).unwrap(), &replacement));
++        drop(new_lease);
++
++        canceled.store(true, Ordering::Release);
++        assert!(PreparedFiles::reopen_verified(&root, new, &canceled).unwrap().is_none());
++    }
++
+     #[test]
+     fn cafe_index_paths_borrow_normalized_names_and_keep_other_spellings() {
+         let name = "assets/minecraft/textures/block/clay.png";

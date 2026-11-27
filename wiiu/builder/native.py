@@ -281,7 +281,7 @@ def hosted_lto_link(directory, archive, commands):
 
 
 def compile_game(directory, source, manifest, tools, sysroot, packages, embedded, *,
-                 settings=LEGACY_BUILD_SETTINGS):
+                 settings=LEGACY_BUILD_SETTINGS, cargo_features=()):
     commands = {name: entry["path"] for name, entry in tools["files"].items()}
     jobs = str(os.cpu_count() or 1)
     target = directory / "cargo-target"
@@ -310,8 +310,11 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     })
     cargo = [commands["cargo"], "+nightly", "build", "--offline", "--locked", "--release",
              "--lib", "--manifest-path", str(manifest), "--target", TARGET, "--jobs", jobs]
+    features = list(cargo_features)
     if embedded and embedded.get("HORIZON_WIIU_HUD_VIEW_LANES") == "1":
-        cargo.extend(["--features", "gx2-hud-view-lanes"])
+        features.insert(0, "gx2-hud-view-lanes")
+    if features:
+        cargo.extend(["--features", ",".join(features)])
     run(cargo, env)
     build_commands = [cargo]
     archive = target / TARGET / "release/libhorizon_wiiu_loading_app.a"

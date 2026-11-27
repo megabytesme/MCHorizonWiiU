@@ -1,0 +1,696 @@
+diff --git a/crates/horizon-client-render/src/hud/stock_hud_launch.rs b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+index 5fad4e6d9550b3eb11ae13c7f6dc11c15a02f611..5e3c31ad690e464b09a34abe544649560158ef7f 100644
+--- a/crates/horizon-client-render/src/hud/stock_hud_launch.rs
++++ b/crates/horizon-client-render/src/hud/stock_hud_launch.rs
+@@ -31,6 +31,13 @@ impl NightStockHudOwner {
+         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+     }
+ 
++    /// Discard parked art without invalidating a different active launch.
++    pub fn clear_parked(&self) {
++        if let NightSlot::Parked(slot) = &mut *self.state() {
++            slot.clear();
++        }
++    }
++
+     /// Close at Night shutdown, even if a hosted launch still has the lease.
+     pub fn shutdown(&self) {
+         *self.state() = NightSlot::Closed;
+@@ -135,6 +142,27 @@ impl StockHudLaunch<'_> {
+         self.assets.assets()
+     }
+ 
++    /// Ordinary gameplay reads from its memoized archive. Decline this
++    /// experiment if those bytes belong to a different installed generation.
++    pub fn matches_ordinary_archive(&self, root: &Path, cancel: &AtomicBool) -> io::Result<bool> {
++        let Some(expected) = self.assets().verified_assets_generation() else {
++            return Ok(false);
++        };
++        let Some(ordinary) = horizon_core::prepared_files::open(root) else {
++            return Ok(false);
++        };
++        ordinary.matches_verified_content(expected, cancel)
++    }
++
++    pub fn retained_capacity(&self) -> Option<super::StockHudCapacity> {
++        self.lease
++            .slot
++            .as_ref()?
++            .0
++            .as_ref()
++            .map(|seed| seed.capacity)
++    }
++
+     pub fn try_warm(&mut self, cancel: &AtomicBool) -> Option<PlannedStockHud> {
+         if self.stage != LaunchStage::New || !self.lease.active() {
+             return None;
+@@ -193,10 +221,19 @@ impl StockHudLaunch<'_> {
+ 
+     /// Confirm that this generation's atlas and panorama reached the renderer.
+     pub fn mark_presented(&mut self, product: &CompleteStockHud, cancel: &AtomicBool) -> bool {
++        self.mark_atlas_presented(product.atlas(), cancel)
++    }
++
++    /// The UI adapter has already moved the complete product into its GUI.
++    pub fn owns_atlas(&self, atlas: &HudAtlas) -> bool {
++        atlas.font.stock_glyph_region(self.assets()).is_some()
++    }
++
++    pub fn mark_atlas_presented(&mut self, atlas: &HudAtlas, cancel: &AtomicBool) -> bool {
+         if !matches!(self.stage, LaunchStage::Warm | LaunchStage::Cold)
+             || cancel.load(Ordering::Acquire)
+             || !self.lease.active()
+-            || !self.assets().same_generation(product.assets())
++            || !self.owns_atlas(atlas)
+         {
+             return false;
+         }
+diff --git a/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs b/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs
+index 7d2ec68ad6a693e130397248ff8868dd11a9cd38..e73a63316ac606a4a2de2a9aedce862d752ba6b1 100644
+--- a/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs
++++ b/crates/horizon-client-render/src/hud/stock_hud_launch_tests.rs
+@@ -191,3 +191,26 @@ fn resolved_overlays_and_unavailable_receipts_evict_previous_seed() -> crate::Re
+     assert!(back.try_warm(&cancel).is_none());
+     Ok(())
+ }
++
++#[test]
++#[cfg(unix)]
++fn verified_launch_declines_after_the_memoized_ordinary_installation_is_replaced()
++-> crate::Result<()> {
++    let installation = Installation::new()?;
++    installation.publish(2)?;
++    let night = NightStockHudOwner::default();
++    let cancel = AtomicBool::new(false);
++    let cold = installation
++        .open(&night, &cancel)?
++        .ok_or("first open failed")?;
++    assert!(cold.matches_ordinary_archive(&installation.resources, &cancel)?);
++    assert!(cold.matches_ordinary_archive(&installation.resources, &cancel)?);
++    cold.park_after_drain(false, &cancel);
++    installation.publish(4)?;
++    let fresh = installation
++        .open(&night, &cancel)?
++        .ok_or("replacement could not be verified")?;
++    assert!(!fresh.matches_ordinary_archive(&installation.resources, &cancel)?);
++    assert!(horizon_core::prepared_files::open(&installation.resources).is_some());
++    Ok(())
++}
+diff --git a/crates/horizon-client/src/game/interface/startup_menu.rs b/crates/horizon-client/src/game/interface/startup_menu.rs
+index ae193503f1d3e4744e6e6896fe38b1ee8c947a79..f8d8583c1cd3ed71c39e5412aab7b2320105eda6 100644
+--- a/crates/horizon-client/src/game/interface/startup_menu.rs
++++ b/crates/horizon-client/src/game/interface/startup_menu.rs
+@@ -1487,6 +1487,10 @@ impl Loading {
+                 format!("resource loader panicked: {}", panic_text(payload.as_ref()))
+             })?;
+         }
++        #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++        if let Some(request) = self.progress.stock_hud() {
++            request.cancel();
++        }
+         self.progress = Progress::new();
+         let options = self.options.as_ref().ok_or("loading already finished")?;
+         let (receiver, handle) = spawn_loader(
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 20870459936df49f1bd42f4d51eba4f75f46d33d..a2e713c5a722f15ba701ce258722a080c94e25e6 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -25,6 +25,8 @@ pub(super) const STAGE_LINES: [&str; 10] = [
+ pub(super) struct Progress {
+     state: Arc<ProgressState>,
+     lines: &'static [&'static str],
++    #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++    stock_hud: Option<Arc<super::CafeStockHudRequest>>,
+ }
+ 
+ #[derive(Default)]
+@@ -52,8 +54,21 @@ impl Progress {
+         Self {
+             state: Arc::new(ProgressState::default()),
+             lines,
++            #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++            stock_hud: None,
+         }
+     }
++    #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++    pub(super) fn with_stock_hud(mut self, stock_hud: Option<Arc<super::CafeStockHudRequest>>) -> Self {
++        self.stock_hud = stock_hud;
++        self
++    }
++
++    #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++    pub(super) fn stock_hud(&self) -> Option<&super::CafeStockHudRequest> {
++        self.stock_hud.as_deref()
++    }
++
+     pub(super) fn set(&self, stage: u32) {
+         self.state.stage.store(stage, Ordering::Relaxed);
+     }
+@@ -66,7 +81,12 @@ impl Progress {
+ 
+     #[cfg(any(target_os = "cafe", test))]
+     pub(super) fn request_cancel(&self) -> bool {
+-        !self.state.cancelled.swap(true, Ordering::Relaxed)
++        let requested = !self.state.cancelled.swap(true, Ordering::Relaxed);
++        #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++        if let Some(request) = self.stock_hud() {
++            request.cancel();
++        }
++        requested
+     }
+ 
+     pub(super) fn cancelled(&self) -> bool {
+@@ -680,6 +700,13 @@ pub(super) fn load_resources(
+         if headless {
+             UiResources::server(source)
+         } else {
++            #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
++            if !super::resource_tables::mod_image_slot()
++                && let Some(request) = progress.stock_hud()
++                && let Some(ui) = request.cold_ui(source, progress.cancel_flag())
++            {
++                return Ok(ui);
++            }
+             #[cfg(not(target_os = "cafe"))]
+             let ui = UiResources::load(source);
+             #[cfg(target_os = "cafe")]
+diff --git a/crates/horizon-client/src/game/runtime/resource_loader.rs b/crates/horizon-client/src/game/runtime/resource_loader.rs
+index 986dfc8bf6fdf9a7d72d7ea705b4a731c77582aa..82fcca1a3317ec77758bdf4edd650903348c933e 100644
+--- a/crates/horizon-client/src/game/runtime/resource_loader.rs
++++ b/crates/horizon-client/src/game/runtime/resource_loader.rs
+@@ -326,7 +326,17 @@ pub(super) fn create_loading(
+     pack_error: Option<String>,
+     started: Instant,
+ ) -> Result<Loading> {
+-    let progress = Progress::new();
++    create_loading_with_progress(options, settings, vanilla_root, pack_error, started, Progress::new())
++}
++
++pub(super) fn create_loading_with_progress(
++    options: Options,
++    settings: Settings,
++    vanilla_root: PathBuf,
++    pack_error: Option<String>,
++    started: Instant,
++    progress: Progress,
++) -> Result<Loading> {
+     let (receiver, loader) = startup_menu::spawn_loader(
+         &options,
+         &settings,
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index d0ca73d8880551462a06f934ddeef4399b8939af..d0c2b18d80dd782e7c5cdb10c821c61aec0f6d70 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -8,6 +8,11 @@ pub use cafe_block_entities::CafeBlockEntitySections;
+ #[path = "cafe_ui_publication.rs"]
+ mod cafe_ui_publication;
+ use cafe_ui_publication::FirstUiPublication;
++#[cfg(feature = "stock-hud-seed")]
++#[path = "cafe_stock_hud.rs"]
++mod cafe_stock_hud;
++#[cfg(feature = "stock-hud-seed")]
++pub use cafe_stock_hud::CafeStockHudRequest;
+ 
+ pub struct CafeLoadingArtwork<'a> {
+     pub atlas: &'a HudAtlas,
+@@ -293,6 +298,15 @@ impl<'resources> CafeLoadingSession<'resources> {
+     pub fn poll(&mut self, event_loop: &dyn horizon_client_platform::EventLoopCtl) -> bool {
+         let first_ui = &mut self.first_ui;
+         if let Err(error) = self.loading.poll_menu_resources_with_ui(|loading, gui, root| {
++            #[cfg(feature = "stock-hud-seed")]
++            if let Some(request) = loading.progress.stock_hud() {
++                if request.owns_atlas(&gui.atlas) {
++                    first_ui.defer();
++                } else {
++                    // The ordinary replacement should publish without the probe.
++                    let _ = first_ui.finish_if_ready(true, drop);
++                }
++            }
+             if let Some((gui, root)) = first_ui.receive((gui, root)) {
+                 loading.set_ui(gui, root);
+             }
+@@ -436,6 +450,13 @@ impl<'resources> CafeLoadingSession<'resources> {
+             frame.ticks,
+             self.loading.settings.horizon.animated_textures,
+         )?;
++        #[cfg(feature = "stock-hud-seed")]
++        if presented
++            && let Some(request) = self.loading.progress.stock_hud()
++            && let Some(gui) = &self.loading.gui
++        {
++            request.after_present(&gui.atlas, self.loading.progress.cancel_flag());
++        }
+         if presented && self.loading.gui.is_some() && self.loading.menu.pending.is_none() {
+             self.loading.title_drawn = true;
+         }
+@@ -1399,6 +1420,9 @@ pub trait CafeLoadingHost: horizon_client_platform::EventLoopCtl {
+         false
+     }
+ 
++    #[cfg(feature = "stock-hud-seed")]
++    fn stock_hud_request(&self) -> Option<Arc<CafeStockHudRequest>> { None }
++
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession<'_>) -> Result<()>;
+ }
+ 
+@@ -1423,8 +1447,11 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+     let mut outcome = CafeRunOutcome::Finished;
+     let result = run_with_loading(options, Default::default(), true, |options, settings, root, pack_error, started| {
+         let resources = std::cell::OnceCell::new();
++        let progress = Progress::new();
++        #[cfg(feature = "stock-hud-seed")]
++        let progress = progress.with_stock_hud(host.stock_hud_request());
+         let mut session = CafeLoadingSession {
+-            loading: resource_loader::create_loading(options, settings, root, pack_error, started)?,
++            loading: resource_loader::create_loading_with_progress(options, settings, root, pack_error, started, progress)?,
+             first_ui: FirstUiPublication::new(host.defer_first_ui_publication()),
+             resources: &resources,
+             pad_edges: Default::default(),
+diff --git a/crates/horizon-client/src/platform/cafe_stock_hud.rs b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bedb18bcb914d9f1f46d210a496ce0e2a755d64
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_stock_hud.rs
+@@ -0,0 +1,149 @@
++//! One opt-in Night launch. Keep the candidate private until a clean return.
++
++use super::{HudAtlas, UiResources};
++use horizon_assets::resource_source::ResourceSource;
++use horizon_client_render::hud::stock_seed::{NightStockHudOwner, StockHudLaunch};
++use std::{
++    path::PathBuf,
++    sync::{
++        Mutex, MutexGuard, PoisonError,
++        atomic::{AtomicBool, Ordering},
++    },
++    time::Instant,
++};
++
++enum Attempt {
++    Unused,
++    Building,
++    Prepared(StockHudLaunch<'static>),
++    Spent,
++}
++
++pub struct CafeStockHudRequest {
++    owner: &'static NightStockHudOwner,
++    resource_root: PathBuf,
++    installed_receipt: PathBuf,
++    attempt: Mutex<Attempt>,
++    canceled: AtomicBool,
++}
++
++impl CafeStockHudRequest {
++    pub fn new(
++        owner: &'static NightStockHudOwner,
++        resource_root: PathBuf,
++        installed_receipt: PathBuf,
++    ) -> Self {
++        Self {
++            owner,
++            resource_root,
++            installed_receipt,
++            attempt: Mutex::new(Attempt::Unused),
++            canceled: AtomicBool::new(false),
++        }
++    }
++
++    fn state(&self) -> MutexGuard<'_, Attempt> {
++        self.attempt.lock().unwrap_or_else(PoisonError::into_inner)
++    }
++
++    /// The current renderer accepts complete CPU artwork. Capture a cold
++    /// candidate here until the planned warm GX2 completion path is enabled.
++    pub(in crate::game) fn cold_ui(
++        &self,
++        source: &ResourceSource,
++        cancel: &AtomicBool,
++    ) -> Option<UiResources> {
++        {
++            let mut state = self.state();
++            if !matches!(*state, Attempt::Unused) {
++                // A later UI indicates pack rollback or a different candidate.
++                let previous = std::mem::replace(&mut *state, Attempt::Spent);
++                drop(state);
++                drop(previous);
++                return None;
++            }
++            *state = Attempt::Building;
++        }
++        let start = Instant::now();
++        let result = (|| -> crate::Result<Option<_>> {
++            let Some(mut launch) = self.owner.begin_launch(
++                source,
++                &self.resource_root,
++                &self.installed_receipt,
++                cancel,
++            )?
++            else {
++                return Ok(None);
++            };
++            let verify = start.elapsed();
++            if !launch.matches_ordinary_archive(&self.resource_root, cancel)? {
++                log::info!(
++                    "Horizon stock HUD declined: the ordinary archive has another generation"
++                );
++                return Ok(None);
++            }
++            let ordinary = start.elapsed() - verify;
++            let cold = Instant::now();
++            let Some(ui) = launch.build_cold(cancel)? else {
++                return Ok(None);
++            };
++            log::info!(
++                "Horizon stock HUD cold candidate: verify_ms={} ordinary_verify_ms={} cold_capture_ms={} retained_bytes={}",
++                verify.as_millis(),
++                ordinary.as_millis(),
++                cold.elapsed().as_millis(),
++                launch
++                    .retained_capacity()
++                    .map_or(0, |capacity| capacity.retained_bytes)
++            );
++            Ok(Some((launch, UiResources::from_verified_stock(ui))))
++        })();
++        let mut state = self.state();
++        match result {
++            Ok(Some((launch, ui)))
++                if matches!(*state, Attempt::Building)
++                    && !cancel.load(Ordering::Acquire)
++                    && !self.canceled.load(Ordering::Acquire) =>
++            {
++                *state = Attempt::Prepared(launch);
++                Some(ui)
++            }
++            result => {
++                *state = Attempt::Spent;
++                drop(state);
++                if let Err(error) = result {
++                    log::warn!("Horizon stock HUD uses the ordinary loader: {error}");
++                }
++                None
++            }
++        }
++    }
++
++    pub(super) fn owns_atlas(&self, atlas: &HudAtlas) -> bool {
++        matches!(&*self.state(), Attempt::Prepared(launch) if launch.owns_atlas(atlas))
++    }
++
++    pub(super) fn after_present(&self, atlas: &HudAtlas, cancel: &AtomicBool) {
++        if let Attempt::Prepared(launch) = &mut *self.state() {
++            if launch.mark_atlas_presented(atlas, cancel) {
++                log::info!("Horizon stock HUD candidate presented");
++            }
++        }
++    }
++
++    pub(in crate::game) fn cancel(&self) {
++        self.canceled.store(true, Ordering::Release);
++        let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
++        drop(previous);
++    }
++
++    /// The Night driver calls this after the presenter and worker drains.
++    /// A raw startup return, failed save or fatal error gives no reuse credit.
++    pub fn finish(&self, saved_return: bool) {
++        let previous = std::mem::replace(&mut *self.state(), Attempt::Spent);
++        match previous {
++            Attempt::Prepared(launch) => launch.park_after_drain(saved_return, &self.canceled),
++            _ => self.owner.clear_parked(),
++        }
++    }
++}
+diff --git a/crates/horizon-client/src/platform/cafe_ui_publication.rs b/crates/horizon-client/src/platform/cafe_ui_publication.rs
+index 2307bb882b9c7d1d980b3594e68735dd9b3b4e58..cf7c2ce4ed0e912aec15aa1256ed7ee456cb5b80 100644
+--- a/crates/horizon-client/src/platform/cafe_ui_publication.rs
++++ b/crates/horizon-client/src/platform/cafe_ui_publication.rs
+@@ -15,6 +15,13 @@ impl<T> FirstUiPublication<T> {
+         }
+     }
+ 
++    #[cfg(feature = "stock-hud-seed")]
++    pub(super) fn defer(&mut self) {
++        if matches!(self, Self::Ordinary) {
++            *self = Self::Deferred(None);
++        }
++    }
++
+     /// A later bundle can replace a provisional one after pack rollback.
+     pub(super) fn receive(&mut self, ui: T) -> Option<T> {
+         match self {
+diff --git a/crates/horizon-core/src/prepared_files.rs b/crates/horizon-core/src/prepared_files.rs
+index 2b216eef39560372b34d4594988334f601f017a5..fbbbd2d23a73f286b3df7aa0ed2d622ef6c22628 100644
+--- a/crates/horizon-core/src/prepared_files.rs
++++ b/crates/horizon-core/src/prepared_files.rs
+@@ -277,6 +277,8 @@ pub struct PreparedFiles {
+     entries: Box<[Entry]>,
+     size: u64,
+     texture_identity: Mutex<Option<u64>>,
++    #[cfg(feature = "verified-prepared-assets")]
++    verified_content: Mutex<Option<[u8; 32]>>,
+     #[cfg(target_os = "cafe")]
+     read_ahead: Mutex<ReadAhead>,
+ }
+@@ -487,6 +489,8 @@ impl PreparedFiles {
+             entries,
+             size,
+             texture_identity: Mutex::new(None),
++            #[cfg(feature = "verified-prepared-assets")]
++            verified_content: Mutex::new(None),
+             #[cfg(target_os = "cafe")]
+             read_ahead: Mutex::default(),
+         };
+@@ -516,6 +520,44 @@ impl PreparedFiles {
+ 
+ #[cfg(feature = "verified-prepared-assets")]
+ impl PreparedFiles {
++    /// Qualify the already-open ordinary snapshot without changing its lookup
++    /// identity or file position. Installed generations must be immutable.
++    pub fn matches_verified_content(
++        &self,
++        expected: [u8; 32],
++        cancel: &std::sync::atomic::AtomicBool,
++    ) -> io::Result<bool> {
++        use sha2::{Digest, Sha256};
++        use std::sync::atomic::Ordering;
++
++        if cancel.load(Ordering::Acquire) || self.size > 192 * 1024 * 1024 {
++            return Ok(false);
++        }
++        let mut memo = self
++            .verified_content
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner);
++        if let Some(digest) = *memo {
++            return Ok(digest == expected);
++        }
++        let mut digest = Sha256::new();
++        let mut buffer = vec![0; 128 * 1024];
++        let mut offset = 0;
++        while offset < self.size {
++            if cancel.load(Ordering::Acquire) {
++                return Ok(false);
++            }
++            let count = (self.size - offset).min(buffer.len() as u64) as usize;
++            let chunk = &mut buffer[..count];
++            read_at(&self.file, chunk, offset)?;
++            digest.update(chunk);
++            offset += count as u64;
++        }
++        let actual: [u8; 32] = digest.finalize().into();
++        *memo = Some(actual);
++        Ok(actual == expected && !cancel.load(Ordering::Acquire))
++    }
++
+     /// The trusted publisher must replace the file
+     /// atomically and keep the opened inode immutable. Verify before parsing.
+     pub fn reopen_verified(
+diff --git a/wiiu/loading_app/Cargo.lock b/wiiu/loading_app/Cargo.lock
+index 6f6ad24d7f870d25d5078567b15a20b94d43e0fc..211b24e3bf43c5064dd6935f10cbfafa208f060c 100644
+--- a/wiiu/loading_app/Cargo.lock
++++ b/wiiu/loading_app/Cargo.lock
+@@ -1463,6 +1463,7 @@ dependencies = [
+  "portable-atomic",
+  "serde",
+  "serde_json",
++ "sha2",
+  "unicode_names2",
+ ]
+ 
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index 7a9c67361e47859d56d348d5e564704106fb88d8..76a2f9ef13a905b1a749e5e3ee490b5d1e8498fa 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -9,6 +9,7 @@ crate-type = ["staticlib"]
+ 
+ [features]
+ gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]
++stock-hud-seed = ["horizon-client/stock-hud-seed"]
+ 
+ [dependencies]
+ horizon-wiiu-mcp = { path = "../mcp" }
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 3353a68feb1594b7e0b7ccd0512bb15b832c946f..f3db26493862de60e0f6222a4605a0a2a97c12b3 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -30,6 +30,34 @@ const RESOURCES: i32 = 2;
+ const FAILED: i32 = 3;
+ const OS_SAVE_FAILED: i32 = 4;
+ 
++#[cfg(feature = "stock-hud-seed")]
++static STOCK_HUD: OnceLock<horizon_client::hud::stock_seed::NightStockHudOwner> = OnceLock::new();
++
++#[cfg(feature = "stock-hud-seed")]
++fn clear_parked_stock_hud() {
++    if let Some(owner) = STOCK_HUD.get() {
++        owner.clear_parked();
++    }
++}
++
++#[cfg(feature = "stock-hud-seed")]
++fn stock_hud_request(launch: &night_menu::Launch) -> Option<Arc<horizon_client::game::CafeStockHudRequest>> {
++    let app = Path::new(CAFE_APP_ROOT);
++    let receipt = app.join(".local/installed-stock-hud.json");
++    if launch.world.is_none()
++        || launch.server.is_some()
++        || launch.benchmark.is_some()
++        || !app.join("stock-hud-seed.enable").is_file()
++        || !receipt.is_file()
++    {
++        clear_parked_stock_hud();
++        return None;
++    }
++    Some(Arc::new(horizon_client::game::CafeStockHudRequest::new(
++        STOCK_HUD.get_or_init(Default::default), launch.resources.clone(), receipt,
++    )))
++}
++
+ // Optional command and reply bit shared with pregame/src/cafe.rs. The
+ // fixed LocalMenu layout and the frozen host's existing modes stay intact.
+ const POLL_AGENT_QUIT: u8 = 15;
+@@ -135,6 +163,10 @@ pub unsafe extern "C" fn horizon_night_local(
+         return;
+     };
+     if command == local_wire::SHUTDOWN {
++        #[cfg(feature = "stock-hud-seed")]
++        if let Some(owner) = STOCK_HUD.get() {
++            owner.shutdown();
++        }
+         local_service()
+             .lock()
+             .unwrap_or_else(|e| e.into_inner())
+@@ -199,12 +231,22 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+             Ok(launch) => (launch, None),
+             Err(code) => return i32::from(code),
+         },
+-        Err(mcp::LaunchError::Cancelled) => return RETURNED,
+-        Err(mcp::LaunchError::Failed) => return FAILED,
++        Err(mcp::LaunchError::Cancelled) => {
++            #[cfg(feature = "stock-hud-seed")]
++            clear_parked_stock_hud();
++            return RETURNED;
++        }
++        Err(mcp::LaunchError::Failed) => {
++            #[cfg(feature = "stock-hud-seed")]
++            clear_parked_stock_hud();
++            return FAILED;
++        }
+     };
+     if let Some(startup) = &startup {
+         if startup.poll_cancel() {
+             startup.finish(true);
++            #[cfg(feature = "stock-hud-seed")]
++            clear_parked_stock_hud();
+             return RETURNED;
+         }
+     }
+@@ -220,16 +262,30 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         if benchmarking {
+             mcp::benchmark_finished(BenchmarkOutcome::Failed, None, None);
+         }
++        #[cfg(feature = "stock-hud-seed")]
++        clear_parked_stock_hud();
+         return RESOURCES;
+     }
+     horizon_client::spans::startup::enable_log_sink();
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+-    let result = run(launch, startup.clone());
++    #[cfg(feature = "stock-hud-seed")]
++    let stock_hud = stock_hud_request(&launch);
++    let result = run(
++        launch,
++        startup.clone(),
++        #[cfg(feature = "stock-hud-seed")]
++        stock_hud.clone(),
++    );
+     if benchmarking && result != RETURNED {
+         mcp::benchmark_finished(BenchmarkOutcome::Failed, None, None);
+     }
+     mcp::withdraw();
+-    if let Err(error) = std::env::set_current_dir(CAFE_APP_ROOT) {
++    let restored_cwd = std::env::set_current_dir(CAFE_APP_ROOT);
++    #[cfg(feature = "stock-hud-seed")]
++    if let Some(stock_hud) = &stock_hud {
++        stock_hud.finish(result == SAVED && restored_cwd.is_ok());
++    }
++    if let Err(error) = restored_cwd {
+         log::error!("Cafe did not restore the launcher working directory: {error}");
+     }
+     horizon_client_platform::cafe_memory::report("hosted.after_game_drop");
+@@ -274,7 +330,11 @@ impl Drop for BenchmarkCapture {
+     }
+ }
+ 
+-fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
++fn run(
++    launch: night_menu::Launch,
++    startup: Option<Arc<mcp::Startup>>,
++    #[cfg(feature = "stock-hud-seed")] stock_hud: Option<Arc<horizon_client::game::CafeStockHudRequest>>,
++) -> i32 {
+     let mut capture = match launch.benchmark.as_ref().and_then(|bench| bench.profile) {
+         Some(profile) => match BenchmarkCapture::begin(profile) {
+             Some(capture) => Some(capture),
+@@ -293,6 +353,8 @@ fn run(launch: night_menu::Launch, startup: Option<Arc<mcp::Startup>>) -> i32 {
+         }
+     };
+     let mut host = LoadingHost::new(&mut presenter);
++    #[cfg(feature = "stock-hud-seed")]
++    { host.stock_hud = stock_hud; }
+     host.hosted = true;
+     host.hosted_benchmark = launch.benchmark.is_some();
+     host.hosted_startup = startup;
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index a74dbe2587ce6d801872eb8e1e492b0ef6829db3..6821c838884c3ff3851929aa4621fee2b1d1dc06 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -445,6 +445,8 @@ struct LoadingHost<'a> {
+     local_world_start_failed: bool,
+     remote_server_start_failed: bool,
+     hosted: bool,
++    #[cfg(feature = "stock-hud-seed")]
++    stock_hud: Option<Arc<horizon_client::game::CafeStockHudRequest>>,
+     hosted_swap_ab: bool,
+     hosted_saved: bool,
+     hosted_exit_save_failed: bool,
+@@ -484,6 +486,8 @@ impl<'a> LoadingHost<'a> {
+             local_world_start_failed: false,
+             remote_server_start_failed: false,
+             hosted: false,
++            #[cfg(feature = "stock-hud-seed")]
++            stock_hud: None,
+             hosted_swap_ab: false,
+             hosted_saved: false,
+             hosted_exit_save_failed: false,
+@@ -883,6 +887,11 @@ fn request_text_input(initial_text: &str, max_utf16_units: usize) -> bool {
+ }
+ 
+ impl CafeLoadingHost for LoadingHost<'_> {
++    #[cfg(feature = "stock-hud-seed")]
++    fn stock_hud_request(&self) -> Option<Arc<horizon_client::game::CafeStockHudRequest>> {
++        self.stock_hud.clone()
++    }
++
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> horizon_client::Result<()> {
+         match horizon_wiiu_platform::keyboard::initialize() {
+             Ok(()) => {

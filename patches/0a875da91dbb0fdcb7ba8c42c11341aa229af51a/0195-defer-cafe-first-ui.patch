@@ -1,0 +1,468 @@
+diff --git a/crates/horizon-client/src/game/interface/startup_menu.rs b/crates/horizon-client/src/game/interface/startup_menu.rs
+index 80af82230ef3a05efa9e06f274490cdf728f3237..ae193503f1d3e4744e6e6896fe38b1ee8c947a79 100644
+--- a/crates/horizon-client/src/game/interface/startup_menu.rs
++++ b/crates/horizon-client/src/game/interface/startup_menu.rs
+@@ -459,12 +459,19 @@ pub(super) fn spawn_loader(
+ 
+ impl Loading {
+     pub(super) fn poll_menu_resources(&mut self) -> Result<()> {
++        self.poll_menu_resources_with_ui(Self::set_ui)
++    }
++
++    pub(super) fn poll_menu_resources_with_ui(
++        &mut self,
++        mut publish: impl FnMut(&mut Self, UiResources, PathBuf),
++    ) -> Result<()> {
+         // Once `Done` arrived the generation is over: the caller may have taken
+         // its result, and the finished loader's channel is closed.
+         if self.loaded.is_none() && !self.delivered {
+             loop {
+                 match self.receiver.try_recv() {
+-                    Ok(LoaderMsg::Ui(gui, root)) => self.set_ui(gui, root),
++                    Ok(LoaderMsg::Ui(gui, root)) => publish(self, gui, root),
+                     Ok(LoaderMsg::Done(result)) => {
+                         self.loaded = Some(result);
+                         self.delivered = true;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 73db0608b826eaaf0db9c15b5ca9e94694788ac1..d0ca73d8880551462a06f934ddeef4399b8939af 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -5,6 +5,9 @@ use horizon_client_platform::{ClientDeviceEvent, ClientWindowEvent};
+ #[path = "cafe_block_entities.rs"]
+ mod cafe_block_entities;
+ pub use cafe_block_entities::CafeBlockEntitySections;
++#[path = "cafe_ui_publication.rs"]
++mod cafe_ui_publication;
++use cafe_ui_publication::FirstUiPublication;
+ 
+ pub struct CafeLoadingArtwork<'a> {
+     pub atlas: &'a HudAtlas,
+@@ -13,6 +16,15 @@ pub struct CafeLoadingArtwork<'a> {
+     pub generation: u64,
+ }
+ 
++/// Complete CPU menu artwork owned by a deferred startup attempt.
++/// The renderer can update the mapped font while it has exclusive access.
++pub struct CafeDeferredLoadingArtwork<'a> {
++    pub atlas: &'a mut HudAtlas,
++    pub panorama: &'a horizon_client::gfx::panorama::Faces,
++    pub generation: u64,
++    pub cancel: &'a std::sync::atomic::AtomicBool,
++}
++
+ /// Original Game artwork needed before laying out a Cafe frame. Resource data
+ /// remains owned by Horizon; the backend copies native textures synchronously.
+ pub struct CafeGameArtwork<'a> {
+@@ -44,6 +56,15 @@ pub trait CafeLoadingPresenter {
+     /// resources when `generation` is unchanged. The artwork is borrowed only
+     /// for this callback; copy any native texture data synchronously.
+     fn prepare_loading(&mut self, artwork: CafeLoadingArtwork<'_>) -> Result<()>;
++    /// Prepare one explicitly deferred first UI, including panorama. Return
++    /// true only after all resources are ready for the ordinary draw path.
++    /// A decline or error must keep the ordinary preparation path usable.
++    fn prepare_deferred_loading(
++        &mut self,
++        _artwork: CafeDeferredLoadingArtwork<'_>,
++    ) -> Result<bool> {
++        Ok(false)
++    }
+     /// Draw both target views synchronously. `Ok(true)` means both were accepted.
+     fn present_loading(
+         &mut self,
+@@ -180,6 +201,7 @@ fn encode_cafe_screenshot(
+ /// exposes readiness without consuming Loaded or claiming a Game handoff.
+ pub struct CafeLoadingSession<'resources> {
+     loading: Loading,
++    first_ui: FirstUiPublication<(UiResources, PathBuf)>,
+     resources: &'resources std::cell::OnceCell<Arc<Resources>>,
+     pad_edges: horizon_client::gamepad::Edges,
+     local_failure: Option<String>,
+@@ -243,6 +265,7 @@ impl<'resources> CafeLoadingSession<'resources> {
+     /// The optional world-resource tail can still be in that queued message.
+     #[cfg(target_os = "cafe")]
+     pub fn drain_hosted(&mut self) -> Result<()> {
++        self.first_ui.abandon();
+         // A session still owning its launch options never handed a game off.
+         // Stop scheduling new load work before joining that generation.
+         if self.loading.options.is_some() && self.loading.progress.request_cancel() {
+@@ -268,13 +291,20 @@ impl<'resources> CafeLoadingSession<'resources> {
+     }
+ 
+     pub fn poll(&mut self, event_loop: &dyn horizon_client_platform::EventLoopCtl) -> bool {
+-        if let Err(error) = self.loading.poll_menu_resources() {
++        let first_ui = &mut self.first_ui;
++        if let Err(error) = self.loading.poll_menu_resources_with_ui(|loading, gui, root| {
++            if let Some((gui, root)) = first_ui.receive((gui, root)) {
++                loading.set_ui(gui, root);
++            }
++        }) {
+             #[cfg(target_os = "cafe")]
+             log::error!("Horizon Cafe startup failure stage=resource-poll");
+             self.loading.error = Some(error);
+             return false;
+         }
+-        self.loading.poll_menu_realms(&Loop(event_loop));
++        if !self.first_ui.blocks_frontend() {
++            self.loading.poll_menu_realms(&Loop(event_loop));
++        }
+         let alive = self.failure_message().is_none();
+         #[cfg(target_os = "cafe")]
+         if !alive {
+@@ -297,11 +327,25 @@ impl<'resources> CafeLoadingSession<'resources> {
+         alive
+     }
+ 
++    /// Cancel the optional presenter attempt and use the ordinary complete UI.
++    /// A host that is leaving the session uses `drain_hosted` instead.
++    pub fn cancel_deferred_first_ui(&mut self) {
++        let loading = &mut self.loading;
++        let _ = self.first_ui.finish_if_ready(true, |pending| {
++            if let Some((gui, root)) = pending {
++                loading.set_ui(gui, root);
++            }
++        });
++    }
++
+     pub fn dispatch_event(
+         &mut self,
+         event_loop: &dyn horizon_client_platform::EventLoopCtl,
+         event: ClientWindowEvent,
+     ) {
++        if self.first_ui.blocks_frontend() && !matches!(event, ClientWindowEvent::CloseRequested) {
++            return;
++        }
+         if let Err(error) = self.loading.menu_event(&Loop(event_loop), input::window_event(event)) {
+             self.loading.error = Some(error);
+             event_loop.exit();
+@@ -320,7 +364,13 @@ impl<'resources> CafeLoadingSession<'resources> {
+         }
+         let settings = &self.loading.settings.controller;
+         let state = settings.map_cafe_face_buttons(state, GlyphStyle::Nintendo);
+-        for (button, down) in self.pad_edges.update(&state, settings.trigger_threshold) {
++        let edges = self.pad_edges.update(&state, settings.trigger_threshold);
++        if self.first_ui.blocks_frontend() {
++            // A held button must be released before it acts in the new UI.
++            self.pad_edges.cancel();
++            return;
++        }
++        for (button, down) in edges {
+             let key = match button {
+                 Button::DPadUp => KeyCode::ArrowUp,
+                 Button::DPadDown => KeyCode::ArrowDown,
+@@ -360,10 +410,16 @@ impl<'resources> CafeLoadingSession<'resources> {
+             log::info!("Horizon Cafe loading draw host_iteration={iteration}");
+         }
+         self.loading.cafe_viewport = size;
+-        if let Some(gui) = &mut self.loading.gui {
++        let deferred = self.prepare_deferred_first_ui(presenter);
++        if deferred.is_some() && let Some(error) = &self.loading.error {
++            return Err(error.to_string().into());
++        }
++        if deferred.is_none() && let Some(gui) = &mut self.loading.gui {
+             gui.atlas.pack_pixels();
+         }
+-        presenter.prepare_loading(self.loading_artwork())?;
++        if deferred != Some(true) {
++            presenter.prepare_loading(self.loading_artwork())?;
++        }
+         let mut batch = HudBatch::new(size, self.loading.settings.gui_scale_inputs());
+         self.loading.draw_menu(&mut batch);
+         self.loading.menu.frame_drawn((batch.width, batch.height));
+@@ -386,6 +442,42 @@ impl<'resources> CafeLoadingSession<'resources> {
+         Ok(presented)
+     }
+ 
++    fn prepare_deferred_first_ui(
++        &mut self,
++        presenter: &mut dyn CafeLoadingPresenter,
++    ) -> Option<bool> {
++        let loading = &mut self.loading;
++        let core_ready = matches!(&loading.loaded, Some(Ok(_)));
++        self.first_ui.finish_if_ready(core_ready, |pending| {
++            let Some((mut gui, root)) = pending else {
++                return false;
++            };
++            gui.atlas.pack_pixels();
++            let cancel = loading.progress.cancel_flag();
++            let prepared = if gui.atlas.pixels.is_empty()
++                && !cancel.load(std::sync::atomic::Ordering::Acquire)
++            {
++                let generation = gui.atlas.revision;
++                match presenter.prepare_deferred_loading(CafeDeferredLoadingArtwork {
++                    atlas: &mut gui.atlas,
++                    panorama: &gui.panorama,
++                    generation,
++                    cancel,
++                }) {
++                    Ok(prepared) => prepared,
++                    Err(error) => {
++                        log::warn!("Horizon Cafe deferred UI preparation failed: {error}");
++                        false
++                    }
++                }
++            } else {
++                false
++            };
++            loading.set_ui(gui, root);
++            prepared
++        })
++    }
++
+     fn loading_artwork(&self) -> CafeLoadingArtwork<'_> {
+         match &self.loading.gui {
+             Some(gui) => CafeLoadingArtwork {
+@@ -440,6 +532,9 @@ impl<'resources> CafeLoadingSession<'resources> {
+     /// In an opted-in Cemu control session, transfer the title as well so
+     /// Horizon's existing Game control and UI paths own it.
+     pub fn start_pending_game(&mut self) -> Result<Option<CafeGameSession<'resources>>> {
++        if self.first_ui.blocks_frontend() {
++            return Ok(None);
++        }
+         let Some(entry_kind) = self.pending_game_kind()? else {
+             return Ok(None);
+         };
+@@ -597,7 +692,10 @@ impl<'resources> CafeLoadingSession<'resources> {
+             CafeLoadingStatus::RemoteServerStartFailed
+         } else if self.failure_message().is_some() {
+             CafeLoadingStatus::Failed
+-        } else if self.loading.loaded.is_some() && self.loading.ready_for_handoff() {
++        } else if !self.first_ui.blocks_frontend()
++            && self.loading.loaded.is_some()
++            && self.loading.ready_for_handoff()
++        {
+             CafeLoadingStatus::ReadyForHandoff
+         } else {
+             CafeLoadingStatus::Loading
+@@ -1295,6 +1393,12 @@ impl Drop for CafeGameSession<'_> {
+ 
+ /// Cafe loop driver; the returned session remains owned by the caller.
+ pub trait CafeLoadingHost: horizon_client_platform::EventLoopCtl {
++    /// An opt-in first-UI transaction. The ordinary host publishes as soon as
++    /// the worker delivers its complete UI.
++    fn defer_first_ui_publication(&self) -> bool {
++        false
++    }
++
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession<'_>) -> Result<()>;
+ }
+ 
+@@ -1321,6 +1425,7 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+         let resources = std::cell::OnceCell::new();
+         let mut session = CafeLoadingSession {
+             loading: resource_loader::create_loading(options, settings, root, pack_error, started)?,
++            first_ui: FirstUiPublication::new(host.defer_first_ui_publication()),
+             resources: &resources,
+             pad_edges: Default::default(),
+             local_failure: None,
+diff --git a/crates/horizon-client/src/platform/cafe_ui_publication.rs b/crates/horizon-client/src/platform/cafe_ui_publication.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2307bb882b9c7d1d980b3594e68735dd9b3b4e58
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_ui_publication.rs
+@@ -0,0 +1,206 @@
++//! Own the first optional Cafe UI publication until the core generation wins.
++
++pub(super) enum FirstUiPublication<T> {
++    Ordinary,
++    Deferred(Option<T>),
++    Abandoned,
++}
++
++impl<T> FirstUiPublication<T> {
++    pub(super) fn new(defer: bool) -> Self {
++        if defer {
++            Self::Deferred(None)
++        } else {
++            Self::Ordinary
++        }
++    }
++
++    /// A later bundle can replace a provisional one after pack rollback.
++    pub(super) fn receive(&mut self, ui: T) -> Option<T> {
++        match self {
++            Self::Ordinary => Some(ui),
++            Self::Deferred(pending) => {
++                *pending = Some(ui);
++                None
++            }
++            Self::Abandoned => None,
++        }
++    }
++
++    pub(super) fn blocks_frontend(&self) -> bool {
++        !matches!(self, Self::Ordinary)
++    }
++
++    /// Complete a single attempt, including publication, while still gated.
++    /// The callback can publish the regular bundle if preparation declines.
++    pub(super) fn finish_if_ready<R>(
++        &mut self,
++        ready: bool,
++        publish: impl FnOnce(Option<T>) -> R,
++    ) -> Option<R> {
++        if !ready {
++            return None;
++        }
++        let Self::Deferred(pending) = self else {
++            return None;
++        };
++        let result = publish(pending.take());
++        *self = Self::Ordinary;
++        Some(result)
++    }
++
++    pub(super) fn abandon(&mut self) {
++        if let Self::Deferred(_) = self {
++            *self = Self::Abandoned;
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::FirstUiPublication;
++    use std::{cell::Cell, rc::Rc};
++
++    #[derive(Debug, PartialEq, Eq)]
++    struct Ui {
++        generation: u32,
++        font: &'static str,
++    }
++
++    struct Fixture {
++        pending: FirstUiPublication<Ui>,
++        ui: Option<Ui>,
++        preparations: u32,
++    }
++
++    impl Fixture {
++        fn new(opt_in: bool) -> Self {
++            Self {
++                pending: FirstUiPublication::new(opt_in),
++                ui: None,
++                preparations: 0,
++            }
++        }
++
++        fn receive(&mut self, generation: u32) {
++            if let Some(ui) = self.pending.receive(Ui {
++                generation,
++                font: "existing",
++            }) {
++                self.ui = Some(ui);
++            }
++        }
++
++        fn draw(&mut self, core_ready: bool, prepare_succeeds: bool) -> &'static str {
++            self.pending.finish_if_ready(core_ready, |ui| {
++                if let Some(mut ui) = ui {
++                    self.preparations += 1;
++                    if prepare_succeeds {
++                        ui.font = "mapped";
++                    }
++                    self.ui = Some(ui);
++                }
++            });
++            self.ui.as_ref().map_or("boot", |ui| ui.font)
++        }
++
++        fn cancel_probe(&mut self) {
++            self.pending.finish_if_ready(true, |ui| self.ui = ui);
++        }
++
++        fn input_generation(&self) -> Option<u32> {
++            if self.pending.blocks_frontend() {
++                return None;
++            }
++            self.ui.as_ref().map(|ui| ui.generation)
++        }
++
++        fn handoff(&mut self, core_ready: bool) -> Option<Ui> {
++            if !core_ready || self.pending.blocks_frontend() {
++                return None;
++            }
++            self.ui.take()
++        }
++    }
++
++    #[test]
++    fn ordinary_host_publishes_immediately_and_never_attempts_preparation() {
++        let mut host = Fixture::new(false);
++        host.receive(1);
++        assert_eq!(host.input_generation(), Some(1));
++        assert_eq!(host.draw(false, true), "existing");
++        assert_eq!(host.handoff(true).unwrap().font, "existing");
++        assert_eq!(host.preparations, 0);
++    }
++
++    #[test]
++    fn only_the_winning_ui_is_prepared_before_input_layout_and_quick_handoff() {
++        let mut host = Fixture::new(true);
++        host.receive(1);
++        assert_eq!(host.input_generation(), None);
++        assert_eq!(host.draw(false, true), "boot");
++        assert_eq!(host.preparations, 0);
++        host.receive(2);
++        assert_eq!(host.handoff(true), None);
++        assert_eq!(host.draw(true, true), "mapped");
++        assert_eq!(host.input_generation(), Some(2));
++        assert_eq!(host.draw(true, true), "mapped");
++        assert_eq!(host.preparations, 1);
++        assert_eq!(
++            host.handoff(true),
++            Some(Ui {
++                generation: 2,
++                font: "mapped"
++            })
++        );
++    }
++
++    #[test]
++    fn failed_preparation_publishes_the_complete_regular_font_once() {
++        let mut host = Fixture::new(true);
++        host.receive(4);
++        assert_eq!(host.draw(true, false), "existing");
++        assert_eq!(host.draw(true, false), "existing");
++        assert_eq!(host.preparations, 1);
++        assert_eq!(host.handoff(true).unwrap().font, "existing");
++    }
++
++    #[test]
++    fn cancel_can_return_to_ordinary_publication_before_or_after_the_ui_arrives() {
++        for staged in [false, true] {
++            let mut host = Fixture::new(true);
++            if staged {
++                host.receive(5)
++            }
++            host.cancel_probe();
++            if !staged {
++                host.receive(5)
++            }
++            assert_eq!(host.draw(true, true), "existing");
++            assert_eq!(host.handoff(true).unwrap().generation, 5);
++            assert_eq!(host.preparations, 0);
++        }
++    }
++
++    #[test]
++    fn draining_drops_staged_ui_and_cannot_publish_late_results() {
++        struct Owned(Rc<Cell<u32>>);
++        impl Drop for Owned {
++            fn drop(&mut self) {
++                self.0.set(self.0.get() + 1);
++            }
++        }
++        let drops = Rc::new(Cell::new(0));
++        let mut pending = FirstUiPublication::new(true);
++        assert!(pending.receive(Owned(drops.clone())).is_none());
++        pending.abandon();
++        assert_eq!(drops.get(), 1);
++        assert!(pending.blocks_frontend());
++        assert!(pending.receive(Owned(drops.clone())).is_none());
++        assert_eq!(drops.get(), 2);
++        assert_eq!(
++            pending.finish_if_ready(true, |_| panic!("late publication")),
++            None::<()>
++        );
++    }
++}
