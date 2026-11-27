@@ -78,6 +78,16 @@
     "settled_boat_changed_pixels_tv_and_gamepad": [571662, 125807],
     "settled_frozen_boat_changed_pixels_tv_and_gamepad": [54775, 11422],
     "frozen_boat_receipt_sha256": "b489c8f6d37117475ab80de40aa160dadd2d8b0dea313109015ee7cffa34bc19",
+    "fixed_geometry_fixture": {
+      "rpx_sha256": "ce2b681e212082217a89053734a0495ad530c0f7c8fa48f9268451fdb70a0893",
+      "cemu_vulkan_passing_records": 40,
+      "cemu_opengl_passing_records": 40,
+      "receipt_sha256": "6c071e65832a593c83cba1ea1697d28f6438b6d9a3abe9547fcc1f371f5341e7"
+    },
+    "retained_fixture_same_shader_gamepad_changed_pixels_and_alpha": [85508, 31316],
+    "retained_fixture_gutter_tv_solid_changed_pixels_and_alpha": [2, 0],
+    "proposed_compact_address_differences_x_and_y_each_output": [196, 558],
+    "address_probe_receipt_sha256": "5fc0197f45dd65e2e4b7598afdd17d52fdfb38a5c1292f5ce41469288db5d942",
     "translucent_parity": "unresolved",
     "physical": "pending"
   },

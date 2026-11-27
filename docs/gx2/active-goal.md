@@ -78,9 +78,12 @@ before expanding that architecture.
 - The Windows CafeGLSL compiler reproduced RC 69's exact stock terrain
   GFD. The gutter trial cut dependent issue groups before the texture
   sample from eight to five and matched both first saved-view captures
-  in Cemu. The boat replays had different initial terrain residency
-  and live entity poses, so translucent pixel parity still needs the
-  controlled native scene. [Terrain shader trials](terrain-format-trials.md#stock-point-atlas-addressing)
+  in Cemu. The new standalone paired atlas fixture passed all 40
+  cutout, translucent and control records on both Cemu backends. The
+  retained comparison still exposes two TV RGB differences with the
+  gutter shader. The compact atlas float address calculation failed
+  both outputs in a separate controlled probe. Physical and gameplay
+  qualification remains open. [Terrain shader trials](terrain-format-trials.md#stock-point-atlas-addressing)
 - The matched RC 68 warm HUD test reduced the first ready Game frame
   from 55.825 s to 50.990 s on reopen in Cemu. Both arms retained the
   starting player pose and terrain slots and recovered the full bulk

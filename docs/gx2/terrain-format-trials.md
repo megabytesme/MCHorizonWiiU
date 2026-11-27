@@ -81,6 +81,8 @@ and depth clears returned the same difference count. Initial RPX SHA-256
 `4d755971603b216c6a57c0630c2c8f6e18fd0e237a9e92f58b8353ff08690276`.
 Explicit-clear RPX SHA-256
 `8f9f23cc1c4003882f6ca2bafe036d81ae9b78eb19e423f8119ce3a08f95d20f`.
+An exact stock-to-stock repeat later reproduced the same GamePad
+difference. [Retained fixture control](#stock-point-atlas-addressing)
 
 ## Reversed water quad reuse
 
@@ -207,10 +209,23 @@ each quad, bounded interpolation and current RGBA edges after animation.
 Keep coverage of those conditions in the native pixel control.
 
 The packed-only clamped GFD is byte-identical to the earlier generic
-packed variant that changed 85,508 GamePad translucent pixels, including
-31,316 alpha values, in each of two standalone Cemu runs. The opaque
-results matched. That variant still needs a same-package stock-to-stock
-control that isolates the GamePad blend state before any requalification.
+packed variant. In the retained packed-material fixture, directing the
+alternate draw to the exact stock GFD reproduced the same 85,508 changed
+GamePad translucent pixels and 31,316 changed alpha values. This happened
+in both Cemu Vulkan and OpenGL, including the identical digest within each
+backend. Separate runs with the same clamped program or the same gutter
+program on both sides reproduced those counts. The historical repeated
+GamePad path cannot determine shader parity. Its TV solid path did detect
+two RGB differences from the gutter shader in each Cemu backend. Their
+cause remains open.
+
+A new fixed-geometry title uses an opaque draw clear, explicit render
+bindings and ordered readback receipts. Its second stock draw, packed-only
+clamped shader and gutter shader all matched stock RGBA for the defined
+cutout and overlapping translucent cases, using different projections
+and both fixed texture phases. Both backends passed all 40 records,
+including an independently visible wrong-sprite control. Physical pixel
+parity and performance remain separate. [Paired atlas fixture](../../wiiu/diagnostics/gx2-atlas-parity/README.md)
 
 An isolated Cemu copy of RC 69 replaced only the stock terrain GFD with
 the 126-dword gutter trial. It loaded the original saved view at fixed
@@ -232,10 +247,8 @@ showed different water animation phases and different live entity poses.
 A separate diagnostic froze texture animation in both arms. Its settled
 differences fell to 54,775 TV and 11,422 GamePad pixels, and the boat and
 fish still moved independently. Initial residency also differed. These
-runs leave translucent pixel parity unresolved. Use a fixed animation
-phase, fixed geometry and explicit per-output draw clear in the next
-standalone comparison. Compare complete RGBA and depth surfaces with
-stock-to-stock and reversed-order controls. The frozen diagnostic receipt
+runs leave gameplay translucent pixel parity unresolved. The fixed
+standalone comparison above establishes its own coverage. The frozen diagnostic receipt
 has SHA-256 `b489c8f6d37117475ab80de40aa160dadd2d8b0dea313109015ee7cffa34bc19`.
 
 The same stock scene allocates 22,708,224 bytes for 1,301 padded 64-pixel
@@ -244,5 +257,13 @@ entries, 47 32-pixel entries and one 64-pixel entry. A mixed-size host
 layout for all 1,311 inputs estimates 1,980,416 bytes. Direct remapping
 passed a different texel to alpha discard in the host model. Preserving
 the original selected address and recentering the compact sample passed
-1,473,480 modeled comparisons. The address-coded native fixture's shader
-compiled, with actual paired sampling and throughput testing pending.
+1,473,480 modeled comparisons. The address-coded native fixture built
+with the Windows C/GLSL toolchain and ran the same RPX in Cemu Vulkan and
+OpenGL. Both outputs in each backend passed the three raw anchors and
+all 1,944 recenter and deliberately wrong-address controls. The proposed
+address calculation differed from the point sampler in 196 X and 558 Y
+cases on each output. Those differences changed 244, 246 and 264 logical
+texels in the 16-, 32- and 64-pixel cohorts. This rejects the proposed
+float calculation for compact storage. The counts are consistent with
+a 21-bit coordinate quantization model on this host GPU. Native sampler
+precision and memory-performance tradeoffs still need separate tests.
