@@ -44,6 +44,7 @@ class CodexSession:
         self.server_name = server_name
         self.request_id = 0
         self.thread = None
+        self.tools = set()
 
     def rpc(self, method, params):
         self.request_id += 1
@@ -78,19 +79,25 @@ class CodexSession:
         self.client.close()
 
     def call(self, tool, arguments=None):
-        status = self.rpc("mcpServerStatus/list", {})
-        server = next((item for item in status["data"] if item["name"] == self.server_name), None)
-        if server is None:
-            raise RuntimeError(f"Codex did not list the configured MCP server {self.server_name}.")
-        if tool not in server["tools"]:
-            raise RuntimeError(f"Codex did not list {tool} from {self.server_name}. Auth={server.get('authStatus')}")
+        if tool not in self.tools:
+            status = self.rpc("mcpServerStatus/list", {})
+            server = next((item for item in status["data"] if item["name"] == self.server_name), None)
+            if server is None:
+                raise RuntimeError(f"Codex did not list the configured MCP server {self.server_name}.")
+            self.tools = set(server["tools"])
+            if tool not in self.tools:
+                raise RuntimeError(f"Codex did not list {tool} from {self.server_name}. Auth={server.get('authStatus')}")
         if self.thread is None:
             self.thread = self.rpc("thread/start", {
                 "cwd": str(self.workspace), "ephemeral": True,
             })["thread"]["id"]
-        reply = self.rpc("mcpServer/tool/call", {
-            "threadId": self.thread, "server": self.server_name, "tool": tool, "arguments": arguments or {},
-        })
+        try:
+            reply = self.rpc("mcpServer/tool/call", {
+                "threadId": self.thread, "server": self.server_name, "tool": tool, "arguments": arguments or {},
+            })
+        except (OSError, RuntimeError):
+            self.tools.discard(tool)
+            raise
         if reply.get("isError"):
             detail = next((block["text"] for block in reply.get("content", [])
                            if block.get("type") == "text" and "text" in block), "No error detail.")

@@ -41,9 +41,35 @@ class ReusedAuthorizationTests(unittest.TestCase):
         starts = [item for item in transport.requests if item["method"] == "thread/start"]
         self.assertEqual(len(starts), 1)
         self.assertTrue(starts[0]["params"]["ephemeral"])
+        self.assertEqual(sum(item["method"] == "mcpServerStatus/list" for item in transport.requests), 1)
         calls = [item["params"] for item in transport.requests if item["method"] == "mcpServer/tool/call"]
         self.assertEqual([(item["server"], item["threadId"], item["tool"]) for item in calls],
                          [("wiiu", "selected-thread", "versions"), ("wiiu", "selected-thread", "worlds_list")])
+
+    def test_new_game_tools_refresh_the_catalog_and_known_calls_keep_server_errors(self):
+        session = fixture.CodexSession("codex", {}, Path("."), "wiiu")
+        session.thread = "selected-thread"
+        statuses = iter((
+            {"data": [{"name": "wiiu", "tools": {"versions": {}}}]},
+            {"data": [{"name": "wiiu", "tools": {"versions": {}, "game_status": {}}}]},
+        ))
+
+        def rpc(method, params):
+            if method == "mcpServerStatus/list":
+                return next(statuses)
+            if params["tool"] == "game_status":
+                return {"isError": True, "content": [{"type": "text", "text": "Grant revoked."}]}
+            return {"content": [{"type": "text", "text": "[]"}]}
+
+        with patch.object(session, "rpc", side_effect=rpc) as transport:
+            session.call("versions")
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "Grant revoked"):
+                    session.call("game_status")
+        self.assertEqual([call.args[0] for call in transport.call_args_list], [
+            "mcpServerStatus/list", "mcpServer/tool/call",
+            "mcpServerStatus/list", "mcpServer/tool/call", "mcpServer/tool/call",
+        ])
 
     def test_resumed_game_uses_the_same_authorization_without_touching_night_settings(self):
         with tempfile.TemporaryDirectory() as directory:
