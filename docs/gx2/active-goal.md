@@ -66,6 +66,10 @@ before expanding that architecture.
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)
+- Offline analysis of the settled physical RC 38 capture measured 29.965 ms
+  per loop in the two HUD callbacks, including synchronization. RC 33 Village
+  continued uploading meshes during the terrain dropout. The capture leaves
+  the cause of the dropout unresolved. [Host stage timings](host-stage-profile.md)
 - The warm HUD seed completed a paired cold and warm interpreter replay.
   It saved and returned twice with the same restored GX2 bulk heap.
   The cold run exposed two full digests of the same archive.
