@@ -75,7 +75,9 @@
     "wuhb_sha256": "90d18707575cfa1d649edaa971d871d65426da25e3537b979986a7e74fd3535b",
     "native_build": "passed",
     "clear_fog_pixel_dwords_control_trial": [112, 64],
-    "runtime": "queued",
+    "runtime": "cemu_multicore_dual_output_save_pass",
+    "cemu_single_core_key_origin": "correct_before_insert_empty_in_selected_stock_definition",
+    "cemu_screen_replay": "queued",
     "physical": "queued",
     "receipt": "rc54-qualification.md"
   },

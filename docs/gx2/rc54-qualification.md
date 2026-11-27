@@ -63,3 +63,24 @@ Borrowed model-state input matched all 35,723 stock bindings. Host peak
 allocation for parsing and binding fell from 33.18 to 23.81 MB. The
 farmland trace records lengths before insertion and after a failed borrow
 while preserving the original lookup and error.
+
+## Matched Cemu recompiler replay
+
+The exact package entered gameplay in 57.642 s in the multicore compiler.
+The two displays drew paired terrain at 60.284 s. Backward input moved
+8.526 blocks and persisted to the disposable save. Audio drained all
+12,763 queued items and the GX2 bulk heap returned to 234,880,920 free
+bytes. The session HZP3 SHA-256 is
+`362d68d1407205fccee3618d48ff1f53a51b63cdb7159591acc1746f85ae3027`.
+It records 98 paired gameplay rows with up to 34 sections per display.
+
+The matched single-core start terminated during resource preparation.
+The origin trace recorded the correct 14-byte `minecraft:dirt` string
+before insertion. At the failing lookup, the origin state and selected map
+entry were both the stock farmland definition. The owned string and its
+borrowed view were both zero-length. The literal and the linear registry
+check still resolved dirt state 10. This bounds the failure between
+construction of the owned definition and its use through the map. Check
+immediately after insertion and before interpretation of the completed map
+to narrow that interval. Successful multicore startup and physical pacing
+have separate acceptance requirements.
