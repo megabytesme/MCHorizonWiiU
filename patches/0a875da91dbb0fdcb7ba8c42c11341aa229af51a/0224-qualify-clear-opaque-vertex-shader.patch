@@ -1,0 +1,285 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 09e7e3318e0de71de07960dc5ded9f6f46fd59ab..44d6a9ae68c36217f7c71460cecf4cec64b9d27a 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -43,6 +43,8 @@ struct HorizonGx2Terrain {
+    TerrainPixelShader pixel, opaque_pixel;
+ #ifdef HORIZON_GX2_CLEAR_FOG
+    TerrainPixelShader clear_fog_pixel;
++   GX2VertexShader *clear_fog_vertex;
++   uint32_t clear_fog_atlas_offset;
+    bool opaque_bound, clear_fog_bound;
+ #endif
+    GX2Texture lightmap;
+@@ -109,12 +111,10 @@ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const vo
+ }
+ 
+ #ifdef HORIZON_GX2_CLEAR_FOG
+-static bool clear_fog_vertex_compatible(const GX2VertexShader *stock, const GX2VertexShader *candidate)
++static bool clear_fog_vertex_layout(const GX2VertexShader *stock, const GX2VertexShader *candidate)
+ {
+    if (!candidate || !stock || !candidate->program || !stock->program ||
+-       candidate->mode != stock->mode || candidate->size != stock->size ||
+-       memcmp(&candidate->regs, &stock->regs, sizeof(stock->regs)) ||
+-       memcmp(candidate->program, stock->program, stock->size) ||
++       candidate->mode != stock->mode ||
+        candidate->attribVarCount != 3 || stock->attribVarCount != 3 ||
+        !candidate->attribVars || !stock->attribVars) return false;
+    for (uint32_t i = 0; i < 3; ++i) {
+@@ -125,6 +125,15 @@ static bool clear_fog_vertex_compatible(const GX2VertexShader *stock, const GX2V
+    return true;
+ }
+ 
++static bool clear_fog_loop_layout(uint32_t stock_count, const GX2LoopVar *stock,
++                                  uint32_t candidate_count, const GX2LoopVar *candidate)
++{
++   /* The pinned compiler can emit one default loop descriptor in a loop-free shader. */
++   return candidate_count == stock_count &&
++      (stock_count == 0 || (stock_count == 1 && stock && candidate &&
++       candidate->offset == stock->offset && candidate->value == stock->value));
++}
++
+ static bool clear_fog_pixel_compatible(const TerrainPixelShader *opaque, GX2PixelShader *candidate,
+                                        TerrainPixelShader *out)
+ {
+@@ -133,7 +142,9 @@ static bool clear_fog_pixel_compatible(const TerrainPixelShader *opaque, GX2Pixe
+        candidate->mode != GX2_SHADER_MODE_UNIFORM_REGISTER || candidate->mode != stock->mode ||
+        candidate->uniformBlockCount || candidate->uniformVarCount != 1 ||
+        !candidate->uniformVars || candidate->samplerVarCount != 1 || !candidate->samplerVars ||
+-       candidate->initialValueCount || candidate->loopVarCount) return false;
++       candidate->initialValueCount ||
++       !clear_fog_loop_layout(stock->loopVarCount, stock->loopVars,
++                              candidate->loopVarCount, candidate->loopVars)) return false;
+ 
+    // Pinned CafeGLSL keeps both live semantic descriptors in their original
+    // order. Only the middle fog input and the input-count bits disappear.
+@@ -166,7 +177,10 @@ bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void
+        t->legacy_attributes || t->legacy_uniforms || t->solid_back_culling) return false;
+    if (t->clear_fog_pixel.shader) return true;
+    GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
+-   const bool compatible = clear_fog_vertex_compatible(t->shader.vertexShader, vertex);
++   const GX2VertexShader *stock = t->shader.vertexShader;
++   const bool compatible = clear_fog_vertex_layout(stock, vertex) && vertex->size == stock->size &&
++      !memcmp(&vertex->regs, &stock->regs, sizeof(stock->regs)) &&
++      !memcmp(vertex->program, stock->program, stock->size);
+    if (vertex) WHBGfxFreeVertexShader(vertex);
+    if (!compatible) return false;
+    GX2PixelShader *pixel = WHBGfxLoadGFDPixelShader(0, gfd);
+@@ -175,6 +189,44 @@ bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void
+    return false;
+ }
+ 
++bool horizon_gx2_terrain_load_clear_fog_vertex(HorizonGx2Terrain *t, const void *gfd)
++{
++   if (!t || !gfd || !t->clear_fog_pixel.shader || t->half_shader ||
++       t->legacy_attributes || t->legacy_uniforms || t->section_uniform_words < 16) return false;
++   if (t->clear_fog_vertex) return true;
++   GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
++   const GX2VertexShader *stock = t->shader.vertexShader;
++   if (!clear_fog_vertex_layout(stock, vertex) || !vertex->size || vertex->size >= stock->size ||
++       vertex->hasStreamOut || vertex->uniformBlockCount || vertex->uniformVarCount != 5 ||
++       vertex->initialValueCount || vertex->samplerVarCount != 1 ||
++       !vertex->samplerVars || !vertex->samplerVars[0].name ||
++       strcmp(vertex->samplerVars[0].name, "uLightmap") ||
++       vertex->samplerVars[0].type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D ||
++       vertex->samplerVars[0].location != t->lightmap_slot ||
++       !clear_fog_loop_layout(stock->loopVarCount, stock->loopVars,
++                              vertex->loopVarCount, vertex->loopVars) ||
++       GX2GetVertexUniformVar(vertex, "uSectionOrigin")) goto fail;
++   /* Only register resource usage changes. Keep fetch and output IDs intact. */
++   if (memcmp((const uint8_t *)&vertex->regs + sizeof(uint32_t),
++              (const uint8_t *)&stock->regs + sizeof(uint32_t),
++              sizeof(stock->regs) - sizeof(uint32_t))) goto fail;
++   const char *names[] = {"uClipX", "uClipY", "uClipZ", "uClipW"};
++   for (uint32_t row = 0; row < 4; ++row) {
++      uint32_t offset;
++      if (!uniform_offset(GX2GetVertexUniformVar(vertex, names[row]), &offset) ||
++          offset != t->clip_offsets[row]) goto fail;
++   }
++   uint32_t atlas;
++   if (!uniform_offset(GX2GetVertexUniformVar(vertex, "uAtlasGrid"), &atlas) ||
++       atlas != t->clip_offsets[0] + 16) goto fail;
++   t->clear_fog_atlas_offset = atlas;
++   t->clear_fog_vertex = vertex;
++   return true;
++fail:
++   if (vertex) WHBGfxFreeVertexShader(vertex);
++   return false;
++}
++
+ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+                                       const float fog_color[4], const float fog_ranges[4])
+ {
+@@ -184,6 +236,11 @@ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+    const TerrainPixelShader *pixel = enabled ? &t->clear_fog_pixel : &t->opaque_pixel;
+    const float material[4] = { 0.0f, t->atlas_grid[1] - 2.0f,
+       1.0f / (float)t->texture.surface.width, 1.0f / (float)t->texture.surface.height };
++   if (t->clear_fog_vertex) {
++      GX2SetVertexShader(enabled ? t->clear_fog_vertex : t->shader.vertexShader);
++      GX2SetVertexUniformReg(enabled ? t->clear_fog_atlas_offset : t->atlas_grid_offset,
++                            4, t->atlas_grid);
++   }
+    GX2SetPixelShader(pixel->shader);
+    if (!enabled) {
+       GX2SetPixelUniformReg(pixel->fog_color_offset, 4, fog_color);
+@@ -311,6 +368,7 @@ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain)
+    if (terrain->opaque_pixel.shader) WHBGfxFreePixelShader(terrain->opaque_pixel.shader);
+ #ifdef HORIZON_GX2_CLEAR_FOG
+    if (terrain->clear_fog_pixel.shader) WHBGfxFreePixelShader(terrain->clear_fog_pixel.shader);
++   if (terrain->clear_fog_vertex) WHBGfxFreeVertexShader(terrain->clear_fog_vertex);
+ #endif
+    if (terrain->half_shader) {
+       WHBGfxFreeShaderGroup(terrain->half_shader);
+@@ -591,6 +649,12 @@ void horizon_gx2_terrain_set_solid_back_culling(HorizonGx2Terrain *terrain, bool
+ static void bind_section_uniforms(const HorizonGx2Terrain *t, const float clip_rows[16],
+                                   const float section_origin[4])
+ {
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (t->clear_fog_bound && t->clear_fog_vertex) {
++      GX2SetVertexUniformReg(t->clip_offsets[0], 16, clip_rows);
++      return;
++   }
++#endif
+    if (!t->legacy_uniforms && t->section_uniform_words == 20) {
+       _Alignas(16) float words[20];
+       memcpy(words, clip_rows, 16 * sizeof(float));
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 5fc41bfa2d6e8d7f055c0153c1ece2eb3ff0a4ca..67728ed97ad67c5094565bbf8d2594426bb98f1a 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -80,8 +80,9 @@ void horizon_gx2_terrain_wait_idle(void);
+ /* Enable the optional shader before submitting any vertices to the terrain. */
+ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const void *gfd);
+ #ifdef HORIZON_GX2_CLEAR_FOG
+-/* Pixel-only diagnostic. A rejected load or transition leaves the current bind intact. */
++/* A rejected diagnostic load or transition leaves the current bind intact. */
+ bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void *gfd);
++bool horizon_gx2_terrain_load_clear_fog_vertex(HorizonGx2Terrain *t, const void *gfd);
+ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+                                       const float fog_color[4], const float fog_ranges[4]);
+ #endif
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index 1ec41cc19e1c73dfba8f20979a36f20daad45c9b..8e90c263af7e78c05ef86b9e727885dab76ce9e4 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -7,7 +7,9 @@ uniform vec4 uClipX;
+ uniform vec4 uClipY;
+ uniform vec4 uClipZ;
+ uniform vec4 uClipW;
++#ifndef HORIZON_TERRAIN_CLEAR_VERTEX
+ uniform vec4 uSectionOrigin;
++#endif
+ uniform vec4 uAtlasGrid;
+ out vec3 vColor;
+ out vec4 vUv;
+@@ -32,7 +34,13 @@ void main() {
+     float correction = step(uAtlasGrid.x, column) + step(0.0, column) - 1.0;
+     vec2 tile = vec2(column - correction * uAtlasGrid.x, row + correction) * uAtlasGrid.y + vec2(1.0);
+     vUv = vec4(mix(aUv, local_uv, uAtlasGrid.w), tile);
++#ifdef HORIZON_TERRAIN_CLEAR_VERTEX
++    // Keep the stock export IDs. CafeGLSL numbers the vertex outputs separately.
++    vCutout = 0.0;
++    vFogDistance = vec2(0.0);
++#else
+     vCutout = aColor.a;
+     vec3 relative = local + uSectionOrigin.xyz;
+     vFogDistance = vec2(length(relative), max(length(relative.xz), abs(relative.y)));
++#endif
+ }
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 0c111b945c5657ac0a040bd3915c6bbea0694cd2..59a555f81fa5a3c245273da8bbb754bb02ef0005 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -282,8 +282,23 @@ if(HORIZON_GX2_CLEAR_FOG)
+       DEPENDS "${TERRAIN_VERTEX_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog.frag"
+       WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+       VERBATIM)
+-   set_source_files_properties("${CLEAR_FOG_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+-   target_sources(horizon_wiiu_loading_host PRIVATE "${CLEAR_FOG_GFD_OBJECT}")
++   set(CLEAR_VERTEX_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_vertex_gfd.o")
++   file(READ "${TERRAIN_VERTEX_SOURCE}" terrain_vertex_source)
++   string(REPLACE "#version 330\n" "#version 330\n#define HORIZON_TERRAIN_CLEAR_VERTEX 1\n"
++      terrain_clear_vertex_source "${terrain_vertex_source}")
++   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_vertex.vert"
++      CONTENT "${terrain_clear_vertex_source}")
++   add_custom_command(
++      OUTPUT "${CLEAR_VERTEX_GFD_OBJECT}"
++      COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs terrain_clear_vertex.vert -ps terrain_clear_fog.frag -o terrain_clear_vertex.gsh
++      COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" -I binary -O elf32-powerpc -B powerpc:common
++         terrain_clear_vertex.gsh terrain_clear_vertex_gfd.o
++      DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_vertex.vert" "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog.frag"
++      WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++      VERBATIM)
++   set_source_files_properties("${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}"
++      PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   target_sources(horizon_wiiu_loading_host PRIVATE "${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}")
+    target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_CLEAR_FOG=1)
+    target_compile_definitions(horizon_gx2_terrain PRIVATE HORIZON_GX2_CLEAR_FOG=1)
+ endif()
+diff --git a/wiiu/loading_host/clear_fog.rs b/wiiu/loading_host/clear_fog.rs
+index f634cc69ea9f4bfc71c185038d79c15aef11684e..37833b2e40a6bdbbeb922b69263d011edea3fd1e 100644
+--- a/wiiu/loading_host/clear_fog.rs
++++ b/wiiu/loading_host/clear_fog.rs
+@@ -1,11 +1,13 @@
+-//! Matched opaque pixel-shader trial for one contiguous proven clear run.
++//! Matched opaque shader trials for one contiguous proven clear run.
+ 
+ use std::ffi::c_void;
+ use std::ptr::NonNull;
+ 
+ unsafe extern "C" {
+     fn horizon_loading_host_clear_fog_gfd() -> *const u8;
++    fn horizon_loading_host_clear_fog_vertex_gfd() -> *const u8;
+     fn horizon_gx2_terrain_load_clear_fog_shader(terrain: *mut c_void, gfd: *const c_void) -> bool;
++    fn horizon_gx2_terrain_load_clear_fog_vertex(terrain: *mut c_void, gfd: *const c_void) -> bool;
+     fn horizon_gx2_terrain_set_clear_fog(
+         terrain: *mut c_void,
+         enabled: bool,
+@@ -36,6 +38,25 @@ pub(super) unsafe fn load(terrain: NonNull<c_void>) -> bool {
+             c"Horizon GX2 clear opaque fog shader rejected\n".as_ptr()
+         });
+     }
++    static VERTEX_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if loaded && *VERTEX_ENABLED.get_or_init(|| {
++        std::path::Path::new("/vol/external01/wiiu/apps/HorizonWiiU/gx2-clear-fog-vertex.enable")
++            .is_file()
++    }) {
++        let vertex = unsafe {
++            horizon_gx2_terrain_load_clear_fog_vertex(
++                terrain.as_ptr(),
++                horizon_loading_host_clear_fog_vertex_gfd().cast(),
++            )
++        };
++        unsafe {
++            super::OSReport(if vertex {
++                c"Horizon GX2 clear opaque vertex trial ready\n".as_ptr()
++            } else {
++                c"Horizon GX2 clear opaque vertex rejected, keeping the stock vertex shader\n".as_ptr()
++            });
++        }
++    }
+     loaded
+ }
+ 
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ea938bd6e87a109753448205a01c4d3fafd22d37..42633d12d02284f633fd98fb2f15d1c7bdbc5ccd 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -29,11 +29,17 @@ extern const uint8_t _binary_terrain_gsh_end[];
+ extern const uint8_t _binary_terrain_opaque_gsh_start[];
+ #ifdef HORIZON_GX2_CLEAR_FOG
+ extern const uint8_t _binary_terrain_clear_fog_gsh_start[];
++extern const uint8_t _binary_terrain_clear_vertex_gsh_start[];
+ 
+ const uint8_t *horizon_loading_host_clear_fog_gfd(void)
+ {
+    return _binary_terrain_clear_fog_gsh_start;
+ }
++
++const uint8_t *horizon_loading_host_clear_fog_vertex_gfd(void)
++{
++   return _binary_terrain_clear_vertex_gsh_start;
++}
+ #endif
+ extern const uint8_t _binary_terrain_half_gsh_start[];
+ 
