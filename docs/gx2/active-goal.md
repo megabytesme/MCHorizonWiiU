@@ -70,6 +70,10 @@ before expanding that architecture.
   per loop in the two HUD callbacks, including synchronization. RC 33 Village
   continued uploading meshes during the terrain dropout. The capture leaves
   the cause of the dropout unresolved. [Host stage timings](host-stage-profile.md)
+- RC 50 frees mesh admission slots held by unstarted work beyond the visible
+  area. In the host traversal fixture, one chunk of camera motion admitted
+  20 newly visible sections from a full queue. The exact native build passed.
+  Village coverage still needs measurement. [RC 50 qualification](rc50-qualification.md)
 - The warm HUD seed completed a paired cold and warm interpreter replay.
   It saved and returned twice with the same restored GX2 bulk heap.
   The cold run exposed two full digests of the same archive.

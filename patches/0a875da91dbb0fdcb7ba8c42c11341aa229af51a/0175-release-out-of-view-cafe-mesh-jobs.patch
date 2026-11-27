@@ -1,0 +1,193 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 365bcef88b21fdf4706297753f95aaf428bb0eca..960b7396ed671a76bf56ac7a4325ca3722f810a0 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -1491,12 +1491,35 @@ impl Streaming {
+     /// it, and with it the decoration of the chunks around the player: at
+     /// render distance 32 nothing was decorated until every proto chunk had
+     /// been generated.
+-    fn requeue(&mut self) {
+-        if !forced_ring::basis_changed(self) {
++    fn requeue(&mut self, world: &mut World) {
++        let rank_changed = forced_ring::basis_changed(self);
++        let mesh_view_changed = cfg!(target_os = "cafe")
++            && self.remote
++            && self.mesh
++            && (rank_changed || self.waiting_area != (self.center, self.radius, self.forced.len()));
++        if !rank_changed && !mesh_view_changed {
+             return;
+         }
+         let mut queue = self.shared.queue.lock().unwrap();
+-        rank_again(&mut queue, |x, z| self.distance(x, z));
++        // The remote server can keep columns after they leave the client view.
++        // Unstarted meshes for those columns still occupy admission slots,
++        // even when no worker would rank them ahead of new work.
++        let released = if mesh_view_changed {
++            release_out_of_view_mesh_jobs(&mut queue, &mut self.meshing, |x, z| {
++                in_view_distance(self.center, self.radius, x, z) || self.forced.contains(&(x, z))
++            })
++        } else {
++            Vec::new()
++        };
++        if rank_changed {
++            rank_again(&mut queue, |x, z| self.distance(x, z));
++        }
++        drop(queue);
++        // Use the ordinary dirty/waiting path. A return remeshes the current
++        // blocks and light, while an unload drops the request as usual.
++        for key in released {
++            world.dirty_sections.insert(key);
++        }
+     }
+     fn receive_decorated(
+         &mut self,
+@@ -1862,7 +1885,7 @@ impl Streaming {
+         } else {
+             self.scan_age = self.scan_age.saturating_add(1);
+         }
+-        self.requeue();
++        self.requeue(world);
+         self.relight_edits(world);
+         hz_laps.lap("st_relight_edits");
+         let deferred = std::mem::take(&mut self.deferred).into_iter();
+@@ -3408,6 +3431,31 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
+     }
+     *queue = BinaryHeap::from(jobs);
+ }
++/// Drop only unstarted mesh jobs outside the current client view. A stale
++/// queued revision cannot release the slot of a newer, running revision.
++fn release_out_of_view_mesh_jobs(
++    queue: &mut BinaryHeap<Queued>,
++    meshing: &mut FxHashMap<(i32, i32, i32), u64>,
++    mut in_view: impl FnMut(i32, i32) -> bool,
++) -> Vec<(i32, i32, i32)> {
++    let mut released = Vec::new();
++    queue.retain(|queued| {
++        let Job::Mesh(x, sy, z, _, sequence, _) = &queued.job else {
++            return true;
++        };
++        if in_view(*x, *z) {
++            return true;
++        }
++        let key = (*x, *sy, *z);
++        if meshing.get(&key) == Some(sequence) {
++            meshing.remove(&key);
++            released.push(key);
++        }
++        false
++    });
++    released
++}
++
+ /// `ChunkTaskPriorityQueue.release(pos, clearQueue=true)`: the jobs queued for the
+ /// `gone` columns are dropped, so a view that moved or shrank does not wait behind the
+ /// generation of the chunks it left. A job without a column (a save, meshes to free)
+@@ -4133,6 +4181,108 @@ mod tests {
+         assert_eq!(queue.pop().and_then(|q| q.at), Some((20, 0)));
+     }
+ 
++    #[test]
++    fn a_moving_view_reuses_unstarted_mesh_slots_before_the_server_forgets_columns() {
++        let rear = (-60, -1);
++        let centre = (-60, 5);
++        let moved = (-60, 6);
++        let forward = (-60, 12);
++        assert!(in_view_distance(centre, 6, rear.0, rear.1));
++        assert!(!in_view_distance(moved, 6, rear.0, rear.1));
++        assert!(!in_view_distance(centre, 6, forward.0, forward.1));
++        assert!(in_view_distance(moved, 6, forward.0, forward.1));
++        let settings = MeshSettings {
++            nether: false,
++            shader_pack_lighting: false,
++            separate_ao: false,
++            shader_pack: false,
++            looks: false,
++            zoom: BiomeZoom::new(0),
++            blend_radius: 0,
++            smooth_lighting: true,
++            cutout_leaves: false,
++            opaque_ice: false,
++            translucent_layers: Arc::default(),
++            leaf_culling: LeafCullingMode::Off,
++        };
++        let snapshot = Arc::<Region>::default();
++        let mesh = |pos: (i32, i32), sy, sequence| Queued {
++            priority: sequence as i64,
++            at: Some(pos),
++            bias: 0,
++            order: sequence,
++            job: Job::Mesh(
++                pos.0,
++                sy,
++                pos.1,
++                snapshot.clone(),
++                sequence,
++                settings.clone(),
++            ),
++        };
++        let rear_section = |sy| (rear.0, sy, rear.1);
++        let centre_section = |sy| (centre.0, sy, centre.1);
++        let forced = (40, 40);
++        let mut meshing: FxHashMap<_, _> = (0..20)
++            .map(|sy| (rear_section(sy), sy as u64))
++            .chain((0..11).map(|sy| (centre_section(sy), (20 + sy) as u64)))
++            .chain([((forced.0, 0, forced.1), 31)])
++            .collect();
++        let mut queue: BinaryHeap<_> = (0..20)
++            .map(|sy| mesh(rear, sy, sy as u64))
++            .chain((0..11).map(|sy| mesh(centre, sy, (20 + sy) as u64)))
++            .chain([mesh(forced, 0, 31)])
++            .collect();
++        // The worker already took the latest rear job. An obsolete queued
++        // revision for the same key must not release that worker's slot.
++        assert!(matches!(
++            queue.pop().unwrap().job,
++            Job::Mesh(_, 0, _, _, 0, _)
++        ));
++        meshing.insert(rear_section(0), 40);
++        queue.push(mesh(rear, 0, 0));
++        // A light task and an urgent save remain ordinary worker work.
++        queue.push(Queued {
++            priority: 39,
++            at: Some(rear),
++            bias: 1,
++            order: 39,
++            job: Job::Light(rear.0, rear.1, Box::default(), 39, true),
++        });
++        queue.push(Queued {
++            priority: i64::MIN,
++            at: None,
++            bias: 0,
++            order: 41,
++            job: Job::Save(Vec::new()),
++        });
++
++        assert_eq!(32usize.saturating_sub(meshing.len()), 0);
++        let mut cancelled = release_out_of_view_mesh_jobs(&mut queue, &mut meshing, |x, z| {
++            (x, z) == forced || in_view_distance(moved, 6, x, z)
++        });
++        cancelled.sort_unstable();
++        assert_eq!(cancelled, (1..20).map(rear_section).collect::<Vec<_>>());
++        assert_eq!(32usize.saturating_sub(meshing.len()), 19);
++        assert_eq!(meshing.get(&rear_section(0)), Some(&40));
++        assert_eq!(Arc::strong_count(&snapshot), 13);
++        assert!(matches!(queue.pop().unwrap().job, Job::Save(_)));
++        for sy in 0..11 {
++            assert_eq!(meshing.get(&centre_section(sy)), Some(&((20 + sy) as u64)));
++            assert!(matches!(queue.pop().unwrap().job, Job::Mesh(_, y, _, _, _, _) if sy == y));
++        }
++        assert_eq!(meshing.get(&(forced.0, 0, forced.1)), Some(&31));
++        assert!(matches!(
++            queue.pop().unwrap().job,
++            Job::Mesh(40, 0, 40, _, 31, _)
++        ));
++        assert!(matches!(
++            queue.pop().unwrap().job,
++            Job::Light(_, _, _, 39, true)
++        ));
++        assert!(queue.is_empty());
++    }
++
+     /// `ChunkTaskPriorityQueue.release`: a column that unloaded keeps no queued job, so
+     /// a teleport or a smaller render distance does not spend its workers on the world
+     /// it left; the other columns' jobs and the jobs without a column (saves, meshes to

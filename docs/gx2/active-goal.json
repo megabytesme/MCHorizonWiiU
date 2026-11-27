@@ -15,6 +15,15 @@
     "runtime": "cemu_offline_saved_world_pass",
     "receipt": "rc49-qualification.md"
   },
+  "mesh_queue_traversal": {
+    "candidate": "0.8.0-rc.50",
+    "engine_tree": "158a96c50cd0b1187e6783b87fe73dcc0629bc6f",
+    "rpx_sha256": "b4989b4b6f6930dffbab5a948a118c9ac392935cc372a50a80a847fa96d262de",
+    "host_fixture_newly_visible_admitted": [0, 20],
+    "native_build": "passed",
+    "runtime": "queued",
+    "receipt": "rc50-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
