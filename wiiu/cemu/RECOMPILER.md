@@ -187,3 +187,14 @@ probe for `GX2DrawDone`. The old Cemu leaves both injected `r3` values
 unchanged. The corrected build returns true after completion in both
 cases. Both builds pass the independent retirement check.
 [ABI patch and paired-output probe](gx2-drawdone-test/README.md)
+
+## Resource failure logging
+
+The pinned formatter truncated the resource worker's counted string
+after its diagnostic prefix. The corrected formatter passed the
+standalone guest checks for bounded strings and unsigned 64-bit
+counters. With the repair, the exact instrumented RC 47 tree
+`3495345948987e46c52bd912f0e840336a253d7b` reached its ordinary startup
+error in multi-core Cemu and reported an unknown farmland base block.
+The qualified interpreter remains the control for saved-world replay.
+[Formatter patch and fixture](osreport-test/README.md)

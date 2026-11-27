@@ -1,0 +1,31 @@
+--- a/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
++++ b/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
+@@ -28,6 +28,19 @@
+ 					formatStr++;
+ 					continue;
+ 				}
++				if (formatStr[0] == '.' && formatStr[1] == '*' && formatStr[2] == 's')
++				{
++					const sint32 precision = *(sint32be*)_ppc_va_arg(vargs, ppc_va_type::INT32);
++					const MPTR offset = *(uint32be*)_ppc_va_arg(vargs, ppc_va_type::INT32);
++					const char* source = offset == MPTR_NULL ? "NULL" :
++						(const char*)memory_getPointerFromVirtualOffset(offset);
++					const sint32 remaining = maxLength - 1 - writeIndex;
++					const sint32 count = precision < 0 ? remaining : std::min(precision, remaining);
++					for (sint32 i = 0; i < count && source[i] != '\0'; ++i)
++						strOut[writeIndex++] = source[i];
++					formatStr += 3;
++					continue;
++				}
+ 				// flags
+ 				bool flag_leftJustify = false;
+ 				bool flag_zeroPadding = false;
+@@ -182,7 +195,7 @@
+ 						writeIndex++;
+ 					}
+ 				}
+-				else if ((formatStr[0] == 'l' && formatStr[1] == 'l' && (formatStr[2] == 'x' || formatStr[2] == 'X')))
++				else if ((formatStr[0] == 'l' && formatStr[1] == 'l' && (formatStr[2] == 'x' || formatStr[2] == 'X' || formatStr[2] == 'u')))
+ 				{
+ 					formatStr += 3;
+ 					// 64bit int
