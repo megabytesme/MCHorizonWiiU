@@ -117,6 +117,33 @@ measured 109.723 to 16.717 ms on the mounted fixture and 1.457 to
 0.209 ms on native WSL storage. The portable evidence is fourteen file
 opens and decodes reduced to two. Native loading time is open.
 
+## Same-process reopening and memory
+
+The exact RC 61 RPX ran on the corrected multicore Cemu build with the
+existing bounded mob-data warm marker enabled. In the two-entry movement
+fixture, the first Game frame took 57.173 s and reopening took 55.761 s.
+The first paired terrain took 60.021 s and 58.358 s. Reopening preserved
+the position saved after moving 8.709 blocks. The warm mob bundle held
+635,674 bytes. Its decode span fell from 0.664390 s to 0.218007 s.
+
+A second run saved and reopened five times in one process. The warm
+entries reached Game in 53.970–55.044 s and paired terrain in
+56.362–57.645 s. Every save preserved the same fixed position and
+restored 234,880,920 bulk GX2 bytes, with the same 234,880,896-byte
+largest free block. Retained Rust memory was 58,198,457 bytes at the
+second complete teardown and 58,232,469 bytes at the fifth, an increase
+of 34,012 bytes. The largest sampled queued CPU terrain charge was
+5,877,516 bytes against a 24 MiB cap. Both runs exited cleanly.
+
+The default native heap was unavailable in this Cemu capture. Physical
+loading, long traversal and the owner of the small retained Rust
+increase remain open.
+
+| Disposable run | Acceptance JSONL SHA-256 |
+| --- | --- |
+| `r61-warm-93fbf946` | `47c0e214f88305881b1c3668472c615d1093ac1d3330759ef48399d57e4c16d7` |
+| `r61-memory-53fb83c4` | `8d2610d2ac47d3f51574c8e309cf65d340915cb92a4453f1fc612444d501551c` |
+
 ## Supervised comparisons
 
 Use plain `4`, two independently drawn views, and the existing fixed-75%

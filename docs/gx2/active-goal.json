@@ -227,6 +227,16 @@
       7,
       1
     ],
+    "cemu_five_reopen_cycles": {
+      "receipt_sha256": "8d2610d2ac47d3f51574c8e309cf65d340915cb92a4453f1fc612444d501551c",
+      "game_ready_ms": [54776, 55044, 53970, 54924, 55036],
+      "paired_terrain_ms": [57472, 57645, 56362, 57392, 57628],
+      "gx2_bulk_free_bytes_after_every_save": 234880920,
+      "rust_live_change_between_warm_cycles_2_and_5_bytes": 34012,
+      "largest_sampled_terrain_queue_charge_bytes": 5877516,
+      "default_native_heap": "unverified",
+      "save_position_and_clean_exit": "passed"
+    },
     "physical": "supervised_comparisons_staged",
     "receipt": "rc61-qualification.md"
   },

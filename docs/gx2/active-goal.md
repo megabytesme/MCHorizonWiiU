@@ -132,7 +132,10 @@ before expanding that architecture.
 - RC 61 exercised the GamePad entry-drain skip in ordinary grouped
   Cemu play and reached clean saves with both outputs. Its near-fog
   branch submitted a small share of the settled workload. The package
-  also removes repeated generator-settings reads. [RC 61 evidence](rc61-qualification.md)
+  also removes repeated generator-settings reads. Five same-process
+  Cemu entries completed with the same full GX2 bulk recovery at every
+  save. Warm entries reached Game in 54.0–55.0 seconds. Physical
+  loading and native heap measurements remain open. [RC 61 evidence](rc61-qualification.md)
 - The solid display-list fixture matched both outputs with 174 draws
   and 32,736 bytes per view. Exact live reuse and native timing remain
   open. [Display-list fixture](../../wiiu/diagnostics/gx2-solid-display-list/README.md)
