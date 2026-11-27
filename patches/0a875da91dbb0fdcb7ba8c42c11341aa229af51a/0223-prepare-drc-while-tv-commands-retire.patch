@@ -1,0 +1,661 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 3509ab2d1a17fcc7f87664941d551028506d9139..f13b974f8e9de5ae72c6668b10f1f955f565d65e 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -65,7 +65,7 @@ static GpuCycleSlot gpu_pass_slots[2][GPU_PASS_COUNT];
+ static uint32_t gpu_pass_masks[2];
+ static bool gpu_pass_enabled, gpu_pass_active;
+ enum { GROUPED_RETIREMENT_PERIOD = 120, GROUPED_RETIREMENT_CAPACITY = 32 };
+-static bool grouped_retirement_enabled, grouped_early_flush_enabled;
++static bool grouped_retirement_enabled, grouped_early_flush_enabled, grouped_drc_prepass_enabled;
+ static uint32_t grouped_retirement_count;
+ static HorizonGx2GroupedRetirement grouped_retirement[GROUPED_RETIREMENT_CAPACITY];
+ 
+@@ -377,6 +377,12 @@ bool horizon_gx2_profile_grouped_present(bool screenshot)
+          if (file) {
+             grouped_early_flush_enabled = true;
+             fclose(file);
++         } else {
++            file = fopen(ROOT "gx2-grouped-drc-prepass.enable", "rb");
++            if (file) {
++               grouped_drc_prepass_enabled = true;
++               fclose(file);
++            }
+          }
+       }
+    }
+@@ -395,6 +401,12 @@ bool horizon_gx2_profile_grouped_early_flush(void)
+           current.phase == PLAYING_PHASE;
+ }
+ 
++bool horizon_gx2_profile_grouped_drc_prepass(void)
++{
++   return grouped_drc_prepass_enabled && history == &process_history && recording &&
++          current.phase == PLAYING_PHASE;
++}
++
+ HorizonGx2GroupedRetirement *horizon_gx2_profile_grouped_retirement_sample(void)
+ {
+    if (!grouped_retirement_enabled || history != &process_history || !recording ||
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 961caa6afefaebfa6789b31bcba8532681419e67..98db2ce8c530c76c45d02402d3a12cf77af2fb0f 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -49,6 +49,7 @@ bool horizon_gx2_profile_skip_scaled_output_clear(void);
+ bool horizon_gx2_profile_defer_flip(void);
+ bool horizon_gx2_profile_grouped_present(bool screenshot);
+ bool horizon_gx2_profile_grouped_early_flush(void);
++bool horizon_gx2_profile_grouped_drc_prepass(void);
+ typedef struct {
+    uint32_t sequence;
+    uint64_t start_ticks;
+diff --git a/wiiu/loading_host/hud_views.rs b/wiiu/loading_host/hud_views.rs
+index 07405dad47b5cb6501fb2066794de6942238dc3a..88c75bc947d42670558656f99df8094bea9de01a 100644
+--- a/wiiu/loading_host/hud_views.rs
++++ b/wiiu/loading_host/hud_views.rs
+@@ -1,6 +1,6 @@
+ //! Lifecycle for the ordinary-profile, non-deferred independent HUD buffers.
+ 
+-use super::{OSReport, RETRY_GUARDED_FLIP};
++use super::{OSReport, PrepareDrc, RETRY_GUARDED_FLIP};
+ use std::ffi::{c_char, c_void};
+ use std::ptr::NonNull;
+ 
+@@ -16,6 +16,7 @@ unsafe extern "C" {
+         retired_pair: *mut u64,
+         active_lanes: *mut c_void,
+         grouped: bool,
++        prepare_drc: Option<PrepareDrc>,
+     ) -> i32;
+     fn horizon_gx2_hud_view_lanes_create(views: u32, capacity: u32) -> *mut c_void;
+     fn horizon_gx2_hud_view_lanes_bytes(lanes: *const c_void) -> u32;
+@@ -139,6 +140,7 @@ impl Trial {
+         ticket: &mut u64,
+         lanes: Option<NonNull<c_void>>,
+         grouped: bool,
++        prepare_drc: Option<PrepareDrc>,
+     ) -> i32 {
+         unsafe {
+             horizon_loading_host_present_view_hud(
+@@ -148,6 +150,7 @@ impl Trial {
+                 ticket,
+                 lanes.map_or(std::ptr::null_mut(), NonNull::as_ptr),
+                 grouped,
++                prepare_drc,
+             )
+         }
+     }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 4b9a289610dabbf3951fe22dcbc67136d7718069..ce1a4ba6e46920f2fbce96126ceca9207b55ba7e 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -247,7 +247,9 @@ extern "C" {
+         context: *mut c_void,
+         rgba: *const f32,
+         opaque_viewports: *const u32,
++        prepare_drc: Option<PrepareDrc>,
+     ) -> i32;
++    fn horizon_loading_host_wait_drc_prepass(tv_submitted: u64) -> bool;
+     fn horizon_loading_host_guarded_hud_available() -> bool;
+     fn horizon_loading_host_guarded_hud_reuse(retired_pair: u64) -> bool;
+     fn horizon_loading_host_present_guarded_hud(
+@@ -1555,6 +1557,8 @@ impl CafeLoadingPresenter for Gx2LoadingPresenter<'_> {
+     }
+ }
+ 
++type PrepareDrc = unsafe extern "C" fn(*mut c_void, u64) -> bool;
++
+ #[derive(PartialEq)]
+ struct TerrainProjection {
+     camera: [f64; 3],
+@@ -2525,6 +2529,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared: bool,
+             skip_terrain_waits: bool,
+             tv_terrain_wait_ticket: u64,
++            drc_prepass: Option<(TerrainProjection, Option<[usize; 2]>, u64)>,
+             #[cfg(feature = "gx2-clear-fog")]
+             clear_fog_indices: [u32; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -2532,6 +2537,29 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             hud_lanes: Option<NonNull<c_void>>,
+         }
++        unsafe extern "C" fn prepare_drc(context: *mut c_void, tv_submitted: u64) -> bool {
++            let draw = unsafe { &mut *context.cast::<Draw<'_, '_, '_>>() };
++            let start = GX2_PROFILE_ENABLED.then(Instant::now);
++            let _span = Span::new(Stage::TranslucentTerrainDrc);
++            let aspect = target_aspect(draw.targets[1]);
++            let projection =
++                TerrainProjection::new(draw.frame, draw.terrain_min_y.unwrap_or(0), aspect);
++            // Read CPU metadata into the existing vector. Any necessary growth
++            // is deferred until the draw verifies the submitted TV watermark.
++            let counts = draw.presenter.translucent_terrain.prepare_visible(
++                &draw.presenter.sections,
++                &projection,
++                false,
++            );
++            draw.drc_prepass = Some((projection, counts, tv_submitted));
++            if let Some(start) = start {
++                draw.profile.target_ns[1] = elapsed_ns(start);
++            }
++            counts.is_some()
++        }
++        fn target_aspect(rect: [u32; 4]) -> f32 {
++            rect[2] as f32 / rect[3].max(1) as f32
++        }
+         unsafe extern "C" fn draw_target(
+             context: *mut c_void,
+             target: u32,
+@@ -2545,6 +2573,15 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+             let index = target as usize;
+             let rect = draw.targets[index];
++            let drc_prepass = if index == 1 {
++                draw.drc_prepass.take()
++            } else {
++                None
++            };
++            let (mut drc_projection, drc_counts, tv_submitted) = match drc_prepass {
++                Some((projection, counts, submitted)) => (Some(projection), counts, Some(submitted)),
++                None => (None, None, None),
++            };
+             #[repr(u32)]
+             enum GpuBoundary {
+                 WorldBound,
+@@ -2585,18 +2622,24 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let wait_start = Instant::now();
+                     {
+                         let _wait = Span::new(Stage::TerrainWait);
+-                        #[cfg(feature = "gx2-hud-view-lanes")]
+-                        if draw.view_hud {
+-                            if !HudViewTrial::drain_before_mutation() {
+-                                draw.presenter.hud_views.reason(HudViewReason::TargetDrain);
+-                                draw.result = Err("GX2 view HUD could not verify terrain retirement");
+-                                return -1;
++                        if let Some(submitted) = tv_submitted {
++                            if !unsafe { horizon_loading_host_wait_drc_prepass(submitted) } {
++                                return RETRY_GUARDED_FLIP;
+                             }
+                         } else {
++                            #[cfg(feature = "gx2-hud-view-lanes")]
++                            if draw.view_hud {
++                                if !HudViewTrial::drain_before_mutation() {
++                                    draw.presenter.hud_views.reason(HudViewReason::TargetDrain);
++                                    draw.result = Err("GX2 view HUD could not verify terrain retirement");
++                                    return -1;
++                                }
++                            } else {
++                                unsafe { horizon_gx2_terrain_wait_idle() };
++                            }
++                            #[cfg(not(feature = "gx2-hud-view-lanes"))]
+                             unsafe { horizon_gx2_terrain_wait_idle() };
+                         }
+-                        #[cfg(not(feature = "gx2-hud-view-lanes"))]
+-                        unsafe { horizon_gx2_terrain_wait_idle() };
+                         if index == 0 {
+                             draw.presenter.finish_retired_after_wait()
+                         }
+@@ -2619,7 +2662,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 }
+                 None => (width, height, rect),
+             };
+-            let aspect = rect[2] as f32 / rect[3].max(1) as f32;
++            let aspect = target_aspect(rect);
+             let sky_result = {
+                 let _span = Span::new([Stage::WorldSkyTv, Stage::WorldSkyDrc][index]);
+                 draw.presenter.stock_sky.draw(
+@@ -2679,9 +2722,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 let terrain_span =
+                     Span::new([Stage::SolidTerrainTv, Stage::SolidTerrainDrc][index]);
+                 let projection_start = GX2_PROFILE_ENABLED.then(Instant::now);
+-                let projection = draw
+-                    .terrain_min_y
+-                    .map(|min_y| TerrainProjection::new(draw.frame, min_y, aspect));
++                let projection = draw.terrain_min_y.map(|min_y| {
++                    drc_projection.take()
++                        .unwrap_or_else(|| TerrainProjection::new(draw.frame, min_y, aspect))
++                });
+                 let same_view = draw.presenter.terrain_views[index] == projection;
+                 let plan = &mut draw.presenter.solid_draw_plans[index];
+                 if !same_view {
+@@ -2903,7 +2947,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let projection = match projection {
+                         Some(projection) => projection,
+                         None => {
+-                            fallback = TerrainProjection::new(draw.frame, 0, aspect);
++                            fallback = drc_projection
++                                .unwrap_or_else(|| TerrainProjection::new(draw.frame, 0, aspect));
+                             &fallback
+                         }
+                     };
+@@ -2947,6 +2992,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         world_rect,
+                         &fog_color,
+                         &fog_ranges,
++                        drc_counts,
+                     )?;
+                     gpu_boundary(GpuBoundary::TranslucentDone);
+                     if let Some(sample) = draw.cave_sample.as_mut() {
+@@ -3138,7 +3184,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             }
+             if let Some(start) = target_start {
+                 draw.profile.target_frames[index] = 1;
+-                draw.profile.target_ns[index] = elapsed_ns(start);
++                draw.profile.target_ns[index] =
++                    draw.profile.target_ns[index].saturating_add(elapsed_ns(start));
+             }
+             0
+         }
+@@ -3285,9 +3332,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             && !unsafe { horizon_gx2_profile_frame_laps_mode() };
+         let defer_flip = !frame.title && self.terrain.is_some()
+             && unsafe { horizon_gx2_profile_defer_flip() };
+-        let present = if grouped_present {
+-            horizon_loading_host_present_grouped
+-        } else if defer_flip {
++        let present = if defer_flip {
+             horizon_loading_host_present_deferred_flip
+         } else {
+             horizon_loading_host_present_with_clear
+@@ -3312,6 +3357,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             0
+         };
+         let terrain_min_y = self.terrain_min_y;
++        let prepare_drc = (grouped_present && per_output_terrain_waits && !skip_terrain_waits)
++            .then_some(prepare_drc as PrepareDrc);
+         // Open the batch immediately before the synchronous native call so
+         // ordinary preparation errors cannot strand an active arena.
+         #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -3341,6 +3388,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared,
+             skip_terrain_waits,
+             tv_terrain_wait_ticket,
++            drc_prepass: None,
+             #[cfg(feature = "gx2-clear-fog")]
+             clear_fog_indices: [0; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -3365,6 +3413,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 horizon_loading_host_present_scaled_color(
+                     draw_target, context, clear.as_ptr(), defer_flip,
+                 )
++            } else if grouped_present {
++                horizon_loading_host_present_grouped(
++                    draw_target, context, clear.as_ptr(), opaque_viewports, prepare_drc,
++                )
+             } else {
+                 present(draw_target, context, clear.as_ptr(), opaque_viewports)
+             }
+@@ -3374,6 +3426,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             unsafe {
+                 HudViewTrial::present(
+                     draw_target, context, &clear, &mut retired_pair, hud_lanes, grouped_present,
++                    prepare_drc,
+                 )
+             }
+         } else {
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ea938bd6e87a109753448205a01c4d3fafd22d37..1ba79edeecd1e166db46f96923c0cc8c713fa794 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -217,7 +217,7 @@ static bool guarded_scan_buffers_ready(void)
+ 
+ /* Keep ownership in the foreground if the device has not retired our commands.
+  * In particular, returning here could let Rust destroy an in-flight buffer. */
+-static OSTime drain_guarded_commands(void)
++static OSTime drain_guarded_commands_through(OSTime submitted_floor)
+ {
+    const OSTime start = OSGetTime();
+    const uint64_t stamp = horizon_gx2_profile_stamp();
+@@ -227,7 +227,8 @@ static OSTime drain_guarded_commands(void)
+    for (;;) {
+       const bool done = GX2DrawDone();
+       const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+-      if (done && submitted >= 0 && submitted >= queued && GX2GetRetiredTimeStamp() >= submitted) {
++      if (done && submitted >= submitted_floor && submitted >= queued &&
++          GX2GetRetiredTimeStamp() >= submitted) {
+          horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+          return OSGetTime() - start;
+       }
+@@ -239,6 +240,11 @@ static OSTime drain_guarded_commands(void)
+    }
+ }
+ 
++static OSTime drain_guarded_commands(void)
++{
++   return drain_guarded_commands_through(0);
++}
++
+ enum GroupedDisposition {
+    GROUPED_KEYBOARD,
+    GROUPED_LATE_KEYBOARD,
+@@ -250,6 +256,9 @@ enum GroupedDisposition {
+    GROUPED_ACCEPTED,
+    GROUPED_VIEW_HUD_ACCEPTED,
+    GROUPED_EARLY_FLUSH,
++   GROUPED_DRC_PREPASS,
++   GROUPED_DRC_PREPASS_RETRY,
++   GROUPED_DRC_PREPASS_CAPACITY,
+ };
+ 
+ static void report_grouped(enum GroupedDisposition disposition, const char *message)
+@@ -261,10 +270,11 @@ static void report_grouped(enum GroupedDisposition disposition, const char *mess
+    OSReport("Horizon GX2 grouped pair: %s\n", message);
+ }
+ 
+-static int reject_grouped(OSTime flip_wait, bool gpu_sample, const uint32_t dimensions[4],
++static int reject_grouped(OSTime flip_wait, OSTime submitted_floor, bool gpu_sample,
++                          const uint32_t dimensions[4],
+                           int result, bool *verified_finish)
+ {
+-   last_wait_ns = OSTicksToNanoseconds(flip_wait + drain_guarded_commands());
++   last_wait_ns = OSTicksToNanoseconds(flip_wait + drain_guarded_commands_through(submitted_floor));
+    if (verified_finish) *verified_finish = true;
+    horizon_gx2_profile_outputs(0, dimensions);
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(0);
+@@ -287,30 +297,46 @@ static void grouped_finish_observed(HorizonGx2GroupedRetirement *sample)
+    GX2SetDRCEnable(TRUE);
+ }
+ 
+-/* Submit current render commands while the exact previous scan pair is
+- * still pending. Render targets stay owned by this synchronous present. */
+-static bool flush_grouped_before_flip(uint32_t ticket, OSTime prior)
++static bool grouped_scan_owned(uint32_t ticket, uint32_t pending_at_start, bool accept_completed)
+ {
+-   if (!horizon_loading_host_guarded_hud_available()) return false;
+-
+    uint32_t swaps, flips;
+    OSTime last_flip, last_vsync;
+    GX2GetSwapStatus(&swaps, &flips, &last_flip, &last_vsync);
+-   if (swaps != ticket || (uint32_t)(ticket - flips) != 1) return false;
++   const uint32_t pending = ticket - flips;
++   return swaps == ticket && pending <= pending_at_start &&
++          (accept_completed || pending == 1);
++}
++
++/* Submit without touching scan buffers. The TV-only arm can still overlap
++ * CPU work after the prior flip has completed. */
++static OSTime flush_grouped_render(uint32_t ticket, uint32_t pending_at_start, OSTime prior, bool tv_only)
++{
++   if (!horizon_loading_host_guarded_hud_available() ||
++       !grouped_scan_owned(ticket, pending_at_start, tv_only)) return 0;
+ 
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+    const OSTime retired = GX2GetRetiredTimeStamp();
+-   if (prior <= 0 || submitted < prior || retired < prior || retired > submitted) return false;
++   if (prior <= 0 || submitted < prior || retired < prior || retired > submitted) return 0;
+ 
+    const uint64_t stamp = horizon_gx2_profile_stamp();
+    GX2Flush();
+-   horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+-   return true;
++   horizon_gx2_profile_end(tv_only ? GX2_PROFILE_SUBMIT_TV : GX2_PROFILE_SUBMIT_DRC, stamp);
++   return submitted;
++}
++
++bool horizon_loading_host_wait_drc_prepass(uint64_t tv_submitted)
++{
++   if (!tv_submitted || !horizon_loading_host_guarded_hud_available()) return false;
++   const OSTime before = GX2GetLastSubmittedTimeStamp();
++   if (before <= 0 || (uint64_t)before < tv_submitted || !GX2DrawDone()) return false;
++   const OSTime after = GX2GetLastSubmittedTimeStamp();
++   return after >= before && GX2GetRetiredTimeStamp() == after &&
++          horizon_loading_host_guarded_hud_available();
+ }
+ 
+ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+                             const uint32_t opaque_viewports[8], uint64_t *retired_pair,
+-                            bool *verified_finish)
++                            bool *verified_finish, HorizonLoadingPrepareDrc prepare_drc)
+ {
+    last_outputs = 0;
+    last_wait_ns = 0;
+@@ -335,14 +361,18 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    const OSTime prior = GX2GetLastSubmittedTimeStamp();
+    if (prior <= 0 || GX2GetRetiredTimeStamp() < prior) {
+       report_grouped(GROUPED_PRIOR_PENDING, "prior GPU retirement unverified, no publication");
+-      return reject_grouped(0, false, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
++      return reject_grouped(0, 0, false, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
+    }
+ 
+    uint32_t ticket, swaps, flips;
+    OSTime last_flip, last_vsync;
+    GX2GetSwapStatus(&ticket, &flips, &last_flip, &last_vsync);
+-   const bool may_flush_early = (uint32_t)(ticket - flips) == 1 &&
+-                                horizon_gx2_profile_grouped_early_flush();
++   const uint32_t pending_at_start = ticket - flips;
++   const bool may_flush_early = pending_at_start == 1 && horizon_gx2_profile_grouped_early_flush();
++   const bool may_prepare_drc = pending_at_start <= 1 && !may_flush_early && prepare_drc &&
++                                horizon_gx2_profile_grouped_drc_prepass();
++   bool prepared_drc = false;
++   OSTime tv_submitted = 0;
+    const bool gpu_sample = horizon_gx2_profile_gpu_begin();
+    int result = 0;
+    for (uint32_t output = 0; output < 2; ++output) {
+@@ -353,23 +383,44 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+       WHBGfxClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+       horizon_gx2_profile_end(output == 0 ? GX2_PROFILE_CLEAR_TV : GX2_PROFILE_CLEAR_DRC, stamp);
+       if (gpu_sample) horizon_gx2_profile_gpu_marker(output, false);
+-      if (draw(context, output, dimensions[2 * output], dimensions[2 * output + 1]) != 0 ||
+-          horizon_swkbd_draw(output) != 0)
+-         result = output == 0 ? -2 : -3;
++      const int draw_result = draw(context, output, dimensions[2 * output], dimensions[2 * output + 1]);
++      if (draw_result != 0 || horizon_swkbd_draw(output) != 0)
++         result = tv_submitted > 0 && draw_result == HORIZON_LOADING_RETRY_FLIP
++            ? HORIZON_LOADING_RETRY_FLIP : (output == 0 ? -2 : -3);
+       if (gpu_sample) horizon_gx2_profile_gpu_marker(output, true);
+       horizon_gx2_profile_end(output == 0 ? GX2_PROFILE_SUBMIT_TV : GX2_PROFILE_SUBMIT_DRC, stamp);
++
++      if (output == 0 && result == 0 && may_prepare_drc) {
++         const OSTime before = flush_grouped_render(ticket, pending_at_start, prior, true);
++         if (before > 0) {
++            tv_submitted = before;
++            const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++            if (submitted >= before && GX2GetRetiredTimeStamp() <= submitted) {
++               tv_submitted = submitted;
++               prepared_drc = prepare_drc(context, (uint64_t)tv_submitted);
++               if (horizon_loading_host_guarded_hud_available() &&
++                   grouped_scan_owned(ticket, pending_at_start, true)) continue;
++            }
++            report_grouped(GROUPED_DRC_PREPASS_RETRY, "GamePad prepass lost queue or foreground ownership");
++            return reject_grouped(0, tv_submitted, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
++         }
++      }
+    }
+    if (result) {
+-      report_grouped(GROUPED_CALLBACK_FAILED, "target callback failed, no publication");
+-      return reject_grouped(0, gpu_sample, dimensions, result, verified_finish);
++      if (result == HORIZON_LOADING_RETRY_FLIP)
++         report_grouped(GROUPED_DRC_PREPASS_RETRY, "GamePad prepass could not verify terrain retirement");
++      else
++         report_grouped(GROUPED_CALLBACK_FAILED, "target callback failed, no publication");
++      return reject_grouped(0, tv_submitted, gpu_sample, dimensions, result, verified_finish);
+    }
+ 
+-   const bool flushed_early = may_flush_early && flush_grouped_before_flip(ticket, prior);
++   const bool flushed_early = may_flush_early &&
++      flush_grouped_render(ticket, pending_at_start, prior, false) > 0;
+    const OSTime flip_wait = wait_for_previous_flip();
+    GX2GetSwapStatus(&swaps, &flips, &last_flip, &last_vsync);
+    if (swaps != ticket || flips != ticket) {
+       report_grouped(GROUPED_SCAN_PENDING, "scan ticket unconfirmed, no publication");
+-      return reject_grouped(flip_wait, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
++      return reject_grouped(flip_wait, tv_submitted, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
+    }
+ 
+    uint64_t stamp = horizon_gx2_profile_stamp();
+@@ -390,12 +441,12 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    const OSTime waited = flip_wait + OSGetTime() - finish_start;
+    horizon_gx2_profile_end(GX2_PROFILE_FINISH, stamp);
+    const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+-   const bool accepted = submitted > 0 && submitted > before_finish &&
++   const bool accepted = submitted > 0 && submitted > before_finish && submitted >= tv_submitted &&
+                          GX2GetRetiredTimeStamp() >= submitted;
+    if (sample) sample->accepted = accepted;
+    if (!accepted) {
+       report_grouped(GROUPED_FINISH_UNVERIFIED, "swap issued, final GPU retirement unverified");
+-      return reject_grouped(waited, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
++      return reject_grouped(waited, tv_submitted, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
+    }
+ 
+    if (retired_pair) *retired_pair = (uint64_t)submitted;
+@@ -408,6 +459,10 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+    if (flushed_early)
+       report_grouped(GROUPED_EARLY_FLUSH, "submitted render commands before the prior scan wait");
++   if (prepared_drc)
++      report_grouped(GROUPED_DRC_PREPASS, "GamePad terrain visibility prepared before its GPU wait");
++   else if (tv_submitted > 0)
++      report_grouped(GROUPED_DRC_PREPASS_CAPACITY, "GamePad terrain visibility used the existing post-wait plan");
+    if (retired_pair)
+       report_grouped(GROUPED_VIEW_HUD_ACCEPTED, "both targets presented with a retired HUD arena");
+    else
+@@ -416,9 +471,10 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+ }
+ 
+ int horizon_loading_host_present_grouped(HorizonLoadingDrawTarget draw, void *context,
+-                                          const float rgba[4], const uint32_t opaque_viewports[8])
++                                          const float rgba[4], const uint32_t opaque_viewports[8],
++                                          HorizonLoadingPrepareDrc prepare_drc)
+ {
+-   return present_grouped(draw, context, rgba, opaque_viewports, NULL, NULL);
++   return present_grouped(draw, context, rgba, opaque_viewports, NULL, NULL, prepare_drc);
+ }
+ 
+ static int discard_guarded_pair(OSTime flip_wait, bool gpu_sample, const uint32_t dimensions[4])
+@@ -638,7 +694,8 @@ int horizon_loading_host_prepare_view_hud(uint64_t prior_pair)
+ 
+ int horizon_loading_host_present_view_hud(
+    HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+-   uint64_t *retired_pair, HorizonHudViewLanes *active_lanes, bool grouped)
++   uint64_t *retired_pair, HorizonHudViewLanes *active_lanes, bool grouped,
++   HorizonLoadingPrepareDrc prepare_drc)
+ {
+    *retired_pair = 0;
+    last_outputs = 0;
+@@ -650,7 +707,7 @@ int horizon_loading_host_present_view_hud(
+    int result = HORIZON_LOADING_RETRY_FLIP;
+    if (ProcUIInForeground()) {
+       result = grouped && active_lanes
+-         ? present_grouped(draw, context, rgba, NULL, retired_pair, &verified_finish)
++         ? present_grouped(draw, context, rgba, NULL, retired_pair, &verified_finish, prepare_drc)
+          : present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
+    }
+    if (active_lanes &&
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 8dbb456c72d490f64007341814109ff1dc1731fc..64ad3ab565c576bf65f7d70310881eaaf964b3a9 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -5,6 +5,9 @@
+ 
+ typedef int (*HorizonLoadingDrawTarget)(void *context, uint32_t target,
+                                        uint32_t width, uint32_t height);
++/* CPU-only, synchronous and called once before the GamePad draw.
++ * Return whether the plan fit in existing storage. */
++typedef bool (*HorizonLoadingPrepareDrc)(void *context, uint64_t tv_submitted);
+ 
+ /* Begin a WHB frame, bind/clear TV then DRC, call draw for each while its GX2
+  * target is active, and finish both. This is synchronous on the GX2 thread. */
+@@ -30,7 +33,9 @@ int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, voi
+ 
+ /* Grouped gameplay trial with the same synchronous ownership as stock. */
+ int horizon_loading_host_present_grouped(HorizonLoadingDrawTarget draw, void *context,
+-                                          const float rgba[4], const uint32_t opaque_viewports[8]);
++                                          const float rgba[4], const uint32_t opaque_viewports[8],
++                                          HorizonLoadingPrepareDrc prepare_drc);
++bool horizon_loading_host_wait_drc_prepass(uint64_t tv_submitted);
+ 
+ /* Trial-only status. No successful pair was accepted. Any issued GPU
+  * commands have retired. A late failure may have issued a scan swap. */
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 63d754a544d9dc2a523630c69c034ba30a07e5eb..8bac18360f872ad1b7c3c4b22fe5cf15786605e5 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -425,6 +425,48 @@ impl TranslucentTerrain {
+         self.visible.iter().map(|&(_, key)| key)
+     }
+ 
++    pub(super) fn prepare_visible(
++        &mut self,
++        sections: &HashMap<SectionKey, TerrainSection>,
++        projection: &TerrainProjection,
++        allow_growth: bool,
++    ) -> Option<[usize; 2]> {
++        self.visible.clear();
++        let mut additional_tested = 0;
++        let mut additional_drawn = 0;
++        let candidates = sections.iter().filter_map(|(&key, entry)| {
++            let section = entry.translucent.as_ref()?;
++            additional_tested += usize::from(entry.solid.is_none());
++            let origin = projection.section_origin(key);
++            let clip = projection.clip_rows(origin);
++            if section
++                .buffer
++                .bounds
++                .is_some_and(|bound| !clip.may_intersect(bound))
++            {
++                return None;
++            }
++            additional_drawn += usize::from(entry.solid.as_ref().is_none_or(|solid| {
++                solid.bounds.is_some_and(|bound| !clip.may_intersect(bound))
++            }));
++            let distance = origin.into_iter().map(|v| (v + 8.0).powi(2)).sum::<f64>();
++            Some((distance, key))
++        });
++        if allow_growth {
++            self.visible.extend(candidates);
++        } else {
++            for candidate in candidates {
++                if self.visible.len() == self.visible.capacity() {
++                    return None;
++                }
++                self.visible.push(candidate);
++            }
++        }
++        self.visible
++            .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
++        Some([additional_tested, additional_drawn])
++    }
++
+     pub(super) fn draw(
+         &mut self,
+         target: u32,
+@@ -436,35 +478,15 @@ impl TranslucentTerrain {
+         rect: [u32; 4],
+         fog_color: &[f32; 4],
+         fog_ranges: &[f32; 4],
++        prepared: Option<[usize; 2]>,
+     ) -> Result<[usize; 2], &'static str> {
+         let _span = cafe_profile::Span::new(
+             [cafe_profile::Stage::TranslucentTerrainTv, cafe_profile::Stage::TranslucentTerrainDrc][target as usize],
+         );
+-        self.visible.clear();
++        let [additional_tested, additional_drawn] = prepared.unwrap_or_else(|| {
++            self.prepare_visible(sections, projection, true).unwrap()
++        });
+         let mut index_upload_bytes = 0;
+-        let mut additional_tested = 0;
+-        let mut additional_drawn = 0;
+-        self.visible
+-            .extend(sections.iter().filter_map(|(&key, entry)| {
+-                let section = entry.translucent.as_ref()?;
+-                additional_tested += usize::from(entry.solid.is_none());
+-                let origin = projection.section_origin(key);
+-                let clip = projection.clip_rows(origin);
+-                if section
+-                    .buffer
+-                    .bounds
+-                    .is_some_and(|bound| !clip.may_intersect(bound))
+-                {
+-                    return None;
+-                }
+-                additional_drawn += usize::from(entry.solid.as_ref().is_none_or(|solid| {
+-                    solid.bounds.is_some_and(|bound| !clip.may_intersect(bound))
+-                }));
+-                let distance = origin.into_iter().map(|v| (v + 8.0).powi(2)).sum::<f64>();
+-                Some((distance, key))
+-            }));
+-        self.visible
+-            .sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+ 
+         let mut indices_drawn = 0usize;
+         let mut bound = false;

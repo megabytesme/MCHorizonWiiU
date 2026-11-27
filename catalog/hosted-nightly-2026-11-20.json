@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
-  "output_tree": "83b3e1d391719995e59bd9a1d61eeccc6f824c7e",
+  "output_tree": "768aadeb60bfe9bfe90361b2c128b9cd5f4798f2",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1346,6 +1346,12 @@
       "sha256": "3dee949b7f36056140755970b42f06b057d4a8f23ecde4e1858fb646cbc0047d",
       "input_tree": "73d9d5019a2915432817d43dda9f36133afb475d",
       "output_tree": "83b3e1d391719995e59bd9a1d61eeccc6f824c7e"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0223-prepare-drc-while-tv-commands-retire.patch",
+      "sha256": "3c12b876c2a4e711eb690090ae6f2d529cc5c1cee4cdbfc40b0fdde4e5849cc2",
+      "input_tree": "83b3e1d391719995e59bd9a1d61eeccc6f824c7e",
+      "output_tree": "768aadeb60bfe9bfe90361b2c128b9cd5f4798f2"
     }
   ],
   "candidate": {
