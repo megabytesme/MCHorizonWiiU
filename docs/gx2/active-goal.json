@@ -106,7 +106,19 @@
     },
     "renderer_and_splitscreen": {
       "status": "in_progress",
-      "independent_view_qualification": "pending",
+      "independent_view_qualification": "cemu_native_viewport_fixture_passed",
+      "native_viewport_fixture": {
+        "rpx_sha256": "783bb38ce8530243aa436e9c904d8738c62fddf6645c33d9bd8c78a4904464e4",
+        "wuhb_sha256": "4d4e087a27ad7718fc01945e435837e70ac4cafdd83e1cd9adc0a918b673cb9f",
+        "positive_layout_pose_cases": 12,
+        "detected_injected_faults": 5,
+        "rejected_tv_crops": 3,
+        "max_independent_cameras": 5,
+        "section_bytes_shared": 7751104,
+        "section_bytes_disjoint": 38755520,
+        "physical": "pending",
+        "local_player_integration": "pending"
+      },
       "local_players_target": 5,
       "tv_players_target": 4,
       "gamepad_players_target": 1,

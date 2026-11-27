@@ -48,6 +48,10 @@ The RC 48 build record gives the RPX, WUHB and pinned source identities.
 - Run the checked standalone readback on both 720p and 1080p TV setups
   before enabling physical staged MCP screenshots. Confirm the readback
   fence and clean menu return on the serial capture. [Readback fixture](../../wiiu/diagnostics/gx2-explicit-readback/README.md)
+- Run the standalone independent-view fixture with the same 1080p and
+  720p TV setups when practical. Record viewport and depth markers and
+  the fault masks. Use the fixed-75% saved world for gameplay timing.
+  [Standalone viewport fixture](../../wiiu/diagnostics/gx2-independent-views/README.md)
 - Keep the original Village and heavy stationary runs separate. Use the
   hosted DRS decision report alongside the 30/60 physical timing probes.
   [Benchmark definitions](benchmarks.md#stationary-render-diagnostic)

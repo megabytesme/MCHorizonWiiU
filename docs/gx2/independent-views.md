@@ -52,8 +52,9 @@ The current Cafe presenter accepts one shared-game frame and renders the
 two displays separately. A host terrain fixture compares up to five
 frustums and their translucent sorts with the existing Cafe decision
 paths. Nearby poses reuse a resident mesh, while distant poses require
-separate resident meshes. Native viewport, input and player integration
-remain open. [Horizon and NX comparison](horizon-nx-comparison.md) ·
+separate resident meshes. A separate native viewport fixture passes in
+Cemu. Hosted integration, player input and physical qualification remain
+open. [Horizon and NX comparison](horizon-nx-comparison.md) ·
 [Independent-view terrain fixture](../../wiiu/diagnostics/gx2-split-terrain/README.md)
 
 ## Horizon and NX source audit
@@ -102,6 +103,14 @@ total with the 641 × 360 GamePad target. In a calibrated fixture with
 and 2,633,370 indices. The estimated workload uses the aggregate RC 38
 submission record. Record actual per-view work and pitch-aligned bytes
 when the fixture runs. [Physical reference](rc38-validation.md#physical-fixed-75-gameplay)
+
+The native Cemu fixture covers 1+1, 2+1 and 4+1 view layouts and two poses
+in both residency modes. It submits 870 opaque indexed draws and
+2,076,180 indices at its five-camera layout. One 174-section site uses
+7,751,104 aligned bytes, and five disjoint sites use 38,755,520. Each
+case checks separate projection, depth, seam ownership and HUD samples.
+A terrain feature exclusive to the distant GamePad site distinguishes
+its output from the three tested TV crops. [Viewport fixture and exact package hashes](../../wiiu/diagnostics/gx2-independent-views/README.md)
 
 - For nearby cameras, overlap streaming ticket regions and use distinct
   headings. Include shared terrain visible to several views and nearby
