@@ -116,3 +116,24 @@ Stock Overworld atmospheric fog starts at zero. The clear path
 requires both starts above one block and admits no sections under
 that configuration. Its synthetic fixture exercises the shader and
 loader. The primary physical reference retains stock fog.
+
+## Fog reciprocal relocation
+
+The native paired bit probe found exact spans and products for all 40
+ranges on both Cemu outputs. CPU-prepared reciprocals matched the GPU
+bits for 31 ranges. The other nine differed by one ULP and include the
+stock render-distance-6 environment ramp. The guarded render-distance-10
+control matched every RGBA pixel. An intentionally wrong reciprocal
+changed 2,073,600 TV and 373,440 GamePad pixels. Render distance 6,
+render distance 19 and the degenerate range retained their stock path.
+Fixture RPX SHA-256
+`aaa06813dd9e51ddf96539d99192f3dbae3cb89c733a7daa5c3529d01981266c`.
+
+The alternative flat vertex export reduced the fragment program from
+142 to 134 dwords and grew the vertex program from 178 to 186. Both
+stages gained one GPR. The physical saved-view median of 1,053,348
+indices per pair corresponds to 702,232 submitted quad vertices if
+each quad processes its four vertices once. A single layer of the two
+75% render targets contains 1,395,720 pixels. This leaves little margin in a simple
+ALU issue-group estimate. Actual shader invocations and timings remain
+unknown. Keep the stock fragment reciprocal in gameplay.
