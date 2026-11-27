@@ -79,3 +79,20 @@ pacing, visuals and memory remains queued for the
 
 The earlier [exact grouped trial](grouped-hud-trial.md) separately reached
 gameplay with distinct Cemu captures, movement and save.
+
+## Offline RC 51 color-only clear replay
+
+A fresh disposable interpreter session ran plain `4` with only
+`gx2-scaled-color-clear.enable` and logged the color-only clear branch.
+Gameplay returned at 505.215 s and paired terrain at 529.058 s. Distinct
+TV and GamePad captures bracketed a 60 s dwell. The player moved 4.096
+blocks, and save and clean exit succeeded. Audio drained all 113,460 items.
+Peak tracked Rust allocations were 331,120,925 bytes. The post-save GX2
+bulk heap returned to 234,880,920 bytes free with a 234,880,896-byte
+largest block.
+
+The session HZP3 SHA-256 is
+`2a0e4198b798ab54073758bc233175af7d84082b5d305d632ded3f6463d6c59a`.
+All 44 paired gameplay rows reported partial passes. Coverage reached
+five sections per display. The physical saved-view color and timing
+comparison remains queued.

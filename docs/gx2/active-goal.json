@@ -33,6 +33,7 @@
     "runtime": "cemu_verified_tv_retirement_and_offline_save_pass",
     "cemu_paired_gameplay_rows": 40,
     "cemu_max_sections_per_output": 5,
+    "cemu_color_only_clear": "independent_displays_and_offline_save_pass",
     "physical": "queued",
     "receipt": "rc51-qualification.md"
   },
