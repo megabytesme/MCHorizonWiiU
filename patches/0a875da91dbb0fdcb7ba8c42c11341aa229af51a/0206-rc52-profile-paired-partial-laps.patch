@@ -1,0 +1,63 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 3c8b0cb024edbc0d7f40c46260fd0602ede75c3c..87306202a49aac4fe8843c3de4f3802cf7ef1e5b 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -10408,9 +10408,16 @@ impl Game<'_> {
+                         .and_then(|backend| backend.frame_laps_key())
+                         .map(cafe_frame_laps::FrameLaps::start);
+                     #[cfg(target_os = "cafe")]
+-                    let rendered = match cafe_backend {
+-                        Some(backend) => self.render_and_flip_cafe(elapsed, backend)?,
+-                        None => self.render_and_flip(elapsed)?,
++                    let (rendered, frame_laps_paired) = match cafe_backend {
++                        Some(backend) => {
++                            let rendered = self.render_and_flip_cafe(elapsed, backend)?;
++                            // Completeness and physical output acceptance are separate.
++                            let paired = frame_laps.is_some()
++                                && self.cafe_frame_built
++                                && backend.frame_laps_pair_accepted();
++                            (rendered, paired)
++                        }
++                        None => (self.render_and_flip(elapsed)?, false),
+                     };
+                     #[cfg(not(target_os = "cafe"))]
+                     let rendered = self.render_and_flip(elapsed)?;
+@@ -10426,7 +10433,7 @@ impl Game<'_> {
+                     if let Some(laps) = frame_laps {
+                         laps.finish(
+                             &frame_spans,
+-                            rendered && self.screen == Screen::Playing && self.player.is_some(),
++                            frame_laps_paired && self.screen == Screen::Playing && self.player.is_some(),
+                         );
+                     }
+                     let mut perf_times = None;
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 36a9581025afc6add58435f5814054a7db71bc6b..ba298cf0687c7faeb96d8323d0ac5045fa6edd48 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -179,6 +179,10 @@ pub trait CafeGameBackend:
+         None
+     }
+ 
++    fn frame_laps_pair_accepted(&self) -> bool {
++        false
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         None
+     }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 65de960ecabac82858d5cd7fbff0757a38a9ce9f..5bb8c679c7647935d83ca66ccc1bab39100d6d78 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -1740,6 +1740,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         self.retry_world_scale = retry_failed;
+     }
+ 
++    fn frame_laps_pair_accepted(&self) -> bool {
++        self.frame_work.presented == [true; 2]
++    }
++
+     fn frame_laps_key(&self) -> Option<(u32, u64)> {
+         let (mut sequence, mut start_ticks) = (0, 0);
+         // Only the profile-owning render thread asks for the active row.

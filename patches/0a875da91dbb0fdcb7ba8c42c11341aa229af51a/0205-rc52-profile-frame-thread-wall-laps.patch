@@ -1,0 +1,250 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 0d5b4ea67f73993198d7254290037ae5e3990a19..3c8b0cb024edbc0d7f40c46260fd0602ede75c3c 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -113,6 +113,9 @@ pub mod points {
+ #[path = "platform/cafe.rs"]
+ mod cafe;
+ #[cfg(target_os = "cafe")]
++#[path = "platform/cafe_frame_laps.rs"]
++mod cafe_frame_laps;
++#[cfg(target_os = "cafe")]
+ pub use cafe::*;
+ mod host;
+ mod native_hooks;
+@@ -10400,6 +10403,11 @@ impl Game<'_> {
+                     self.tick_world_icon();
+                     let ticked = Instant::now();
+                     #[cfg(target_os = "cafe")]
++                    let frame_laps = cafe_backend
++                        .as_deref()
++                        .and_then(|backend| backend.frame_laps_key())
++                        .map(cafe_frame_laps::FrameLaps::start);
++                    #[cfg(target_os = "cafe")]
+                     let rendered = match cafe_backend {
+                         Some(backend) => self.render_and_flip_cafe(elapsed, backend)?,
+                         None => self.render_and_flip(elapsed)?,
+@@ -10414,6 +10422,13 @@ impl Game<'_> {
+                     } else {
+                         Vec::new()
+                     };
++                    #[cfg(target_os = "cafe")]
++                    if let Some(laps) = frame_laps {
++                        laps.finish(
++                            &frame_spans,
++                            rendered && self.screen == Screen::Playing && self.player.is_some(),
++                        );
++                    }
+                     let mut perf_times = None;
+                     if let Some(r) = self.renderer.as_mut() {
+                         let cpu = now.elapsed().saturating_sub(r.last_wait);
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 4b462930e85f51d36948d710be3ff9be47f856f3..36a9581025afc6add58435f5814054a7db71bc6b 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -174,6 +174,11 @@ pub trait CafeGameBackend:
+         self.set_world_resolution_scale(percent);
+     }
+ 
++    /// Sequence and elapsed start ticks of the active HZP3 row.
++    fn frame_laps_key(&self) -> Option<(u32, u64)> {
++        None
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         None
+     }
+diff --git a/crates/horizon-client/src/platform/cafe_frame_laps.rs b/crates/horizon-client/src/platform/cafe_frame_laps.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbc203ff049554a6320df8dfef5e20838df31ef9
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_frame_laps.rs
+@@ -0,0 +1,87 @@
++use horizon_client::spans::{self, Span};
++
++const PREPARE_LAPS: [[&str; 6]; 4] = [
++    [
++        "prepare",
++        "renderer",
++        "pr_cleanup",
++        "pr_setup",
++        "pr_camera",
++        "pr_listener",
++    ],
++    [
++        "pr_occlusion",
++        "pr_environment",
++        "pr_debug",
++        "pr_native_visuals",
++        "pr_outline",
++        "pr_projection",
++    ],
++    [
++        "pr_hud",
++        "pr_entity_setup",
++        "pr_entities",
++        "pr_dragon_bolts",
++        "pr_celestial",
++        "pr_hand",
++    ],
++    [
++        "pr_screen_end",
++        "pr_weather_border",
++        "pr_lights",
++        "pr_shader_inputs",
++        "pr_frame",
++        "pr_loading",
++    ],
++];
++
++pub(super) struct FrameLaps {
++    sequence: u32,
++    start_ticks: u64,
++    enabled_here: bool,
++}
++
++impl FrameLaps {
++    pub(super) fn start((sequence, start_ticks): (u32, u64)) -> Self {
++        // Keep other local recordings enabled and let the existing redraw
++        // consumer continue to drain their spans.
++        let enabled_here = !spans::recording_here();
++        if enabled_here {
++            spans::record_here(true);
++        }
++        Self {
++            sequence,
++            start_ticks,
++            enabled_here,
++        }
++    }
++
++    pub(super) fn finish(self, spans: &[Span], rendered: bool) {
++        if !rendered {
++            return;
++        }
++        for (group, names) in PREPARE_LAPS.iter().enumerate() {
++            let wall_us = names.map(|name| {
++                spans
++                    .iter()
++                    .find(|span| span.name == name)
++                    .map_or(u32::MAX, |span| (span.ms * 1_000.0).round() as u32)
++            });
++            log::info!(
++                "Horizon Cafe frame wall us seq={} start_ticks={} group={group} samples={wall_us:?}",
++                self.sequence, self.start_ticks
++            );
++        }
++    }
++}
++
++impl Drop for FrameLaps {
++    fn drop(&mut self) {
++        if self.enabled_here {
++            spans::record_here(false);
++            // Redraw normally consumed these already. Clean up partial
++            // spans if rendering or a callback returned early.
++            drop(spans::take_raw());
++        }
++    }
++}
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 7080fe813453e9fc6b2622c6668c9df9e7212dd6..d3f9343a5c6a03e46ef11346f25f4432aff53b68 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -88,7 +88,7 @@ static bool marker_enabled;
+ static int marker_mode = EOF, marker_variant = EOF;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+-static bool shared_model_uploads, guarded_shared_hud;
++static bool shared_model_uploads, guarded_shared_hud, frame_laps_mode;
+ static uint32_t hud_patch_mode, tv_terrain_wait_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
+@@ -201,6 +201,7 @@ void horizon_gx2_profile_init(void)
+    marker_mode = fgetc(marker);
+    marker_variant = marker_mode == '4' ? fgetc(marker) : EOF;
+    const bool plain_profile = marker_mode == '4' && marker_end(marker, marker_variant);
++   frame_laps_mode = marker_mode == '4' && marker_variant == 'f' && marker_end(marker, fgetc(marker));
+    fclose(marker);
+    marker_enabled = true;
+ #ifdef HORIZON_GX2_HUD_VIEW_LANES
+@@ -236,6 +237,7 @@ void horizon_gx2_profile_init(void)
+    if (solid_draw_plan) OSReport("Horizon GX2 solid draw plan trial enabled\n");
+    if (solid_axis_ranges) OSReport("Horizon GX2 solid terrain axis ranges trial enabled\n");
+    if (opaque_terrain_shader) OSReport("Horizon GX2 opaque terrain shader trial requested\n");
++   if (frame_laps_mode) OSReport("Horizon Cafe frame-thread wall lap capture enabled\n");
+    OSReport("Horizon GX2 hosted HUD submission: %s\n", shared_hud_upload ? "shared" : "direct");
+    if (hud_patch_mode) OSReport("Horizon GX2 HUD patch profile mode=%u\n", hud_patch_mode);
+    FILE *worker_marker = fopen(ROOT "gx2-worker-profile.enable", "rb");
+@@ -541,6 +543,21 @@ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence)
+    return true;
+ }
+ 
++bool horizon_gx2_profile_frame_laps_mode(void)
++{
++   return frame_laps_mode && history == &process_history;
++}
++
++bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_ticks)
++{
++   if (!horizon_gx2_profile_frame_laps_mode() ||
++       !horizon_gx2_profile_playing_sequence(sequence) || *sequence % 120u != 0)
++      return false;
++   // finish() stores this same relative clock value in the HZP3 record.
++   *start_ticks = started - history->epoch;
++   return true;
++}
++
+ /* The host owns phase changes. Keep the marker gate open between gameplay
+  * loops so worker jobs need no dependency on the frame's recording state. */
+ static void update_worker_capture_phase(uint32_t phase)
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 06f4b70c45ddd740cec21bc769788f3ec969bcc2..70b3063924cdd81efbb4d5244e21573527243e0e 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -64,6 +64,8 @@ void horizon_gx2_profile_gpu_finish(uint32_t outputs);
+ bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
++bool horizon_gx2_profile_frame_laps_mode(void);
++bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_ticks);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ uint64_t horizon_gx2_profile_stamp(void);
+ uint64_t horizon_gx2_profile_worker_stamp(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index e72fb309eb0e53bfc147abc19cd06865a07b8463..65de960ecabac82858d5cd7fbff0757a38a9ce9f 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -200,6 +200,8 @@ extern "C" {
+     fn OSReport(format: *const std::ffi::c_char, ...);
+     fn horizon_loading_host_last_outputs() -> u32;
+     fn horizon_gx2_profile_take_gpu_sample(sample: *mut CafeGpuSample) -> bool;
++    fn horizon_gx2_profile_frame_laps_mode() -> bool;
++    fn horizon_gx2_profile_frame_laps_key(sequence: *mut u32, start_ticks: *mut u64) -> bool;
+     fn horizon_gx2_profile_gpu_pass_active() -> bool;
+     fn horizon_gx2_profile_gpu_pass_boundary(target: u32, boundary: u32);
+     fn horizon_loading_host_last_wait_ns() -> u64;
+@@ -1738,6 +1740,13 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         self.retry_world_scale = retry_failed;
+     }
+ 
++    fn frame_laps_key(&self) -> Option<(u32, u64)> {
++        let (mut sequence, mut start_ticks) = (0, 0);
++        // Only the profile-owning render thread asks for the active row.
++        unsafe { horizon_gx2_profile_frame_laps_key(&mut sequence, &mut start_ticks) }
++            .then_some((sequence, start_ticks))
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         Some(unsafe { horizon_loading_host_flip_count() })
+     }
+@@ -3102,7 +3111,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             && !guarded_hud
+             && !grouped_present
+             && !view_hud_requested
+-            && scaled_color_clear_enabled();
++            && scaled_color_clear_enabled()
++            && !unsafe { horizon_gx2_profile_frame_laps_mode() };
+         let defer_flip = !frame.title && self.terrain.is_some()
+             && unsafe { horizon_gx2_profile_defer_flip() };
+         let present = if grouped_present {
