@@ -1,0 +1,678 @@
+diff --git a/crates/horizon-assets/src/resource_source.rs b/crates/horizon-assets/src/resource_source.rs
+index 0024c761cd0b055c2aeddcf566c4f47708e1b577..0830967c315e74a4519c00b4267a3c921a69ca90 100644
+--- a/crates/horizon-assets/src/resource_source.rs
++++ b/crates/horizon-assets/src/resource_source.rs
+@@ -387,8 +387,7 @@ impl ResourceSource {
+         Self(Arc::new(Storage::Directory(root)))
+     }
+ 
+-    /// The resolved launch is the stock directory itself, with no overlay.
+-    #[cfg(feature = "verified-prepared-assets")]
++    /// Whether this source reads the specified directory directly, without overlays.
+     pub fn is_direct_directory(&self, root: &Path) -> bool {
+         matches!(self.0.as_ref(), Storage::Directory(path) if path == root)
+     }
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 8fe1c9a66f672d119af1d4f78e8aa191b0f41313..8c26726e46299988ebf027b919909babac2d5343 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -27,6 +27,8 @@ pub(super) struct Progress {
+     lines: &'static [&'static str],
+     #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
+     stock_hud: Option<Arc<super::CafeStockHudRequest>>,
++    #[cfg(target_os = "cafe")]
++    mob_seed: Option<Arc<super::CafeMobSeedRequest>>,
+ }
+ 
+ #[derive(Default)]
+@@ -56,6 +58,8 @@ impl Progress {
+             lines,
+             #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
+             stock_hud: None,
++            #[cfg(target_os = "cafe")]
++            mob_seed: None,
+         }
+     }
+     #[cfg(all(target_os = "cafe", feature = "stock-hud-seed"))]
+@@ -69,6 +73,17 @@ impl Progress {
+         self.stock_hud.as_deref()
+     }
+ 
++    #[cfg(target_os = "cafe")]
++    pub(super) fn with_mob_seed(mut self, seed: Option<Arc<super::CafeMobSeedRequest>>) -> Self {
++        self.mob_seed = seed;
++        self
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub(super) fn mob_seed(&self) -> Option<&super::CafeMobSeedRequest> {
++        self.mob_seed.as_deref()
++    }
++
+     pub(super) fn set(&self, stage: u32) {
+         self.state.stage.store(stage, Ordering::Relaxed);
+     }
+@@ -86,6 +101,10 @@ impl Progress {
+         if let Some(request) = self.stock_hud() {
+             request.cancel();
+         }
++        #[cfg(target_os = "cafe")]
++        if let Some(request) = self.mob_seed() {
++            request.cancel();
++        }
+         requested
+     }
+ 
+@@ -679,6 +698,17 @@ pub(super) fn load_resources(
+     };
+     resolved = client_reload::stage_runtime_sprites(resolved, &runtime_sprites);
+     resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
++    #[cfg(target_os = "cafe")]
++    if let Some(request) = progress.mob_seed()
++        && (headless
++            || launch_world.is_none()
++            || !settings.resource_packs.is_empty()
++            || !additional_data.is_empty()
++            || root != vanilla_root
++            || !resolved.source().is_direct_directory(&root))
++    {
++        request.cancel();
++    }
+     // Battery Mode is a client's: a dedicated server keeps its pools whole. Fixed
+     // here, before any pool size is read or a pool starts; a later change waits
+     // for the next launch.
+@@ -852,6 +882,10 @@ pub(super) fn load_resources(
+         collision,
+     } = core;
+     progress.checkpoint()?;
++    #[cfg(target_os = "cafe")]
++    if pack_error.is_some() && let Some(request) = progress.mob_seed() {
++        request.cancel();
++    }
+     let assets = Arc::new(assets);
+     let render = Arc::new(render);
+     // The namespaces of the mod block states registered now: what every level.dat saved from
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index b13eb4ed4941f7a591f9e3ebef3ac1dc7da37909..6a16fe7ed209b7abdc73d8175716486be77f62d1 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -142,8 +142,21 @@ pub(super) fn load_world_rest(
+             .map(|(k, v)| (k, Arc::new(v)))
+             .collect();
+         let mut mob_data = startup::time("rest.mobs.data", || {
++            #[cfg(target_os = "cafe")]
++            if let Some(request) = progress.mob_seed() {
++                return horizon_client::mobs::MobData::load_with_warm_seed(
++                    resource_root,
++                    facts,
++                    request,
++                    progress.cancel_flag(),
++                );
++            }
+             horizon_client::mobs::MobData::load(resource_root, facts)
+         });
++        #[cfg(target_os = "cafe")]
++        if progress.mob_seed().is_some() {
++            progress.checkpoint()?;
++        }
+         // arismoko/horizon#847: the mods' spawn rules (`RegisterSpawnPlacementsEvent`) take
+         // their types' placement, heightmap and predicate here, once, so a
+         // spawn check reads one table with no pass over the mods.
+diff --git a/crates/horizon-client/src/mobs/data.rs b/crates/horizon-client/src/mobs/data.rs
+index 71e8c94402652614ab63abba0900242cfd6a29f6..bfd02026fbab34c9ef28be6df3a18742662a07f2 100644
+--- a/crates/horizon-client/src/mobs/data.rs
++++ b/crates/horizon-client/src/mobs/data.rs
+@@ -17,6 +17,11 @@ use std::{
+     sync::atomic::{AtomicU8, Ordering},
+ };
+ 
++#[cfg(target_os = "cafe")]
++mod cafe_seed;
++#[cfg(target_os = "cafe")]
++pub use cafe_seed::{CafeMobSeedRequest, NightMobSeedOwner};
++
+ const LAND: u16 = 1;
+ const WATER: u16 = 2;
+ const AIR: u16 = 4;
+@@ -196,16 +201,35 @@ pub struct MobData {
+ }
+ impl MobData {
+     pub fn load(root: &ResourceRoot, facts: &BlockFacts) -> Self {
++        Self::load_with_base(root, || Self::read_prepared(root.prepared(), facts))
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn load_with_warm_seed(
++        root: &ResourceRoot,
++        facts: &BlockFacts,
++        request: &CafeMobSeedRequest,
++        cancelled: &std::sync::atomic::AtomicBool,
++    ) -> Self {
++        Self::load_with_base(root, || {
++            request.load(root, facts, cancelled)
++                .unwrap_or_else(|| Self::read_prepared(root.prepared(), facts))
++        })
++    }
++
++    fn read_prepared(root: &Path, facts: &BlockFacts) -> Self {
++        fs::read(root.join("mob-data.json"))
++            .ok()
++            .and_then(|bytes| Self::from_prepared_json(&bytes, facts.states.len()))
++            .unwrap_or_else(|| Self::fallback(facts))
++    }
++
++    fn load_with_base(root: &ResourceRoot, decode: impl FnOnce() -> Self) -> Self {
+         let source = root.source();
+         let root = root.prepared();
+         use crate::spans::startup;
+ 
+-        let mut data = startup::time("rest.mobs.data.decode", || {
+-            fs::read(root.join("mob-data.json"))
+-                .ok()
+-                .and_then(|bytes| Self::from_prepared_json(&bytes, facts.states.len()))
+-                .unwrap_or_else(|| Self::fallback(facts))
+-        });
++        let mut data = startup::time("rest.mobs.data.decode", decode);
+         (data.biome_tags, data.entity_tags) = startup::time("rest.mobs.data.tags", || {
+             let no_overlay = &horizon_world::loot::PackOverlay::NONE;
+             let biomes = crate::items::load_tags(root, "worldgen/biome", no_overlay);
+@@ -351,6 +375,15 @@ impl MobData {
+             .flatten()
+             .map(|(k, a)| (k.clone(), Animation::parse(a)))
+             .collect();
++        Self::from_parts(states, placements, heightmaps, animations)
++    }
++
++    fn from_parts(
++        states: Vec<StateData>,
++        placements: HashMap<String, Placement>,
++        heightmaps: HashMap<String, String>,
++        animations: HashMap<String, Animation>,
++    ) -> Self {
+         Self {
+             resolved: Default::default(),
+             states,
+diff --git a/crates/horizon-client/src/mobs/data/cafe_seed.rs b/crates/horizon-client/src/mobs/data/cafe_seed.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..54e3f7df8848d1e14ea946ba472e64825631feb9
+--- /dev/null
++++ b/crates/horizon-client/src/mobs/data/cafe_seed.rs
+@@ -0,0 +1,285 @@
++//! Case-specific ownership for the stock prepared mob export on Cafe.
++//! Night lends one parsed base to a launch. Only a drained, saved game may
++//! move it back. Session-specific spawn overrides and pack overlays stay live.
++use super::{Animation, BlockFacts, MobData, Placement, ResourceRoot, StateData};
++use sha2::{Digest, Sha256};
++use std::{
++    collections::HashMap,
++    path::PathBuf,
++    sync::{
++        Mutex,
++        atomic::{AtomicBool, Ordering::Relaxed},
++    },
++};
++
++const EXPORT: &str = "mob-data.json";
++const INPUT_CAP: u64 = 1_250_000;
++const RETAINED_CAP: usize = 768 * 1024;
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++struct Key {
++    // A successful prepared decode depends only on these exact export bytes
++    // and the live facts' row count. All ID binding and fallback stay live.
++    export: [u8; 32],
++    rows: usize,
++}
++
++struct Parked {
++    root: PathBuf,
++    key: Key,
++    data: BaseMobData,
++}
++
++#[derive(Default)]
++struct Available {
++    epoch: u64,
++    parked: Option<Parked>,
++}
++
++/// Foreground Night ownership. An older launch can release its own attempt,
++/// but cannot publish into a later launch.
++#[derive(Default)]
++pub struct NightMobSeedOwner(Mutex<Available>);
++
++impl NightMobSeedOwner {
++    pub fn begin(&'static self, root: PathBuf) -> CafeMobSeedRequest {
++        let mut available = self.0.lock().unwrap_or_else(|error| error.into_inner());
++        available.epoch = available.epoch.wrapping_add(1);
++        let parked = available.parked.take().filter(|seed| seed.root == root);
++        CafeMobSeedRequest {
++            owner: self,
++            epoch: available.epoch,
++            root,
++            state: Mutex::new(Attempt::Offered(parked)),
++        }
++    }
++
++    pub fn clear(&self) {
++        let mut available = self.0.lock().unwrap_or_else(|error| error.into_inner());
++        available.epoch = available.epoch.wrapping_add(1);
++        available.parked = None;
++    }
++}
++
++enum Attempt {
++    Offered(Option<Parked>),
++    Reading,
++    Active(Key),
++    Drained(Parked),
++    Closed,
++}
++
++/// One loading generation. Does not hold any Resources, ResourceSource,
++/// pack data or active Game.
++pub struct CafeMobSeedRequest {
++    owner: &'static NightMobSeedOwner,
++    epoch: u64,
++    root: PathBuf,
++    state: Mutex<Attempt>,
++}
++
++impl CafeMobSeedRequest {
++    pub fn cancel(&self) {
++        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = Attempt::Closed;
++    }
++
++    fn current(&self) -> bool {
++        self.owner
++            .0
++            .lock()
++            .unwrap_or_else(|error| error.into_inner())
++            .epoch
++            == self.epoch
++    }
++
++    pub fn is_active(&self) -> bool {
++        matches!(
++            *self.state.lock().unwrap_or_else(|error| error.into_inner()),
++            Attempt::Active(_)
++        )
++    }
++
++    // Called from the live resource worker. Read only from the direct
++    // selected source for this exact prepared root, which serves the same
++    // loose export file as the cold path. Indexed overlays are ineligible.
++    pub(super) fn load(
++        &self,
++        root: &ResourceRoot,
++        facts: &BlockFacts,
++        cancelled: &AtomicBool,
++    ) -> Option<MobData> {
++        if cancelled.load(Relaxed)
++            || !self.current()
++            || self.root != root.prepared()
++            || !root.source().is_direct_directory(root.prepared())
++        {
++            self.cancel();
++            return None;
++        }
++        let offered = {
++            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
++            if !matches!(*state, Attempt::Offered(_)) {
++                *state = Attempt::Closed;
++                return None;
++            }
++            match std::mem::replace(&mut *state, Attempt::Reading) {
++                Attempt::Offered(seed) => seed,
++                _ => unreachable!(),
++            }
++        };
++        use crate::spans::startup;
++        let bytes = startup::time("rest.mobs.data.seed_read", || {
++            root.source().read_limited(EXPORT, INPUT_CAP)
++        });
++        let Ok(bytes) = bytes else {
++            self.cancel();
++            return None;
++        };
++        let key = Key {
++            export: startup::time("rest.mobs.data.seed_hash", || Sha256::digest(&bytes).into()),
++            rows: facts.states.len(),
++        };
++        if !self.current() {
++            self.cancel();
++            return None;
++        }
++        let matching = offered.filter(|seed| seed.key == key && !cancelled.load(Relaxed));
++        let prepared = if let Some(seed) = matching {
++            log::info!("Horizon Cafe mob seed: adopted");
++            Some(seed.data.into_live())
++        } else {
++            MobData::from_prepared_json(&bytes, key.rows)
++        };
++        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
++        if matches!(*state, Attempt::Reading) && !cancelled.load(Relaxed) {
++            *state = if prepared.is_some() {
++                Attempt::Active(key)
++            } else {
++                Attempt::Closed
++            };
++        }
++        Some(prepared.unwrap_or_else(|| MobData::fallback(facts)))
++    }
++
++    /// Accept only the exclusive MobData from the generation whose Game and
++    /// workers have stopped. Dynamic overlays/derived tables drop here.
++    pub fn stage_drained(&self, loaded: MobData) {
++        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
++        let Attempt::Active(key) = std::mem::replace(&mut *state, Attempt::Closed) else {
++            return;
++        };
++        // Mod declarations may replace vanilla placement/heightmap rows.
++        if !loaded.mod_spawns.is_empty() || loaded.states.len() != key.rows {
++            return;
++        }
++        let base = BaseMobData {
++            states: loaded.states,
++            placements: loaded.placements,
++            heightmaps: loaded.heightmaps,
++            animations: loaded.animations,
++        };
++        let retained = base
++            .retained_allowance()
++            .saturating_add(self.root.capacity())
++            .saturating_add(32);
++        if retained > RETAINED_CAP {
++            return;
++        }
++        log::info!("Horizon Cafe mob seed: staged allowance={retained}");
++        *state = Attempt::Drained(Parked {
++            root: self.root.clone(),
++            key,
++            data: base,
++        });
++    }
++
++    /// Called after the hosted owner returns and the Night cwd is restored.
++    /// Failure and cancellation never restore the old generation.
++    pub fn finish(&self, saved: bool) {
++        let staged = std::mem::replace(
++            &mut *self.state.lock().unwrap_or_else(|error| error.into_inner()),
++            Attempt::Closed,
++        );
++        let Attempt::Drained(seed) = staged else {
++            return;
++        };
++        if !saved {
++            return;
++        }
++        let mut available = self
++            .owner
++            .0
++            .lock()
++            .unwrap_or_else(|error| error.into_inner());
++        if available.epoch == self.epoch {
++            available.parked = Some(seed);
++            log::info!("Horizon Cafe mob seed: parked");
++        }
++    }
++}
++
++struct BaseMobData {
++    states: Vec<StateData>,
++    placements: HashMap<String, Placement>,
++    heightmaps: HashMap<String, String>,
++    animations: HashMap<String, Animation>,
++}
++
++impl BaseMobData {
++    fn into_live(self) -> MobData {
++        MobData::from_parts(
++            self.states,
++            self.placements,
++            self.heightmaps,
++            self.animations,
++        )
++    }
++
++    fn retained_allowance(&self) -> usize {
++        fn owned<T>(capacity: usize) -> usize {
++            capacity.saturating_mul(size_of::<T>()).saturating_add(32)
++        }
++        fn map<K, V>(data: &HashMap<K, V>) -> usize {
++            // HashMap capacity is the number of entries permitted, rather
++            // than an allocation size. Cover buckets, controls and padding.
++            let buckets = data.capacity().saturating_mul(2);
++            owned::<(K, V)>(buckets).saturating_add(buckets)
++        }
++        fn string(text: &String) -> usize {
++            owned::<u8>(text.capacity())
++        }
++        let mut total = size_of::<Parked>()
++            .saturating_add(owned::<StateData>(self.states.capacity()))
++            .saturating_add(map(&self.placements))
++            .saturating_add(map(&self.heightmaps))
++            .saturating_add(map(&self.animations));
++        for name in self.placements.keys() {
++            total = total.saturating_add(string(name));
++        }
++        for (name, kind) in &self.heightmaps {
++            total = total
++                .saturating_add(string(name))
++                .saturating_add(string(kind));
++        }
++        for (name, animation) in &self.animations {
++            total = total.saturating_add(string(name)).saturating_add(owned::<(
++                String,
++                Vec<mod_api::AnimationChannel>,
++            )>(
++                animation.bones.capacity()
++            ));
++            for (bone, channels) in &animation.bones {
++                total = total.saturating_add(string(bone)).saturating_add(owned::<
++                    mod_api::AnimationChannel,
++                >(
++                    channels.capacity()
++                ));
++                for channel in channels {
++                    total = total
++                        .saturating_add(owned::<mod_api::Keyframe>(channel.keyframes.capacity()));
++                }
++            }
++        }
++        total
++    }
++}
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index ba298cf0687c7faeb96d8323d0ac5045fa6edd48..05ef71c88369b52d27f6e056bbbf858aa4b7c3d1 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -14,6 +14,8 @@ mod cafe_stock_handoff;
+ #[cfg(feature = "stock-hud-seed")]
+ #[path = "cafe_stock_hud.rs"]
+ mod cafe_stock_hud;
++
++pub use horizon_client::mobs::data::{CafeMobSeedRequest, NightMobSeedOwner};
+ #[cfg(feature = "stock-hud-seed")]
+ pub use cafe_stock_hud::CafeStockHudRequest;
+ #[cfg(feature = "stock-hud-seed")]
+@@ -1497,6 +1499,10 @@ pub trait CafeLoadingHost: horizon_client_platform::EventLoopCtl {
+     #[cfg(feature = "stock-hud-seed")]
+     fn stock_hud_request(&self) -> Option<Arc<CafeStockHudRequest>> { None }
+ 
++    fn mob_seed_request(&self) -> Option<Arc<CafeMobSeedRequest>> {
++        None
++    }
++
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession<'_>) -> Result<()>;
+ }
+ 
+@@ -1521,7 +1527,8 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+     let mut outcome = CafeRunOutcome::Finished;
+     let result = run_with_loading(options, Default::default(), true, |options, settings, root, pack_error, started| {
+         let resources = std::cell::OnceCell::new();
+-        let progress = Progress::new();
++        let mob_seed = host.mob_seed_request();
++        let progress = Progress::new().with_mob_seed(mob_seed.clone());
+         #[cfg(feature = "stock-hud-seed")]
+         let progress = progress.with_stock_hud(host.stock_hud_request());
+         let mut session = CafeLoadingSession {
+@@ -1540,9 +1547,23 @@ pub(crate) fn run_hosted_cafe(options: Options, host: &mut dyn CafeLoadingHost)
+         });
+         drop(session);
+         log::info!("Horizon Cafe hosted loading state released");
+-        drop(resources);
++        let result = driven.and(drained);
++        if result.is_ok()
++            && let Some(request) = mob_seed.as_deref().filter(|request| request.is_active())
++        {
++            if let Some(loaded) = resources.into_inner().and_then(|resources| {
++                Arc::try_unwrap(resources).ok()?.rest.into_inner()
++            }) {
++                request.stage_drained(loaded.mob_data);
++            } else {
++                request.cancel();
++                log::info!("Horizon Cafe mob seed: exclusive drained resources unavailable");
++            }
++        } else {
++            drop(resources);
++        }
+         log::info!("Horizon Cafe hosted resources released");
+-        driven.and(drained)
++        result
+     });
+     narrator::stop();
+     world_loading::release_cafe_world_data();
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 03fd19dcccdccd8545b04ed3f714ca10c2c8a1ca..7e50d5c4699ac983ea5640f4e9303af6a0349d9d 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -30,6 +30,29 @@ const RESOURCES: i32 = 2;
+ const FAILED: i32 = 3;
+ const OS_SAVE_FAILED: i32 = 4;
+ 
++static MOB_SEED: OnceLock<horizon_client::game::NightMobSeedOwner> = OnceLock::new();
++
++fn clear_parked_mob_seed() {
++    if let Some(owner) = MOB_SEED.get() {
++        owner.clear();
++    }
++}
++
++fn mob_seed_request(
++    launch: &night_menu::Launch,
++) -> Option<Arc<horizon_client::game::CafeMobSeedRequest>> {
++    if launch.world.is_none()
++        || launch.server.is_some()
++        || launch.benchmark.is_some()
++        || !Path::new(CAFE_APP_ROOT).join("mob-data-warm.enable").is_file()
++    {
++        clear_parked_mob_seed();
++        return None;
++    }
++    let owner = MOB_SEED.get_or_init(Default::default);
++    Some(Arc::new(owner.begin(launch.resources.clone())))
++}
++
+ #[cfg(feature = "stock-hud-seed")]
+ static STOCK_HUD: OnceLock<horizon_client::hud::stock_seed::NightStockHudOwner> = OnceLock::new();
+ 
+@@ -236,11 +259,13 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+             Err(code) => return i32::from(code),
+         },
+         Err(mcp::LaunchError::Cancelled) => {
++            clear_parked_mob_seed();
+             #[cfg(feature = "stock-hud-seed")]
+             clear_parked_stock_hud();
+             return RETURNED;
+         }
+         Err(mcp::LaunchError::Failed) => {
++            clear_parked_mob_seed();
+             #[cfg(feature = "stock-hud-seed")]
+             clear_parked_stock_hud();
+             return FAILED;
+@@ -249,6 +274,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     if let Some(startup) = &startup {
+         if startup.poll_cancel() {
+             startup.finish(true);
++            clear_parked_mob_seed();
+             #[cfg(feature = "stock-hud-seed")]
+             clear_parked_stock_hud();
+             return RETURNED;
+@@ -266,6 +292,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         if benchmarking {
+             mcp::benchmark_finished(BenchmarkOutcome::Failed, None, None);
+         }
++        clear_parked_mob_seed();
+         #[cfg(feature = "stock-hud-seed")]
+         clear_parked_stock_hud();
+         return RESOURCES;
+@@ -274,9 +301,11 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+     #[cfg(feature = "stock-hud-seed")]
+     let stock_hud = stock_hud_request(&launch);
++    let mob_seed = mob_seed_request(&launch);
+     let result = run(
+         launch,
+         startup.clone(),
++        mob_seed.clone(),
+         #[cfg(feature = "stock-hud-seed")]
+         stock_hud.clone(),
+     );
+@@ -285,6 +314,9 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+     }
+     mcp::withdraw();
+     let restored_cwd = std::env::set_current_dir(CAFE_APP_ROOT);
++    if let Some(request) = &mob_seed {
++        request.finish(result == SAVED && restored_cwd.is_ok());
++    }
+     #[cfg(feature = "stock-hud-seed")]
+     if let Some(stock_hud) = &stock_hud {
+         stock_hud.finish(result == SAVED && restored_cwd.is_ok());
+@@ -337,6 +369,7 @@ impl Drop for BenchmarkCapture {
+ fn run(
+     launch: night_menu::Launch,
+     startup: Option<Arc<mcp::Startup>>,
++    mob_seed: Option<Arc<horizon_client::game::CafeMobSeedRequest>>,
+     #[cfg(feature = "stock-hud-seed")] stock_hud: Option<Arc<horizon_client::game::CafeStockHudRequest>>,
+ ) -> i32 {
+     let mut capture = match launch.benchmark.as_ref().and_then(|bench| bench.profile) {
+@@ -359,6 +392,7 @@ fn run(
+     let mut host = LoadingHost::new(&mut presenter);
+     #[cfg(feature = "stock-hud-seed")]
+     { host.stock_hud = stock_hud; }
++    host.mob_seed = mob_seed;
+     host.hosted = true;
+     host.hosted_benchmark = launch.benchmark.is_some();
+     host.hosted_startup = startup;
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 634313296d30e88fde79788269bc5249c9f93693..2db60f2b6f156c405c30da90800dfad91ff4fc53 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -447,6 +447,7 @@ struct LoadingHost<'a> {
+     hosted: bool,
+     #[cfg(feature = "stock-hud-seed")]
+     stock_hud: Option<Arc<horizon_client::game::CafeStockHudRequest>>,
++    mob_seed: Option<Arc<horizon_client::game::CafeMobSeedRequest>>,
+     hosted_swap_ab: bool,
+     hosted_saved: bool,
+     hosted_exit_save_failed: bool,
+@@ -488,6 +489,7 @@ impl<'a> LoadingHost<'a> {
+             hosted: false,
+             #[cfg(feature = "stock-hud-seed")]
+             stock_hud: None,
++            mob_seed: None,
+             hosted_swap_ab: false,
+             hosted_saved: false,
+             hosted_exit_save_failed: false,
+@@ -892,6 +894,10 @@ impl CafeLoadingHost for LoadingHost<'_> {
+         self.stock_hud.clone()
+     }
+ 
++    fn mob_seed_request(&self) -> Option<Arc<horizon_client::game::CafeMobSeedRequest>> {
++        self.mob_seed.clone()
++    }
++
+     fn drive_loading(&mut self, session: &mut CafeLoadingSession) -> horizon_client::Result<()> {
+         match horizon_wiiu_platform::keyboard::initialize() {
+             Ok(()) => {
