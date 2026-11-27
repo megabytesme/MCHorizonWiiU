@@ -1,0 +1,60 @@
+diff --git a/crates/horizon-client/src/mobs/data.rs b/crates/horizon-client/src/mobs/data.rs
+index 16336f3b1eacf8ce095ad11e7ca6d56127b94749..71e8c94402652614ab63abba0900242cfd6a29f6 100644
+--- a/crates/horizon-client/src/mobs/data.rs
++++ b/crates/horizon-client/src/mobs/data.rs
+@@ -96,6 +96,18 @@ impl StateData {
+         }
+     }
+ }
++// Decode directly into the compact runtime state row. The tuple deserializer
++// keeps the prepared export's field types, including borrowed path strings.
++impl<'de> serde::Deserialize<'de> for StateData {
++    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
++        let (path, flags, top) = <(&str, u64, f64)>::deserialize(d)?;
++        Ok(Self {
++            path: PathType::from_name(path),
++            flags: flags as u16,
++            top: top as f32,
++        })
++    }
++}
+ /// One state's answers once its mod parts were asked (see [`MobData::resolve_parts`]). Atomics,
+ /// so a `/reload` replaces them while the shared [`MobData`] is read.
+ #[derive(Debug)]
+@@ -137,12 +149,10 @@ pub enum Placement {
+     InLava,
+     NoRestrictions,
+ }
+-/// Columns exported for the mob state table. The usual rows borrow their
+-/// path names from the document rather than allocating a JSON tree per state.
++/// Columns exported for the mob state table.
+ #[derive(serde::Deserialize)]
+-struct ExportedMobData<'a> {
+-    #[serde(borrow)]
+-    states: Vec<(&'a str, u64, f64)>,
++struct ExportedMobData {
++    states: Vec<StateData>,
+     #[serde(default)]
+     placements: Value,
+     #[serde(default)]
+@@ -288,17 +298,10 @@ impl MobData {
+         self.biome_tags.get(tag).is_some_and(|s| s.contains(biome))
+     }
+     fn from_prepared_json(bytes: &[u8], state_count: usize) -> Option<Self> {
+-        if let Ok(exported) = serde_json::from_slice::<ExportedMobData<'_>>(bytes) {
++        if let Ok(exported) = serde_json::from_slice::<ExportedMobData>(bytes) {
+             return (exported.states.len() == state_count).then(|| {
+-                let states = exported
+-                    .states
+-                    .into_iter()
+-                    .map(|(path, flags, top)| StateData {
+-                        path: PathType::from_name(path),
+-                        flags: flags as u16,
+-                        top: top as f32,
+-                    })
+-                    .collect();
++                let mut states = exported.states;
++                states.shrink_to_fit();
+                 Self::from_tables(states, &exported.placements, &exported.animations)
+             });
+         }
