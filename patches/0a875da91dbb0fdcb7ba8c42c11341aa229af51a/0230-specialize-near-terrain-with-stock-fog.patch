@@ -1,0 +1,524 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 44d6a9ae68c36217f7c71460cecf4cec64b9d27a..e708e61f5e75d7e7b9b36c6b09ee6cf6fd551768 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -42,6 +42,8 @@ struct HorizonGx2Terrain {
+    GX2Sampler sampler;
+    TerrainPixelShader pixel, opaque_pixel;
+ #ifdef HORIZON_GX2_CLEAR_FOG
++   GX2PixelShader *near_fog_pixel;
++   bool near_fog_solid;
+    TerrainPixelShader clear_fog_pixel;
+    GX2VertexShader *clear_fog_vertex;
+    uint32_t clear_fog_atlas_offset;
+@@ -134,6 +136,63 @@ static bool clear_fog_loop_layout(uint32_t stock_count, const GX2LoopVar *stock,
+        candidate->offset == stock->offset && candidate->value == stock->value));
+ }
+ 
++static bool near_fog_pixel_compatible(const TerrainPixelShader *original, GX2PixelShader *candidate)
++{
++   const GX2PixelShader *stock = original->shader;
++   TerrainPixelShader reflection = {0};
++   if (!stock || !candidate || !stock->program || !candidate->program ||
++       stock->size != 142u * 4 || candidate->size != 124u * 4 ||
++       candidate->mode != stock->mode ||
++       memcmp(&candidate->regs, &stock->regs, sizeof(stock->regs)) ||
++       stock->uniformBlockCount || candidate->uniformBlockCount ||
++       stock->uniformVarCount != 3 || candidate->uniformVarCount != 3 ||
++       !stock->uniformVars || !candidate->uniformVars ||
++       stock->initialValueCount || candidate->initialValueCount ||
++       stock->samplerVarCount != 1 || candidate->samplerVarCount != 1 ||
++       !clear_fog_loop_layout(stock->loopVarCount, stock->loopVars,
++                              candidate->loopVarCount, candidate->loopVars) ||
++       !terrain_pixel_shader(&reflection, candidate) ||
++       reflection.sampler_slot != original->sampler_slot ||
++       reflection.fog_color_offset != original->fog_color_offset ||
++       reflection.fog_ranges_offset != original->fog_ranges_offset ||
++       reflection.material_offset != original->material_offset) return false;
++
++   /* Candidate retains the pinned ordinary sampler and both discard branches.
++    * Word 17 contains the size of the final fog/lighting ALU clause. */
++   const uint32_t *a = stock->program, *b = candidate->program;
++   return !memcmp(a, b, 17u * sizeof(*a)) &&
++          !memcmp(a + 18, b + 18, (86u - 18u) * sizeof(*a));
++}
++
++bool horizon_gx2_terrain_load_near_fog(HorizonGx2Terrain *t, const void *gfd)
++{
++   if (!t || !gfd || !t->atlas_grid[0] || t->opaque_pixel.shader || t->half_shader ||
++       t->legacy_attributes || t->legacy_uniforms || t->solid_back_culling) return false;
++   if (t->near_fog_pixel) return true;
++   const GX2VertexShader *stock = t->shader.vertexShader;
++   GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
++   bool compatible = clear_fog_vertex_layout(stock, vertex) && vertex->size == stock->size &&
++      !memcmp(&vertex->regs, &stock->regs, sizeof(stock->regs)) &&
++      !memcmp(vertex->program, stock->program, stock->size);
++   if (vertex) WHBGfxFreeVertexShader(vertex);
++   if (!compatible) return false;
++
++   GX2PixelShader *pixel = WHBGfxLoadGFDPixelShader(0, gfd);
++   if (!near_fog_pixel_compatible(&t->pixel, pixel)) {
++      if (pixel) WHBGfxFreePixelShader(pixel);
++      return false;
++   }
++   t->near_fog_pixel = pixel;
++   return true;
++}
++
++bool horizon_gx2_terrain_set_near_fog(HorizonGx2Terrain *t, bool enabled)
++{
++   if (!t || !t->near_fog_solid || t->half_active) return false;
++   GX2SetPixelShader(enabled ? t->near_fog_pixel : t->pixel.shader);
++   return true;
++}
++
+ static bool clear_fog_pixel_compatible(const TerrainPixelShader *opaque, GX2PixelShader *candidate,
+                                        TerrainPixelShader *out)
+ {
+@@ -367,6 +426,7 @@ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain)
+    if (terrain->lightmap.surface.image) GX2RDestroySurfaceEx(&terrain->lightmap.surface, texture_flags);
+    if (terrain->opaque_pixel.shader) WHBGfxFreePixelShader(terrain->opaque_pixel.shader);
+ #ifdef HORIZON_GX2_CLEAR_FOG
++   if (terrain->near_fog_pixel) WHBGfxFreePixelShader(terrain->near_fog_pixel);
+    if (terrain->clear_fog_pixel.shader) WHBGfxFreePixelShader(terrain->clear_fog_pixel.shader);
+    if (terrain->clear_fog_vertex) WHBGfxFreeVertexShader(terrain->clear_fog_vertex);
+ #endif
+@@ -591,6 +651,7 @@ int horizon_gx2_terrain_bind_variant(HorizonGx2Terrain *t, uint32_t target_width
+    const TerrainPixelShader *pixel = !translucent && opaque_only && t->opaque_pixel.shader
+       ? &t->opaque_pixel : &t->pixel;
+ #ifdef HORIZON_GX2_CLEAR_FOG
++   t->near_fog_solid = t->near_fog_pixel && !translucent && pixel == &t->pixel;
+    t->opaque_bound = pixel == &t->opaque_pixel;
+    t->clear_fog_bound = false;
+ #endif
+diff --git a/wiiu/gx2_terrain/terrain.frag b/wiiu/gx2_terrain/terrain.frag
+index 2501783fe57208e7a7dc9095b214a60f3559b527..10b12302f903c17ee3499758fed53dcca748320c 100644
+--- a/wiiu/gx2_terrain/terrain.frag
++++ b/wiiu/gx2_terrain/terrain.frag
+@@ -37,9 +37,13 @@ void main() {
+ #endif
+ #ifdef HORIZON_TERRAIN_CLEAR_FOG
+     fragColor = vec4(texel.rgb * vColor, alpha);
++#else
++#ifdef HORIZON_TERRAIN_NEAR_FOG
++    float fog = linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y);
+ #else
+     float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
+                     linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
++#endif
+     fragColor = vec4(mix(texel.rgb * vColor, uFogColor.rgb, fog * uFogColor.a), alpha);
+ #endif
+ }
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 67728ed97ad67c5094565bbf8d2594426bb98f1a..084c4c40d0f832ad04d50d73c6520619d321f332 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -81,6 +81,8 @@ void horizon_gx2_terrain_wait_idle(void);
+ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const void *gfd);
+ #ifdef HORIZON_GX2_CLEAR_FOG
+ /* A rejected diagnostic load or transition leaves the current bind intact. */
++bool horizon_gx2_terrain_load_near_fog(HorizonGx2Terrain *t, const void *gfd);
++bool horizon_gx2_terrain_set_near_fog(HorizonGx2Terrain *t, bool enabled);
+ bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void *gfd);
+ bool horizon_gx2_terrain_load_clear_fog_vertex(HorizonGx2Terrain *t, const void *gfd);
+ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 59a555f81fa5a3c245273da8bbb754bb02ef0005..19793ec271fc948e79f5341479d73534e1f3c3d4 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -266,8 +266,22 @@ if(HORIZON_GX2_SCREEN_OVERLAYS)
+    target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_SCREEN_OVERLAYS=1)
+ endif()
+ 
+-option(HORIZON_GX2_CLEAR_FOG "Build the optional opaque clear-fog shader" OFF)
++option(HORIZON_GX2_CLEAR_FOG "Build the optional GX2 fog shader experiments" OFF)
+ if(HORIZON_GX2_CLEAR_FOG)
++   set(NEAR_FOG_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_near_fog_gfd.o")
++   file(READ "${TERRAIN_OPAQUE_SOURCE}" terrain_near_fog_source)
++   string(REPLACE "#version 330\n" "#version 330\n#define HORIZON_TERRAIN_NEAR_FOG 1\n"
++      terrain_near_fog_source "${terrain_near_fog_source}")
++   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain_near_fog.frag"
++      CONTENT "${terrain_near_fog_source}")
++   add_custom_command(
++      OUTPUT "${NEAR_FOG_GFD_OBJECT}"
++      COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${TERRAIN_VERTEX_SOURCE}" -ps terrain_near_fog.frag -o terrain_near_fog.gsh
++      COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" -I binary -O elf32-powerpc -B powerpc:common
++         terrain_near_fog.gsh terrain_near_fog_gfd.o
++      DEPENDS "${TERRAIN_VERTEX_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/terrain_near_fog.frag"
++      WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++      VERBATIM)
+    set(CLEAR_FOG_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog_gfd.o")
+    string(REPLACE "#define HORIZON_TERRAIN_OPAQUE 1\n"
+       "#define HORIZON_TERRAIN_OPAQUE 1\n#define HORIZON_TERRAIN_CLEAR_FOG 1\n"
+@@ -296,9 +310,10 @@ if(HORIZON_GX2_CLEAR_FOG)
+       DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_vertex.vert" "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog.frag"
+       WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+       VERBATIM)
+-   set_source_files_properties("${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}"
++   set_source_files_properties("${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}" "${NEAR_FOG_GFD_OBJECT}"
+       PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+-   target_sources(horizon_wiiu_loading_host PRIVATE "${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}")
++   target_sources(horizon_wiiu_loading_host PRIVATE
++      "${CLEAR_FOG_GFD_OBJECT}" "${CLEAR_VERTEX_GFD_OBJECT}" "${NEAR_FOG_GFD_OBJECT}")
+    target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_CLEAR_FOG=1)
+    target_compile_definitions(horizon_gx2_terrain PRIVATE HORIZON_GX2_CLEAR_FOG=1)
+ endif()
+diff --git a/wiiu/loading_host/clear_fog.rs b/wiiu/loading_host/clear_fog.rs
+index 37833b2e40a6bdbbeb922b69263d011edea3fd1e..afb28d5f87058078d55d3ab0113f6f5a0ceac92d 100644
+--- a/wiiu/loading_host/clear_fog.rs
++++ b/wiiu/loading_host/clear_fog.rs
+@@ -4,6 +4,10 @@ use std::ffi::c_void;
+ use std::ptr::NonNull;
+ 
+ unsafe extern "C" {
++    fn horizon_gx2_profile_near_fog_requested() -> bool;
++    fn horizon_loading_host_near_fog_gfd() -> *const u8;
++    fn horizon_gx2_terrain_load_near_fog(terrain: *mut c_void, gfd: *const c_void) -> bool;
++    fn horizon_gx2_terrain_set_near_fog(terrain: *mut c_void, enabled: bool) -> bool;
+     fn horizon_loading_host_clear_fog_gfd() -> *const u8;
+     fn horizon_loading_host_clear_fog_vertex_gfd() -> *const u8;
+     fn horizon_gx2_terrain_load_clear_fog_shader(terrain: *mut c_void, gfd: *const c_void) -> bool;
+@@ -78,6 +82,60 @@ pub(super) unsafe fn select(
+     }
+ }
+ 
++/// # Safety
++/// The full-precision ordinary terrain must belong to the current render thread.
++pub(super) unsafe fn load_near(terrain: NonNull<c_void>) -> bool {
++    if !requested_near() {
++        return false;
++    }
++    let loaded = unsafe {
++        horizon_gx2_terrain_load_near_fog(
++            terrain.as_ptr(),
++            horizon_loading_host_near_fog_gfd().cast(),
++        )
++    };
++    unsafe {
++        super::OSReport(if loaded {
++            c"Horizon GX2 near fog trial ready\n".as_ptr()
++        } else {
++            c"Horizon GX2 near fog shader rejected\n".as_ptr()
++        });
++    }
++    loaded
++}
++
++pub(super) fn requested_near() -> bool {
++    unsafe { horizon_gx2_profile_near_fog_requested() }
++}
++
++/// # Safety
++/// The ordinary solid state of the same terrain must already be bound.
++pub(super) unsafe fn select_near(terrain: NonNull<c_void>, enabled: bool) -> bool {
++    unsafe { horizon_gx2_terrain_set_near_fog(terrain.as_ptr(), enabled) }
++}
++
++/// The second ramp is exactly zero over the complete solid geometry. The
++/// environmental ramp still executes in the pixel shader.
++pub(super) fn near(bounds: [[f32; 3]; 2], origin: [f32; 3], ranges: [f32; 4]) -> bool {
++    let [env_start, env_end, render_start, render_end] = ranges;
++    if !ranges.iter().all(|f| f.is_finite())
++        || env_end <= env_start
++        || !(env_end - env_start).is_normal()
++        || render_start <= 1.0
++        || render_end <= render_start
++    {
++        return false;
++    }
++    let Some([x, y, z]) = max_abs(bounds, origin) else {
++        return false;
++    };
++    let horizontal_squared = x * x + z * z;
++    let limit = f64::from(render_start) - 1.0;
++    horizontal_squared + y * y <= 256.0 * 256.0
++        && horizontal_squared < limit * limit
++        && y < limit
++}
++
+ /// The native vertex shader sees the F32 origin and the complete solid AABB.
+ /// Stay one block inside both ramps and within a bounded near-world distance.
+ pub(super) fn clear(bounds: [[f32; 3]; 2], origin: [f32; 3], ranges: [f32; 4]) -> bool {
+@@ -90,22 +148,28 @@ pub(super) fn clear(bounds: [[f32; 3]; 2], origin: [f32; 3], ranges: [f32; 4]) -
+     {
+         return false;
+     }
++    let Some([x, y, z]) = max_abs(bounds, origin) else {
++        return false;
++    };
++    let horizontal_squared = x * x + z * z;
++    let radial_squared = horizontal_squared + y * y;
++    radial_squared <= 256.0 * 256.0
++        && radial_squared < (env_start - 1.0) * (env_start - 1.0)
++        && horizontal_squared < (render_start - 1.0) * (render_start - 1.0)
++        && y < render_start - 1.0
++}
++
++fn max_abs(bounds: [[f32; 3]; 2], origin: [f32; 3]) -> Option<[f64; 3]> {
+     let mut max_abs = [0.0f64; 3];
+     for (i, extent) in max_abs.iter_mut().enumerate() {
+         let [lo, hi] = bounds.map(|end| f64::from(end[i]));
+         let origin = f64::from(origin[i]);
+         if !lo.is_finite() || !hi.is_finite() || !origin.is_finite() || lo > hi {
+-            return false;
++            return None;
+         }
+         *extent = (origin + lo).abs().max((origin + hi).abs());
+     }
+-    let [x, y, z] = max_abs;
+-    let horizontal_squared = x * x + z * z;
+-    let radial_squared = horizontal_squared + y * y;
+-    radial_squared <= 256.0 * 256.0
+-        && radial_squared < (env_start - 1.0) * (env_start - 1.0)
+-        && horizontal_squared < (render_start - 1.0) * (render_start - 1.0)
+-        && y < render_start - 1.0
++    Some(max_abs)
+ }
+ 
+ const MAX_RUN: u8 = 32;
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 3c501d5c9641ecb886565640fae3373ed64f6977..7122f1859db457f31c7329c83dad68694edcb42c 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -235,6 +235,15 @@ bool horizon_gx2_profile_mem1_tv_depth(void)
+    return mem1_tv_depth && history == &process_history && recording && current.phase == PLAYING_PHASE;
+ }
+ 
++#ifdef HORIZON_GX2_CLEAR_FOG
++static bool near_fog_requested;
++
++bool horizon_gx2_profile_near_fog_requested(void)
++{
++   return near_fog_requested && history == &process_history;
++}
++#endif
++
+ void horizon_gx2_profile_init(void)
+ {
+    FILE *reverse = fopen(ROOT "gx2-reverse-translucent.enable", "rb");
+@@ -271,6 +280,13 @@ void horizon_gx2_profile_init(void)
+    if (plain_profile) {
+       init_tv_terrain_wait_trial();
+       init_mem1_tv_depth();
++#ifdef HORIZON_GX2_CLEAR_FOG
++      FILE *near_fog = fopen(ROOT "gx2-near-fog.enable", "rb");
++      if (near_fog) {
++         fclose(near_fog);
++         near_fog_requested = !mem1_tv_depth && !tv_terrain_wait_mode && !reverse_translucent_quads;
++      }
++#endif
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index a7144f527d5a18b70a304af1eaed639797c4504c..0fb4cc51b13708c1cd70be12d295e4e1231c2a8f 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -36,6 +36,9 @@ typedef struct {
+ 
+ void horizon_gx2_profile_init(void);
+ bool horizon_gx2_profile_mem1_tv_depth(void);
++#ifdef HORIZON_GX2_CLEAR_FOG
++bool horizon_gx2_profile_near_fog_requested(void);
++#endif
+ bool horizon_gx2_profile_process_history(void);
+ bool horizon_gx2_profile_begin_trial(uint32_t mode);
+ bool horizon_gx2_profile_end_trial(const char *path);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 0d905516c173f4afdffacca0da3dcefdfee2ba98..d5c7c9cbbe37394f26ccbf1c11b4a1353b2c6209 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -754,6 +754,10 @@ struct Terrain<'shader> {
+     opaque_shader: bool,
+     #[cfg(feature = "gx2-clear-fog")]
+     clear_fog_shader: bool,
++    #[cfg(feature = "gx2-clear-fog")]
++    near_fog_shader: bool,
++    #[cfg(feature = "gx2-clear-fog")]
++    near_fog_reported: bool,
+     half_position_shader: bool,
+     _shader: PhantomData<&'shader [u8]>,
+     _thread: PhantomData<*mut ()>,
+@@ -1887,6 +1891,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 opaque_shader,
+                 #[cfg(feature = "gx2-clear-fog")]
+                 clear_fog_shader: false,
++                #[cfg(feature = "gx2-clear-fog")]
++                near_fog_shader: false,
++                #[cfg(feature = "gx2-clear-fog")]
++                near_fog_reported: false,
+                 half_position_shader: false,
+                 _shader: PhantomData,
+                 _thread: PhantomData,
+@@ -1930,6 +1938,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     });
+                 }
+             }
++            #[cfg(feature = "gx2-clear-fog")]
++            if !opaque_shader_requested && !self.half_position_requested {
++                terrain.near_fog_shader = unsafe { clear_fog::load_near(native) };
++            }
+             self.terrain = Some(terrain);
+             self.resident_animations =
+                 terrain_animation::ResidentAnimations::new(&layout, artwork.terrain_animations);
+@@ -2569,6 +2581,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             drc_prepass: Option<(TerrainProjection, Option<[usize; 2]>, u64)>,
+             #[cfg(feature = "gx2-clear-fog")]
+             clear_fog_indices: [u32; 2],
++            #[cfg(feature = "gx2-clear-fog")]
++            near_fog_indices: [u32; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             view_hud: bool,
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -2875,6 +2889,19 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     .then(clear_fog::Run::default);
+                 #[cfg(feature = "gx2-clear-fog")]
+                 let mut clear_bound = false;
++                #[cfg(feature = "gx2-clear-fog")]
++                let mut near_run = (!legacy_bindings
++                    && draw.presenter.screenshot_requested.is_none()
++                    && draw.presenter.terrain.as_ref().is_some_and(|t| t.near_fog_shader)
++                    && clear_fog::requested_near()
++                    && cafe_profile::playing_frame_sequence().is_some()
++                    && fog_color.iter().all(|value| value.is_finite())
++                    && projection.is_some_and(|current| {
++                        current.clip.rows.as_flattened().iter().all(|value| value.is_finite())
++                    }))
++                    .then(clear_fog::Run::default);
++                #[cfg(feature = "gx2-clear-fog")]
++                let mut near_bound = false;
+                 let bind_opaque_state = |opaque_only| unsafe {
+                     horizon_gx2_terrain_bind_variant(
+                         terrain.as_ptr(),
+@@ -2964,6 +2991,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         #[cfg(feature = "gx2-clear-fog")]
+                         {
+                             clear_bound = false;
++                            near_bound = false;
+                         }
+                     }
+                     #[cfg(feature = "gx2-clear-fog")]
+@@ -2986,6 +3014,26 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             }
+                         }
+                     }
++                    #[cfg(feature = "gx2-clear-fog")]
++                    if let Some(run) = &mut near_run {
++                        let enable = run.admit(|| {
++                            !opaque_only && ranges.is_none() && section.bounds.is_some_and(|bounds| {
++                                clear_fog::near(bounds.extents(), [x, y, z], fog_ranges)
++                            })
++                        });
++                        if enable != near_bound {
++                            if unsafe { clear_fog::select_near(terrain, enable) } {
++                                near_bound = enable;
++                            } else {
++                                run.close();
++                                if near_bound && !bind_opaque_state(opaque_only) {
++                                    draw.result = Err("GX2 stock fog terrain restore failed");
++                                    return -1;
++                                }
++                                near_bound = false;
++                            }
++                        }
++                    }
+                     if unsafe {
+                         if let Some(ranges) = ranges {
+                             horizon_gx2_terrain_draw_bound_solid_ranges(
+@@ -3006,6 +3054,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         }
+                     } != 0
+                     {
++                        #[cfg(feature = "gx2-clear-fog")]
++                        if near_bound {
++                            let _ = unsafe { clear_fog::select_near(terrain, false) };
++                        }
+                         draw.result = Err("GX2 terrain draw failed");
+                         return -1;
+                     }
+@@ -3019,6 +3071,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     if clear_bound {
+                         draw.clear_fog_indices[index] += submitted_indices;
+                     }
++                    #[cfg(feature = "gx2-clear-fog")]
++                    if near_bound {
++                        draw.near_fog_indices[index] += submitted_indices;
++                    }
+                     if GX2_PROFILE_ENABLED {
+                         draw.profile.section_draws = draw.profile.section_draws.saturating_add(1);
+                         draw.profile.vertex_draws = draw
+@@ -3038,6 +3094,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.result = Err("GX2 solid terrain restore failed");
+                     return -1;
+                 }
++                #[cfg(feature = "gx2-clear-fog")]
++                if near_bound && !unsafe { clear_fog::select_near(terrain, false) }
++                    && !bind_opaque_state(false)
++                {
++                    draw.result = Err("GX2 stock fog terrain restore failed");
++                    return -1;
++                }
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+                 drop(terrain_span);
+@@ -3513,6 +3576,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             drc_prepass: None,
+             #[cfg(feature = "gx2-clear-fog")]
+             clear_fog_indices: [0; 2],
++            #[cfg(feature = "gx2-clear-fog")]
++            near_fog_indices: [0; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             view_hud: view_hud.is_some(),
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -3574,6 +3639,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let screen_drawn = draw.screen_drawn;
+         #[cfg(feature = "gx2-clear-fog")]
+         let clear_fog_indices = draw.clear_fog_indices;
++        #[cfg(feature = "gx2-clear-fog")]
++        let near_fog_indices = draw.near_fog_indices;
+         drop(draw);
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+@@ -3600,6 +3667,22 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 }
+             }
+         }
++        #[cfg(feature = "gx2-clear-fog")]
++        if host == 0 && outputs == 3 && draw_result.is_ok() && clear_fog::requested_near() {
++            let loaded = self.terrain.as_mut().filter(|t| t.near_fog_shader);
++            if let (Some(terrain), Some(sequence)) = (loaded, cafe_profile::playing_frame_sequence()) {
++                let active = near_fog_indices != [0; 2];
++                if (active && !terrain.near_fog_reported) || sequence.is_multiple_of(120) {
++                    terrain.near_fog_reported |= active;
++                    unsafe {
++                        OSReport(
++                            c"Horizon GX2 near fog seq=%u tv_indices=%u drc_indices=%u\n".as_ptr(),
++                            sequence, near_fog_indices[0], near_fog_indices[1],
++                        );
++                    }
++                }
++            }
++        }
+         #[cfg(feature = "gx2-hud-view-lanes")]
+         if view_hud.is_some() {
+             self.hud_views.finish(host == 0 && outputs == 3);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index ab8f8ba7446c4a74791d1236ed672b57bb29a179..21a9124b556272879781cbe292f3a455e115cf28 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -28,9 +28,15 @@ extern const uint8_t _binary_terrain_gsh_start[];
+ extern const uint8_t _binary_terrain_gsh_end[];
+ extern const uint8_t _binary_terrain_opaque_gsh_start[];
+ #ifdef HORIZON_GX2_CLEAR_FOG
++extern const uint8_t _binary_terrain_near_fog_gsh_start[];
+ extern const uint8_t _binary_terrain_clear_fog_gsh_start[];
+ extern const uint8_t _binary_terrain_clear_vertex_gsh_start[];
+ 
++const uint8_t *horizon_loading_host_near_fog_gfd(void)
++{
++   return _binary_terrain_near_fog_gsh_start;
++}
++
+ const uint8_t *horizon_loading_host_clear_fog_gfd(void)
+ {
+    return _binary_terrain_clear_fog_gsh_start;
