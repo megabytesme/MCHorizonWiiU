@@ -45,6 +45,27 @@ Cancellation, foreground loss and resource-pack changes retain the cold
 path. The [earlier exact trial](verified-archive-reopen.md) saved both rounds
 in Cemu and reduced world-ready time by 80.766 s in that same process.
 
-Measure RC 53 from the same cold and warm archive state. Capture first input,
-first paired terrain, world and player save, HUD preparation and resident
-memory. Exact RC 53 reopen and supervised physical comparisons are queued.
+The exact RC 53 RPX completed two offline rounds in the corrected Cemu
+interpreter. Both used fixed 75%, render distance 6 and simulation distance 5.
+
+| Measurement | Cold | Same-process reopen |
+| --- | ---: | ---: |
+| Fresh archive verification | 49.649 s | 44.694 s |
+| HUD seed preparation | 59.050 s | 3.328 s |
+| First ready gameplay frame | 588.295 s | 489.715 s |
+| First paired terrain, wall time since Play | 614.157 s | 518.045 s |
+| Retained HUD seed bytes | 10,351,352 | 10,351,352 |
+| Tracked Rust bytes after game drop | 53,934,840 | 54,150,909 |
+| Peak tracked Rust bytes | 319,516,143 | 336,778,772 |
+| GX2 bulk heap free after game drop | 234,880,920 | 234,880,920 |
+| Largest GX2 bulk heap block | 234,880,896 | 234,880,896 |
+
+Both rounds drew distinct 1920×1080 TV and 854×480 GamePad captures with
+one section per output at the first terrain sample. The save preserved the
+same position and rotation across both rounds. Audio produced PCM in both
+rounds. The cold close cursors matched and the warm close reported one
+trailing queued item. The title exited normally.
+
+The warm round reached gameplay 98.580 s sooner in this same-process replay.
+Cache state changed between rounds. Physical first input, first paired
+terrain, settled coverage and loading time remain queued.

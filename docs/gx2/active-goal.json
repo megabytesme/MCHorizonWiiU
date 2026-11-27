@@ -61,7 +61,10 @@
     "native_build": "passed",
     "host_forward_mesh_slots_admitted": 28,
     "host_parked_rearmed": 28,
-    "runtime": "queued",
+    "runtime": "cemu_interpreter_cold_and_warm_offline_save_pass",
+    "cemu_first_ready_game_ms": [588295, 489715],
+    "cemu_hud_seed_preparation_ms": [59050, 3328],
+    "cemu_first_paired_terrain_ms": [614157, 518045],
     "physical": "queued",
     "receipt": "rc53-qualification.md"
   },
