@@ -32,14 +32,9 @@ def retained_window(path, first, last, refresh_hz=None, *, scale=75, fixed_scale
     if refresh_hz is not None:
         if not 1 <= refresh_hz <= metadata["clock_hz"]:
             raise ValueError(f"{path} needs a refresh rate within the capture clock frequency")
-        flips = summarize_flip_quantization(rows, -math.inf, math.inf, refresh_hz, terrain_sections=174)
-        dimensions = report["reference_dimensions"][0]["world_tv_gamepad"]
-        flips["cohorts"] = [
-            cohort for cohort in flips["cohorts"]
-            if cohort["requested_and_effective_scale"] == scale
-            and cohort["world_dimensions_tv_gamepad"] == dimensions
-        ]
-        report["reference_combined_flip_quantization"] = flips
+        report["reference_combined_flip_quantization"] = summarize_flip_quantization(
+            rows, -math.inf, math.inf, refresh_hz, saved_view_scale=scale,
+        )
     return {"capture": str(path), "capture_sha256": sha256(data).hexdigest(), **report}
 
 

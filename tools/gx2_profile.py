@@ -209,7 +209,7 @@ def summarize(frames, start, end, stall_ms=50):
     return summaries
 
 
-def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections=None):
+def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections=None, *, saved_view_scale=None):
     """Group matched dual-output gameplay by scale, dimensions and visible terrain."""
     refresh_ms = 1000 / refresh_hz
     tolerance_ms = refresh_ms * 0.05
@@ -224,7 +224,8 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
                 and row["world_requested_scale"] == row["world_effective_scale"] > 0
                 and min(row["tv_sections_drawn"], row["drc_sections_drawn"]) > 0
                 and (terrain_sections is None
-                     or row["tv_sections_drawn"] == row["drc_sections_drawn"] == terrain_sections)):
+                     or row["tv_sections_drawn"] == row["drc_sections_drawn"] == terrain_sections)
+                and (saved_view_scale is None or saved_view_pair(row, saved_view_scale))):
             cohort = (
                 row["world_effective_scale"], row["tv_world_width"], row["tv_world_height"],
                 row["drc_world_width"], row["drc_world_height"],
@@ -276,6 +277,20 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
     }
 
 
+def saved_view_pair(row, scale):
+    return (
+        row["phase"] == "playing"
+        and row["presented"] == row["tv_submissions"] == row["gamepad_submissions"] == 1
+        and row["game_frames_built"] == 1
+        and not row["screenshot_ms"]
+        and row["world_requested_scale"] == row["world_effective_scale"] == scale
+        and row["tv_sections_drawn"] == row["drc_sections_drawn"] == 174
+        and min(row[key] for key in ("tv_width", "tv_height", "drc_width", "drc_height",
+                                    "tv_world_width", "tv_world_height",
+                                    "drc_world_width", "drc_world_height")) > 0
+    )
+
+
 def summarize_stock_saved_view(frames, start, end, *, scale=75):
     """Measure a 174-section saved-view run across its full retained wall interval."""
     rows = [row for row in frames if start <= row["start_ms"] / 1000 < end]
@@ -288,15 +303,7 @@ def summarize_stock_saved_view(frames, start, end, *, scale=75):
         and row["presented"] == row["tv_submissions"] == row["gamepad_submissions"] == 1
         and row["game_frames_built"] == 1
     ]
-    reference = [
-        row for row in gameplay_pairs
-        if not row["screenshot_ms"]
-        and row["world_requested_scale"] == row["world_effective_scale"] == scale
-        and row["tv_sections_drawn"] == row["drc_sections_drawn"] == 174
-        and min(row[key] for key in ("tv_width", "tv_height", "drc_width", "drc_height",
-                                    "tv_world_width", "tv_world_height",
-                                    "drc_world_width", "drc_world_height")) > 0
-    ]
+    reference = [row for row in gameplay_pairs if saved_view_pair(row, scale)]
     # Each interval is billed to its ending frame. The first retained row
     # supplies the clock boundary and cannot also count as an interval.
     timed_pairs = sum(row["sequence"] != rows[0]["sequence"] for row in reference)

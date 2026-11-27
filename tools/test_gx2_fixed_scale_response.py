@@ -8,14 +8,15 @@ from gx2_saved_view_compare import retained_window
 from test_gx2_host_stages import hzp_frame
 
 
-def capture(path, scale, *, step, partial=False, effective=None, tv_width=1920):
+def capture(path, scale, *, step, partial=False, effective=None, tv_width=1920, undrawn_tv=False):
     count = 60_000 // step + 1
     dimensions = (1440, 809, 641, 360) if scale == 75 else (1248, 702, 555, 312)
     rows = [
         hzp_frame(
             seq, seq * step, game_frames_built=1, world_requested_scale=scale,
             world_effective_scale=effective if seq == 1 and effective is not None else scale,
-            tv_width=tv_width, tv_height=1080, drc_width=854, drc_height=480,
+            tv_width=0 if undrawn_tv and seq == 1 else tv_width, tv_height=1080,
+            drc_width=854, drc_height=480,
             tv_world_width=dimensions[0], tv_world_height=dimensions[1],
             drc_world_width=dimensions[2], drc_world_height=dimensions[3],
             partial=int(partial and seq == 1), section_draws=510, indices=1053348,
@@ -39,9 +40,11 @@ class FixedScaleResponseTest(unittest.TestCase):
             self.assertEqual(summary[75]["median_complete_pairs_per_second"], 0.017)
             self.assertEqual(summary[65]["world_pixels_per_pair"], 1049256)
             self.assertEqual(summary[65]["paired_rate_change_from_fixed75"], 0.017)
+            self.assertEqual(summary[65]["complete_pair_rate_change_from_fixed75"], 0.033)
             self.assertEqual(summary[65]["reported_median_indices_each_window"], [1053348])
-            self.assertTrue(summary[75]["eligible_scale_for_primary_stock_measurement"])
-            self.assertFalse(summary[65]["eligible_scale_for_primary_stock_measurement"])
+            self.assertTrue(summary[65]["same_median_geometry_each_window_as_fixed75"])
+            self.assertTrue(summary[75]["is_primary_stock_scale"])
+            self.assertFalse(summary[65]["is_primary_stock_scale"])
 
     def test_rejects_a_presented_effective_scale_transition(self):
         with TemporaryDirectory() as directory:
@@ -60,6 +63,15 @@ class FixedScaleResponseTest(unittest.TestCase):
                 compare([(75, stock), (65, stock)])
             with self.assertRaisesRegex(ValueError, "fixed-75 reference"):
                 compare([(65, trial)])
+
+    def test_flip_cohort_uses_the_same_native_output_rows_as_reference(self):
+        with TemporaryDirectory() as directory:
+            case = capture(Path(directory) / "75.hzp", 75, step=15_000, undrawn_tv=True)
+            result = retained_window(*case, refresh_hz=59.94)
+            cohort, = result['reference_combined_flip_quantization']['cohorts']
+            self.assertEqual(result['reference_paired_submissions'], 4)
+            self.assertEqual(cohort['paired_submissions'], 4)
+            self.assertEqual(cohort['consecutive_pairs'], 2)
 
 
 if __name__ == "__main__":

@@ -47,10 +47,23 @@ def compare(windows):
             "reported_median_section_draws_each_window": [row["reference_section_draws"]["median"] for row in group],
         }
     stock = scales[75]
+    stock_geometry = set(zip(stock["reported_median_indices_each_window"],
+                             stock["reported_median_section_draws_each_window"]))
     for scale, summary in scales.items():
-        summary["world_pixel_ratio_to_fixed75"] = round(summary["world_pixels_per_pair"] / stock["world_pixels_per_pair"], 6)
-        summary["paired_rate_change_from_fixed75"] = round(summary["median_pairs_per_second"] - stock["median_pairs_per_second"], 3)
-        summary["eligible_scale_for_primary_stock_measurement"] = scale == 75
+        pixels = summary["world_pixels_per_pair"]
+        if scale != 75 and pixels == stock["world_pixels_per_pair"]:
+            raise ValueError(f"scale {scale} has the same world pixel count as fixed 75")
+        geometry = set(zip(summary["reported_median_indices_each_window"],
+                           summary["reported_median_section_draws_each_window"]))
+        summary["same_median_geometry_each_window_as_fixed75"] = len(stock_geometry) == 1 and geometry == stock_geometry
+        summary["world_pixel_ratio_to_fixed75"] = round(pixels / stock["world_pixels_per_pair"], 6)
+        summary["paired_rate_change_from_fixed75"] = round(
+            summary["median_pairs_per_second"] - stock["median_pairs_per_second"], 3,
+        )
+        summary["complete_pair_rate_change_from_fixed75"] = round(
+            summary["median_complete_pairs_per_second"] - stock["median_complete_pairs_per_second"], 3,
+        )
+        summary["is_primary_stock_scale"] = scale == 75
     return {
         "outputs_tv_gamepad": scanouts,
         "scales_in_capture_order": [scale for scale, _ in windows],
