@@ -1,0 +1,100 @@
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index 3c73a9f..9e7f04c 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -47,7 +47,7 @@ impl FeaturePreparation {
+ pub(in crate::worldgen) struct StructureBundles {
+     pub(in crate::worldgen) structures: BTreeMap<String, String>,
+     pub(in crate::worldgen) sets: BTreeMap<String, String>,
+-    pub(in crate::worldgen) pools: BTreeMap<String, String>,
++    pub(in crate::worldgen) pools: Arc<BTreeMap<String, String>>,
+ }
+ 
+ type RegistryNames = BTreeSet<String>;
+@@ -420,7 +420,7 @@ impl GeneratorData {
+             (Some(structures), Some(sets), Some(pools)) => Some(StructureBundles {
+                 structures,
+                 sets,
+-                pools,
++                pools: Arc::new(pools),
+             }),
+             _ => None,
+         };
+@@ -885,7 +885,7 @@ impl GeneratorData {
+         self.decoded_structures
+             .get_or_init(|| {
+                 let raw = self.structure_resources.as_ref()?;
+-                super::super::structure::start::StructureRegistry::new(
++                super::super::structure::start::StructureRegistry::with_shared_pools(
+                     &raw.structures,
+                     &raw.sets,
+                     raw.pools.clone(),
+diff --git a/crates/horizon-world/src/worldgen/generator_structures.rs b/crates/horizon-world/src/worldgen/generator_structures.rs
+index 9af5b60..14de2d9 100644
+--- a/crates/horizon-world/src/worldgen/generator_structures.rs
++++ b/crates/horizon-world/src/worldgen/generator_structures.rs
+@@ -321,7 +321,7 @@ impl StructureState {
+         let (Some(resources), Some(raw)) = (&data.structures, &data.structure_resources) else {
+             return Ok(None);
+         };
+-        let registry = StructureRegistry::new(
++        let registry = StructureRegistry::with_shared_pools(
+             &raw.structures,
+             &raw.sets,
+             raw.pools.clone(),
+diff --git a/crates/horizon-world/src/worldgen/structure/jigsaw.rs b/crates/horizon-world/src/worldgen/structure/jigsaw.rs
+index 6d008bd..d967283 100644
+--- a/crates/horizon-world/src/worldgen/structure/jigsaw.rs
++++ b/crates/horizon-world/src/worldgen/structure/jigsaw.rs
+@@ -524,7 +524,9 @@ impl Limit {
+ }
+ /// Lazily decoded template pools.
+ pub struct Pools {
+-    raw: BTreeMap<String, String>,
++    // All consumers of the same generator data can share the original
++    // source documents. The decoded cache still belongs to this registry.
++    raw: Arc<BTreeMap<String, String>>,
+     decoded: RwLock<HashMap<String, Option<Arc<Pool>>>>,
+ }
+ impl std::fmt::Debug for Pools {
+@@ -534,6 +536,10 @@ impl std::fmt::Debug for Pools {
+ }
+ impl Pools {
+     pub fn new(raw: BTreeMap<String, String>) -> Self {
++        Self::with_shared_sources(Arc::new(raw))
++    }
++
++    pub(super) fn with_shared_sources(raw: Arc<BTreeMap<String, String>>) -> Self {
+         Self {
+             raw,
+             decoded: RwLock::new(HashMap::new()),
+diff --git a/crates/horizon-world/src/worldgen/structure/start.rs b/crates/horizon-world/src/worldgen/structure/start.rs
+index 596f74c..1f6a40b 100644
+--- a/crates/horizon-world/src/worldgen/structure/start.rs
++++ b/crates/horizon-world/src/worldgen/structure/start.rs
+@@ -364,6 +364,16 @@ impl StructureRegistry {
+         // The structure types the executable's mods registered, looked up
+         // before `Unsupported` (`"type": "modid:tower"`).
+         mod_types: &ModStructureTypes,
++    ) -> Result<Self, DecodeError> {
++        Self::with_shared_pools(structures, sets, Arc::new(pools), biome_set, mod_types)
++    }
++
++    pub(in crate::worldgen) fn with_shared_pools(
++        structures: &BTreeMap<String, String>,
++        sets: &BTreeMap<String, String>,
++        pools: Arc<BTreeMap<String, String>>,
++        biome_set: &dyn Fn(&Value) -> Result<BTreeSet<BiomeId>, DecodeError>,
++        mod_types: &ModStructureTypes,
+     ) -> Result<Self, DecodeError> {
+         let mut defs = Vec::new();
+         for (name, json) in structures {
+@@ -569,7 +579,7 @@ impl StructureRegistry {
+         Ok(Self {
+             structures: defs,
+             sets: out,
+-            pools: Pools::new(pools),
++            pools: Pools::with_shared_sources(pools),
+             origin: ChunkPos::new(0, 0),
+         })
+     }
