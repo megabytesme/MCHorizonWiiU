@@ -353,6 +353,10 @@ def compile_game(directory, source, manifest, tools, sysroot, packages, embedded
     link = [commands["cmake"], "--build", str(native), "--parallel", jobs]
     if embedded and embedded.get("HORIZON_WIIU_HUD_VIEW_LANES") == "1":
         configure.append("-DHORIZON_GX2_HUD_VIEW_LANES=ON")
+    if "gx2-screen-overlays" in cargo_features:
+        configure.append("-DHORIZON_GX2_SCREEN_OVERLAYS=ON")
+    if "gx2-clear-fog" in cargo_features:
+        configure.append("-DHORIZON_GX2_CLEAR_FOG=ON")
     run(configure, env)
     run(link, env)
     imports = subprocess.check_output(

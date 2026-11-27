@@ -18,8 +18,13 @@ def validate(spec):
         raise ValueError("unsupported hosted Nightly source recipe")
     toolchain_field = ("toolchain",) if spec["schema"] == 2 else ()
     feature_field = ("cargo_features",) if "cargo_features" in spec else ()
-    if feature_field and spec["cargo_features"] != ["stock-hud-seed"]:
-        raise ValueError("unsupported hosted Nightly Cargo features")
+    if feature_field:
+        features = spec["cargo_features"]
+        allowed = {"stock-hud-seed", "gx2-screen-overlays", "gx2-clear-fog"}
+        if (type(features) is not list or not features
+                or any(type(name) is not str or name not in allowed for name in features)
+                or len(features) != len(set(features))):
+            raise ValueError("unsupported hosted Nightly Cargo features")
     fields(spec, "schema", "kind", "target", "upstream", "base_recipe_sha256",
            "cargo_lock_sha256", "output_tree", "series", "candidate", "resource_pin",
            *toolchain_field, *feature_field)

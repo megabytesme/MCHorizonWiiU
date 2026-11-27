@@ -1,0 +1,586 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index ee92640db8e85a7b1225fce30a4c0f8f03be703d..ef7b6cf87343ff71ffb5df150e48c97409b2f37b 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -86,6 +86,10 @@ pub struct TerrainBounds {
+ }
+ 
+ impl TerrainBounds {
++    pub fn extents(self) -> [[f32; 3]; 2] {
++        [self.min, self.max]
++    }
++
+     pub fn union(self, other: Self) -> Self {
+         Self {
+             min: core::array::from_fn(|i| self.min[i].min(other.min[i])),
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 56ce17354dfb1d91322a6f3f149c9b7de0d2aea4..09e7e3318e0de71de07960dc5ded9f6f46fd59ab 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -41,6 +41,10 @@ struct HorizonGx2Terrain {
+    GX2Texture texture;
+    GX2Sampler sampler;
+    TerrainPixelShader pixel, opaque_pixel;
++#ifdef HORIZON_GX2_CLEAR_FOG
++   TerrainPixelShader clear_fog_pixel;
++   bool opaque_bound, clear_fog_bound;
++#endif
+    GX2Texture lightmap;
+    GX2Sampler lightmap_sampler;
+    uint32_t lightmap_slot;
+@@ -104,6 +108,93 @@ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const vo
+    return false;
+ }
+ 
++#ifdef HORIZON_GX2_CLEAR_FOG
++static bool clear_fog_vertex_compatible(const GX2VertexShader *stock, const GX2VertexShader *candidate)
++{
++   if (!candidate || !stock || !candidate->program || !stock->program ||
++       candidate->mode != stock->mode || candidate->size != stock->size ||
++       memcmp(&candidate->regs, &stock->regs, sizeof(stock->regs)) ||
++       memcmp(candidate->program, stock->program, stock->size) ||
++       candidate->attribVarCount != 3 || stock->attribVarCount != 3 ||
++       !candidate->attribVars || !stock->attribVars) return false;
++   for (uint32_t i = 0; i < 3; ++i) {
++      const GX2AttribVar *a = &stock->attribVars[i], *b = &candidate->attribVars[i];
++      if (!a->name || !b->name || strcmp(a->name, b->name) || a->location != b->location ||
++          a->type != b->type || a->count != b->count) return false;
++   }
++   return true;
++}
++
++static bool clear_fog_pixel_compatible(const TerrainPixelShader *opaque, GX2PixelShader *candidate,
++                                       TerrainPixelShader *out)
++{
++   const GX2PixelShader *stock = opaque->shader;
++   if (!stock || !candidate || !candidate->program || !candidate->size ||
++       candidate->mode != GX2_SHADER_MODE_UNIFORM_REGISTER || candidate->mode != stock->mode ||
++       candidate->uniformBlockCount || candidate->uniformVarCount != 1 ||
++       !candidate->uniformVars || candidate->samplerVarCount != 1 || !candidate->samplerVars ||
++       candidate->initialValueCount || candidate->loopVarCount) return false;
++
++   // Pinned CafeGLSL keeps both live semantic descriptors in their original
++   // order. Only the middle fog input and the input-count bits disappear.
++   if (stock->regs.spi_ps_in_control_0 != 0x10000003 ||
++       candidate->regs.spi_ps_in_control_0 != 0x10000002 ||
++       stock->regs.num_spi_ps_input_cntl != 3 || candidate->regs.num_spi_ps_input_cntl != 2 ||
++       stock->regs.spi_ps_input_cntls[1] != 0x8c ||
++       candidate->regs.spi_ps_input_cntls[0] != stock->regs.spi_ps_input_cntls[0] ||
++       candidate->regs.spi_ps_input_cntls[1] != stock->regs.spi_ps_input_cntls[2] ||
++       candidate->regs.spi_ps_in_control_1 != stock->regs.spi_ps_in_control_1 ||
++       candidate->regs.spi_input_z != stock->regs.spi_input_z ||
++       candidate->regs.sq_pgm_resources_ps != stock->regs.sq_pgm_resources_ps ||
++       candidate->regs.sq_pgm_exports_ps != stock->regs.sq_pgm_exports_ps ||
++       candidate->regs.cb_shader_mask != stock->regs.cb_shader_mask ||
++       candidate->regs.cb_shader_control != stock->regs.cb_shader_control ||
++       candidate->regs.db_shader_control != stock->regs.db_shader_control) return false;
++   const GX2SamplerVar *sampler = &candidate->samplerVars[0];
++   if (sampler->type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D || !sampler->name ||
++       strcmp(sampler->name, "uTerrain") || sampler->location != opaque->sampler_slot ||
++       !uniform_offset(GX2GetPixelUniformVar(candidate, "uMaterial"), &out->material_offset))
++      return false;
++   out->sampler_slot = sampler->location;
++   out->shader = candidate;
++   return true;
++}
++
++bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void *gfd)
++{
++   if (!t || !gfd || !t->opaque_pixel.shader || t->half_shader || !t->atlas_grid[0] ||
++       t->legacy_attributes || t->legacy_uniforms || t->solid_back_culling) return false;
++   if (t->clear_fog_pixel.shader) return true;
++   GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
++   const bool compatible = clear_fog_vertex_compatible(t->shader.vertexShader, vertex);
++   if (vertex) WHBGfxFreeVertexShader(vertex);
++   if (!compatible) return false;
++   GX2PixelShader *pixel = WHBGfxLoadGFDPixelShader(0, gfd);
++   if (clear_fog_pixel_compatible(&t->opaque_pixel, pixel, &t->clear_fog_pixel)) return true;
++   if (pixel) WHBGfxFreePixelShader(pixel);
++   return false;
++}
++
++bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
++                                      const float fog_color[4], const float fog_ranges[4])
++{
++   if (!t || !t->opaque_bound || !t->clear_fog_pixel.shader || !fog_color || !fog_ranges ||
++       !t->opaque_pixel.shader || t->half_active) return false;
++   if (t->clear_fog_bound == enabled) return true;
++   const TerrainPixelShader *pixel = enabled ? &t->clear_fog_pixel : &t->opaque_pixel;
++   const float material[4] = { 0.0f, t->atlas_grid[1] - 2.0f,
++      1.0f / (float)t->texture.surface.width, 1.0f / (float)t->texture.surface.height };
++   GX2SetPixelShader(pixel->shader);
++   if (!enabled) {
++      GX2SetPixelUniformReg(pixel->fog_color_offset, 4, fog_color);
++      GX2SetPixelUniformReg(pixel->fog_ranges_offset, 4, fog_ranges);
++   }
++   GX2SetPixelUniformReg(pixel->material_offset, 4, material);
++   t->clear_fog_bound = enabled;
++   return true;
++}
++#endif
++
+ bool horizon_gx2_terrain_load_half_shader(HorizonGx2Terrain *t, const void *gfd)
+ {
+    if (!t || !gfd || t->opaque_pixel.shader || t->legacy_attributes || t->legacy_uniforms) return false;
+@@ -218,6 +309,9 @@ void horizon_gx2_terrain_destroy(HorizonGx2Terrain *terrain)
+    if (terrain->atlas_storage) MEMFreeToDefaultHeap(terrain->atlas_storage);
+    if (terrain->lightmap.surface.image) GX2RDestroySurfaceEx(&terrain->lightmap.surface, texture_flags);
+    if (terrain->opaque_pixel.shader) WHBGfxFreePixelShader(terrain->opaque_pixel.shader);
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (terrain->clear_fog_pixel.shader) WHBGfxFreePixelShader(terrain->clear_fog_pixel.shader);
++#endif
+    if (terrain->half_shader) {
+       WHBGfxFreeShaderGroup(terrain->half_shader);
+       free(terrain->half_shader);
+@@ -438,6 +532,10 @@ int horizon_gx2_terrain_bind_variant(HorizonGx2Terrain *t, uint32_t target_width
+       1.0f / (float)t->texture.surface.width, 1.0f / (float)t->texture.surface.height };
+    const TerrainPixelShader *pixel = !translucent && opaque_only && t->opaque_pixel.shader
+       ? &t->opaque_pixel : &t->pixel;
++#ifdef HORIZON_GX2_CLEAR_FOG
++   t->opaque_bound = pixel == &t->opaque_pixel;
++   t->clear_fog_bound = false;
++#endif
+    t->half_active = false;
+    t->half_allowed = !translucent && pixel == &t->pixel && !t->legacy_attributes &&
+       !t->legacy_uniforms && t->half_shader;
+diff --git a/wiiu/gx2_terrain/terrain.frag b/wiiu/gx2_terrain/terrain.frag
+index c2273bb31fcd1b596794a01965e0880d738d3ef3..2501783fe57208e7a7dc9095b214a60f3559b527 100644
+--- a/wiiu/gx2_terrain/terrain.frag
++++ b/wiiu/gx2_terrain/terrain.frag
+@@ -1,7 +1,9 @@
+ #version 330
+ uniform sampler2D uTerrain;
++#ifndef HORIZON_TERRAIN_CLEAR_FOG
+ uniform vec4 uFogColor;
+ uniform vec4 uFogRanges;
++#endif
+ uniform vec4 uMaterial;
+ in vec3 vColor;
+ in vec4 vUv;
+@@ -33,7 +35,11 @@ void main() {
+         discard;
+     }
+ #endif
++#ifdef HORIZON_TERRAIN_CLEAR_FOG
++    fragColor = vec4(texel.rgb * vColor, alpha);
++#else
+     float fog = max(linearFog(vFogDistance.x, uFogRanges.x, uFogRanges.y),
+                     linearFog(vFogDistance.y, uFogRanges.z, uFogRanges.w));
+     fragColor = vec4(mix(texel.rgb * vColor, uFogColor.rgb, fog * uFogColor.a), alpha);
++#endif
+ }
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 69febc4742dd793891895871f644b387e92996c6..5fc41bfa2d6e8d7f055c0153c1ece2eb3ff0a4ca 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -79,6 +79,12 @@ void horizon_gx2_terrain_wait_idle(void);
+ /* Restore redundant stream writes for matched measurements on the render thread. */
+ /* Enable the optional shader before submitting any vertices to the terrain. */
+ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const void *gfd);
++#ifdef HORIZON_GX2_CLEAR_FOG
++/* Pixel-only diagnostic. A rejected load or transition leaves the current bind intact. */
++bool horizon_gx2_terrain_load_clear_fog_shader(HorizonGx2Terrain *t, const void *gfd);
++bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
++                                      const float fog_color[4], const float fog_ranges[4]);
++#endif
+ bool horizon_gx2_terrain_load_half_shader(HorizonGx2Terrain *terrain, const void *gfd);
+ /* opaque_only promises that the solid buffer has cutout=0 at every vertex. */
+ int horizon_gx2_terrain_bind_variant(HorizonGx2Terrain *terrain, uint32_t target_width,
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index ff9313349775aa916076dbaa671ce331ef325a9f..e519d1a40852ff8aea815ae649c45c0a8d16c352 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ crate-type = ["staticlib"]
+ 
+ [features]
++gx2-clear-fog = ["horizon-wiiu-loading-host/gx2-clear-fog"]
+ gx2-screen-overlays = ["gx2-hud-view-lanes", "horizon-wiiu-loading-host/gx2-screen-overlays"]
+ gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]
+ stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-loading-host/stock-hud-seed"]
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 50a516ed4703dd2dd22dd6bfc1845bd4fc52559c..077f11435dd04dd258cc83b5d8556014513a2b36 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -265,3 +265,25 @@ if(HORIZON_GX2_SCREEN_OVERLAYS)
+    target_sources(horizon_wiiu_loading_host PRIVATE screen_overlay.c screen_geometry.c "${SCREEN_GFD_OBJECT}")
+    target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_SCREEN_OVERLAYS=1)
+ endif()
++
++option(HORIZON_GX2_CLEAR_FOG "Build the optional opaque clear-fog shader" OFF)
++if(HORIZON_GX2_CLEAR_FOG)
++   set(CLEAR_FOG_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog_gfd.o")
++   string(REPLACE "#define HORIZON_TERRAIN_OPAQUE 1\n"
++      "#define HORIZON_TERRAIN_OPAQUE 1\n#define HORIZON_TERRAIN_CLEAR_FOG 1\n"
++      terrain_clear_fog_source "${terrain_opaque_source}")
++   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog.frag"
++      CONTENT "${terrain_clear_fog_source}")
++   add_custom_command(
++      OUTPUT "${CLEAR_FOG_GFD_OBJECT}"
++      COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${TERRAIN_VERTEX_SOURCE}" -ps terrain_clear_fog.frag -o terrain_clear_fog.gsh
++      COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" -I binary -O elf32-powerpc -B powerpc:common
++         terrain_clear_fog.gsh terrain_clear_fog_gfd.o
++      DEPENDS "${TERRAIN_VERTEX_SOURCE}" "${CMAKE_CURRENT_BINARY_DIR}/terrain_clear_fog.frag"
++      WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++      VERBATIM)
++   set_source_files_properties("${CLEAR_FOG_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   target_sources(horizon_wiiu_loading_host PRIVATE "${CLEAR_FOG_GFD_OBJECT}")
++   target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_CLEAR_FOG=1)
++   target_compile_definitions(horizon_gx2_terrain PRIVATE HORIZON_GX2_CLEAR_FOG=1)
++endif()
+diff --git a/wiiu/loading_host/Cargo.toml b/wiiu/loading_host/Cargo.toml
+index cc3b824bdc8cb655d0a6441dfc0ddbfb31ae5300..8016fae25750ebf88a588c2038db92545c4361dd 100644
+--- a/wiiu/loading_host/Cargo.toml
++++ b/wiiu/loading_host/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ path = "lib.rs"
+ 
+ [features]
++gx2-clear-fog = []
+ gx2-screen-overlays = ["gx2-hud-view-lanes"]
+ gx2-hud-view-lanes = ["horizon-wiiu-platform/gx2-hud-view-lanes"]
+ stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-platform/stock-hud-seed"]
+diff --git a/wiiu/loading_host/clear_fog.rs b/wiiu/loading_host/clear_fog.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f634cc69ea9f4bfc71c185038d79c15aef11684e
+--- /dev/null
++++ b/wiiu/loading_host/clear_fog.rs
+@@ -0,0 +1,121 @@
++//! Matched opaque pixel-shader trial for one contiguous proven clear run.
++
++use std::ffi::c_void;
++use std::ptr::NonNull;
++
++unsafe extern "C" {
++    fn horizon_loading_host_clear_fog_gfd() -> *const u8;
++    fn horizon_gx2_terrain_load_clear_fog_shader(terrain: *mut c_void, gfd: *const c_void) -> bool;
++    fn horizon_gx2_terrain_set_clear_fog(
++        terrain: *mut c_void,
++        enabled: bool,
++        color: *const f32,
++        ranges: *const f32,
++    ) -> bool;
++}
++
++/// # Safety
++/// The opaque, full-precision native terrain must be rooted on the render thread.
++pub(super) unsafe fn load(terrain: NonNull<c_void>) -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    if !*ENABLED.get_or_init(|| {
++        std::path::Path::new("/vol/external01/wiiu/apps/HorizonWiiU/gx2-clear-fog.enable").is_file()
++    }) {
++        return false;
++    }
++    let loaded = unsafe {
++        horizon_gx2_terrain_load_clear_fog_shader(
++            terrain.as_ptr(),
++            horizon_loading_host_clear_fog_gfd().cast(),
++        )
++    };
++    unsafe {
++        super::OSReport(if loaded {
++            c"Horizon GX2 clear opaque fog trial ready\n".as_ptr()
++        } else {
++            c"Horizon GX2 clear opaque fog shader rejected\n".as_ptr()
++        });
++    }
++    loaded
++}
++
++/// # Safety
++/// The same live terrain's opaque state must already be bound.
++pub(super) unsafe fn select(
++    terrain: NonNull<c_void>,
++    enabled: bool,
++    color: &[f32; 4],
++    ranges: &[f32; 4],
++) -> bool {
++    unsafe {
++        horizon_gx2_terrain_set_clear_fog(
++            terrain.as_ptr(),
++            enabled,
++            color.as_ptr(),
++            ranges.as_ptr(),
++        )
++    }
++}
++
++/// The native vertex shader sees the F32 origin and the complete solid AABB.
++/// Stay one block inside both ramps and within a bounded near-world distance.
++pub(super) fn clear(bounds: [[f32; 3]; 2], origin: [f32; 3], ranges: [f32; 4]) -> bool {
++    let [env_start, env_end, render_start, render_end] = ranges.map(f64::from);
++    if !ranges.iter().all(|f| f.is_finite())
++        || env_start <= 1.0
++        || render_start <= 1.0
++        || env_end < env_start
++        || render_end < render_start
++    {
++        return false;
++    }
++    let mut max_abs = [0.0f64; 3];
++    for (i, extent) in max_abs.iter_mut().enumerate() {
++        let [lo, hi] = bounds.map(|end| f64::from(end[i]));
++        let origin = f64::from(origin[i]);
++        if !lo.is_finite() || !hi.is_finite() || !origin.is_finite() || lo > hi {
++            return false;
++        }
++        *extent = (origin + lo).abs().max((origin + hi).abs());
++    }
++    let [x, y, z] = max_abs;
++    let horizontal_squared = x * x + z * z;
++    let radial_squared = horizontal_squared + y * y;
++    radial_squared <= 256.0 * 256.0
++        && radial_squared < (env_start - 1.0) * (env_start - 1.0)
++        && horizontal_squared < (render_start - 1.0) * (render_start - 1.0)
++        && y < render_start - 1.0
++}
++
++const MAX_RUN: u8 = 32;
++
++#[derive(Default)]
++pub(super) struct Run {
++    admitted: u8,
++    closed: bool,
++}
++
++impl Run {
++    /// Inspect sections only until the first accepted run ends.
++    pub(super) fn admit(&mut self, qualifies: impl FnOnce() -> bool) -> bool {
++        if self.closed {
++            return false;
++        }
++        if self.admitted == MAX_RUN {
++            self.close();
++            return false;
++        }
++        if qualifies() {
++            self.admitted += 1;
++            return true;
++        }
++        if self.admitted != 0 {
++            self.close();
++        }
++        false
++    }
++
++    pub(super) fn close(&mut self) {
++        self.closed = true;
++    }
++}
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index ee51ab8602d98bb02dff76e758922cb3b3acc86b..783a74c6850c9b6fda98d6797e0f57d7d471b772 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -7,6 +7,8 @@
+ 
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
++#[cfg(feature = "gx2-clear-fog")]
++mod clear_fog;
+ mod crumbling;
+ mod end_sky;
+ mod hand;
+@@ -744,6 +746,8 @@ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, p
+ struct Terrain<'shader> {
+     native: NonNull<c_void>,
+     opaque_shader: bool,
++    #[cfg(feature = "gx2-clear-fog")]
++    clear_fog_shader: bool,
+     half_position_shader: bool,
+     _shader: PhantomData<&'shader [u8]>,
+     _thread: PhantomData<*mut ()>,
+@@ -1869,6 +1873,8 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             let mut terrain = Terrain {
+                 native,
+                 opaque_shader,
++                #[cfg(feature = "gx2-clear-fog")]
++                clear_fog_shader: false,
+                 half_position_shader: false,
+                 _shader: PhantomData,
+                 _thread: PhantomData,
+@@ -1893,6 +1899,10 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                     horizon_gx2_profile_solid_back_culling(),
+                 );
+             }
++            #[cfg(feature = "gx2-clear-fog")]
++            if opaque_shader {
++                terrain.clear_fog_shader = unsafe { clear_fog::load(native) };
++            }
+             if self.half_position_requested && !opaque_shader_requested {
+                 terrain.half_position_shader = unsafe {
+                     horizon_gx2_terrain_load_half_shader(
+@@ -2504,6 +2514,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared: bool,
+             skip_terrain_waits: bool,
+             tv_terrain_wait_ticket: u64,
++            #[cfg(feature = "gx2-clear-fog")]
++            clear_fog_indices: [u32; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             view_hud: bool,
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -2695,6 +2707,33 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.profile.projection_ns.saturating_add(elapsed_ns(start));
+                 }
+                 let legacy_bindings = cafe_profile::legacy_terrain_bindings();
++                #[cfg(feature = "gx2-clear-fog")]
++                let mut clear_run = (!legacy_bindings
++                    && draw.presenter.screenshot_requested.is_none()
++                    && draw.presenter.terrain.as_ref().is_some_and(|t| t.clear_fog_shader)
++                    && unsafe { horizon_gx2_profile_opaque_terrain_shader() }
++                    && fog_color.iter().all(|value| value.is_finite())
++                    && projection.is_some_and(|current| {
++                        current.clip.rows.as_flattened().iter().all(|value| value.is_finite())
++                    }))
++                    .then(clear_fog::Run::default);
++                #[cfg(feature = "gx2-clear-fog")]
++                let mut clear_bound = false;
++                let bind_opaque_state = |opaque_only| unsafe {
++                    horizon_gx2_terrain_bind_variant(
++                        terrain.as_ptr(),
++                        world_width,
++                        world_height,
++                        world_rect[0],
++                        world_rect[1],
++                        world_rect[2],
++                        world_rect[3],
++                        fog_color.as_ptr(),
++                        fog_ranges.as_ptr(),
++                        false,
++                        opaque_only,
++                    ) == 0
++                };
+                 let mut bound = None;
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+@@ -2755,26 +2794,35 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     let submit_start = GX2_PROFILE_ENABLED.then(Instant::now);
+                     let opaque_only = opaque_shader && section.opaque_only;
+                     if bound != Some(opaque_only) || legacy_bindings {
+-                        if unsafe {
+-                            horizon_gx2_terrain_bind_variant(
+-                                terrain.as_ptr(),
+-                                world_width,
+-                                world_height,
+-                                world_rect[0],
+-                                world_rect[1],
+-                                world_rect[2],
+-                                world_rect[3],
+-                                fog_color.as_ptr(),
+-                                fog_ranges.as_ptr(),
+-                                false,
+-                                opaque_only,
+-                            )
+-                        } != 0
+-                        {
++                        if !bind_opaque_state(opaque_only) {
+                             draw.result = Err("GX2 solid terrain state failed");
+                             return -1;
+                         }
+                         bound = Some(opaque_only);
++                        #[cfg(feature = "gx2-clear-fog")]
++                        {
++                            clear_bound = false;
++                        }
++                    }
++                    #[cfg(feature = "gx2-clear-fog")]
++                    if let Some(run) = &mut clear_run {
++                        let enable = run.admit(|| {
++                            opaque_only && ranges.is_none() && section.bounds.is_some_and(|bounds| {
++                                clear_fog::clear(bounds.extents(), [x, y, z], fog_ranges)
++                            })
++                        });
++                        if enable != clear_bound {
++                            if unsafe { clear_fog::select(terrain, enable, &fog_color, &fog_ranges) } {
++                                clear_bound = enable;
++                            } else {
++                                run.close();
++                                if clear_bound && !bind_opaque_state(opaque_only) {
++                                    draw.result = Err("GX2 solid terrain restore failed");
++                                    return -1;
++                                }
++                                clear_bound = false;
++                            }
++                        }
+                     }
+                     if unsafe {
+                         if let Some(ranges) = ranges {
+@@ -2805,6 +2853,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                             .draw_submit_ns
+                             .saturating_add(elapsed_ns(start));
+                     }
++                    #[cfg(feature = "gx2-clear-fog")]
++                    if clear_bound {
++                        draw.clear_fog_indices[index] += submitted_indices;
++                    }
+                     if GX2_PROFILE_ENABLED {
+                         draw.profile.section_draws = draw.profile.section_draws.saturating_add(1);
+                         draw.profile.vertex_draws = draw
+@@ -2817,6 +2869,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         }
+                     }
+                 }
++                #[cfg(feature = "gx2-clear-fog")]
++                if clear_bound && !unsafe { clear_fog::select(terrain, false, &fog_color, &fog_ranges) }
++                    && !bind_opaque_state(true)
++                {
++                    draw.result = Err("GX2 solid terrain restore failed");
++                    return -1;
++                }
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+                 drop(terrain_span);
+@@ -3254,6 +3313,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             atlas_patches_prepared,
+             skip_terrain_waits,
+             tv_terrain_wait_ticket,
++            #[cfg(feature = "gx2-clear-fog")]
++            clear_fog_indices: [0; 2],
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             view_hud: view_hud.is_some(),
+             #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -3296,6 +3357,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let draw_result = draw.result;
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_drawn = draw.screen_drawn;
++        #[cfg(feature = "gx2-clear-fog")]
++        let clear_fog_indices = draw.clear_fog_indices;
+         drop(draw);
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+@@ -3308,6 +3371,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else if screen_trial && (host != 0 || outputs != 3) {
+             self.frame_work.omitted_pass_mask |= screen_overlays::OMISSION;
+         }
++        #[cfg(feature = "gx2-clear-fog")]
++        if host == 0 && outputs == 3 && draw_result.is_ok() && clear_fog_indices != [0; 2] {
++            if let Some(sequence) = cafe_profile::playing_frame_sequence().filter(|seq| seq.is_multiple_of(120)) {
++                unsafe {
++                    OSReport(
++                        c"Horizon GX2 clear opaque fog seq=%u tv_indices=%u drc_indices=%u\n".as_ptr(),
++                        sequence, clear_fog_indices[0], clear_fog_indices[1],
++                    );
++                }
++            }
++        }
+         #[cfg(feature = "gx2-hud-view-lanes")]
+         if view_hud.is_some() {
+             self.hud_views.finish(host == 0 && outputs == 3);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 7d478e32165576bf2e2d7b14ede68311182fc4d9..24135ec52897211c16af0d39967cbde12bf77008 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -25,6 +25,14 @@ extern const uint8_t _binary_panorama_gsh_end[];
+ extern const uint8_t _binary_terrain_gsh_start[];
+ extern const uint8_t _binary_terrain_gsh_end[];
+ extern const uint8_t _binary_terrain_opaque_gsh_start[];
++#ifdef HORIZON_GX2_CLEAR_FOG
++extern const uint8_t _binary_terrain_clear_fog_gsh_start[];
++
++const uint8_t *horizon_loading_host_clear_fog_gfd(void)
++{
++   return _binary_terrain_clear_fog_gsh_start;
++}
++#endif
+ extern const uint8_t _binary_terrain_half_gsh_start[];
+ 
+ const uint8_t *horizon_loading_host_hud_gfd(size_t *length)
