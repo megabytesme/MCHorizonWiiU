@@ -78,6 +78,15 @@
     "first_loss_view_region_light_masks": [15, 1, 1],
     "forward_ready_unserved_at_first_loss": [0, 0, 0, 0],
     "verified_report_sha256": "21c748702c6969b781772fefc76722309fbed4b1c71cad0b5b27931025239703",
+    "automated_repeats": {
+      "destination_columns": [213, 130],
+      "ready_terrain_each_display": [562, 269],
+      "first_terrain_loss_elapsed_ms": [7634, 4499],
+      "eligible_terrain_fractions": [0.6285542593081108, 0.4092846344614093],
+      "first_loss_view_region_light_masks": [15, 1, 1],
+      "canonical_runner_report_sha256": "22df366b0aaee567b281c2c9551afa9f85494a11c4f99e7d41526e98a89ff567",
+      "clean_exit": true
+    },
     "physical": "pending"
   },
   "paired_solid_list_retirement": {

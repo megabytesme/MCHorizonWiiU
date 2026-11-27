@@ -95,11 +95,12 @@ before expanding that architecture.
   captures on both displays. A fresh Cemu draw probe verified the exact
   no-kill shader on both displays with culling disabled. Physical cost
   remains pending. [Paired draw coverage](terrain-format-trials.md#rc-69-gameplay-draw-coverage)
-- The original RC 69 Village flight reached both stock readiness gates
-  and completed in offline Cemu. It had paired terrain for 36.69% of
-  the timed route. At the first loss both outputs still tested 651
-  resident sections and the sampled queues had no ready forward mesh
-  work. Only one of the four forward points had a ready region. The
+- Three original RC 69 Village flights reached both stock readiness gates
+  and completed in offline Cemu. Two automated runs completed report
+  capture, save, heap recovery and title exit without manual input.
+  Terrain coverage ranged from 36.69% to 62.86%. At each first loss
+  only one of four forward sample points had a ready region and stable
+  lighting, with no ready or active mesh work at those points. The
   physical Village baseline remains RC 33. [Village trace](host-stage-profile.md#rc-69-stock-village-replay)
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging

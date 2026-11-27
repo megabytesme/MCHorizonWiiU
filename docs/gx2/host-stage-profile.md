@@ -89,6 +89,38 @@ python3 -B tools/gx2_benchmark_report.py VILLAGE.json --profile SESSION.hzp --se
 Joined report SHA-256
 `21c748702c6969b781772fefc76722309fbed4b1c71cad0b5b27931025239703`.
 
+Prepare a fresh Windows Cemu lab with the default instance, the verified
+RPX and the stock prepared game files. Drive the local Night benchmark
+with the following command.
+
+```sh
+python3 -B tools/gx2_cemu_village.py LAB --rpx-sha256 RPX_SHA256
+```
+
+The runner checks the prepared inputs, opens the original Village route,
+waits for both stock readiness gates and leaves the timed flight
+undisturbed. It joins the report to the exact fixed-75 session capture,
+checks the save and bulk heap recovery, captures the Night report
+screens and closes the title. It records the measured coverage and
+whether the replay reached the 95% terrain target.
+
+Two automated repeats completed on the same package and prepared
+inputs. The stock readiness gate admitted different resident sets
+across the three runs.
+
+| Launch | Destination columns | Sections per display at readiness | First terrain loss | Paired terrain wall coverage |
+| --- | ---: | ---: | ---: | ---: |
+| Local menu | 130 | 269 | 4.479 s | 36.69% |
+| Automated prototype | 213 | 562 | 7.634 s | 62.86% |
+| Canonical runner | 130 | 269 | 4.499 s | 40.93% |
+
+At each first loss, all four sample points were in view, exactly one
+had a ready region and stable lighting, and none reported active or
+ready-but-unserved mesh work. Both automated runs returned to Night,
+recovered the full bulk heap and exited cleanly. The canonical runner
+receipt has SHA-256
+`22df366b0aaee567b281c2c9551afa9f85494a11c4f99e7d41526e98a89ff567`.
+
 ## GPU pass boundaries
 
 On a build with the sparse GPU pass sampler, use `gx2-gpu-pass-profile.enable`
