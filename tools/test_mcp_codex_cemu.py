@@ -231,6 +231,34 @@ class ReusedAuthorizationTests(unittest.TestCase):
             self.assertEqual(config.read_text(encoding="utf-8"), text)
             press.assert_not_called()
 
+    def test_delayed_quit_requires_new_save_evidence_without_resending(self):
+        calls = []
+
+        def delayed_quit(tool):
+            calls.append(tool)
+            raise RuntimeError(fixture.GAME_QUIT_REPLY_DELAYED)
+
+        def completed_save():
+            calls.append("save-return")
+
+        self.assertIsNone(fixture.request_hosted_quit(delayed_quit, completed_save))
+        self.assertEqual(calls, ["game_quit", "save-return"])
+        with self.assertRaisesRegex(RuntimeError, "did not accept the request"):
+            fixture.request_hosted_quit(delayed_quit)
+
+        def no_save():
+            raise TimeoutError("No current save and return")
+
+        with self.assertRaisesRegex(TimeoutError, "No current save and return"):
+            fixture.request_hosted_quit(delayed_quit, no_save)
+
+        def revoked(_):
+            raise RuntimeError("Tool call game_quit failed. The grant was revoked.")
+
+        with self.assertRaisesRegex(RuntimeError, "grant was revoked"):
+            fixture.request_hosted_quit(revoked, completed_save)
+        self.assertEqual(calls, ["game_quit", "save-return", "game_quit", "game_quit"])
+
     def test_prior_saves_do_not_satisfy_current_return(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "log.txt"

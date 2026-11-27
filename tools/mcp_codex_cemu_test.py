@@ -240,6 +240,20 @@ def wait_for_save_return(log, offset, timeout):
     raise RuntimeError("The hosted game did not complete its save and return.")
 
 
+GAME_QUIT_REPLY_DELAYED = "Tool call game_quit failed. The game did not accept the request in time."
+
+
+def request_hosted_quit(invoke, save_return=None):
+    """A delayed reply can coexist with a single successful save request."""
+    try:
+        return invoke("game_quit")
+    except RuntimeError as error:
+        if save_return is None or str(error) != GAME_QUIT_REPLY_DELAYED:
+            raise
+    save_return()
+    return None
+
+
 GAME_STATE_UNAVAILABLE = (
     "Tool missing from the current catalog",
     "did not list game_state",
@@ -339,12 +353,22 @@ def play_and_save(invoke, window, client_name, index, evidence):
                 json.dump(profile, output, indent=2)
                 output.write("\n")
 
+    save_return = None
     if evidence:
         log = evidence / "portable/log.txt"
         before_quit = log.stat().st_size
-    quit_reply = invoke("game_quit")
-    # Launcher read tools remain callable while the original game saves.
-    launcher_during_save = invoke("versions", {"installed": True})
+        save_timeout = int(os.environ.get("MCHORIZON_CEMU_SAVE_RETURN_TIMEOUT", "120"))
+
+        def save_return():
+            wait_for_save_return(log, before_quit, save_timeout)
+
+    quit_reply = request_hosted_quit(invoke, save_return)
+    # Exercise launcher tools while save is underway if the request replied.
+    launcher_during_save = None
+    if quit_reply is not None:
+        launcher_during_save = invoke("versions", {"installed": True})
+        if save_return is not None:
+            save_return()
     try:
         invoke("game_state")
     except RuntimeError as error:
@@ -355,13 +379,13 @@ def play_and_save(invoke, window, client_name, index, evidence):
     print(f"{client_name} requested the original hosted quit for session {index} and called Night again.",
           flush=True)
     if evidence:
-        wait_for_save_return(log, before_quit, int(os.environ.get("MCHORIZON_CEMU_SAVE_RETURN_TIMEOUT", "120")))
         print(f"Session {index} completed its save barrier and returned to Night.", flush=True)
         launcher_after_save = invoke("versions", {"installed": True})
         receipt = {
             "world": saved,
             "game_state": game,
             "game_quit": quit_reply,
+            "game_quit_reply_delayed": quit_reply is None,
             "launcher_during_save": launcher_during_save,
             "launcher_after_save": launcher_after_save,
             "game_tools_withdrawn": True,
