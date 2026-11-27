@@ -1,0 +1,551 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index d029731..45830b0 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -865,7 +865,7 @@ impl TerrainAtlasLayout {
+         source: &[TerrainVertex],
+         output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
+     ) -> Result<(), &'static str> {
+-        self.write_material_vertices(source, output, false)
++        self.write_material_vertices::<false>(source, output, false)
+     }
+ 
+     pub fn write_translucent_vertices(
+@@ -873,10 +873,20 @@ impl TerrainAtlasLayout {
+         source: &[TerrainVertex],
+         output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
+     ) -> Result<(), &'static str> {
+-        self.write_material_vertices(source, output, true)
++        self.write_material_vertices::<false>(source, output, true)
+     }
+ 
+-    fn write_material_vertices(
++    /// Requires the matching centered-light GX2 vertex and pixel shaders.
++    pub fn write_centered_light_vertices(
++        &self,
++        source: &[TerrainVertex],
++        output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
++        translucent: bool,
++    ) -> Result<(), &'static str> {
++        self.write_material_vertices::<true>(source, output, translucent)
++    }
++
++    fn write_material_vertices<const CENTERED_LIGHT: bool>(
+         &self,
+         source: &[TerrainVertex],
+         output: &mut [core::mem::MaybeUninit<IndexedTerrainVertex>],
+@@ -902,8 +912,15 @@ impl TerrainAtlasLayout {
+             } else {
+                 0
+             };
++            let light = if CENTERED_LIGHT {
++                let block = u32::from((vertex.light >> 8).min(240)) + 8;
++                let sky = u32::from((vertex.light & 255).min(240)) + 8;
++                ((block << 8) | sky) as f32 * (1.0 / 256.0)
++            } else {
++                f32::from(vertex.light)
++            };
+             dest.write(IndexedTerrainVertex {
+-                position: [x, y, z, f32::from(vertex.light)],
++                position: [x, y, z, light],
+                 uv,
+                 color_cutout: [r, g, b, material],
+             });
+diff --git a/wiiu/gx2_terrain/terrain.frag b/wiiu/gx2_terrain/terrain.frag
+index 10b1230..de3f754 100644
+--- a/wiiu/gx2_terrain/terrain.frag
++++ b/wiiu/gx2_terrain/terrain.frag
+@@ -5,9 +5,16 @@ uniform vec4 uFogColor;
+ uniform vec4 uFogRanges;
+ #endif
+ uniform vec4 uMaterial;
++#ifdef HORIZON_TERRAIN_CENTERED_LIGHT
++in vec4 vColorCutout;
++#define vColor vColorCutout.rgb
++#define vCutout vColorCutout.a
++in vec4 vUv;
++#else
+ in vec3 vColor;
+ in vec4 vUv;
+ in float vCutout;
++#endif
+ in vec2 vFogDistance;
+ out vec4 fragColor;
+ 
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index 77668e3..c523c80 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -15,9 +15,16 @@ uniform vec4 uClipW;
+ uniform vec4 uSectionOrigin;
+ #endif
+ uniform vec4 uAtlasGrid;
++#ifdef HORIZON_TERRAIN_CENTERED_LIGHT
++out vec4 vColorCutout;
++#define vColor vColorCutout.rgb
++#define vCutout vColorCutout.a
++out vec4 vUv;
++#else
+ out vec3 vColor;
+ out vec4 vUv;
+ out float vCutout;
++#endif
+ out vec2 vFogDistance;
+ void main() {
+     vec3 local = aPosition.xyz;
+@@ -25,9 +32,14 @@ void main() {
+                        dot(uClipY.xyz, local) + uClipY.w,
+                        dot(uClipZ.xyz, local) + uClipZ.w,
+                        dot(uClipW.xyz, local) + uClipW.w);
++#ifdef HORIZON_TERRAIN_CENTERED_LIGHT
++    float light = aPosition.w;
++    vec2 lightUv = vec2(floor(light) * (1.0 / 256.0), fract(light));
++#else
+     float packedLight = aPosition.w;
+     vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
+     vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
++#endif
+     vColor = aColor.rgb * textureLod(uLightmap, lightUv, 0.0).rgb;
+ #ifdef HORIZON_TERRAIN_ATLAS_CELLS
+     vec2 local_uv = aAtlasCellUv.xy * (1.0 / 32768.0) + vec2(1.0);
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 1ee382b..9bad7c2 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -86,6 +86,26 @@ add_custom_command(OUTPUT "${TERRAIN_HALF_GFD_OBJECT}"
+    VERBATIM)
+ set_source_files_properties("${TERRAIN_HALF_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
++# The combined terrain trial owns the two linked shader stages.
++foreach(stage vert frag)
++   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../gx2_terrain/terrain.${stage}" terrain_centered_source)
++   string(REPLACE "#version 330\n" "#version 330\n#define HORIZON_TERRAIN_CENTERED_LIGHT 1\n"
++      terrain_centered_source "${terrain_centered_source}")
++   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain_centered.${stage}"
++      CONTENT "${terrain_centered_source}")
++endforeach()
++set(TERRAIN_CENTERED_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_centered_gfd.o")
++add_custom_command(OUTPUT "${TERRAIN_CENTERED_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs terrain_centered.vert
++           -ps terrain_centered.frag -o terrain_centered.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}" -I binary -O elf32-powerpc -B powerpc:common
++           terrain_centered.gsh terrain_centered_gfd.o
++   DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/terrain_centered.vert"
++           "${CMAKE_CURRENT_BINARY_DIR}/terrain_centered.frag" "${CAFEGLSL_COMPILER_EXECUTABLE}"
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
++set_source_files_properties("${TERRAIN_CENTERED_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++
+ set(OUTLINE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/outline.gsh")
+ set(OUTLINE_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/outline_gfd.o")
+ add_custom_command(
+@@ -263,7 +283,7 @@ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c worker_schedule.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+    stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c world_border.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}" "${TERRAIN_OPAQUE_GFD_OBJECT}"
+-   "${TERRAIN_HALF_GFD_OBJECT}" "${TERRAIN_ATLAS_CELLS_GFD_OBJECT}"
++   "${TERRAIN_HALF_GFD_OBJECT}" "${TERRAIN_ATLAS_CELLS_GFD_OBJECT}" "${TERRAIN_CENTERED_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}" "${MODEL_OVERLAY_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+    "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}" "${WATER_MASK_GFD_OBJECT}")
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index d953a7b..338fb57 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -567,6 +567,51 @@ bool horizon_gx2_profile_near_fog_requested(void)
+ }
+ #endif
+ 
++static bool centered_light;
++
++static void init_centered_light(void)
++{
++   FILE *marker = fopen(ROOT "gx2-centered-light.enable", "rb");
++   if (!marker) return;
++   fclose(marker);
++
++   // Preserve existing trial precedence. Passive pass/deadline observations
++   // are allowed with the same settings in both A/B arms.
++   const char *const incompatible[] = {
++      ROOT "gx2-atlas-cells.enable",
++      ROOT "gx2-half-position.enable",
++      ROOT "gx2-clear-fog.enable",
++      ROOT "gx2-clear-fog-vertex.enable",
++      ROOT "gx2-near-fog.enable",
++      ROOT "gx2-solid-list-replay.enable",
++      ROOT "gx2-solid-list-census.enable",
++      ROOT "gx2-prepared-solid-frustum.enable",
++      ROOT "gx2-reverse-translucent.enable",
++      ROOT "gx2-mem1-tv-depth.enable",
++      ROOT "gx2-tv-terrain-wait.enable",
++      ROOT "gx2-grouped-present.enable",
++      ROOT "gx2-hud-view-lanes.enable",
++      ROOT "gx2-screen-overlays.enable",
++      ROOT "gx2-scaled-color-clear.enable",
++      ROOT "gx2-opaque-tiles.enable",
++      ROOT "gx2-cave-visibility.enable",
++   };
++   for (size_t i = 0; i < sizeof(incompatible) / sizeof(incompatible[0]); ++i) {
++      marker = fopen(incompatible[i], "rb");
++      if (marker) {
++         fclose(marker);
++         OSReport("Horizon GX2 centered light skipped: separate renderer trial is enabled\n");
++         return;
++      }
++   }
++   centered_light = true;
++}
++
++bool horizon_gx2_profile_centered_light(void)
++{
++   return centered_light && history == &process_history;
++}
++
+ void horizon_gx2_profile_init(void)
+ {
+    FILE *reverse = fopen(ROOT "gx2-reverse-translucent.enable", "rb");
+@@ -639,6 +684,7 @@ void horizon_gx2_profile_init(void)
+       FILE *frustum = fopen(ROOT "gx2-prepared-solid-frustum.enable", "rb");
+       prepared_solid_frustum = frustum != NULL;
+       if (frustum) fclose(frustum);
++      init_centered_light();
+       FILE *pump = fopen(ROOT "gx2-server-pump-profile.enable", "rb");
+       server_pump_requested = pump != NULL;
+       if (pump) {
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index ba368de..ba83b3a 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -87,6 +87,7 @@ bool horizon_gx2_profile_prepared_solid_frustum(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_reverse_translucent_quads(void);
+ bool horizon_gx2_profile_atlas_cells(void);
++bool horizon_gx2_profile_centered_light(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ bool horizon_gx2_profile_gpu_pass_active(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 9ce7cef..16b7950 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -225,6 +225,7 @@ extern "C" {
+     fn horizon_loading_host_panorama_gfd(length: *mut usize) -> *const u8;
+     fn horizon_loading_host_terrain_gfd(length: *mut usize) -> *const u8;
+     fn horizon_loading_host_opaque_terrain_gfd() -> *const u8;
++    fn horizon_loading_host_centered_terrain_gfd() -> *const u8;
+     fn horizon_loading_host_half_terrain_gfd() -> *const u8;
+     fn horizon_loading_host_atlas_cell_terrain_gfd() -> *const u8;
+     fn horizon_loading_host_present(
+@@ -289,6 +290,7 @@ extern "C" {
+     fn horizon_gx2_profile_process_history() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+     fn horizon_gx2_profile_atlas_cells() -> bool;
++    fn horizon_gx2_profile_centered_light() -> bool;
+     fn horizon_gx2_profile_reverse_translucent_quads() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+@@ -671,9 +673,16 @@ mod terrain_translucency;
+ mod terrain_translucent_reuse;
+ use terrain_translucency::{TerrainSection, TranslucentTerrain};
+ 
++#[derive(Clone, Copy)]
++enum TerrainEncoding {
++    Stock,
++    AtlasCells(AtlasCellLayout),
++    CenteredLight,
++}
++
+ struct TerrainUpload<'a> {
+     atlas: &'a TerrainAtlasLayout,
+-    atlas_cells: Option<AtlasCellLayout>,
++    encoding: TerrainEncoding,
+     source: &'a [TerrainVertex],
+     resident_vertices: usize,
+     reuse: Option<&'a terrain_translucent_reuse::ReuseMap>,
+@@ -700,7 +709,11 @@ unsafe extern "C" fn fill_terrain_vertices(
+     // SAFETY: C allocated and mapped `count` vertices of the matching ABI.
+     // They are uninitialized, exclusively CPU-owned, and not yet GPU-visible.
+     let output = unsafe { std::slice::from_raw_parts_mut(vertices, count) };
+-    let result = if let Some(reuse) = upload.reuse {
++    let result = if matches!(upload.encoding, TerrainEncoding::CenteredLight) {
++        upload
++            .atlas
++            .write_centered_light_vertices(upload.source, output, upload.translucent)
++    } else if let Some(reuse) = upload.reuse {
+         reuse.write_vertices(upload.source, output, |quad, dst| {
+             upload.atlas.write_translucent_vertices(quad, dst)
+         })
+@@ -726,7 +739,7 @@ unsafe extern "C" fn fill_terrain_atlas_cell_vertices(
+     // C owns the mapping and borrows both it and this upload synchronously.
+     let upload = unsafe { &mut *context.cast::<TerrainUpload<'_>>() };
+     let count = count as usize;
+-    let Some(layout) = upload.atlas_cells else {
++    let TerrainEncoding::AtlasCells(layout) = upload.encoding else {
+         upload.error = Some("GX2 signed atlas cell layout is missing");
+         return -1;
+     };
+@@ -819,7 +832,7 @@ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, p
+ 
+ struct Terrain<'shader> {
+     native: NonNull<c_void>,
+-    atlas_cells: Option<AtlasCellLayout>,
++    encoding: TerrainEncoding,
+     opaque_shader: bool,
+     #[cfg(feature = "gx2-clear-fog")]
+     clear_fog_shader: bool,
+@@ -892,6 +905,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     solid_lists: Option<solid_lists::Trial>,
+     half_position_requested: bool,
+     atlas_cells_requested: bool,
++    centered_light_requested: bool,
+     reverse_translucent_quads: bool,
+     solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
+@@ -981,6 +995,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
+             prepared_solid_frustum: false,
+             atlas_cells_requested: false,
++            centered_light_requested: false,
+             solid_list_census: None,
+             solid_lists: None,
+             half_position_requested: std::path::Path::new(
+@@ -1062,6 +1077,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+     /// Admit standalone renderer diagnostics only on the ordinary hosted entry.
+     pub fn enable_ordinary_renderer_trials(&mut self) {
+         self.atlas_cells_requested = unsafe { horizon_gx2_profile_atlas_cells() };
++        self.centered_light_requested = unsafe { horizon_gx2_profile_centered_light() }
++            && !horizon_client::graphics::cafe_dynamic_resolution_trial();
+         self.prepared_solid_frustum = !self.half_position_requested
+             && unsafe { horizon_gx2_profile_prepared_solid_frustum() };
+         self.solid_list_census = unsafe { horizon_gx2_profile_solid_list_census() }
+@@ -1972,22 +1989,40 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 source: artwork.terrain_pixels,
+                 layer_bytes,
+             };
+-            let mut native = std::ptr::null_mut();
+-            let code = unsafe {
+-                horizon_gx2_terrain_create_mapped(
+-                    &mut native,
+-                    self.terrain_shader.as_ptr().cast(),
+-                    layout.width,
+-                    layout.height,
+-                    fill_terrain_atlas,
+-                    (&mut upload as *mut TerrainAtlasUpload<'_>).cast(),
+-                )
++            let mut create = |shader: *const u8| -> horizon_client::Result<NonNull<c_void>> {
++                let mut native = std::ptr::null_mut();
++                let code = unsafe {
++                    horizon_gx2_terrain_create_mapped(
++                        &mut native,
++                        shader.cast(),
++                        layout.width,
++                        layout.height,
++                        fill_terrain_atlas,
++                        (&mut upload as *mut TerrainAtlasUpload<'_>).cast(),
++                    )
++                };
++                if code != 0 {
++                    return Err(format!("GX2 terrain atlas creation failed ({code})").into());
++                }
++                Ok(NonNull::new(native).ok_or("GX2 terrain returned a null resource")?)
+             };
+-            if code != 0 {
+-                return Err(format!("GX2 terrain atlas creation failed ({code})").into());
+-            }
+-            let native = NonNull::new(native).ok_or("GX2 terrain returned a null resource")?;
+-            let opaque_shader_requested = unsafe { horizon_gx2_profile_opaque_terrain_shader() };
++            let stock = self.terrain_shader.as_ptr();
++            let (native, encoding) = if self.centered_light_requested {
++                match create(unsafe { horizon_loading_host_centered_terrain_gfd() }) {
++                    Ok(native) => (native, TerrainEncoding::CenteredLight),
++                    Err(_) => {
++                        unsafe {
++                            OSReport(c"Horizon GX2 centered light initialization failed, using stock light\n".as_ptr());
++                        }
++                        (create(stock)?, TerrainEncoding::Stock)
++                    }
++                }
++            } else {
++                (create(stock)?, TerrainEncoding::Stock)
++            };
++            let centered_light = matches!(encoding, TerrainEncoding::CenteredLight);
++            let opaque_shader_requested = !centered_light
++                && unsafe { horizon_gx2_profile_opaque_terrain_shader() };
+             let opaque_shader = if opaque_shader_requested {
+                 let loaded = unsafe {
+                     horizon_gx2_terrain_load_opaque_shader(
+@@ -2009,7 +2044,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             let mut terrain = Terrain {
+                 native,
+                 opaque_shader,
+-                atlas_cells: None,
++                encoding,
+                 #[cfg(feature = "gx2-clear-fog")]
+                 clear_fog_shader: false,
+                 #[cfg(feature = "gx2-clear-fog")]
+@@ -2044,7 +2079,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             if opaque_shader {
+                 terrain.clear_fog_shader = unsafe { clear_fog::load(native) };
+             }
+-            if self.half_position_requested && !opaque_shader_requested {
++            if !centered_light && self.half_position_requested && !opaque_shader_requested {
+                 terrain.half_position_shader = unsafe {
+                     horizon_gx2_terrain_load_half_shader(
+                         native.as_ptr(),
+@@ -2060,24 +2095,29 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 }
+             }
+             #[cfg(feature = "gx2-clear-fog")]
+-            if !opaque_shader_requested
++            if !centered_light
++                && !opaque_shader_requested
+                 && !self.half_position_requested
+                 && !self.atlas_cells_requested
+             {
+                 terrain.near_fog_shader = unsafe { clear_fog::load_near(native) };
+             }
+-            if self.atlas_cells_requested
++            if !centered_light
++                && self.atlas_cells_requested
+                 && !self.half_position_requested
+                 && !opaque_shader_requested
+             {
+-                terrain.atlas_cells = layout.atlas_cell_layout().filter(|_| unsafe {
++                let cells = layout.atlas_cell_layout().filter(|_| unsafe {
+                     horizon_gx2_terrain_load_atlas_cells(
+                         native.as_ptr(),
+                         horizon_loading_host_atlas_cell_terrain_gfd().cast(),
+                     )
+                 });
++                if let Some(cells) = cells {
++                    terrain.encoding = TerrainEncoding::AtlasCells(cells);
++                }
+                 unsafe {
+-                    OSReport(if terrain.atlas_cells.is_some() {
++                    OSReport(if cells.is_some() {
+                         c"Horizon GX2 signed atlas cell terrain shader ready\n".as_ptr()
+                     } else {
+                         c"Horizon GX2 signed atlas cell terrain unavailable, using the ordinary shader\n"
+@@ -2086,6 +2126,11 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 }
+             }
+             self.invalidate_solid_lists();
++            if centered_light {
++                unsafe {
++                    OSReport(c"Horizon GX2 centered light active for both terrain outputs\n".as_ptr());
++                }
++            }
+             self.terrain = Some(terrain);
+             self.resident_animations =
+                 terrain_animation::ResidentAnimations::new(&layout, artwork.terrain_animations);
+@@ -2403,7 +2448,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             info,
+             bounds,
+             terrain.opaque_shader,
+-            terrain.atlas_cells,
++            terrain.encoding,
+             layouts,
+         ) {
+             Ok(section) => section,
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 2c80d79..aa12274 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -30,6 +30,7 @@ extern const uint8_t _binary_panorama_gsh_end[];
+ extern const uint8_t _binary_terrain_gsh_start[];
+ extern const uint8_t _binary_terrain_gsh_end[];
+ extern const uint8_t _binary_terrain_opaque_gsh_start[];
++extern const uint8_t _binary_terrain_centered_gsh_start[];
+ #ifdef HORIZON_GX2_CLEAR_FOG
+ extern const uint8_t _binary_terrain_near_fog_gsh_start[];
+ extern const uint8_t _binary_terrain_clear_fog_gsh_start[];
+@@ -81,6 +82,11 @@ const uint8_t *horizon_loading_host_terrain_gfd(size_t *length)
+    return _binary_terrain_gsh_start;
+ }
+ 
++const uint8_t *horizon_loading_host_centered_terrain_gfd(void)
++{
++   return _binary_terrain_centered_gsh_start;
++}
++
+ const uint8_t *horizon_loading_host_half_terrain_gfd(void)
+ {
+    return _binary_terrain_half_gsh_start;
+diff --git a/wiiu/loading_host/loading_host.h b/wiiu/loading_host/loading_host.h
+index 5cda82d..418f473 100644
+--- a/wiiu/loading_host/loading_host.h
++++ b/wiiu/loading_host/loading_host.h
+@@ -70,4 +70,5 @@ const uint8_t *horizon_loading_host_hud_gfd(size_t *length);
+ const uint8_t *horizon_loading_host_panorama_gfd(size_t *length);
+ const uint8_t *horizon_loading_host_terrain_gfd(size_t *length);
+ const uint8_t *horizon_loading_host_opaque_terrain_gfd(void);
++const uint8_t *horizon_loading_host_centered_terrain_gfd(void);
+ const uint8_t *horizon_loading_host_half_terrain_gfd(void);
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 6c67227..13329bb 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -50,7 +50,7 @@ impl TerrainBuffer {
+         source: &[TerrainVertex],
+         bounds: Option<TerrainBounds>,
+         layout: VertexLayout<'_>,
+-        atlas_cells: Option<AtlasCellLayout>,
++        encoding: TerrainEncoding,
+     ) -> horizon_client::Result<Option<Self>> {
+         if source.is_empty() {
+             return Ok(None);
+@@ -61,6 +61,9 @@ impl TerrainBuffer {
+             VertexLayout::ReusedTranslucent(plan, map) => (true, Some((plan, map))),
+         };
+         let half_position = matches!(layout, VertexLayout::HalfSolid);
++        if matches!(encoding, TerrainEncoding::CenteredLight) && (half_position || reuse.is_some()) {
++            return Err("GX2 centered-light terrain layout conflicts with its shader".into());
++        }
+         let vertex_count = match reuse {
+             Some((plan, _)) => plan.resident_vertices,
+             None => u32::try_from(source.len())?,
+@@ -73,7 +76,7 @@ impl TerrainBuffer {
+         .ok_or("GX2 vertex allocation estimate overflow")?;
+         let mut upload = TerrainUpload {
+             atlas,
+-            atlas_cells,
++            encoding,
+             source,
+             resident_vertices: vertex_count as usize,
+             reuse: reuse.map(|(_, map)| map),
+@@ -99,7 +102,7 @@ impl TerrainBuffer {
+                     context,
+                     &mut gpu_bytes,
+                 )
+-            } else if atlas_cells.is_some() {
++            } else if matches!(encoding, TerrainEncoding::AtlasCells(_)) {
+                 let draw_quads = if translucent {
+                     reuse.map_or(vertex_count / 4, |(plan, _)| plan.logical_quads)
+                 } else {
+@@ -291,7 +294,7 @@ impl TerrainSection {
+         info: DeferredTerrain,
+         [solid_bounds, translucent_bounds]: [Option<TerrainBounds>; 2],
+         opaque_shader: bool,
+-        atlas_cells: Option<AtlasCellLayout>,
++        encoding: TerrainEncoding,
+         layouts: SectionLayouts,
+     ) -> horizon_client::Result<Self> {
+         // Plan and source both come from the same immutable borrowed mesh.
+@@ -325,7 +328,7 @@ impl TerrainSection {
+             VertexLayout::Solid
+         };
+         let solid =
+-            TerrainBuffer::upload(atlas, &mesh.solid, solid_bounds, solid_layout, atlas_cells)?
++            TerrainBuffer::upload(atlas, &mesh.solid, solid_bounds, solid_layout, encoding)?
+                 .map(|mut buffer| {
+                     // Match the native solid conversion. Inspect every vertex
+                     // because the fragment shader interpolates the cutout value.
+@@ -347,7 +350,7 @@ impl TerrainSection {
+             &mesh.translucent,
+             translucent_bounds,
+             translucent_layout,
+-            atlas_cells,
++            encoding,
+         ) {
+             Ok(buffer) => buffer.map(|buffer| SortedSection {
+                 buffer,

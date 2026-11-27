@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
-  "output_tree": "efad1a58e2d3e7edaf4fcb600ce3107e301681f3",
+  "output_tree": "b24421b563b1195818039eb6c0f1c49ea3c4bf22",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1568,6 +1568,12 @@
       "sha256": "2c54911a05390d743d973c96d4915467c5f04ebaf4cc29574110583f1bf0815b",
       "input_tree": "7631c02f5adccd31c3f6e53942e3618584dd184e",
       "output_tree": "efad1a58e2d3e7edaf4fcb600ce3107e301681f3"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0260-use-verified-centered-light-terrain-program-on-demand.patch",
+      "sha256": "e2c150686c42eddaa901d1211d1c206b32da38c2516c5d7e5c8f72c389d6ca46",
+      "input_tree": "efad1a58e2d3e7edaf4fcb600ce3107e301681f3",
+      "output_tree": "b24421b563b1195818039eb6c0f1c49ea3c4bf22"
     }
   ],
   "candidate": {
