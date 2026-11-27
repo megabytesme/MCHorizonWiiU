@@ -60,10 +60,29 @@ restored 234,880,920 free bytes in the GX2 bulk heap with a largest block of
 The session HZP3 SHA-256 is
 `0f54a4c3c651923ab718306f503d48220e6c9f2f51016337d8297a7335511f70`.
 It records 1,236 paired gameplay rows, 783 with no reported partial passes,
-and up to 163 sections per output. Prior RC 50 runs stopped during resource
-preparation in both recompiler modes. The change responsible for the RC 52
-result still needs isolation. Repeated starts and same-process reopening
-remain open.
+and up to 163 sections per output.
+
+## Recompiler failure isolation
+
+One exact single-core run reached gameplay at 117.373 s and paired terrain
+at 129.471 s, then rendered both outputs through the dwell. The replay
+timed out opening Pause. Captures and serial playback still showed active
+gameplay with loops taking about 0.8 s. The harness now holds single-core
+inputs across that frame interval.
+
+A fresh single-core start and a multicore start with both geometry markers
+failed during core resource work before the host Game handoff. The same
+failure-only trace appeared in both runs. Farmland state 6875 supplied a
+zero-length borrowed base name. Both the registry lookup and bounded linear
+check found the literal `minecraft:dirt` at state 10. The data identifies
+an invalid lookup input. The origin of the invalid input still needs a
+matched trace before and after loading the landing definitions.
+
+Prior RC 50 runs ended in resource preparation in both modes. Run existing
+RC 50, RC 51 and RC 52 packages from one hash-locked disposable fixture to
+separate differences in the inputs from a layout-sensitive recompiler
+failure. Reliable repeated starts, single-core save and same-process
+reopening remain open.
 
 ## Supervised native comparison
 

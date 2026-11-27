@@ -328,7 +328,9 @@ def exercise(args):
         if mode != args.cpu_mode:
             raise ValueError(f"requested CPU mode {args.cpu_mode}, observed {mode}")
         # The interpreter can take several seconds to consume a VPAD sample.
-        game_hold = 6 if mode == "interpreter" else 0.5
+        # Single-core Cemu can take longer than the multicore key pulse to
+        # finish a terrain frame and poll the next controller state.
+        game_hold = {"interpreter": 6, "single": 4, "multi": 0.5}[mode]
         lab.show("night")
         lab.select_world()
         for index in range(1, args.sessions + 1):

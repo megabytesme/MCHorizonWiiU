@@ -47,6 +47,8 @@
     "cemu_multicore_ready_ms": 50211,
     "cemu_multicore_first_paired_terrain_ms": 52851,
     "cemu_multicore_max_sections_per_output": 163,
+    "cemu_single_core": "one_dual_output_gameplay_pass_lifecycle_incomplete",
+    "cemu_recompiler_repeat": "both_modes_observed_zero_length_farmland_base",
     "physical": "queued",
     "receipt": "rc52-qualification.md"
   },
@@ -250,7 +252,7 @@
   ],
   "dependencies": {
     "physical": "Supervised console launch. Continue host and emulator work while pending.",
-    "recompiler": "Exact RC 52 passed one multicore Cemu world entry, dual-output gameplay and save. Repeat starts and same-process reopening remain open."
+    "recompiler": "Exact RC 52 passed one multicore Cemu world entry, dual-output gameplay and save. Subsequent starts in both recompiler modes exposed a zero-length farmland base before Game handoff."
   },
   "diagnostics": {
     "winding": {
