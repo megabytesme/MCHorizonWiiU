@@ -1,0 +1,123 @@
+diff --git a/crates/horizon-client-render/src/mesher.rs b/crates/horizon-client-render/src/mesher.rs
+index 6335949..3c7e58a 100644
+--- a/crates/horizon-client-render/src/mesher.rs
++++ b/crates/horizon-client-render/src/mesher.rs
+@@ -1439,23 +1439,31 @@ impl Padded {
+     #[cfg(test)]
+     fn new(region: &[[Option<&Chunk>; 3]; 3], sy: i32) -> Self {
+         let mut pad = Self::default();
+-        pad.fill(region, sy, &mut Box::new([0; 4096]));
++        pad.fill(region, sy, &mut None);
+         pad
+     }
+-    fn fill(&mut self, region: &[[Option<&Chunk>; 3]; 3], sy: i32, own: &mut [u32; 4096]) {
++    fn fill(
++        &mut self,
++        region: &[[Option<&Chunk>; 3]; 3],
++        sy: i32,
++        own: &mut Option<Box<[u32; 4096]>>,
++    ) {
+         self.blocks.resize(P * P * P, 0);
+         self.light.resize(P * P * P, 0);
+         let (blocks, light) = (&mut self.blocks, &mut self.light);
+         let base_y = region[1][1].map_or(MIN_Y, Chunk::min_y) + sy * 16;
+-        // The section itself is unpacked in one pass and copied row by row;
+-        // the border cells of the neighbouring sections are read in runs, from
+-        // sections found once per layer.
++        // Single-value and four-bit palettes can write directly into each
++        // padded row. Wider palettes still amortize their word decoding over
++        // the whole centre section before the border is copied.
+         let center = region[1][1];
+-        if let Some(c) = center {
+-            c.sections[sy as usize].unpack(own);
+-        } else {
+-            own.fill(0);
+-        }
++        let buffered = center
++            .map(|chunk| &chunk.sections[sy as usize])
++            .filter(|section| section.blocks.bits() > 4)
++            .map(|section| {
++                let values = own.get_or_insert_with(|| Box::new([0; 4096]));
++                section.unpack(values);
++                &**values
++            });
+         for y in -B..16 + B {
+             let wy = base_y + y;
+             // Where each chunk column's cells of this layer come from, found once.
+@@ -1475,8 +1483,9 @@ impl Padded {
+                 let (middle, east) = rest.split_at_mut(16);
+                 let (west_light, rest) = light[row..row + P].split_at_mut(B as usize);
+                 let (middle_light, east_light) = rest.split_at_mut(16);
+-                let own_row = (rz == 1 && (0..16).contains(&y))
+-                    .then(|| &own[(y << 8 | z << 4) as usize..][..16]);
++                let own_row = buffered
++                    .filter(|_| rz == 1 && (0..16).contains(&y))
++                    .map(|values| &values[(y << 8 | z << 4) as usize..][..16]);
+                 let at = |x: i32| crate::chunk::index(x, wy, z);
+                 let [w, m, e] = &sources[rz];
+                 let edge = (center, wy, z);
+@@ -2202,8 +2211,7 @@ impl Mesher<'_> {
+             }
+             return out;
+         }
+-        let own = scratch.own.get_or_insert_with(|| Box::new([0; 4096]));
+-        scratch.padded.fill(region, sy, own);
++        scratch.padded.fill(region, sy, &mut scratch.own);
+         if !self.hidden_states.is_empty() {
+             for id in &mut scratch.padded.blocks {
+                 if self.hidden_states[*id as usize] {
+diff --git a/crates/horizon-core/src/paletted.rs b/crates/horizon-core/src/paletted.rs
+index 1e8ac19..5c1ce89 100644
+--- a/crates/horizon-core/src/paletted.rs
++++ b/crates/horizon-core/src/paletted.rs
+@@ -307,10 +307,14 @@ impl PalettedContainer {
+     pub fn get_run(&self, start: usize, out: &mut [u32]) {
+         if out.len() == 2 && !matches!(self.palette, Palette::Single(_)) {
+             let bits = usize::from(self.bits);
+-            let per = 64 / bits;
+-            let slot = start % per;
++            let (word, slot, per) = if self.bits == 4 {
++                (start / 16, start % 16, 16)
++            } else {
++                let per = 64 / bits;
++                (start / per, start % per, per)
++            };
+             if slot + 1 < per {
+-                let word = self.words[start / per] >> (slot * bits);
++                let word = self.words[word] >> (slot * bits);
+                 let mask = mask(self.bits);
+                 let a = (word & mask) as usize;
+                 let b = ((word >> bits) & mask) as usize;
+@@ -331,6 +335,16 @@ impl PalettedContainer {
+         match &self.palette {
+             Palette::Single(value) => out.fill(*value),
+             Palette::List(list) => {
++                // A four-bit block palette packs one x-aligned row per word.
++                // Read it once and write the row straight to the caller's grid.
++                if self.bits == 4
++                    && start.is_multiple_of(16)
++                    && let Ok(row) = <&mut [u32; 16]>::try_from(&mut *out)
++                {
++                    let word = self.words[start / 16];
++                    *row = std::array::from_fn(|x| list[((word >> (4 * x)) & 15) as usize]);
++                    return;
++                }
+                 for (k, cell) in out.iter_mut().enumerate() {
+                     *cell = list[self.raw(start + k)];
+                 }
+@@ -901,6 +915,15 @@ mod tests {
+                 container.get_run(start, &mut pair);
+                 assert_eq!(pair, values[start..start + 2]);
+             }
++            for start in (0..4096).step_by(16) {
++                let mut row = [u32::MAX; 16];
++                container.get_run(start, &mut row);
++                assert_eq!(
++                    row,
++                    values[start..start + 16],
++                    "{distinct} values, row {start}"
++                );
++            }
+             for _ in 0..200 {
+                 let start = (rng(&mut state) % 4096) as usize;
+                 let len = (rng(&mut state) % 20) as usize;
