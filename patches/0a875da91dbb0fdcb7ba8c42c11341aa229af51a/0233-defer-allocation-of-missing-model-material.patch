@@ -1,0 +1,22 @@
+diff --git a/crates/horizon-assets/src/bake.rs b/crates/horizon-assets/src/bake.rs
+index 8aaa29e2d75be965fdfdd247e8e64c87bd2936ea..cc4974e251f6c59146ed742522a011ff36aebc7c 100644
+--- a/crates/horizon-assets/src/bake.rs
++++ b/crates/horizon-assets/src/bake.rs
+@@ -256,10 +256,13 @@ fn bake_into(
+                 continue;
+             }
+             let face = face.as_ref().ok_or_else(|| error("null model face"))?;
+-            let material = model.material(&face.texture)?.cloned().unwrap_or(Material {
+-                sprite: "minecraft:missingno".to_owned(),
+-                force_translucent: false,
+-            });
++            let material = model
++                .material(&face.texture)?
++                .cloned()
++                .unwrap_or_else(|| Material {
++                    sprite: "minecraft:missingno".to_owned(),
++                    force_translucent: false,
++                });
+             output.push(bake_face(
+                 element,
+                 face,
