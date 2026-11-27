@@ -1,0 +1,226 @@
+diff --git a/crates/horizon-client-render/src/light.rs b/crates/horizon-client-render/src/light.rs
+index 265bc03..7cc20ec 100644
+--- a/crates/horizon-client-render/src/light.rs
++++ b/crates/horizon-client-render/src/light.rs
+@@ -65,6 +65,28 @@ pub struct LightTables {
+     /// Any state is [`Cell::dynamic`]: without one, no chunk waits to be asked.
+     dynamic: bool,
+ }
++fn intern_light_face(
++    face: VoxelShape,
++    shapes: &mut Vec<VoxelShape>,
++    by_geometry: &mut HashMap<Vec<u64>, u16>,
++) -> u16 {
++    let key = face
++        .boxes()
++        .iter()
++        .flat_map(|b| {
++            b.min_position()
++                .components()
++                .into_iter()
++                .chain(b.max_position().components())
++        })
++        .map(f64::to_bits)
++        .collect();
++    *by_geometry.entry(key).or_insert_with(|| {
++        shapes.push(face);
++        (shapes.len() - 1) as u16
++    })
++}
++
+ impl LightTables {
+     /// Dampening and emission only: every occlusion face is empty.
+     pub fn new(facts: &BlockFacts) -> Self {
+@@ -178,21 +200,7 @@ impl LightTables {
+                         } else if face.same_identity(&block) {
+                             FULL
+                         } else {
+-                            let key: Vec<u64> = face
+-                                .boxes()
+-                                .iter()
+-                                .flat_map(|b| {
+-                                    b.min_position()
+-                                        .components()
+-                                        .into_iter()
+-                                        .chain(b.max_position().components())
+-                                })
+-                                .map(f64::to_bits)
+-                                .collect();
+-                            *by_geometry.entry(key).or_insert_with(|| {
+-                                shapes.push(face.clone());
+-                                (shapes.len() - 1) as u16
+-                            })
++                            intern_light_face(face, &mut shapes, &mut by_geometry)
+                         };
+                     }
+                 }
+@@ -202,6 +210,45 @@ impl LightTables {
+             cell.faces = faces;
+             cell.shaped = faces.iter().any(|f| *f != EMPTY);
+         }
++        tables.finish_occlusion(shapes)
++    }
++
++    /// Reuse faces extracted by the visibility worker for the same prepared
++    /// resource root and exact block registry. A custom pack may disagree
++    /// about an occluder. The caller then loads the original light inputs.
++    pub fn from_startup_visibility(
++        facts: &BlockFacts,
++        visibility: &horizon_world::block_render::FaceVisibility,
++    ) -> Option<crate::Result<Self>> {
++        let mut tables = Self::new(facts);
++        let mut shapes = vec![VoxelShape::empty(), VoxelShape::block()];
++        let mut by_geometry = HashMap::new();
++        let mut by_visible_id = HashMap::new();
++        for (id, (state, cell)) in facts.states.iter().zip(&mut tables.cells).enumerate() {
++            if !state.can_occlude || !state.shape_occlusion {
++                continue;
++            }
++            // The visibility and lighting flags come from different files.
++            // Visibility must actually have extracted each requested face.
++            let faces = visibility.occluder_faces(BlockStateId(id as u32))?;
++            cell.faces = faces.map(|(visible_id, face)| {
++                *by_visible_id.entry(visible_id).or_insert_with(|| {
++                    if face.is_empty() {
++                        EMPTY
++                    } else if face.same_identity(&shapes[FULL as usize]) {
++                        FULL
++                    } else {
++                        intern_light_face(face.clone(), &mut shapes, &mut by_geometry)
++                    }
++                })
++            });
++            cell.shaped = cell.faces.iter().any(|&face| face != EMPTY);
++        }
++        Some(tables.finish_occlusion(shapes))
++    }
++
++    fn finish_occlusion(mut self, shapes: Vec<VoxelShape>) -> crate::Result<Self> {
++        let block = &shapes[FULL as usize];
+         let n = shapes.len();
+         let mut occludes = vec![false; n * n];
+         for a in 0..n {
+@@ -217,10 +264,10 @@ impl LightTables {
+                 };
+             }
+         }
+-        tables.occludes = occludes;
+-        tables.faces = n;
+-        tables.rebuild_cache();
+-        Ok(tables)
++        self.occludes = occludes;
++        self.faces = n;
++        self.rebuild_cache();
++        Ok(self)
+     }
+     /// Assembled tables (tests and benchmarks): derives the packed light cache.
+     #[cfg(test)]
+diff --git a/crates/horizon-client/src/game/runtime/resource_load.rs b/crates/horizon-client/src/game/runtime/resource_load.rs
+index 88c5711..2087045 100644
+--- a/crates/horizon-client/src/game/runtime/resource_load.rs
++++ b/crates/horizon-client/src/game/runtime/resource_load.rs
+@@ -299,7 +299,7 @@ pub(super) fn load_core(
+             });
+             // Nor the face visibility the mesher and the block entity
+             // renderer cull with (19 MB).
+-            let visibility = Step::spawn(scope, parallel, "visibility", || {
++            let mut pending_visibility = Some(Step::spawn(scope, parallel, "visibility", || {
+                 checkpoint()?;
+                 if headless {
+                     return Ok(horizon_world::block_render::FaceVisibility::empty());
+@@ -308,7 +308,7 @@ pub(super) fn load_core(
+                     models::load_visibility(root, registry)
+                 })
+                 .map_err(|e| e.to_string())
+-            });
++            }));
+             let biomes = Step::spawn(scope, parallel, "biomes", || {
+                 checkpoint()?;
+                 let biomes = Arc::new(
+@@ -351,12 +351,32 @@ pub(super) fn load_core(
+                 startup::time("core.collision", || collisions::load(root, registry))
+                     .map_err(|e| e.to_string())
+             });
+-            let gameplay = gameplay_tables(root, assets, parallel, progress);
++            let mut ready_visibility = None;
++            let gameplay = gameplay_tables_with_light(root, assets, parallel, progress, |facts| {
++                // The two consumers already share this root and registry. On
++                // the parallel Cafe path visibility normally completes well
++                // before the light table starts.
++                if cfg!(target_os = "cafe") && parallel && !headless {
++                    let loaded = startup::time("core.light.await_visibility", || {
++                        pending_visibility.take().unwrap().join()
++                    });
++                    let light = loaded.as_ref().ok().and_then(|visible| {
++                        startup::time("core.light.reuse_visibility", || {
++                            LightTables::from_startup_visibility(facts, visible)
++                        })
++                    });
++                    ready_visibility = Some(loaded);
++                    if let Some(light) = light {
++                        return light;
++                    }
++                }
++                LightTables::load(root, registry, facts)
++            });
+             checkpoint()?;
+             Ok::<_, String>((
+                 render.join(),
+                 gameplay,
+-                visibility.join(),
++                ready_visibility.unwrap_or_else(|| pending_visibility.unwrap().join()),
+                 biomes.join(),
+                 environment.join(),
+                 collision.join(),
+@@ -392,6 +412,18 @@ pub(super) fn gameplay_tables(
+     assets: &Assets,
+     parallel: bool,
+     progress: &Progress,
++) -> std::result::Result<GameplayTables, String> {
++    gameplay_tables_with_light(root, assets, parallel, progress, |facts| {
++        LightTables::load(root, assets.registry, facts)
++    })
++}
++
++fn gameplay_tables_with_light(
++    root: &std::path::Path,
++    assets: &Assets,
++    parallel: bool,
++    progress: &Progress,
++    make_light: impl FnOnce(&BlockFacts) -> horizon_client::Result<LightTables> + Send,
+ ) -> std::result::Result<GameplayTables, String> {
+     progress.checkpoint().map_err(|error| error.to_string())?;
+     let facts_step = startup::step("core.block_facts");
+@@ -411,10 +443,7 @@ pub(super) fn gameplay_tables(
+     progress.set(2);
+     let (light, motion) = std::thread::scope(|scope| {
+         let light = Step::spawn(scope, parallel, "light", || {
+-            startup::time("core.light", || {
+-                LightTables::load(root, assets.registry, &facts)
+-            })
+-            .map_err(|e| e.to_string())
++            startup::time("core.light", || make_light(&facts)).map_err(|e| e.to_string())
+         });
+         let motion = startup::time("core.motion", || {
+             let inventory = horizon_mod_package::enabled::EnabledMods::read(root)?;
+diff --git a/crates/horizon-world/src/block_render.rs b/crates/horizon-world/src/block_render.rs
+index 63efd59..c059d84 100644
+--- a/crates/horizon-world/src/block_render.rs
++++ b/crates/horizon-world/src/block_render.rs
+@@ -173,6 +173,16 @@ impl FaceVisibility {
+             }
+         }
+     }
++    /// Already extracted geometry for the light table of this same registry.
++    /// A render definition that skips occlusion has not extracted its shape.
++    pub fn occluder_faces(&self, state: BlockStateId) -> Option<[(u32, &VoxelShape); 6]> {
++        let entry = self.states.get(state.0 as usize)?;
++        entry
++            .definition
++            .can_occlude
++            .then(|| entry.faces.map(|id| (id, &self.faces[id as usize])))
++    }
++
+     /// The state's occlusion face toward `direction` (`getFaceOcclusionShape`) and
+     /// its shared ID: 0 is the empty singleton, 1 the full-block singleton.
+     pub fn occlusion_face(

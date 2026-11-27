@@ -1,0 +1,86 @@
+diff --git a/crates/horizon-world/src/worldgen/generator.rs b/crates/horizon-world/src/worldgen/generator.rs
+index 0b86539..b233d9a 100644
+--- a/crates/horizon-world/src/worldgen/generator.rs
++++ b/crates/horizon-world/src/worldgen/generator.rs
+@@ -154,47 +154,58 @@ use noise_settings::DecodedNoiseSettings;
+ /// Convert a data-generator `biome_parameters` report into the quantized
+ /// preset table format, using vanilla's float `quantizeCoord`.
+ pub(crate) fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
++    use std::fmt::Write as _;
++
++    #[derive(serde::Serialize)]
++    struct QuantizedBiome<'a> {
++        biome: &'a Value,
++        coordinates: [[i64; 2]; 6],
++        offset: i64,
++    }
++
+     let report: Value = serde_json::from_str(json)?;
+-    let float = |v: &Value| -> Result<i64, GeneratorError> {
+-        let text = v.to_string();
++    let rows = report["biomes"]
++        .as_array()
++        .ok_or_else(|| resource("biome parameter report"))?;
++    let mut text = String::new();
++    let mut float = |value: &Value| -> Result<i64, GeneratorError> {
++        // Preserve the decimal-to-f32 conversion at interval boundaries.
++        text.clear();
++        write!(&mut text, "{value}").expect("writing to a String cannot fail");
+         text.parse::<f32>()
+             .map(quantize)
+             .map_err(|_| resource("biome parameter value"))
+     };
+-    let mut entries = Vec::new();
+-    for entry in report["biomes"]
+-        .as_array()
+-        .ok_or_else(|| resource("biome parameter report"))?
+-    {
++
++    let mut entries = Vec::with_capacity(rows.len());
++    for entry in rows {
+         let parameters = &entry["parameters"];
+-        let mut coordinates = Vec::new();
+-        for key in [
++        let mut coordinates = [[0; 2]; 6];
++        for (coordinate, key) in coordinates.iter_mut().zip([
+             "temperature",
+             "humidity",
+             "continentalness",
+             "erosion",
+             "depth",
+             "weirdness",
+-        ] {
++        ]) {
+             let value = &parameters[key];
+-            coordinates.push(match value.as_array() {
+-                Some(range) if range.len() == 2 => {
+-                    serde_json::json!([float(&range[0])?, float(&range[1])?])
+-                }
++            *coordinate = match value.as_array() {
++                Some(range) if range.len() == 2 => [float(&range[0])?, float(&range[1])?],
+                 None if value.is_number() => {
+-                    let v = float(value)?;
+-                    serde_json::json!([v, v])
++                    let value = float(value)?;
++                    [value; 2]
+                 }
+                 _ => return Err(resource("biome parameter interval")),
+-            });
++            };
+         }
+-        entries.push(serde_json::json!({
+-            "coordinates": coordinates,
+-            "offset": float(&parameters["offset"])?,
+-            "biome": entry["biome"],
+-        }));
++        entries.push(QuantizedBiome {
++            biome: &entry["biome"],
++            coordinates,
++            offset: float(&parameters["offset"])?,
++        });
+     }
+-    Ok(Value::Array(entries).to_string())
++    Ok(serde_json::to_string(&entries)?)
+ }
+ /// `load` on a thread of its own ("Worldgen loader").
+ fn loading<T: Send + 'static>(

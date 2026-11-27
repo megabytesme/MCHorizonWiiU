@@ -1,0 +1,194 @@
+diff --git a/crates/horizon-assets/src/blockstate/bind.rs b/crates/horizon-assets/src/blockstate/bind.rs
+index e6b2109..a39c532 100644
+--- a/crates/horizon-assets/src/blockstate/bind.rs
++++ b/crates/horizon-assets/src/blockstate/bind.rs
+@@ -74,14 +74,13 @@ impl BoundCondition {
+             ),
+         })
+     }
+-    fn matches(&self, state: &Properties) -> bool {
++    fn matches<'a>(&self, lookup: impl Fn(&str) -> Option<&'a str> + Copy) -> bool {
+         match self {
+-            Self::Or(values) => values.iter().any(|v| v.matches(state)),
+-            Self::And(values) => values.iter().all(|v| v.matches(state)),
++            Self::Or(values) => values.iter().any(|v| v.matches(lookup)),
++            Self::And(values) => values.iter().all(|v| v.matches(lookup)),
+             Self::Properties(values) => values.iter().all(|(key, terms)| {
+-                state
+-                    .get(key)
+-                    .is_some_and(|value| terms.iter().any(|t| (value == &t.value) ^ t.negated))
++                lookup(key)
++                    .is_some_and(|value| terms.iter().any(|t| (value == t.value) ^ t.negated))
+             }),
+         }
+     }
+@@ -114,6 +113,18 @@ impl BlockStateDefinition {
+         &self,
+         schema: &PropertySchema,
+         states: &[Properties],
++    ) -> Result<Vec<Option<SelectedModels>>> {
++        self.bind_ordered(schema, states.iter(), |state, key| {
++            state.get(key).map(String::as_str)
++        })
++    }
++
++    /// Bind the same canonical state order from an existing property store.
++    pub fn bind_ordered<'a, P: 'a>(
++        &self,
++        schema: &PropertySchema,
++        states: impl ExactSizeIterator<Item = &'a P> + Clone,
++        lookup: impl Fn(&'a P, &str) -> Option<&'a str> + Copy,
+     ) -> Result<Vec<Option<SelectedModels>>> {
+         let mut result = vec![None; states.len()];
+         if let Some(variants) = &self.variants {
+@@ -121,10 +132,10 @@ impl BlockStateDefinition {
+                 let Ok(predicate) = variant_predicate(key, schema) else {
+                     continue;
+                 };
+-                for (target, state) in result.iter_mut().zip(states) {
++                for (target, state) in result.iter_mut().zip(states.clone()) {
+                     if predicate
+                         .iter()
+-                        .all(|(key, value)| state.get(key) == Some(value))
++                        .all(|(key, value)| lookup(state, key) == Some(value.as_str()))
+                         && target.replace(SelectedModels::Variant(index)).is_some()
+                     {
+                         break;
+@@ -148,7 +159,9 @@ impl BlockStateDefinition {
+                         .iter()
+                         .enumerate()
+                         .filter_map(|(index, p)| {
+-                            p.as_ref().is_none_or(|p| p.matches(state)).then_some(index)
++                            p.as_ref()
++                                .is_none_or(|p| p.matches(|key| lookup(state, key)))
++                                .then_some(index)
+                         })
+                         .collect();
+                     *target = Some(SelectedModels::Multipart(selected));
+diff --git a/crates/horizon-client-render/src/models/catalog.rs b/crates/horizon-client-render/src/models/catalog.rs
+index 2976f5c..d3a3cc2 100644
+--- a/crates/horizon-client-render/src/models/catalog.rs
++++ b/crates/horizon-client-render/src/models/catalog.rs
+@@ -15,6 +15,7 @@ use horizon_core::{
+     position::BlockPos,
+     random::{LegacyRandom, position_seed},
+ };
++use horizon_world::block_state_properties::BlockProperties;
+ use horizon_world::{
+     chunk::BlockState,
+     registry::{BlockRegistry, BlockStateId},
+@@ -251,22 +252,54 @@ fn definition_layers(text: &str) -> std::result::Result<Vec<String>, String> {
+         _ => Ok(vec![text.to_owned()]),
+     }
+ }
++/// Prepared rows and registry rows have separate producers. Use the
++/// registry's owned maps only after checking the complete ordered input.
++/// Any other JSON shape keeps the original decoding and error order.
++fn prepared_states_match(raw: &Value, native: &[(BlockStateId, &BlockProperties)]) -> bool {
++    raw.as_array().is_some_and(|raw| {
++        raw.len() == native.len()
++            && raw.iter().zip(native).all(|(raw, (_, props))| {
++                raw.as_object().is_some_and(|row| {
++                    row.len() == props.len()
++                        && props.iter().all(|(key, value)| {
++                            row.get(key).and_then(Value::as_str) == Some(value.as_str())
++                        })
++                })
++            })
++    })
++}
++
+ /// One layer of block `block`'s blockstate file, read and bound to its `possible` states:
+ /// vanilla's variants and multipart, or the picks of the definition type a mod registered.
+ fn bind_layer(
+     text: &str,
+     block: &str,
+     schema: &PropertySchema,
+-    possible: &[Properties],
++    possible: &mut Option<Vec<Properties>>,
++    native_order: &[(BlockStateId, &BlockProperties)],
+ ) -> std::result::Result<(BlockStateDefinition, Vec<Option<SelectedModels>>), String> {
+     match BlockStateFile::from_json(text).map_err(|e| e.to_string())? {
+         BlockStateFile::Vanilla(definition) => {
+-            let bound = definition
+-                .bind(schema, possible)
+-                .map_err(|e| e.to_string())?;
++            let bound = match possible.as_deref() {
++                Some(possible) => definition.bind(schema, possible),
++                None => definition.bind_ordered(
++                    schema,
++                    native_order.iter().map(|(_, props)| *props),
++                    |state, key| state.get(key).map(String::as_str),
++                ),
++            }
++            .map_err(|e| e.to_string())?;
+             Ok((definition, bound))
+         }
+         BlockStateFile::Typed { kind, config } => {
++            // The typed mod interface still takes a contiguous slice. Only
++            // materialize rows from the registry when that interface needs it.
++            let possible = possible.get_or_insert_with(|| {
++                native_order
++                    .iter()
++                    .map(|(_, props)| props.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
++                    .collect()
++            });
+             crate::mod_block_state_models::instantiate(&kind, block, &config, possible)
+                 .map(BlockStateDefinition::from_picks)
+         }
+@@ -375,7 +408,21 @@ impl StateModels {
+                     Ok((key.clone(), values))
+                 })
+                 .collect::<Result<_>>()?;
+-            let possible: Vec<Properties> = serde_json::from_value(facts["states"].clone())?;
++            let native_order: Vec<_> = by_name
++                .get(name.as_str())
++                .map(Vec::as_slice)
++                .unwrap_or_default()
++                .iter()
++                .map(|&id| (id, &registry.state(id).expect("indexed state").properties))
++                .collect();
++            let raw_states = &facts["states"];
++            let mut possible = if prepared_states_match(raw_states, &native_order) {
++                None
++            } else {
++                Some(serde_json::from_value::<Vec<Properties>>(
++                    raw_states.clone(),
++                )?)
++            };
+             // Vanilla's BlockStateModelLoader: a definition that does not
+             // read or bind is logged and left out; with none left the block
+             // gets no model, and the other blocks still load. A file several
+@@ -395,7 +442,7 @@ impl StateModels {
+             };
+             let mut loaded = Vec::with_capacity(layers.len());
+             for text in &layers {
+-                match bind_layer(text, &name, &schema, &possible) {
++                match bind_layer(text, &name, &schema, &mut possible, &native_order) {
+                     Ok(layer) => loaded.push(layer),
+                     Err(e) => log::warn!("Horizon: blockstate definition {file} not loaded: {e}"),
+                 }
+@@ -403,19 +450,10 @@ impl StateModels {
+             if loaded.is_empty() {
+                 continue;
+             }
+-            let native_order: Vec<_> = by_name
+-                .get(name.as_str())
+-                .map(Vec::as_slice)
+-                .unwrap_or_default()
+-                .iter()
+-                .map(|&id| (id, &registry.state(id).expect("indexed state").properties))
+-                .collect();
+-            if native_order.len() != possible.len()
+-                || native_order
+-                    .iter()
+-                    .zip(&possible)
+-                    .any(|((_, a), b)| *a != b)
+-            {
++            if possible.as_ref().is_some_and(|possible| {
++                native_order.len() != possible.len()
++                    || native_order.iter().zip(possible).any(|((_, a), b)| *a != b)
++            }) {
+                 return Err(
+                     "model state definitions disagree with the imported block registry".into(),
+                 );

@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "67ad79271790c3deb654e6eef100f78a8c982ed3",
+  "output_tree": "6c8827eb8f2120b3c0ce479e0e6fe0eddf8db173",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1124,6 +1124,24 @@
       "sha256": "ba8934087ae6d9d33867a0c478aa565fa23978b27e854a9c64b7b0b1ef78527a",
       "input_tree": "be10e69dcf76ba2dc473d98da77cad4453ebb1b7",
       "output_tree": "67ad79271790c3deb654e6eef100f78a8c982ed3"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0186-borrow-ordered-model-states.patch",
+      "sha256": "4202b889f1055cc1c76f418c8521ad3d39df1e5d91ba570a10ccc84eabbf2030",
+      "input_tree": "67ad79271790c3deb654e6eef100f78a8c982ed3",
+      "output_tree": "d5ff2ca61388cbf9ffd91c97fd517fee4e083649"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0187-reuse-startup-occlusion-faces.patch",
+      "sha256": "cc28a2dbe6a1ecffc2463f4c4ea936a963e7331278b1a87c03024105054c4529",
+      "input_tree": "d5ff2ca61388cbf9ffd91c97fd517fee4e083649",
+      "output_tree": "7a8de3b7511da4b8c0fa6f85e9859cbfa89b2c04"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0188-quantize-biome-report.patch",
+      "sha256": "9e029c6b81bf8654e2bafe3fea654e5af9da8b582e4ab61897ae625d58428208",
+      "input_tree": "7a8de3b7511da4b8c0fa6f85e9859cbfa89b2c04",
+      "output_tree": "6c8827eb8f2120b3c0ce479e0e6fe0eddf8db173"
     }
   ],
   "candidate": {
