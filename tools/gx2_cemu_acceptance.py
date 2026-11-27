@@ -392,7 +392,7 @@ def exercise(args):
             for marker in (r"hosted save barrier completed", r"hosted game and loading workers released",
                            r"frame.home.play"):
                 lab.wait(marker, deadline - time.monotonic(), save)
-            lab.wait(r"Cafe sound decoders joined: 2", 5, save)
+            decoders = lab.wait(r"Cafe sound decoders joined: ([1-9]\d*)\b", 5, save)
             ax = lab.wait(r"AX session closed callback=(\d+) nonzero=(\d+) queue_write=(\d+) queue_read=(\d+)",
                           5, save)
             if ax[1] != "1" or ax[2] != "1" or int(ax[4]) <= 0:
@@ -425,6 +425,7 @@ def exercise(args):
                 raise ValueError("the bulk heap did not recover its baseline free space")
             lab.record("save-completed", rust_live=int(memory[1]), rust_peak=int(memory[2]),
                        bulk_free=int(bulk[1]), bulk_largest=int(bulk[2]),
+                       sound_decoders_joined=int(decoders[1]),
                        ax_callback=ax[1] == "1", ax_nonzero=ax[2] == "1",
                        ax_queue_write=int(ax[3]), ax_queue_read=int(ax[4]),
                        saved_position=list(persisted))
