@@ -79,6 +79,10 @@ before expanding that architecture.
   GamePad capture because the Cemu test profile selected it as primary. The
   harness now opens the TV in the main window. The three matched physical
   arms are staged. [Grouped HUD trial](grouped-hud-trial.md)
+- The native 24-byte half-position fixture matched stock RGBA under two
+  lightmaps on both outputs. Reversed water quad reuse also matched the
+  original sorted draws. Eligible terrain and memory savings in ordinary
+  gameplay still need measurement. [Terrain format trials](terrain-format-trials.md)
 - The verified archive trial shares one freshly checked descriptor across
   ordinary resource and HUD preparation. The Cemu warm round reached
   gameplay 80.766 seconds sooner and both rounds restored the original
