@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "6c8827eb8f2120b3c0ce479e0e6fe0eddf8db173",
+  "output_tree": "b1dbd537da264c71c5bc1823cbd64166005562a6",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1142,6 +1142,18 @@
       "sha256": "9e029c6b81bf8654e2bafe3fea654e5af9da8b582e4ab61897ae625d58428208",
       "input_tree": "7a8de3b7511da4b8c0fa6f85e9859cbfa89b2c04",
       "output_tree": "6c8827eb8f2120b3c0ce479e0e6fe0eddf8db173"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0189-exact-half-solid-terrain.patch",
+      "sha256": "1a20f51827862d3c2442b01b91e7efb39168b7261094dc39c2ac69552180092d",
+      "input_tree": "6c8827eb8f2120b3c0ce479e0e6fe0eddf8db173",
+      "output_tree": "a39b4ac3fd19aaaccec38b7a2a0ba33e850181da"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0190-reuse-reverse-translucent-quads.patch",
+      "sha256": "2b24ce51b301fcf94efe6e8301242866ea0559ff5dd70580d00c4b1f2f040825",
+      "input_tree": "a39b4ac3fd19aaaccec38b7a2a0ba33e850181da",
+      "output_tree": "b1dbd537da264c71c5bc1823cbd64166005562a6"
     }
   ],
   "candidate": {
