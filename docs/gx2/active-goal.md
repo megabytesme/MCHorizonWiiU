@@ -70,8 +70,9 @@ before expanding that architecture.
   stationary display capture matched its stock counterpart byte for byte.
   The compact layouts each held 318,508 eligible vertices in the matched
   651-section resident set. The 20-byte layout saved 1,274,032 payload
-  bytes relative to the 24-byte layout. Per-output compact draw proof
-  awaits the corrected instrumentation. The same-run replay reducer
+  bytes relative to the 24-byte layout. A separate instrumented Cemu
+  replay verified actual stride and shader use on each output. The
+  same-run solid replay reducer
   joined 1,680 paired frames, including 1,545 with warm lists on both
   displays. Physical throughput is still pending.
 - The matched RC 68 warm HUD test reduced the first ready Game frame
@@ -91,9 +92,9 @@ before expanding that architecture.
   and raised host solid submission time. Both arms are held from physical
   timing while the geometry is corrected. [Physical queue](post-rc35-queue.md#physical-qualification-order)
 - The RC 69 opaque no-kill trial retained byte-identical stationary
-  captures on both displays. Its fresh Cemu cache proves the exact
-  native no-kill shader reached the TV draw path with culling disabled.
-  GamePad shader activation and physical cost remain pending.
+  captures on both displays. A fresh Cemu draw probe verified the exact
+  no-kill shader on both displays with culling disabled. Physical cost
+  remains pending. [Paired draw coverage](terrain-format-trials.md#rc-69-gameplay-draw-coverage)
 - The original RC 69 Village flight reached both stock readiness gates
   and completed in offline Cemu. It had paired terrain for 36.69% of
   the timed route. At the first loss both outputs still tested 651

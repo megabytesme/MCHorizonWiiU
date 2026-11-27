@@ -28,7 +28,10 @@
     "resident_sections": 651,
     "resident_compact_vertices_per_arm": 318508,
     "half20_saving_over_half24_bytes": 1274032,
-    "compact_draw_coverage": "pending_corrected_instrumentation",
+    "compact_draw_coverage": "exact_cemu_draw_path_on_both_outputs",
+    "cemu_selected_draws_per_display_per_format": 8192,
+    "combined_draw_proof_sha256": "43b4a7dee1ad5347c3304a7c2d85dd2b113804c779b4eaec41f049df45240e5a",
+    "native_sparse_counter": "pending",
     "replay_joined_pairs": 1680,
     "replay_warm_both_pairs": 1545,
     "physical_throughput": "pending"
@@ -58,10 +61,11 @@
     "candidate": "0.8.0-rc.69",
     "profile_variant": "4o",
     "scanouts_match_by_output": true,
-    "exact_no_kill_shader_draw_path": "verified_on_tv_in_cemu",
-    "gamepad_activation": "pending_per_output_evidence",
+    "exact_no_kill_shader_draw_path": "verified_on_tv_and_gamepad_in_cemu",
+    "cemu_selected_draws_per_display": 8192,
     "native_fragment_shader_sha256": "99b44c68716a6dd209cfdb3cd7096afd7bf540baf961259a9052a47ef37f6605",
-    "cache_report_sha256": "22c5c3eb19addb5de8f36307218ac25e2117adc934daa1e96968b8a5beb5180e"
+    "cache_report_sha256": "22c5c3eb19addb5de8f36307218ac25e2117adc934daa1e96968b8a5beb5180e",
+    "combined_draw_proof_sha256": "43b4a7dee1ad5347c3304a7c2d85dd2b113804c779b4eaec41f049df45240e5a"
   },
   "stock_village_cemu_replay": {
     "candidate": "0.8.0-rc.69",

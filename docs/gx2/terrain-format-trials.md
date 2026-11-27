@@ -38,6 +38,30 @@ stayed identical. This saves eight logical bytes per eligible vertex
 against stock. Aligned allocation and real geometry coverage still need
 measurement. [Half20 fixture](../../wiiu/diagnostics/gx2-half20-light/README.md)
 
+## RC 69 gameplay draw coverage
+
+The exact RC 69 RPX completed four offline saved-world arms in Cemu.
+The draw probe checked the complete GX2 vertex, fragment and fetch
+program bytes and the live vertex stride when Vulkan recorded each
+indexed draw. Stock 28-byte, opaque no-kill, half24 and half20 each
+reached 8,192 matching draws on TV and 8,192 on GamePad. The visible
+world viewports were 1440×809 and 641×360, with separate padded backing
+extents of 1440×816 and 672×368. The probe verified both dimensions and
+kept the viewport identity separate from the attachment padding.
+
+Each arm reached 100 terrain sections per output before its 45-second
+stationary dwell, then passed movement, save, audio, bulk heap recovery
+and clean exit. Each display capture matched its stock counterpart byte
+for byte. Separate uninstrumented runs measured 318,508 eligible compact
+vertices at 651 resident sections. The 20-byte layout saved 1,274,032
+logical payload bytes over the 24-byte layout.
+
+These observations cover independent gameplay draw selection in Cemu.
+The native sparse counter and physical timing remain pending. RC 69 RPX
+SHA-256 `b330fe80f86c1b12fa79084ff66be7f8a2cf895bb092f1710e52121ed6250d78`.
+Paired draw receipt SHA-256
+`43b4a7dee1ad5347c3304a7c2d85dd2b113804c779b4eaec41f049df45240e5a`.
+
 ## Packed integers and material specialization
 
 Explicit R, G, 0, 1 selectors corrected the UINT2 fetch setup. The 24-byte
