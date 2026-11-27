@@ -1,0 +1,16 @@
+diff --git a/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSLAttrDecoder.cpp b/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSLAttrDecoder.cpp
+index 76d7632..7e6bbda 100644
+--- a/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSLAttrDecoder.cpp
++++ b/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSLAttrDecoder.cpp
+@@ -486,6 +486,11 @@ void LatteDecompiler_emitAttributeDecodeGLSL(LatteDecompilerShader* shaderContex
+ 			src->add("attrDecoder.xy = floatBitsToUint(vec2(float(int(attrDecoder.x)), float(int(attrDecoder.y))));" _CRLF);
+ 			src->add("attrDecoder.zw = uvec2(0);" _CRLF);
+ 		}
++		else if (attrib->format == FMT_16 && attrib->nfa == 2 && attrib->isSigned == 0)
++		{
++			_readBigEndianAttributeU16x1(shaderContext, src, attributeInputIndex);
++			src->add("attrDecoder.x = floatBitsToUint(float(attrDecoder.x));" _CRLF);
++		}
+ 		else if (attrib->format == FMT_16 && attrib->nfa == 1 && attrib->isSigned == 0)
+ 		{
+ 			_readBigEndianAttributeU16x1(shaderContext, src, attributeInputIndex);

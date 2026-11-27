@@ -356,6 +356,8 @@
     "logical_bytes_per_vertex_stock_half_half20": [28, 24, 20],
     "cemu_independent_output_rows_passed": 24,
     "integer_light_values_exhaustively_verified": 65536,
+    "cemu_scalar_vulkan_interpreter_and_multicore_rows_passed": [24, 24],
+    "cemu_scalar_decoder_receipt": "../../wiiu/cemu/VERTEX-FETCH.md",
     "physical_and_hosted_gameplay": "pending",
     "receipt": "../../wiiu/diagnostics/gx2-half20-light/README.md"
   },

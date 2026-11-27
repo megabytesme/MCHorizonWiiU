@@ -16,8 +16,8 @@ represents each original unsigned value as binary32.
 
 The second RPX draws a hardware-only scalar contrast using unsigned
 scaled 16 at byte six. Pinned Cemu's legacy decoder handles unsigned
-scaled pairs but has no unsigned scaled scalar path. Keep the scalar
-RPX separate from Cemu testing.
+scaled pairs. The scalar RPX needs the tested decoder patch for Cemu
+Vulkan. [Decoder validation](../../cemu/VERTEX-FETCH.md)
 
 Build from exact assembled RC68 engine
 b24421b563b1195818039eb6c0f1c49ea3c4bf22 and the pinned compiler.
