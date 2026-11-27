@@ -163,6 +163,12 @@ before expanding that architecture.
   probe reached Game in 51.538 seconds, down from 54.451. All 32 deadline
   records joined exact HZP3 rows. The physical timing and settled
   section gate are pending. [RC 65 evidence](rc65-qualification.md)
+- RC 66 ran the bounded solid terrain list on each independently
+  rendered output in Cemu. Both opt-in lists queued cold and warm.
+  Matched solid CPU stages ran about 2.0–2.5 ms per view on the stock
+  arm and 0.027–0.031 ms on the replay arm. Both lifecycle runs saved,
+  resumed Night and recovered the full GX2 bulk heap. Physical cadence
+  and active-frame coverage remain open. [RC 66 evidence](rc66-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

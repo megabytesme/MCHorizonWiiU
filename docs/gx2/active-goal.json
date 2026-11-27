@@ -313,6 +313,18 @@
     "physical_settled_deadline_capture": "pending_exact_section_gate",
     "receipt": "rc65-qualification.md"
   },
+  "worldgen_sharing_and_paired_solid_replay": {
+    "candidate": "0.8.0-rc.66",
+    "engine_tree": "393c268a6cf0af5b4bcc2199c0a8482b4d454d13",
+    "rpx_sha256": "4a6ea3453fb6b71690aba15ad5ffa5bc392e40f6028557e1b5ccac9396d2116c",
+    "wuhb_sha256": "57b2f019037fefa5b046752371236d5ff5a6af486f233cad6699851afa5a0cec",
+    "matched_cemu_first_game_ms": [51538, 51340],
+    "matched_cemu_solid_stage_cohorts": 5,
+    "native_warm_replay_seen_on_both_outputs_in_cemu": true,
+    "cemu_external_scanouts_match_each_output": true,
+    "physical_replay": "pending_updated_recorder_guard_and_active_cohort_observation",
+    "receipt": "rc66-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
