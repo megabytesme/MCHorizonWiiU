@@ -1,0 +1,1015 @@
+diff --git a/wiiu/loading_app/Cargo.toml b/wiiu/loading_app/Cargo.toml
+index e8b813cd8afc8ae134466364ecf9c07e8243345b..ff9313349775aa916076dbaa671ce331ef325a9f 100644
+--- a/wiiu/loading_app/Cargo.toml
++++ b/wiiu/loading_app/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ crate-type = ["staticlib"]
+ 
+ [features]
++gx2-screen-overlays = ["gx2-hud-view-lanes", "horizon-wiiu-loading-host/gx2-screen-overlays"]
+ gx2-hud-view-lanes = ["horizon-wiiu-loading-host/gx2-hud-view-lanes"]
+ stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-loading-host/stock-hud-seed"]
+ 
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index a1d223a256822d2bd8aaad94e92be779f5f02581..50a516ed4703dd2dd22dd6bfc1845bd4fc52559c 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -248,3 +248,20 @@ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+ target_link_libraries(horizon_wiiu_loading_host
+    PUBLIC horizon_gx2_hud horizon_gx2_panorama horizon_gx2_terrain
+    PRIVATE wut m)
++
++option(HORIZON_GX2_SCREEN_OVERLAYS "Build the optional scaled GX2 screen effects trial" OFF)
++if(HORIZON_GX2_SCREEN_OVERLAYS)
++   set(SCREEN_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/screen_gfd.o")
++   add_custom_command(
++      OUTPUT "${SCREEN_GFD_OBJECT}"
++      COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/screen.vert"
++         -ps "${CMAKE_CURRENT_SOURCE_DIR}/screen.frag" -o screen.gsh
++      COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++         -I binary -O elf32-powerpc -B powerpc:common screen.gsh screen_gfd.o
++      DEPENDS screen.vert screen.frag
++      WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++      VERBATIM)
++   set_source_files_properties("${SCREEN_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++   target_sources(horizon_wiiu_loading_host PRIVATE screen_overlay.c screen_geometry.c "${SCREEN_GFD_OBJECT}")
++   target_compile_definitions(horizon_wiiu_loading_host PRIVATE HORIZON_GX2_SCREEN_OVERLAYS=1)
++endif()
+diff --git a/wiiu/loading_host/Cargo.toml b/wiiu/loading_host/Cargo.toml
+index 74d1325bdcd013b9e44db06f62dfa459a71c5b25..cc3b824bdc8cb655d0a6441dfc0ddbfb31ae5300 100644
+--- a/wiiu/loading_host/Cargo.toml
++++ b/wiiu/loading_host/Cargo.toml
+@@ -8,6 +8,7 @@ publish = false
+ path = "lib.rs"
+ 
+ [features]
++gx2-screen-overlays = ["gx2-hud-view-lanes"]
+ gx2-hud-view-lanes = ["horizon-wiiu-platform/gx2-hud-view-lanes"]
+ stock-hud-seed = ["horizon-client/stock-hud-seed", "horizon-wiiu-platform/stock-hud-seed"]
+ 
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index d3f9343a5c6a03e46ef11346f25f4432aff53b68..5505be402d19394e1a8850423183cae3e1df35be 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -92,6 +92,9 @@ static bool shared_model_uploads, guarded_shared_hud, frame_laps_mode;
+ static uint32_t hud_patch_mode, tv_terrain_wait_mode;
+ static bool skip_scaled_output_clear, defer_flip, skip_terrain_waits, solid_back_culling;
+ static bool solid_axis_ranges, opaque_terrain_shader, solid_draw_plan;
++#ifdef HORIZON_GX2_SCREEN_OVERLAYS
++static bool screen_overlays_marker, screen_overlays;
++#endif
+ #ifdef HORIZON_GX2_HUD_VIEW_LANES
+ static bool hud_view_lanes_marker, hud_view_lanes;
+ #endif
+@@ -153,6 +156,10 @@ static void select_mode(int mode, int variant)
+    solid_draw_plan = variant == 'v';
+    opaque_terrain_shader = variant == 'o';
+    solid_back_culling = variant == 'b' || solid_axis_ranges;
++#ifdef HORIZON_GX2_SCREEN_OVERLAYS
++   screen_overlays = screen_overlays_marker && mode == '4' &&
++      (variant == EOF || variant == '\r' || variant == '\n');
++#endif
+ #ifdef HORIZON_GX2_HUD_VIEW_LANES
+    hud_view_lanes = hud_view_lanes_marker && mode == '4' &&
+       (variant == EOF || variant == '\r' || variant == '\n');
+@@ -210,6 +217,15 @@ void horizon_gx2_profile_init(void)
+       hud_view_lanes_marker = true;
+       fclose(marker);
+    }
++#endif
++#ifdef HORIZON_GX2_SCREEN_OVERLAYS
++   if (plain_profile) {
++      marker = fopen(ROOT "gx2-screen-overlays.enable", "rb");
++      if (marker) {
++         screen_overlays_marker = true;
++         fclose(marker);
++      }
++   }
+ #endif
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) init_tv_terrain_wait_trial();
+@@ -275,6 +291,13 @@ bool horizon_gx2_profile_view_hud(void)
+ }
+ #endif
+ 
++#ifdef HORIZON_GX2_SCREEN_OVERLAYS
++bool horizon_gx2_profile_screen_overlays(void)
++{
++   return screen_overlays && tv_terrain_wait_mode == 0;
++}
++#endif
++
+ bool horizon_gx2_profile_shared_hud_upload(void)
+ {
+    return shared_hud_upload;
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 5bb8c679c7647935d83ca66ccc1bab39100d6d78..ee51ab8602d98bb02dff76e758922cb3b3acc86b 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -20,6 +20,10 @@ mod outline;
+ mod precipitation;
+ mod sky_bodies;
+ mod stock_sky;
++#[cfg(feature = "gx2-screen-overlays")]
++mod screen_overlays;
++#[cfg(feature = "gx2-screen-overlays")]
++use screen_overlays::{Reason as ScreenOverlayReason, Trial as ScreenOverlayTrial};
+ 
+ use horizon_client::chunk::ColumnLayout;
+ use horizon_client::gfx::SectionKey;
+@@ -805,6 +809,8 @@ pub struct Gx2LoadingPresenter<'shader> {
+     retired_pair: u64,
+     #[cfg(feature = "gx2-hud-view-lanes")]
+     hud_views: HudViewTrial,
++    #[cfg(feature = "gx2-screen-overlays")]
++    screen_overlays: ScreenOverlayTrial,
+     world_scale: WorldScale,
+     requested_world_scale: u32,
+     retry_world_scale: bool,
+@@ -891,6 +897,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             retired_pair: 0,
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             hud_views: HudViewTrial::default(),
++            #[cfg(feature = "gx2-screen-overlays")]
++            screen_overlays: ScreenOverlayTrial::default(),
+             world_scale: WorldScale::default(),
+             requested_world_scale: 100,
+             retry_world_scale: false,
+@@ -987,6 +995,10 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             if HudViewTrial::requested() {
+                 self.invalidate_surface_retirement();
+             }
++            #[cfg(feature = "gx2-screen-overlays")]
++            if ScreenOverlayTrial::requested() {
++                self.invalidate_surface_retirement();
++            }
+         }
+         self.outputs = outputs?;
+         self.layout = self.outputs[1];
+@@ -1006,6 +1018,10 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             || self.hud.is_none();
+         if new_hud {
+             self.invalidate_tv_terrain_wait_ticket();
++            #[cfg(feature = "gx2-screen-overlays")]
++            if ScreenOverlayTrial::requested() {
++                self.invalidate_surface_retirement();
++            }
+             // Create before layout: HorizonPresenter resets the original font
+             // and UI-theme caches so this frame's new batch has valid glyph
+             // and transient UI-texture UVs.
+@@ -2297,6 +2313,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         {
+             return;
+         }
++        #[cfg(feature = "gx2-screen-overlays")]
++        if self.retired_pair != 0
++            && outputs.as_ref() == Ok(&self.outputs)
++            && ScreenOverlayTrial::requested()
++        {
++            return;
++        }
+         if self.retired_pair != 0
+             && (outputs.as_ref() != Ok(&self.outputs)
+                 || unsafe { horizon_gx2_profile_tv_terrain_wait(false) } == 0)
+@@ -2316,6 +2339,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.retired_pair = 0;
+         #[cfg(feature = "gx2-hud-view-lanes")]
+         self.hud_views.release_surface();
++        #[cfg(feature = "gx2-screen-overlays")]
++        self.screen_overlays.release_surface();
+         self.world_scale.release();
+         self.clear_native_sections();
+         self.terrain = None;
+@@ -2471,6 +2496,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Result<(), &'static str>,
+             profile: Gx2ProfileDelta,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
++            per_output_terrain_waits: bool,
++            #[cfg(feature = "gx2-screen-overlays")]
++            screen_ready: bool,
++            #[cfg(feature = "gx2-screen-overlays")]
++            screen_drawn: u32,
+             atlas_patches_prepared: bool,
+             skip_terrain_waits: bool,
+             tv_terrain_wait_ticket: u64,
+@@ -2511,7 +2541,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             };
+             let target_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             if !draw.skip_terrain_waits
+-                && draw.uploaded_hud.is_none()
++                && draw.per_output_terrain_waits
+                 && !draw.frame.title
+                 && draw.presenter.terrain.is_some()
+             {
+@@ -2883,6 +2913,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 );
+                 draw.presenter.frame_work.terrain_sections[index] = sections_drawn;
+             }
++            #[cfg(feature = "gx2-screen-overlays")]
++            let composited = world_target.is_some();
+             if let Some(world_target) = world_target {
+                 let _span = Span::new([Stage::WorldCompositeTv, Stage::WorldCompositeDrc][index]);
+                 world_target.composite();
+@@ -2892,6 +2924,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 draw.result = Err("GX2 HUD presenter is not prepared");
+                 return -1;
+             };
++            #[cfg(feature = "gx2-screen-overlays")]
++            if draw.screen_ready && composited {
++                let screen = &mut draw.presenter.screen_overlays;
++                if hud.with_native_atlas(|atlas| unsafe { screen.draw(atlas, target, rect) }) {
++                    draw.screen_drawn |= 1 << target;
++                }
++            }
+             cafe_profile::count(Counter::HudVertices, draw.frame.hud.vertices.len());
+             let hud_start = GX2_PROFILE_ENABLED.then(Instant::now);
+             let stock_hud = |hud: &mut HorizonPresenter<'_>, atlas_updates| unsafe {
+@@ -3107,6 +3146,47 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let grouped_present = !frame.title
+             && self.terrain.is_some()
+             && unsafe { horizon_gx2_profile_grouped_present(self.screenshot_requested.is_some()) };
++        let per_output_terrain_waits = uploaded_hud.is_none();
++        #[cfg(feature = "gx2-screen-overlays")]
++        let screen_trial = scaled_world
++            && !frame.title
++            && !frame.screen.is_empty()
++            && self.terrain.is_some()
++            && self.screenshot_requested.is_none()
++            && !view_hud_requested
++            && !grouped_present
++            && ScreenOverlayTrial::requested()
++            && !scaled_color_clear_enabled()
++            && unsafe { horizon_loading_host_guarded_hud_available() };
++        #[cfg(feature = "gx2-screen-overlays")]
++        let screen_can_preupload =
++            screen_trial && unsafe { horizon_loading_host_guarded_hud_reuse(prior_pair) };
++        #[cfg(feature = "gx2-screen-overlays")]
++        let (uploaded_hud, screen_ready) = {
++            let mut screen_upload = None;
++            if screen_trial {
++                if screen_can_preupload {
++                    let rects = unsafe { self.screen_overlays.upload_retired(frame.screen) };
++                    if let Some(rects) = rects {
++                        if let Some(hud) = self.hud.as_mut() {
++                            let _upload = Span::new(Stage::TextureUpload);
++                            screen_upload = unsafe {
++                                hud.upload_batch_for_screen_after_wait(
++                                    frame.hud, self.layout, frame.ticks, &rects[..frame.screen.len()],
++                                )
++                            }.ok();
++                        }
++                        if screen_upload.is_none() {
++                            self.screen_overlays.reason(ScreenOverlayReason::Atlas);
++                        }
++                    }
++                } else {
++                    self.screen_overlays.reason(ScreenOverlayReason::Bootstrap);
++                }
++            }
++            let ready = screen_upload.is_some();
++            (screen_upload.or(uploaded_hud), ready)
++        };
+         let scaled_color_only = !frame.title
+             && self.terrain.is_some()
+             && scaled_world
+@@ -3166,6 +3246,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
+             uploaded_hud,
++            per_output_terrain_waits,
++            #[cfg(feature = "gx2-screen-overlays")]
++            screen_ready,
++            #[cfg(feature = "gx2-screen-overlays")]
++            screen_drawn: 0,
+             atlas_patches_prepared,
+             skip_terrain_waits,
+             tv_terrain_wait_ticket,
+@@ -3177,6 +3262,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let mut retired_pair = 0;
+         let context = (&mut draw as *mut Draw<'_, '_, '_>).cast();
+         let stock_present = |retired_pair: &mut u64| unsafe {
++            #[cfg(feature = "gx2-screen-overlays")]
++            if screen_trial {
++                return ScreenOverlayTrial::present(
++                    draw_target, context, &clear, retired_pair, screen_can_preupload,
++                );
++            }
+             if guarded_hud || tv_wait_mode != 0 {
+                 horizon_loading_host_present_guarded_hud(
+                     draw_target, context, clear.as_ptr(), use_guarded_upload, retired_pair,
+@@ -3203,10 +3294,20 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let host = stock_present(&mut retired_pair);
+         let profile = draw.profile;
+         let draw_result = draw.result;
++        #[cfg(feature = "gx2-screen-overlays")]
++        let screen_drawn = draw.screen_drawn;
+         drop(draw);
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
++        #[cfg(feature = "gx2-screen-overlays")]
++        let screen_complete = screen_overlays::complete(host, outputs, screen_drawn);
++        #[cfg(feature = "gx2-screen-overlays")]
++        if screen_complete {
++            self.screen_overlays.active_pair();
++        } else if screen_trial && (host != 0 || outputs != 3) {
++            self.frame_work.omitted_pass_mask |= screen_overlays::OMISSION;
++        }
+         #[cfg(feature = "gx2-hud-view-lanes")]
+         if view_hud.is_some() {
+             self.hud_views.finish(host == 0 && outputs == 3);
+@@ -3243,6 +3344,10 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             return Err("WHB did not accept both GX2 game frames".into());
+         }
+         for (flag, name) in unsupported {
++            #[cfg(feature = "gx2-screen-overlays")]
++            if flag == screen_overlays::OMISSION && screen_complete {
++                continue;
++            }
+             self.frame_work.omitted_pass_mask |= flag;
+             if self.unsupported_logged & flag == 0 {
+                 log_unsupported_world_pass(name);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 5dcfdd27076ab007fca4cc967a65926d6fe07c60..7d478e32165576bf2e2d7b14ede68311182fc4d9 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -528,6 +528,29 @@ int horizon_loading_host_present_scaled_color(HorizonLoadingDrawTarget draw, voi
+    return present_with_clear(draw, context, rgba, NULL, defer_flip, NULL, NULL, true);
+ }
+ 
++#ifdef HORIZON_GX2_SCREEN_OVERLAYS
++int horizon_loading_host_present_screen_overlays(
++   HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
++   uint64_t *retired_pair, bool prepublished)
++{
++   *retired_pair = 0;
++   last_outputs = 0;
++   last_wait_ns = 0;
++   if (!ProcUIInForeground()) {
++      if (prepublished) last_wait_ns = OSTicksToNanoseconds(drain_guarded_commands());
++      return HORIZON_LOADING_RETRY_FLIP;
++   }
++   bool verified_finish = false;
++   const int result =
++      present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
++   // A scan wait timeout already drained through discard_guarded_pair. An
++   // early error still must retire any pre-frame atlas/geometry invalidation.
++   if (prepublished && !verified_finish && result != HORIZON_LOADING_RETRY_FLIP)
++      last_wait_ns += OSTicksToNanoseconds(drain_guarded_commands());
++   return result;
++}
++#endif
++
+ int horizon_loading_host_present_guarded_hud(
+    HorizonLoadingDrawTarget draw, void *context, const float rgba[4],
+    bool defer_flip, uint64_t *retired_pair)
+diff --git a/wiiu/loading_host/screen.frag b/wiiu/loading_host/screen.frag
+new file mode 100644
+index 0000000000000000000000000000000000000000..86a5db3a8e03dae63e6b339142775e010b76aa03
+--- /dev/null
++++ b/wiiu/loading_host/screen.frag
+@@ -0,0 +1,22 @@
++#version 400
++in vec2 vUv;
++in vec4 vColor;
++uniform sampler2D uAtlas;
++uniform vec4 uRect;
++uniform vec4 uEdges;
++uniform vec4 uMode;
++out vec4 fragColor;
++
++void main(void) {
++    bool clamped = uMode.x != 0.0;
++    vec2 offset = clamped ? vUv : fract(vUv);
++    vec2 uv = uRect.xy + offset * (uRect.zw - uRect.xy);
++    if (clamped) uv = clamp(uv, uEdges.xy, uEdges.zw);
++    vec4 sampled = textureLod(uAtlas, uv, 0.0) * vColor;
++    if (uMode.y != 0.0) {
++        fragColor = vec4(sampled.rgb, 1.0);
++    } else {
++        if (sampled.a <= 0.0) discard;
++        fragColor = sampled;
++    }
++}
+diff --git a/wiiu/loading_host/screen.vert b/wiiu/loading_host/screen.vert
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a6f06fa639bff5c48e0b90ca1953407cc19faee
+--- /dev/null
++++ b/wiiu/loading_host/screen.vert
+@@ -0,0 +1,12 @@
++#version 400
++in vec4 aPosition;
++in vec2 aUv;
++in vec4 aColor;
++out vec2 vUv;
++out vec4 vColor;
++
++void main(void) {
++    gl_Position = aPosition;
++    vUv = aUv;
++    vColor = aColor;
++}
+diff --git a/wiiu/loading_host/screen_geometry.c b/wiiu/loading_host/screen_geometry.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0d3bd89405a4e6d435bea6f33096bd52dd794a2
+--- /dev/null
++++ b/wiiu/loading_host/screen_geometry.c
+@@ -0,0 +1,30 @@
++#include "screen_overlay.h"
++
++#include <math.h>
++#include <stddef.h>
++
++_Static_assert(sizeof(ScreenVertex) == 56, "screen vertex ABI");
++_Static_assert(offsetof(ScreenVertex, uv) == 16 && offsetof(ScreenVertex, color) == 40,
++               "screen vertex fetch offsets");
++_Static_assert(sizeof(ScreenQuad) == 232, "normalized screen command ABI");
++
++bool screen_overlay_valid(const ScreenQuad *quads, uint32_t count)
++{
++    if (count > SCREEN_MAX_QUADS || (count && !quads)) return false;
++    for (uint32_t quad = 0; quad < count; ++quad) {
++        const ScreenQuad *q = &quads[quad];
++        if (q->vignette > 1 || q->sampling & ~(SCREEN_BLUR | SCREEN_CLAMP)) return false;
++        const float *rect = q->vertices[0].rect;
++        if (!(rect[0] >= 0.0f && rect[1] >= 0.0f && rect[2] <= 1.0f && rect[3] <= 1.0f &&
++              rect[0] < rect[2] && rect[1] < rect[3])) return false;
++        for (unsigned corner = 0; corner < 4; ++corner) {
++            const ScreenVertex *v = &q->vertices[corner];
++            if (!(isfinite(v->position[0]) && isfinite(v->position[1]) &&
++                  v->position[2] == 0.0f && v->position[3] == 1.0f &&
++                  isfinite(v->uv[0]) && isfinite(v->uv[1]))) return false;
++            for (unsigned i = 0; i < 4; ++i)
++                if (v->rect[i] != rect[i] || !isfinite(v->color[i])) return false;
++        }
++    }
++    return true;
++}
+diff --git a/wiiu/loading_host/screen_overlay.c b/wiiu/loading_host/screen_overlay.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..2580d6457422c69ed3ee1b795d550932fae1eacf
+--- /dev/null
++++ b/wiiu/loading_host/screen_overlay.c
+@@ -0,0 +1,170 @@
++#include "screen_overlay.h"
++
++#include <gx2/draw.h>
++#include <gx2/registers.h>
++#include <gx2/sampler.h>
++#include <gx2/shaders.h>
++#include <gx2/state.h>
++#include <gx2/texture.h>
++#include <gx2r/buffer.h>
++#include <stdlib.h>
++#include <string.h>
++#include <whb/gfx.h>
++
++extern const uint8_t _binary_screen_gsh_start[];
++
++typedef struct {
++    float rect[4];
++    uint32_t vignette, sampling;
++} ScreenMaterial;
++
++struct ScreenOverlay {
++    WHBGfxShaderGroup shader;
++    GX2RBuffer geometry;
++    GX2Sampler samplers[2];
++    ScreenMaterial materials[SCREEN_MAX_QUADS];
++    uint32_t uniforms[3], atlas_slot, count;
++};
++
++void screen_overlay_destroy_retired(ScreenOverlay *screen)
++{
++    if (!screen) return;
++    if (GX2RBufferExists(&screen->geometry)) GX2RDestroyBufferEx(&screen->geometry, 0);
++    if (screen->shader.vertexShader) WHBGfxFreeShaderGroup(&screen->shader);
++    free(screen);
++}
++
++ScreenOverlay *screen_overlay_create(void)
++{
++    ScreenOverlay *screen = calloc(1, sizeof(*screen));
++    if (!screen) return NULL;
++    WHBGfxShaderGroup *group = &screen->shader;
++    if (!WHBGfxLoadGFDShaderGroup(group, 0, _binary_screen_gsh_start)) goto fail;
++    const GX2PixelShader *ps = group->pixelShader;
++    if (!ps || !group->vertexShader || ps->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++        group->vertexShader->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto fail;
++    const char *names[] = {"uRect", "uEdges", "uMode"};
++    for (unsigned i = 0; i < 3; ++i) {
++        const GX2UniformVar *var = GX2GetPixelUniformVar(ps, names[i]);
++        if (!var || var->type != GX2_SHADER_VAR_TYPE_FLOAT4 || var->count != 1 || var->block >= 0)
++            goto fail;
++        screen->uniforms[i] = var->offset;
++    }
++    if (ps->samplerVarCount != 1 || !ps->samplerVars ||
++        ps->samplerVars[0].type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D ||
++        !ps->samplerVars[0].name || strcmp(ps->samplerVars[0].name, "uAtlas")) goto fail;
++    screen->atlas_slot = ps->samplerVars[0].location;
++    if (!WHBGfxInitShaderAttribute(group, "aPosition", 0, offsetof(ScreenVertex, position),
++                                   GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
++        !WHBGfxInitShaderAttribute(group, "aUv", 0, offsetof(ScreenVertex, uv),
++                                   GX2_ATTRIB_FORMAT_FLOAT_32_32) ||
++        !WHBGfxInitShaderAttribute(group, "aColor", 0, offsetof(ScreenVertex, color),
++                                   GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32) ||
++        !WHBGfxInitFetchShader(group)) goto fail;
++    screen->geometry = (GX2RBuffer){
++        .flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_WRITE |
++                 GX2R_RESOURCE_USAGE_GPU_READ | GX2R_RESOURCE_USAGE_FORCE_MEM2,
++        .elemSize = sizeof(ScreenVertex),
++        .elemCount = SCREEN_MAX_QUADS * 6,
++    };
++    if (!GX2RCreateBuffer(&screen->geometry)) goto fail;
++    GX2InitSampler(&screen->samplers[0], GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
++    GX2InitSampler(&screen->samplers[1], GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
++    return screen;
++
++fail:
++    screen_overlay_destroy_retired(screen);
++    return NULL;
++}
++
++bool screen_overlay_upload_retired(ScreenOverlay *screen, const ScreenQuad *quads,
++                                   uint32_t count)
++{
++    if (!screen) return false;
++    screen->count = 0;
++    if (!screen_overlay_valid(quads, count)) return false;
++    if (!count) return true;
++    ScreenVertex *vertices = GX2RLockBufferEx(&screen->geometry, 0);
++    if (!vertices) return false;
++    static const unsigned corners[] = {0, 1, 2, 0, 2, 3};
++    for (uint32_t i = 0; i < count; ++i) {
++        const ScreenQuad *quad = &quads[i];
++        ScreenMaterial *material = &screen->materials[i];
++        memcpy(material->rect, quad->vertices[0].rect, sizeof(material->rect));
++        material->sampling = quad->sampling;
++        material->vignette = quad->vignette;
++        for (unsigned v = 0; v < 6; ++v) vertices[i * 6 + v] = quad->vertices[corners[v]];
++    }
++    GX2RUnlockBufferEx(&screen->geometry, 0);
++    screen->count = count;
++    return true;
++}
++
++bool screen_overlay_draw(const ScreenOverlay *screen, const void *native_atlas, uint32_t output,
++                         const uint32_t rect[4])
++{
++    if (!screen || output > 1 || !rect) return false;
++    if (!screen->count) return true;
++    const GX2Texture *atlas = native_atlas;
++    if (!atlas || !atlas->surface.image || !atlas->surface.width || !atlas->surface.height)
++        return false;
++    GX2ContextState *context = output ? WHBGfxGetDRCContextState() : WHBGfxGetTVContextState();
++    GX2ColorBuffer *color = output ? WHBGfxGetDRCColourBuffer() : WHBGfxGetTVColourBuffer();
++    GX2DepthBuffer *depth = output ? WHBGfxGetDRCDepthBuffer() : WHBGfxGetTVDepthBuffer();
++    if (!context || !color || !depth || !rect[2] || !rect[3] ||
++        (uint64_t)rect[0] + rect[2] > color->surface.width ||
++        (uint64_t)rect[1] + rect[3] > color->surface.height) return false;
++
++    const float half[2] = {0.5f / atlas->surface.width, 0.5f / atlas->surface.height};
++    /* A clampable sprite occupies at least one texel along each axis. */
++    for (unsigned i = 0; i < screen->count; ++i) {
++        const ScreenMaterial *material = &screen->materials[i];
++        const float *r = material->rect;
++        if ((material->sampling & SCREEN_CLAMP) &&
++            (r[0] + half[0] > r[2] - half[0] || r[1] + half[1] > r[3] - half[1]))
++            return false;
++    }
++
++    GX2SetContextState(context);
++    GX2SetColorBuffer(color, GX2_RENDER_TARGET_0);
++    GX2SetDepthBuffer(depth);
++    GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++    GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++    GX2SetShaderMode(screen->shader.pixelShader->mode);
++    GX2SetFetchShader(&screen->shader.fetchShader);
++    GX2SetVertexShader(screen->shader.vertexShader);
++    GX2SetPixelShader(screen->shader.pixelShader);
++    GX2SetPixelTexture(atlas, screen->atlas_slot);
++    GX2SetAttribBuffer(0, screen->count * 6 * sizeof(ScreenVertex), sizeof(ScreenVertex),
++                       screen->geometry.buffer);
++    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
++    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0);
++    GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++    GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++    GX2SetColorControl(GX2_LOGIC_OP_COPY, 1, FALSE, TRUE);
++    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
++    for (unsigned i = 0; i < screen->count; ++i) {
++        const ScreenMaterial *material = &screen->materials[i];
++        const float *r = material->rect;
++        const float edges[4] = {r[0] + half[0], r[1] + half[1],
++                                r[2] - half[0], r[3] - half[1]};
++        const float mode[4] = {!!(material->sampling & SCREEN_CLAMP), material->vignette, 0, 0};
++        GX2SetPixelSampler(&screen->samplers[!!(material->sampling & SCREEN_BLUR)],
++                           screen->atlas_slot);
++        GX2SetPixelUniformReg(screen->uniforms[0], 4, r);
++        GX2SetPixelUniformReg(screen->uniforms[1], 4, edges);
++        GX2SetPixelUniformReg(screen->uniforms[2], 4, mode);
++        if (material->vignette) {
++            GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ZERO,
++                              GX2_BLEND_MODE_INV_SRC_COLOR, GX2_BLEND_COMBINE_MODE_ADD, TRUE,
++                              GX2_BLEND_MODE_ZERO, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_ADD);
++        } else {
++            GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA,
++                              GX2_BLEND_MODE_INV_SRC_ALPHA, GX2_BLEND_COMBINE_MODE_ADD, TRUE,
++                              GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
++                              GX2_BLEND_COMBINE_MODE_ADD);
++        }
++        GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, i * 6, 1);
++    }
++    return true;
++}
+diff --git a/wiiu/loading_host/screen_overlay.h b/wiiu/loading_host/screen_overlay.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..024bcdefe871d5bf95425114e768c0f0f98a71c6
+--- /dev/null
++++ b/wiiu/loading_host/screen_overlay.h
+@@ -0,0 +1,32 @@
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++enum { SCREEN_BLUR = 1, SCREEN_CLAMP = 2, SCREEN_MAX_QUADS = 16 };
++
++typedef struct {
++    float position[4], uv[2], rect[4], color[4];
++} ScreenVertex;
++
++typedef struct {
++    ScreenVertex vertices[4];
++    uint32_t vignette, sampling;
++} ScreenQuad;
++
++typedef struct ScreenOverlay ScreenOverlay;
++
++/* Validate the entire frame before either output uses the shared upload. */
++bool screen_overlay_valid(const ScreenQuad *quads, uint32_t count);
++ScreenOverlay *screen_overlay_create(void);
++
++/* Previous consumers of the overlay vertices must have positively retired. */
++bool screen_overlay_upload_retired(ScreenOverlay *screen, const ScreenQuad *quads,
++                                   uint32_t count);
++
++/* Borrow the resident HUD atlas; this call cannot change the atlas or vertices. */
++bool screen_overlay_draw(const ScreenOverlay *screen, const void *atlas, uint32_t output,
++                         const uint32_t rect[4]);
++
++/* The caller has positively retired every successful or partial draw. */
++void screen_overlay_destroy_retired(ScreenOverlay *screen);
+diff --git a/wiiu/loading_host/screen_overlays.rs b/wiiu/loading_host/screen_overlays.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7c4989faa244d634cee743d4384524504b3c10f0
+--- /dev/null
++++ b/wiiu/loading_host/screen_overlays.rs
+@@ -0,0 +1,209 @@
++//! Optional screen effects using one retired geometry upload and the HUD atlas.
++
++use horizon_client::screen_effects::{Blend, ScreenQuad, ScreenVertex};
++use std::ffi::c_void;
++use std::ptr::NonNull;
++
++pub(super) const MAX_QUADS: usize = 16;
++pub(super) const OMISSION: u32 = 1 << 9;
++
++pub(super) fn complete(host: i32, outputs: u32, overlay_draws: u32) -> bool {
++    host == 0 && outputs == 3 && overlay_draws == 3
++}
++
++#[derive(Clone, Copy)]
++#[repr(C)]
++struct NativeQuad {
++    vertices: [ScreenVertex; 4],
++    vignette: u32,
++    sampling: u32,
++}
++
++const _: () = {
++    assert!(std::mem::size_of::<ScreenVertex>() == 56);
++    assert!(std::mem::offset_of!(ScreenVertex, uv) == 16);
++    assert!(std::mem::offset_of!(ScreenVertex, color) == 40);
++    assert!(std::mem::size_of::<NativeQuad>() == 232);
++};
++
++type DrawTarget = unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32;
++
++unsafe extern "C" {
++    fn horizon_loading_host_present_screen_overlays(
++        draw: DrawTarget,
++        context: *mut c_void,
++        clear: *const f32,
++        ticket: *mut u64,
++        prepublished: bool,
++    ) -> i32;
++    fn horizon_gx2_profile_screen_overlays() -> bool;
++    fn screen_overlay_valid(quads: *const NativeQuad, count: u32) -> bool;
++    fn screen_overlay_create() -> *mut c_void;
++    fn screen_overlay_upload_retired(
++        screen: *mut c_void,
++        quads: *const NativeQuad,
++        count: u32,
++    ) -> bool;
++    fn screen_overlay_draw(
++        screen: *const c_void,
++        atlas: *const c_void,
++        output: u32,
++        rect: *const u32,
++    ) -> bool;
++    fn screen_overlay_destroy_retired(screen: *mut c_void);
++}
++
++struct Native(NonNull<c_void>);
++
++impl Drop for Native {
++    fn drop(&mut self) {
++        // Only the synchronous guarded present may reference this backing.
++        // That present retires its GPU commands before releasing the Rust call.
++        unsafe { screen_overlay_destroy_retired(self.0.as_ptr()) };
++    }
++}
++
++#[derive(Clone, Copy)]
++#[repr(u8)]
++pub(super) enum Reason {
++    Bootstrap,
++    Geometry,
++    Allocation,
++    Upload,
++    Atlas,
++    Draw,
++}
++
++#[derive(Default)]
++pub(super) struct Trial {
++    native: Option<Native>,
++    allocation_failed: bool,
++    reasons: u8,
++    reported_active: bool,
++}
++
++impl Trial {
++    pub(super) fn requested() -> bool {
++        unsafe { horizon_gx2_profile_screen_overlays() }
++    }
++
++    /// # Safety
++    /// The frame pointers and draw callback must live through this synchronous call.
++    pub(super) unsafe fn present(
++        draw: DrawTarget,
++        context: *mut c_void,
++        clear: &[f32; 4],
++        ticket: &mut u64,
++        prepublished: bool,
++    ) -> i32 {
++        unsafe {
++            horizon_loading_host_present_screen_overlays(
++                draw,
++                context,
++                clear.as_ptr(),
++                ticket,
++                prepublished,
++            )
++        }
++    }
++
++    pub(super) fn release_surface(&mut self) {
++        self.native = None;
++        self.allocation_failed = false;
++    }
++
++    /// A complete plan returns atlas bounds.
++    ///
++    /// # Safety
++    /// The preceding pair must have positively retired, and no current draw
++    /// may reference this backing.
++    pub(super) unsafe fn upload_retired(
++        &mut self,
++        quads: &[ScreenQuad],
++    ) -> Option<[[f32; 4]; MAX_QUADS]> {
++        let Some(first) = quads.first().filter(|_| quads.len() <= MAX_QUADS) else {
++            self.reason(Reason::Geometry);
++            return None;
++        };
++        let native = |q: &ScreenQuad| NativeQuad {
++            vertices: q.vertices,
++            vignette: u32::from(q.blend == Blend::Vignette),
++            sampling: q.sampling,
++        };
++        let mut plan = [native(first); MAX_QUADS];
++        let mut rects = [[0.0; 4]; MAX_QUADS];
++        for ((q, dest), rect) in quads.iter().zip(&mut plan).zip(&mut rects) {
++            *dest = native(q);
++            *rect = q.vertices[0].rect;
++        }
++        let count = quads.len() as u32;
++        if !unsafe { screen_overlay_valid(plan.as_ptr(), count) } {
++            self.reason(Reason::Geometry);
++            return None;
++        }
++        if self.native.is_none() && !self.allocation_failed {
++            self.native = NonNull::new(unsafe { screen_overlay_create() }).map(Native);
++            self.allocation_failed = self.native.is_none();
++        }
++        let Some(native) = &self.native else {
++            self.reason(Reason::Allocation);
++            return None;
++        };
++        if !unsafe { screen_overlay_upload_retired(native.0.as_ptr(), plan.as_ptr(), count) } {
++            self.reason(Reason::Upload);
++            return None;
++        }
++        Some(rects)
++    }
++
++    /// # Safety
++    /// The atlas must be borrowed from the current native HUD generation.
++    /// Call only inside a guarded paired present with an active upload.
++    pub(super) unsafe fn draw(
++        &mut self,
++        atlas: *const c_void,
++        output: u32,
++        rect: [u32; 4],
++    ) -> bool {
++        let drew = self.native.as_ref().is_some_and(|native| unsafe {
++            screen_overlay_draw(native.0.as_ptr(), atlas, output, rect.as_ptr())
++        });
++        if !drew {
++            self.reason(Reason::Draw);
++        }
++        drew
++    }
++
++    pub(super) fn active_pair(&mut self) {
++        if !self.reported_active {
++            self.reported_active = true;
++            unsafe {
++                super::OSReport(
++                    c"Horizon GX2 scaled screen effects submitted on both outputs\n".as_ptr(),
++                );
++            }
++        }
++    }
++
++    pub(super) fn reason(&mut self, reason: Reason) {
++        let mask = 1 << reason as u8;
++        if self.reasons & mask != 0 {
++            return;
++        }
++        self.reasons |= mask;
++        let name = match reason {
++            Reason::Bootstrap => c"prior-retirement",
++            Reason::Geometry => c"geometry",
++            Reason::Allocation => c"allocation",
++            Reason::Upload => c"vertex-upload",
++            Reason::Atlas => c"atlas-upload",
++            Reason::Draw => c"native-draw",
++        };
++        unsafe {
++            super::OSReport(
++                c"Horizon GX2 scaled screen effects fallback reason=%s\n".as_ptr(),
++                name.as_ptr(),
++            );
++        }
++    }
++}
+diff --git a/wiiu/platform/src/hud/horizon.rs b/wiiu/platform/src/hud/horizon.rs
+index a00f2fb927b25c633e22e13128c2f80afc3f488f..ef42be1cd35db1a16294407a1745062606e31564 100644
+--- a/wiiu/platform/src/hud/horizon.rs
++++ b/wiiu/platform/src/hud/horizon.rs
+@@ -183,6 +183,7 @@ fn animation_may_be_sampled(
+     rect: horizon_client_render::hud::Rect,
+     size: [u32; 2],
+     triangles: Option<&[[f32; 4]]>,
++    screen_rects: &[[f32; 4]],
+ ) -> bool {
+     let [width, height] = size;
+     let Some(triangles) = triangles else {
+@@ -203,7 +204,7 @@ fn animation_may_be_sampled(
+     if bounds.iter().any(|v| !v.is_finite()) {
+         return true;
+     }
+-    triangles.iter().any(|triangle| {
++    triangles.iter().chain(screen_rects).any(|triangle| {
+         triangle[2] >= bounds[0]
+             && triangle[0] <= bounds[2]
+             && triangle[3] >= bounds[1]
+@@ -542,6 +543,7 @@ impl<'shader> HorizonPresenter<'shader> {
+             layout_viewport,
+             tick,
+             atlas_updates,
++            &[],
+             |presenter, frame, extra| unsafe {
+                 presenter.draw_with_patches_to_output(frame, extra, target, output)
+             },
+@@ -569,6 +571,7 @@ impl<'shader> HorizonPresenter<'shader> {
+             layout_viewport,
+             tick,
+             atlas_updates,
++            &[],
+             |presenter, frame, extra| unsafe {
+                 presenter.draw_guarded_view(frame, extra, target, output, slot)
+             },
+@@ -585,6 +588,20 @@ impl<'shader> HorizonPresenter<'shader> {
+         batch: &'a HudBatch,
+         viewport: [u32; 2],
+         tick: u64,
++    ) -> Result<UploadedBatch<'a>, Error> {
++        unsafe { self.upload_batch_for_screen_after_wait(batch, viewport, tick, &[]) }
++    }
++
++    /// Publish frame patches and animations sampled by the HUD and screen quads.
++    ///
++    /// # Safety
++    /// Both outputs' previous reads of the atlas and HUD upload must have retired.
++    pub unsafe fn upload_batch_for_screen_after_wait<'a>(
++        &mut self,
++        batch: &'a HudBatch,
++        viewport: [u32; 2],
++        tick: u64,
++        screen_rects: &[[f32; 4]],
+     ) -> Result<UploadedBatch<'a>, Error> {
+         let runs = self.with_batch(
+             batch,
+@@ -594,6 +611,7 @@ impl<'shader> HorizonPresenter<'shader> {
+                 animated: true,
+                 frame_patches_prepared: false,
+             },
++            screen_rects,
+             |presenter, frame, extra| unsafe { presenter.upload_after_wait(frame, extra) },
+         )?;
+         Ok(UploadedBatch { batch, runs, viewport })
+@@ -631,6 +649,7 @@ impl<'shader> HorizonPresenter<'shader> {
+         layout_viewport: [u32; 2],
+         tick: u64,
+         atlas_updates: AtlasUpdates,
++        screen_rects: &[[f32; 4]],
+         submit: impl FnOnce(&mut super::Presenter<'shader>, &Frame<'_>, &[super::Patch]) -> Result<T, Error>,
+     ) -> Result<T, Error> {
+         let frame = BatchFrame {
+@@ -663,7 +682,7 @@ impl<'shader> HorizonPresenter<'shader> {
+                 &mut self.animations,
+                 atlas_size,
+                 tick,
+-                |rect| animation_may_be_sampled(rect, atlas_size, triangles.as_deref()),
++                |rect| animation_may_be_sampled(rect, atlas_size, triangles.as_deref(), screen_rects),
+             ))
+         } else {
+             None
+@@ -856,36 +875,49 @@ mod tests {
+         assert!(!animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&away).as_deref()
++            triangle_uv_bounds(&away).as_deref(),
++            &[],
++        ));
++        // A fire sprite used by a screen overlay can be absent from the HUD.
++        assert!(animation_may_be_sampled(
++            rect,
++            [32, 32],
++            triangle_uv_bounds(&away).as_deref(),
++            &[[0.49, 0.5, 0.52, 0.55]],
+         ));
+         let enclosing = [vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(0.0, 1.0)];
+         assert!(animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&enclosing).as_deref()
++            triangle_uv_bounds(&enclosing).as_deref(),
++            &[],
+         ));
+         let edge = [vertex(0.49, 0.5); 3];
+         assert!(animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&edge).as_deref()
++            triangle_uv_bounds(&edge).as_deref(),
++            &[],
+         ));
+         let glint_mask = [vertex(2.5, 0.5); 3];
+         assert!(animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&glint_mask).as_deref()
++            triangle_uv_bounds(&glint_mask).as_deref(),
++            &[],
+         ));
+         let unknown = [vertex(f32::NAN, 0.0); 3];
+         assert!(animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&unknown).as_deref()
++            triangle_uv_bounds(&unknown).as_deref(),
++            &[],
+         ));
+         assert!(animation_may_be_sampled(
+             rect,
+             [32, 32],
+-            triangle_uv_bounds(&away[..2]).as_deref()
++            triangle_uv_bounds(&away[..2]).as_deref(),
++            &[],
+         ));
+     }
+ }
