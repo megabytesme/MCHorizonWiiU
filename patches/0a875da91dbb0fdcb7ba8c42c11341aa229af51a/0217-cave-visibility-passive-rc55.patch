@@ -1,0 +1,490 @@
+diff --git a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+index f49f0912bafa1e8de14680dd44f8182b5099e594..cf31f3e13ba70e6b6c6e03afab7d301d321fbd74 100644
+--- a/crates/horizon-client-render/src/gfx.rs
++++ b/crates/horizon-client-render/src/gfx.rs
+@@ -513,6 +513,7 @@ use crate::render_slots as native_render;
+ mod native_shadow;
+ mod native_sky;
+ mod occlusion;
++pub use occlusion::Occlusion as SectionOcclusion;
+ mod oit;
+ mod oit_features;
+ pub(crate) mod output;
+diff --git a/crates/horizon-client-render/src/gfx/occlusion.rs b/crates/horizon-client-render/src/gfx/occlusion.rs
+index c3f552a1a8e9610567726ead90b0303356864fe1..a1735b5bdc6ae17ed0455e6eddfecac6b1c63b56 100644
+--- a/crates/horizon-client-render/src/gfx/occlusion.rs
++++ b/crates/horizon-client-render/src/gfx/occlusion.rs
+@@ -638,6 +638,25 @@ impl Occlusion {
+             resync: false,
+         }
+     }
++    /// Create an observer that requires a worker and never searches on the frame thread.
++    pub fn new_async(min_y: i32, sections: i32) -> Option<Self> {
++        let graph = Self::new(min_y, sections);
++        graph.worker.is_some().then_some(graph)
++    }
++
++    /// Keep diagnostic topology storage bounded. A rejected insert makes the
++    /// caller's connectivity snapshot incomplete.
++    pub fn set_bounded(&mut self, key: SectionKey, vis: u64, columns: usize) -> bool {
++        if vis != ALL_VISIBLE
++            && self.columns.map.len() >= columns
++            && !self.columns.map.contains_key(&(key.0, key.2))
++        {
++            return false;
++        }
++        self.set(key, vis);
++        true
++    }
++
+     pub fn set(&mut self, key: SectionKey, vis: u64) {
+         if self.columns.set(key, vis) {
+             self.changed(key, vis);
+@@ -702,9 +721,13 @@ impl Occlusion {
+         self.edits.clear();
+         self.edits.push(Edit::Clear);
+         self.resync = false;
++        self.invalidate_view();
++    }
++
++    /// Forget the current answer without losing topology. A pending result
++    /// can still update the worker's topology but cannot answer for this view.
++    pub fn invalidate_view(&mut self) {
+         self.dirty = true;
+-        // Another world: the old graph says nothing about it. Without one, every
+-        // section was visible already, and stays so.
+         if let Some(graph) = self.graph.take() {
+             self.spare = graph;
+             self.generation = next_generation();
+@@ -775,11 +798,46 @@ impl Occlusion {
+     /// and start a search when sections changed or the camera moved to
+     /// another section. Never waits for the worker.
+     pub fn update(&mut self, camera: DVec3, radius: i32) {
++        self.update_with_fallback(camera, radius, true);
++    }
++
++    /// Advance a diagnostic graph. Returns false if its worker has failed.
++    pub fn update_async(&mut self, camera: DVec3, radius: i32) -> bool {
++        self.update_with_fallback(camera, radius, false);
++        self.worker.is_some()
++    }
++
++    /// The fresh diagnostic answer shares one identity across the displays.
++    /// Calls that change eye position within a section must invalidate the
++    /// view before updating so the advanced distance rays also match.
++    pub fn fresh_origin(&self, camera: DVec3, radius: i32) -> Option<(SectionKey, u64)> {
++        let from = self.columns.section_of(camera);
++        let graph = self.graph.as_ref()?;
++        (self.worker.is_some()
++            && self.searched == Some((from, radius))
++            && (graph.from, graph.radius) == (from, radius)
++            && self.running.is_none()
++            && !self.dirty
++            && !self.resync
++            && self.changed.is_empty()
++            && self.changed_late.is_empty())
++        .then_some((from, self.generation))
++    }
++
++    fn update_with_fallback(&mut self, camera: DVec3, radius: i32, synchronous: bool) {
+         let from = self.columns.section_of(camera);
+         self.collect(false);
+-        self.propagate_changes(camera);
++        if !synchronous {
++            // A complete replacement is enough for the passive observer.
++            // Leave the desktop's immediate partial propagation alone.
++            if self.worker.is_none() {
++                return;
++            }
++        } else {
++            self.propagate_changes(camera);
++        }
+         if self.running.is_none() && (self.dirty || self.searched != Some((from, radius))) {
+-            self.start(camera, radius);
++            self.start(camera, radius, synchronous);
+         }
+         // A graph that never reached the camera's section hides everything
+         // around it: until the new one lands, cull by the frustum alone.
+@@ -793,7 +851,7 @@ impl Occlusion {
+             self.generation = next_generation();
+         }
+     }
+-    fn start(&mut self, camera: DVec3, radius: i32) {
++    fn start(&mut self, camera: DVec3, radius: i32, synchronous: bool) {
+         let from = self.columns.section_of(camera);
+         self.dirty = false;
+         self.searched = Some((from, radius));
+@@ -813,8 +871,13 @@ impl Occlusion {
+                 self.changed_late.clear();
+                 return;
+             }
+-            log::warn!("Horizon: the occlusion worker stopped; culling on the render thread");
+             self.worker = None;
++            if synchronous {
++                log::warn!("Horizon: the occlusion worker stopped; culling on the render thread");
++            }
++        }
++        if !synchronous {
++            return;
+         }
+         self.edits.clear();
+         let mut graph = Graph::default();
+diff --git a/wiiu/loading_host/cave_visibility.rs b/wiiu/loading_host/cave_visibility.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..efbe16e840bafc4475ce4f1daf57d050be2e6282
+--- /dev/null
++++ b/wiiu/loading_host/cave_visibility.rs
+@@ -0,0 +1,197 @@
++//! Opt-in passive observer of the stock native terrain candidate lists.
++use horizon_client::{
++    chunk::ColumnLayout,
++    gfx::{Frame, SectionKey, SectionOcclusion},
++    mesher::ALL_VISIBLE,
++};
++
++const MARKER: &str = "/vol/external01/wiiu/apps/HorizonWiiU/gx2-cave-visibility.enable";
++const MAX_COLUMNS: usize = 512;
++const INTERVAL: u32 = 120;
++const STILL_FRAMES: u8 = 8;
++
++#[derive(Default)]
++struct Counts {
++    pre: u32,
++    eligible: u32,
++    unknown: u32,
++}
++
++impl Counts {
++    fn record(&mut self, visible: Option<bool>) {
++        self.pre += 1;
++        self.eligible += u32::from(visible != Some(false));
++        self.unknown += u32::from(visible.is_none());
++    }
++}
++
++pub(super) struct Sample {
++    origin: SectionKey,
++    generation: u64,
++    radius: i32,
++    solid: [Counts; 2],
++    translucent: [Counts; 2],
++}
++
++pub(super) struct Probe {
++    enabled: bool,
++    supported_layout: bool,
++    graph: Option<Box<SectionOcclusion>>,
++    eye: Option<[f64; 3]>,
++    searched_eye: Option<[f64; 3]>,
++    still_frames: u8,
++    pairs: u32,
++    remaining: u32,
++}
++
++impl Probe {
++    pub(super) fn new() -> Self {
++        let enabled = std::path::Path::new(MARKER).is_file();
++        if enabled {
++            unsafe {
++                super::OSReport(c"Horizon GX2 cave visibility observation requested\n".as_ptr())
++            };
++        }
++        Self {
++            enabled,
++            supported_layout: false,
++            graph: None,
++            eye: None,
++            searched_eye: None,
++            still_frames: 0,
++            pairs: 0,
++            remaining: 0,
++        }
++    }
++
++    pub(super) fn set_layout(&mut self, layout: ColumnLayout) {
++        // The first observer has stock Overworld-sized storage only.
++        self.supported_layout = layout.min_y() == -64 && layout.sections() == 24;
++        if self.enabled && self.supported_layout && self.graph.is_none() {
++            self.graph = SectionOcclusion::new_async(-64, 24).map(Box::new);
++            if self.graph.is_none() {
++                self.disable(c"worker");
++            }
++        }
++    }
++
++    pub(super) fn clear(&mut self) {
++        if let Some(graph) = &mut self.graph {
++            graph.clear();
++        }
++        self.eye = None;
++        self.searched_eye = None;
++        self.still_frames = 0;
++        self.remaining = 0;
++    }
++
++    pub(super) fn forget(&mut self, key: SectionKey) {
++        if let Some(graph) = self.graph.as_mut().filter(|_| self.supported_layout) {
++            graph.set(key, ALL_VISIBLE);
++        }
++    }
++
++    pub(super) fn publish(&mut self, key: SectionKey, visibility: u64) {
++        if let Some(graph) = self.graph.as_mut().filter(|_| self.supported_layout) {
++            if !graph.set_bounded(key, visibility, MAX_COLUMNS) {
++                self.disable(c"topology-cap");
++            }
++        }
++    }
++
++    pub(super) fn prepare(&mut self, frame: &Frame<'_>) -> Option<Sample> {
++        if !self.enabled {
++            return None;
++        }
++        let eye = frame.camera.to_array();
++        if !self.supported_layout
++            || frame.title
++            || !frame.cave_culling
++            || !(16.0..=96.0).contains(&frame.detail_distance)
++            || frame.distance > frame.detail_distance
++            || !eye
++                .iter()
++                .all(|v| (-30_000_000.0..=30_000_000.0).contains(v))
++            || !(-64.0..320.0).contains(&eye[1])
++        {
++            self.eye = None;
++            self.still_frames = 0;
++            return None;
++        }
++        if self.eye != Some(eye) {
++            self.eye = Some(eye);
++            self.still_frames = 0;
++            return None;
++        }
++        self.still_frames = self.still_frames.saturating_add(1);
++        if self.remaining != 0 || self.still_frames < STILL_FRAMES {
++            return None;
++        }
++
++        let graph = self.graph.as_mut()?;
++        if self.searched_eye != Some(eye) {
++            graph.invalidate_view();
++            self.searched_eye = Some(eye);
++        }
++        let radius = (frame.detail_distance / 16.0) as i32 + 2;
++        if !graph.update_async(frame.camera, radius) {
++            self.disable(c"worker");
++            return None;
++        }
++        let (origin, generation) = graph.fresh_origin(frame.camera, radius)?;
++        Some(Sample {
++            origin,
++            generation,
++            radius,
++            solid: Default::default(),
++            translucent: Default::default(),
++        })
++    }
++
++    fn visible(&self, key: SectionKey, origin: SectionKey) -> Option<bool> {
++        self.graph.as_ref()?.visible_for_camera(key, origin)
++    }
++
++    pub(super) fn solid(&self, sample: &mut Sample, output: usize, key: SectionKey) {
++        sample.solid[output].record(self.visible(key, sample.origin));
++    }
++
++    pub(super) fn translucent(&self, sample: &mut Sample, output: usize, key: SectionKey) {
++        sample.translucent[output].record(self.visible(key, sample.origin));
++    }
++
++    pub(super) fn paired(&mut self, sample: Option<Sample>) {
++        if !self.enabled {
++            return;
++        }
++        self.pairs = self.pairs.wrapping_add(1);
++        self.remaining = self.remaining.saturating_sub(1);
++        let Some(sample) = sample else { return };
++        self.remaining = INTERVAL;
++        let (x, y, z) = sample.origin;
++        // Keep each line independently parseable and short enough for OSReport.
++        for (output, (solid, translucent)) in
++            sample.solid.iter().zip(&sample.translucent).enumerate()
++        {
++            unsafe {
++                super::OSReport(
++                    c"Horizon GX2 cave visibility pair=%u graph=%llu origin=%d,%d,%d radius=%d output=%u solid=%u,%u,%u translucent=%u,%u,%u\n".as_ptr(),
++                    self.pairs, sample.generation, x, y, z, sample.radius, output as u32,
++                    solid.pre, solid.eligible, solid.unknown,
++                    translucent.pre, translucent.eligible, translucent.unknown,
++                );
++            }
++        }
++    }
++
++    fn disable(&mut self, reason: &std::ffi::CStr) {
++        self.enabled = false;
++        self.graph = None;
++        unsafe {
++            super::OSReport(
++                c"Horizon GX2 cave visibility observation disabled reason=%s\n".as_ptr(),
++                reason.as_ptr(),
++            );
++        }
++    }
++}
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 783a74c6850c9b6fda98d6797e0f57d7d471b772..4b9a289610dabbf3951fe22dcbc67136d7718069 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -7,6 +7,7 @@
+ 
+ #![cfg(all(target_os = "cafe", target_arch = "powerpc"))]
+ 
++mod cave_visibility;
+ #[cfg(feature = "gx2-clear-fog")]
+ mod clear_fog;
+ mod crumbling;
+@@ -796,6 +797,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_animation: terrain_animation::TerrainAnimation,
+     resident_animations: Option<terrain_animation::ResidentAnimations>,
+     terrain_min_y: Option<i32>,
++    cave_visibility: cave_visibility::Probe,
+     sections: HashMap<SectionKey, TerrainSection>,
+     block_entity_sections: Arc<CafeBlockEntitySections>,
+     block_entity_models_partial: bool,
+@@ -881,6 +883,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_animation: terrain_animation::TerrainAnimation::default(),
+             resident_animations: None,
+             terrain_min_y: None,
++            cave_visibility: cave_visibility::Probe::new(),
+             sections: HashMap::new(),
+             block_entity_sections: Arc::default(),
+             block_entity_models_partial: false,
+@@ -2011,6 +2014,7 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        self.cave_visibility.forget(key);
+         if self.solid_draw_plan_enabled {
+             for plan in &mut self.solid_draw_plans {
+                 plan.invalidate();
+@@ -2053,6 +2057,7 @@ impl Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn clear_native_sections(&mut self) {
++        self.cave_visibility.clear();
+         self.retired_pair = 0;
+         self.block_entity_sections = Arc::default();
+         if let Some(residents) = self.resident_animations.as_mut() {
+@@ -2090,6 +2095,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         key: SectionKey,
+         mesh: &SectionMesh,
+     ) -> horizon_client::Result<()> {
++        // A failed or deferred attempt cannot leave an older diagnostic
++        // barrier closing a portal. Publish the new mask only after upload.
++        self.cave_visibility.forget(key);
+         if ![&mesh.solid, &mesh.translucent]
+             .iter()
+             .all(|vertices| vertices.len().is_multiple_of(4))
+@@ -2221,6 +2229,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        self.cave_visibility.publish(key, mesh.visibility);
+         if self.solid_draw_plan_enabled {
+             for plan in &mut self.solid_draw_plans {
+                 plan.invalidate();
+@@ -2284,6 +2293,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+     fn clear_sections(&mut self, layout: ColumnLayout) {
+         self.terrain_min_y = Some(layout.min_y());
+         self.clear_native_sections();
++        self.cave_visibility.set_layout(layout);
+     }
+ 
+     fn remove_columns(&mut self, columns: &mut dyn Iterator<Item = (i32, i32)>) {
+@@ -2505,6 +2515,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             clear: [f32; 4],
+             result: Result<(), &'static str>,
+             profile: Gx2ProfileDelta,
++            cave_sample: Option<cave_visibility::Sample>,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             per_output_terrain_waits: bool,
+             #[cfg(feature = "gx2-screen-overlays")]
+@@ -2785,6 +2796,12 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         * 6;
+                     indices += submitted_indices as usize;
+                     sections_drawn += 1;
++                    if let Some(sample) = draw.cave_sample
++                        .as_mut()
++                        .filter(|_| submitted_indices != 0)
++                    {
++                        draw.presenter.cave_visibility.solid(sample, index, key);
++                    }
+                     let [x, y, z] = origin.map(|value| value as f32);
+                     let section_origin = [x, y, z, 0.0];
+                     if let Some(start) = projection_start {
+@@ -2932,6 +2949,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         &fog_ranges,
+                     )?;
+                     gpu_boundary(GpuBoundary::TranslucentDone);
++                    if let Some(sample) = draw.cave_sample.as_mut() {
++                        for key in draw.presenter.translucent_terrain.visible_keys() {
++                            draw.presenter.cave_visibility.translucent(sample, index, key);
++                        }
++                    }
+                     sections_tested += tested;
+                     sections_drawn += drawn;
+                     {
+@@ -3153,6 +3175,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             let ([r, g, b, _], _) = horizon_client::gfx::fog_uniform(frame);
+             [r, g, b, 1.0]
+         };
++        let cave_sample = if self.terrain.is_some() {
++            self.cave_visibility.prepare(frame)
++        } else {
++            None
++        };
+         let present_start = Instant::now();
+         let skip_terrain_waits = !frame.title
+             && self.terrain.is_some()
+@@ -3304,6 +3331,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             clear,
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
++            cave_sample,
+             uploaded_hud,
+             per_output_terrain_waits,
+             #[cfg(feature = "gx2-screen-overlays")]
+@@ -3355,6 +3383,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let host = stock_present(&mut retired_pair);
+         let profile = draw.profile;
+         let draw_result = draw.result;
++        let cave_sample = draw.cave_sample.take();
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_drawn = draw.screen_drawn;
+         #[cfg(feature = "gx2-clear-fog")]
+@@ -3363,6 +3392,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.retired_pair = retired_pair;
+         let elapsed = present_start.elapsed();
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
++        if host == 0 && outputs == 3 && draw_result.is_ok() {
++            self.cave_visibility.paired(cave_sample);
++        }
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_complete = screen_overlays::complete(host, outputs, screen_drawn);
+         #[cfg(feature = "gx2-screen-overlays")]
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 399ce5906f0b096d5803ab5433537257df371a9b..63d754a544d9dc2a523630c69c034ba30a07e5eb 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -421,6 +421,10 @@ pub(super) struct TranslucentTerrain {
+ }
+ 
+ impl TranslucentTerrain {
++    pub(super) fn visible_keys(&self) -> impl Iterator<Item = SectionKey> + '_ {
++        self.visible.iter().map(|&(_, key)| key)
++    }
++
+     pub(super) fn draw(
+         &mut self,
+         target: u32,
