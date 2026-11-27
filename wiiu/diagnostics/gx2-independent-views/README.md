@@ -93,10 +93,11 @@ open.
 
 ## Guarded teardown qualification
 
-The revised package reproduced both hashes in two independent Cafe
-builds with the same engine inputs. It passed all twelve positive cases,
-all three crop checks, the shader comparison and all five injected
-faults in Cemu 2.6 Vulkan, then exited normally through the new fence.
+The initial guarded package reproduced both hashes in two independent
+Cafe builds with the same engine inputs. It passed all twelve positive
+cases, all three crop checks, the shader comparison and all five
+injected faults in Cemu 2.6 Vulkan. The shared teardown build shown
+below repeated the full matrix and exited normally.
 The host retirement control also passed delayed retirement and a stale
 copy ticket.
 
@@ -104,5 +105,5 @@ copy ticket.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| RPX | `935726178ec74d19fb1dd27976d79e9c49a3f5b4cfd41a3b1788b97af098d42c` |
-| WUHB | `95902a4068f9feee80af4f731bbbc586ba51fd3185968d68ac95546d7a24828b` |
+| RPX | `9baca4e74c3fb72bfea236cc4c6c2fd441bf928d00866458fa24e705745ec7c8` |
+| WUHB | `9c3a3ff4669166e1b9cd99d5d5647eb96b05320362535a7794e504b160177782` |

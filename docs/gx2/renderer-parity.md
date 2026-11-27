@@ -21,7 +21,7 @@ evidence for each pass. [Hosted coverage](coverage.md) ·
 | 10 | Terrain textures, UVs and mipmaps | The padded native atlas decodes repeated sprite UVs with the 28-byte terrain vertex. Native terrain mipmaps remain open. |
 | 11 | Animated terrain sprites | Stock animated terrain updates resident sprite cells in place. Pack modes that need budgeted updates keep the existing scheduler. |
 | 12 | Solid and cutout terrain | Native indexed section meshes draw solid and cutout faces with per-output visibility and shared projected section data. |
-| 13 | Translucent terrain | The native translucent pass sorts camera-sector indices, tests depth and blends tint and atlas alpha. Live overlapping surfaces need coverage. |
+| 13 | Translucent terrain | The native translucent pass sorts camera-sector indices, tests depth and blends tint and atlas alpha. Opposite camera orders passed the standalone dual-output blend and depth checks. Live overlapping surfaces need coverage. [Independent blend fixture](../../wiiu/diagnostics/gx2-independent-translucency/README.md) |
 | 14 | Block-entity extraction and static cache | Retained section metadata supplies bounded ordinary block-entity extraction. Desktop static caches and specialized passes remain partial. |
 | 15 | Block entities, mobs, players, items and opaque particles | Shared ordinary entity and item quads use the GX2 atlas and lightmap. Hurt, TNT and creeper overlays passed the separate dual-output fixture. Skinned geometry and specialized materials remain partial. |
 | 16 | Entity blob shadows | Entity shadow geometry has no GX2 pass. |

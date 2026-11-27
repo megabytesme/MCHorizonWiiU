@@ -12,12 +12,13 @@ repo, out = map(Path, sys.argv[1:])
 diagnostics = repo / "wiiu/diagnostics"
 source = (diagnostics / "gx2-independent-views/main.c").read_text()
 stage = (diagnostics / "gx2-explicit-readback/stage.h").read_text()
+retire = (diagnostics / "gx2-explicit-readback/retire.h").read_text()
 
 def fragment(text, first, last):
     begin = text.index(first)
     return text[begin:text.index(last, begin)]
 
-(out / "retire.inc").write_text(fragment(source, "static void retire_for_teardown", "static void quad"))
+(out / "retire.inc").write_text(retire[retire.index("static void retire_for_teardown"):])
 (out / "faults.inc").write_text(fragment(source, "   // Run the independent positive matrix", "   if (graphics) retire_for_teardown"))
 (out / "stage-observe.inc").write_text(
     fragment(stage, "typedef struct {", "enum ReadStatus")

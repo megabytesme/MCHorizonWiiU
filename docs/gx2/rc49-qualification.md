@@ -48,3 +48,19 @@ with a second parse and 2.058 ms with the borrowed document. Median
 extra requested heap peaked at 27,708,066 and 91,349 bytes respectively.
 These figures cover the model acquisition slice. Cafe frame time and
 physical loading savings await matched runs.
+
+## Offline saved-world replay
+
+The exact RPX loaded a disposable copy of the same saved world in
+interpreter Cemu using Full Performance at fixed 75%, render distance
+6 and simulation distance 5. The first ready Game frame took 635.683 s.
+At 672.302 s, the first paired terrain sample had one visible section
+on each output. Separate 1920×1080 TV and 854×480 GamePad captures
+passed before and after a 20-second stationary interval.
+
+The GamePad input moved the player 2.334 blocks backward. Nonzero PCM,
+the save barrier, the durable player position, return to Night and a
+clean exit all passed. GX2 bulk free returned to 234,880,920 bytes
+with a 234,880,896-byte largest block. The run qualifies this
+interpreter lifecycle and the exact package. It is separate from
+the physical 174-section performance workload.

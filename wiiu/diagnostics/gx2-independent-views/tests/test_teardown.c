@@ -87,7 +87,7 @@ static void retry(Stage *stage, const struct Readings *values, size_t count, uns
    gpu.count = count;
    gpu.stage = stage;
    gpu.expect_pending = stage->copy_pending;
-   retire_for_teardown(stage);
+   retire_for_teardown(stage, "fixture");
    assert(!stage->copy_pending);
    assert(gpu.index == gpu.count && gpu.sleeps == sleeps);
    assert(gpu.signals == 1 && gpu.flushes == 1 && gpu.draws == 1);

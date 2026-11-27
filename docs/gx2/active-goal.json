@@ -12,7 +12,7 @@
     "engine_tree": "525181edcc48d623e3dc21d9f0793044648b3556",
     "rpx_sha256": "bbb33c5bfcf85f27da9b3d75122e22a66d5e5d63a8d4a3e7478ff352e8df739b",
     "native_build": "passed",
-    "runtime": "pending",
+    "runtime": "cemu_offline_saved_world_pass",
     "receipt": "rc49-qualification.md"
   },
   "warm_hud_replay": {
@@ -127,8 +127,8 @@
       "status": "in_progress",
       "independent_view_qualification": "cemu_native_viewport_fixture_passed",
       "native_viewport_fixture": {
-        "rpx_sha256": "935726178ec74d19fb1dd27976d79e9c49a3f5b4cfd41a3b1788b97af098d42c",
-        "wuhb_sha256": "95902a4068f9feee80af4f731bbbc586ba51fd3185968d68ac95546d7a24828b",
+        "rpx_sha256": "9baca4e74c3fb72bfea236cc4c6c2fd441bf928d00866458fa24e705745ec7c8",
+        "wuhb_sha256": "9c3a3ff4669166e1b9cd99d5d5647eb96b05320362535a7794e504b160177782",
         "positive_layout_pose_cases": 12,
         "detected_injected_faults": 5,
         "rejected_tv_crops": 3,
@@ -137,6 +137,11 @@
         "section_bytes_disjoint": 38755520,
         "physical": "pending",
         "local_player_integration": "pending"
+      },
+      "independent_blend_fixture": {
+        "rpx_sha256": "d286a75fbebd09ff04b7ce6c002cf4267af19c9a0713fc92517ce027d18dfc3c",
+        "cemu_fault_masks": [0, 0, 2, 3, 0],
+        "physical": "pending"
       },
       "local_players_target": 5,
       "tv_players_target": 4,

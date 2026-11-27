@@ -1,0 +1,1124 @@
+diff --git a/crates/horizon-client-render/src/gfx/translucency.rs b/crates/horizon-client-render/src/gfx/translucency.rs
+index 3b365d7..189a408 100644
+--- a/crates/horizon-client-render/src/gfx/translucency.rs
++++ b/crates/horizon-client-render/src/gfx/translucency.rs
+@@ -30,26 +30,59 @@ impl Sorter {
+     }
+ }
+ 
++/// Mutable sort history for one camera. Mesh centers stay with the mesh owner.
++#[derive(Clone, Copy, Default)]
++pub struct SortCursor {
++    last: Option<([i32; 3], [i32; 3])>,
++}
++
++impl SortCursor {
++    /// TranslucencyPointOfView and ResortTransparencyTask: diagonal views keep
++    /// their ordering until the point of view changes; aligned views also
++    /// resort on crossing a block boundary. Sub-block movement needs no upload.
++    pub fn update<'a>(
++        &mut self,
++        centers: &[[f32; 3]],
++        camera: [f64; 3],
++        origin: [i32; 3],
++        sorter: &'a mut Sorter,
++    ) -> Option<&'a [u32]> {
++        let block = camera.map(|v| v.floor() as i32);
++        let pov = std::array::from_fn(|i| ((block[i] >> 4) - (origin[i] >> 4)).clamp(-1, 1));
++        if let Some((last_block, last_pov)) = self.last
++            && last_pov == pov
++            && (last_block == block || !pov.contains(&0))
++        {
++            return None;
++        }
++        self.last = Some((block, pov));
++        Some(sorter.sort(
++            centers,
++            std::array::from_fn(|i| (camera[i] - f64::from(origin[i])) as f32),
++        ))
++    }
++}
++
+ pub struct SortState {
+     centers: Vec<[f32; 3]>,
+-    last: Option<([i32; 3], [i32; 3])>,
++    cursor: SortCursor,
+ }
+ 
+ impl SortState {
+     pub fn new(centers: Vec<[f32; 3]>) -> Self {
+         Self {
+             centers,
+-            last: None,
++            cursor: SortCursor::default(),
+         }
+     }
+ 
+     /// A backend that could not publish the reordered indices may retry.
+     pub fn retry_upload(&mut self) {
+-        self.last = None;
++        self.cursor.last = None;
+     }
+ 
+     pub fn is_sorted(&self) -> bool {
+-        self.last.is_some()
++        self.cursor.last.is_some()
+     }
+ 
+     /// Large tiles cannot use the section viewpoint shortcut: the camera may
+@@ -61,38 +94,23 @@ impl SortState {
+         sorter: &'a mut Sorter,
+     ) -> Option<&'a [u32]> {
+         let block = camera.map(|v| v.floor() as i32);
+-        if self.last.is_some_and(|(last, _)| last == block) {
++        if self.cursor.last.is_some_and(|(last, _)| last == block) {
+             return None;
+         }
+-        self.last = Some((block, [0; 3]));
++        self.cursor.last = Some((block, [0; 3]));
+         Some(sorter.sort(
+             &self.centers,
+             std::array::from_fn(|i| (camera[i] - f64::from(origin[i])) as f32),
+         ))
+     }
+ 
+-    /// TranslucencyPointOfView and ResortTransparencyTask: diagonal views keep
+-    /// their ordering until the point of view changes; aligned views also
+-    /// resort on crossing a block boundary. Sub-block movement needs no upload.
+     pub fn update<'a>(
+         &mut self,
+         camera: [f64; 3],
+         origin: [i32; 3],
+         sorter: &'a mut Sorter,
+     ) -> Option<&'a [u32]> {
+-        let block = camera.map(|v| v.floor() as i32);
+-        let pov = std::array::from_fn(|i| ((block[i] >> 4) - (origin[i] >> 4)).clamp(-1, 1));
+-        if let Some((last_block, last_pov)) = self.last
+-            && last_pov == pov
+-            && (last_block == block || !pov.contains(&0))
+-        {
+-            return None;
+-        }
+-        self.last = Some((block, pov));
+-        Some(sorter.sort(
+-            &self.centers,
+-            std::array::from_fn(|i| (camera[i] - f64::from(origin[i])) as f32),
+-        ))
++        self.cursor.update(&self.centers, camera, origin, sorter)
+     }
+ }
+ 
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index 1a903e1..886105e 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -435,28 +435,35 @@ static void bind_section(const HorizonGx2Terrain *t, HorizonGx2TerrainSection *s
+    }
+ }
+ 
+-int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+-                                  const float clip_rows[16], const float section_origin[4])
++int horizon_gx2_terrain_draw_bound_view(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                                       uint32_t view, const float clip_rows[16],
++                                       const float section_origin[4])
+ {
+    if (!t || !s || !clip_rows || !section_origin) return -1;
++   TerrainSortLane *lane = terrain_ready_sort_lane(s, view);
++   if (!lane && (s->view_count || view)) return -1;
+    if (!s->vertex_count) return 0;
+-   const bool translucent = GX2RBufferExists(&s->sorted_indices);
+-   if (translucent && !s->sorted_indices_ready) return -1;
+    bind_section(t, s, clip_rows, section_origin);
+-   if (translucent)
+-      terrain_draw_sorted(s);
++   if (lane)
++      terrain_draw_sorted(lane);
+    else
+       horizon_gx2_terrain_draw_quads(t, s->vertex_count);
+    return 0;
+ }
+ 
++int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
++                                  const float clip_rows[16], const float section_origin[4])
++{
++   return horizon_gx2_terrain_draw_bound_view(t, s, 0, clip_rows, section_origin);
++}
++
+ int horizon_gx2_terrain_draw_bound_solid_ranges(
+    HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+    const float clip_rows[16], const float section_origin[4],
+    const uint32_t (*ranges)[2], uint32_t range_count)
+ {
+    if (!t || !s || !clip_rows || !section_origin || (!ranges && range_count) ||
+-       GX2RBufferExists(&s->sorted_indices)) return -1;
++       s->view_count) return -1;
+    if (!range_count) return 0;
+    const uint32_t total = s->vertex_count / 4;
+    uint32_t end = 0;
+@@ -479,7 +486,7 @@ int horizon_gx2_terrain_draw(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                             const float fog_color[4], const float fog_ranges[4])
+ {
+    if (!s || !clip_rows || !section_origin) return -1;
+-   const bool translucent = GX2RBufferExists(&s->sorted_indices);
++   const bool translucent = s->view_count;
+    const int bound = horizon_gx2_terrain_bind(t, target_width, target_height, x, y, width, height,
+                                               fog_color, fog_ranges, translucent);
+    return bound ? bound : horizon_gx2_terrain_draw_bound(t, s, clip_rows, section_origin);
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index e2b4878..1dc8137 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -40,9 +40,22 @@ int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
+                                              uint32_t count, HorizonTerrainFillVertices fill,
+                                              void *context, uint32_t *allocation_bytes);
+ int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes);
++/* One vertex owner and one independently backed order per logical view.
++ * All lanes are reserved up front and retire with their mesh generation. */
++enum { HORIZON_TERRAIN_MAX_SORT_VIEWS = 5 };
++int horizon_gx2_terrain_section_estimate_sorted_views(uint32_t count, uint32_t views,
++                                                     uint32_t *bytes);
++int horizon_gx2_terrain_section_create_sorted_views(HorizonGx2TerrainSection **out,
++                                                   uint32_t count, uint32_t views,
++                                                   HorizonTerrainFillVertices fill,
++                                                   void *context, uint32_t *allocation_bytes);
+ /* Call only after the preceding consumers have retired. */
+ int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
+                                                const uint32_t *indices, uint32_t count);
++/* Publish before the first use of this lane in the pair. Rewriting a lane
++ * from an earlier pair requires retirement of its previous consumers. */
++int horizon_gx2_terrain_section_update_indices_view(HorizonGx2TerrainSection *section, uint32_t view,
++                                                    const uint32_t *indices, uint32_t count);
+ /* The synchronous callback updates only rects (x, y, width, height in
+  * pixels), including their sprite borders. Call after all atlas draws retire. */
+ int horizon_gx2_terrain_patch_atlas(HorizonGx2Terrain *terrain,
+@@ -89,6 +102,9 @@ int horizon_gx2_terrain_bind(HorizonGx2Terrain *terrain, uint32_t target_width,
+                             const float fog_color[4], const float fog_ranges[4], bool translucent);
+ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *terrain, HorizonGx2TerrainSection *section,
+                                   const float clip_rows[16], const float section_origin[4]);
++int horizon_gx2_terrain_draw_bound_view(HorizonGx2Terrain *terrain, HorizonGx2TerrainSection *section,
++                                       uint32_t view, const float clip_rows[16],
++                                       const float section_origin[4]);
+ int horizon_gx2_terrain_draw(HorizonGx2Terrain *terrain,
+                             HorizonGx2TerrainSection *section,
+                             uint32_t target_width, uint32_t target_height,
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index 550ab10..ab2899b 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -3,11 +3,17 @@
+ /* Private GX2 buffer lifecycle, shared with the host test's SDK stubs. */
+ enum { TERRAIN_INDEX_QUADS = (UINT16_MAX + 1) / 4 };
+ 
++typedef struct {
++   GX2RBuffer indices;
++   bool ready;
++} TerrainSortLane;
++
+ struct HorizonGx2TerrainSection {
+    GX2RBuffer buffer;
+-   GX2RBuffer sorted_indices;
++   TerrainSortLane sorted;
++   TerrainSortLane *other_views;
+    uint32_t vertex_count;
+-   bool sorted_indices_ready;
++   uint32_t view_count;
+ };
+ 
+ static void terrain_buffer_release(GX2RBuffer *buffer)
+@@ -111,70 +117,128 @@ static uint32_t terrain_sorted_index_width(uint32_t vertices)
+    return vertices <= UINT16_MAX + 1u ? sizeof(uint16_t) : sizeof(uint32_t);
+ }
+ 
+-int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
++static TerrainSortLane *terrain_sort_lane(HorizonGx2TerrainSection *section, uint32_t view)
++{
++   if (!section || view >= section->view_count) return NULL;
++   return view ? &section->other_views[view-1] : &section->sorted;
++}
++
++int horizon_gx2_terrain_section_estimate_sorted_views(uint32_t count, uint32_t views,
++                                                     uint32_t *bytes)
+ {
+    if (horizon_gx2_terrain_section_estimate(count, bytes) != 0) return -1;
++   if (!views || views > HORIZON_TERRAIN_MAX_SORT_VIEWS || count / 4 > UINT32_MAX / 6) {
++      *bytes = 0;
++      return -1;
++   }
+    if (!count) return 0;
+-   if (count / 4 > UINT32_MAX / 6) return -1;
+    uint32_t index_bytes;
+    GX2RBuffer layout;
+    int result = terrain_buffer_layout(&layout, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+                                       terrain_sorted_index_width(count), count / 4 * 6, &index_bytes);
+-   if (result || index_bytes > UINT32_MAX - *bytes) return -1;
+-   *bytes += index_bytes;
++   if (result || index_bytes > (UINT32_MAX - *bytes) / views) {
++      *bytes = 0;
++      return -1;
++   }
++   *bytes += views * index_bytes;
+    return 0;
+ }
+ 
+-int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
+-                                             uint32_t count, HorizonTerrainFillVertices fill,
+-                                             void *context, uint32_t *allocation_bytes)
++int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
++{
++   return horizon_gx2_terrain_section_estimate_sorted_views(count, 1, bytes);
++}
++
++int horizon_gx2_terrain_section_create_sorted_views(HorizonGx2TerrainSection **out,
++                                                   uint32_t count, uint32_t views,
++                                                   HorizonTerrainFillVertices fill,
++                                                   void *context, uint32_t *allocation_bytes)
+ {
+    if (!out || !allocation_bytes) return -1;
+    *out = NULL;
+    *allocation_bytes = 0;
+    uint32_t expected;
+-   if (!count || horizon_gx2_terrain_section_estimate_sorted(count, &expected) != 0) return -1;
++   if (!count || horizon_gx2_terrain_section_estimate_sorted_views(count, views, &expected)) return -1;
+    HorizonGx2TerrainSection *section = NULL;
+-   uint32_t vertex_bytes, index_bytes;
+-   int result = horizon_gx2_terrain_section_create(&section, count, fill, context, &vertex_bytes);
++   uint32_t bytes;
++   int result = horizon_gx2_terrain_section_create(&section, count, fill, context, &bytes);
+    if (result) return result;
+-   result = terrain_buffer_create(&section->sorted_indices, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+-                                  terrain_sorted_index_width(count), count / 4 * 6, &index_bytes);
+-   if (result || vertex_bytes > expected || index_bytes != expected - vertex_bytes) {
+-      horizon_gx2_terrain_section_destroy_after_wait(section);
+-      return result ? result : -1;
++   if (views > 1) {
++      section->other_views = calloc(views-1, sizeof(*section->other_views));
++      if (!section->other_views) {
++         result = -2;
++         goto fail;
++      }
++   }
++   section->view_count = views;
++   for (uint32_t view = 0; view < views; ++view) {
++      TerrainSortLane *lane = terrain_sort_lane(section, view);
++      uint32_t index_bytes;
++      result = terrain_buffer_create(&lane->indices, GX2R_RESOURCE_BIND_INDEX_BUFFER,
++                                     terrain_sorted_index_width(count), count / 4 * 6, &index_bytes);
++      if (result) goto fail;
++      if (bytes > expected || index_bytes > expected - bytes) {
++         result = -1;
++         goto fail;
++      }
++      bytes += index_bytes;
++   }
++   if (bytes != expected) {
++      result = -1;
++      goto fail;
+    }
+    *out = section;
+-   *allocation_bytes = expected;
++   *allocation_bytes = bytes;
+    return 0;
++fail:
++   /* No vertex or index lane was submitted before the owner was published. */
++   horizon_gx2_terrain_section_destroy_after_wait(section);
++   return result;
+ }
+ 
+-int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
+-                                               const uint32_t *indices, uint32_t count)
++int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
++                                             uint32_t count, HorizonTerrainFillVertices fill,
++                                             void *context, uint32_t *allocation_bytes)
+ {
+-   if (!section || !indices || !GX2RBufferExists(&section->sorted_indices) ||
+-       count != section->sorted_indices.elemCount) return -1;
++   return horizon_gx2_terrain_section_create_sorted_views(out, count, 1, fill, context,
++                                                          allocation_bytes);
++}
++
++int horizon_gx2_terrain_section_update_indices_view(HorizonGx2TerrainSection *section, uint32_t view,
++                                                    const uint32_t *indices, uint32_t count)
++{
++   TerrainSortLane *lane = terrain_sort_lane(section, view);
++   if (!lane || !indices || !GX2RBufferExists(&lane->indices) ||
++       count != lane->indices.elemCount) return -1;
+    /* Validate before mapping so an invalid update preserves the last order. */
+    for (uint32_t i = 0; i < count; ++i)
+       if (indices[i] >= section->vertex_count) return -1;
+-   void *dest = GX2RLockBufferEx(&section->sorted_indices, 0);
++   void *dest = GX2RLockBufferEx(&lane->indices, 0);
+    if (!dest) return -3;
+    /* Cafe is big-endian. Keep the sorter's order in the bound index type. */
+-   if (section->sorted_indices.elemSize == sizeof(uint16_t)) {
++   if (lane->indices.elemSize == sizeof(uint16_t)) {
+       uint16_t *compact = dest;
+       for (uint32_t i = 0; i < count; ++i) compact[i] = (uint16_t)indices[i];
+    } else {
+       memcpy(dest, indices, (size_t)count * sizeof(*indices));
+    }
+-   GX2RUnlockBufferEx(&section->sorted_indices, 0);
+-   section->sorted_indices_ready = true;
++   GX2RUnlockBufferEx(&lane->indices, 0);
++   lane->ready = true;
+    return 0;
+ }
+ 
++int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section,
++                                               const uint32_t *indices, uint32_t count)
++{
++   return horizon_gx2_terrain_section_update_indices_view(section, 0, indices, count);
++}
++
+ void horizon_gx2_terrain_section_destroy_after_wait(HorizonGx2TerrainSection *section)
+ {
+    if (!section) return;
+-   terrain_buffer_release(&section->sorted_indices);
++   for (uint32_t view = 0; view < section->view_count; ++view)
++      terrain_buffer_release(&terrain_sort_lane(section, view)->indices);
++   if (section->other_views) free(section->other_views);
+    terrain_buffer_release(&section->buffer);
+    free(section);
+ }
+@@ -204,9 +268,15 @@ static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count
+    terrain_draw_indexed_range(quad_indices, 0, vertex_count / 4);
+ }
+ 
+-static void terrain_draw_sorted(HorizonGx2TerrainSection *section)
++static TerrainSortLane *terrain_ready_sort_lane(HorizonGx2TerrainSection *section, uint32_t view)
++{
++   TerrainSortLane *lane = terrain_sort_lane(section, view);
++   return lane && lane->ready ? lane : NULL;
++}
++
++static void terrain_draw_sorted(TerrainSortLane *lane)
+ {
+-   GX2RBuffer *indices = &section->sorted_indices;
++   GX2RBuffer *indices = &lane->indices;
+    GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, indices,
+                    indices->elemSize == sizeof(uint16_t) ? GX2_INDEX_TYPE_U16 : GX2_INDEX_TYPE_U32,
+                    indices->elemCount, 0, 0, 1);
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index af03ba1..f6ff489 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -25,9 +25,12 @@ enum {
+ };
+ 
+ static bool fail_calloc, fail_create, fail_map, reject_fill, fail_indices;
+-static unsigned sections, buffers, mapped, waits, fills;
++static unsigned sections, buffers, mapped, waits, fills, fail_index_countdown;
+ static unsigned draw_count;
+-static struct { uint32_t index_count, base_vertex, index_type; } draws[3];
++static struct {
++   uint32_t index_count, base_vertex, index_type;
++   const void *payload;
++} draws[HORIZON_TERRAIN_MAX_SORT_VIEWS];
+ 
+ static void *section_calloc(size_t count, size_t bytes)
+ {
+@@ -66,6 +69,9 @@ static uint32_t GX2RGetBufferAllocationSize(GX2RBuffer *buffer)
+ static bool GX2RCreateBuffer(GX2RBuffer *buffer)
+ {
+    if (fail_create || (fail_indices && (buffer->flags & GX2R_RESOURCE_BIND_INDEX_BUFFER))) return false;
++   if (buffer->flags & GX2R_RESOURCE_BIND_INDEX_BUFFER) {
++      if (fail_index_countdown && !--fail_index_countdown) return false;
++   }
+    buffer->buffer = malloc(GX2RGetBufferAllocationSize(buffer));
+    assert(buffer->buffer);
+    ++buffers;
+@@ -103,8 +109,9 @@ static void GX2RDrawIndexed(unsigned mode, GX2RBuffer *buffer, unsigned type,
+    assert(buffer->elemSize == (type == GX2_INDEX_TYPE_U16 ? 2u : 4u));
+    assert(buffer->flags & GX2R_RESOURCE_BIND_INDEX_BUFFER);
+    assert(!mapped && instances == 1 && offset == 0);
+-   assert(count <= buffer->elemCount && draw_count < 3);
++   assert(count <= buffer->elemCount && draw_count < HORIZON_TERRAIN_MAX_SORT_VIEWS);
+    draws[draw_count].index_count = count;
++   draws[draw_count].payload = buffer->buffer;
+    draws[draw_count].base_vertex = base;
+    draws[draw_count++].index_type = type;
+ }
+@@ -219,21 +226,21 @@ static void check_sorted_section(void)
+    assert(!section && !bytes && !sections && !buffers && waits == baseline_waits);
+ 
+    assert(horizon_gx2_terrain_section_create_sorted(&section, 4, fill, (void *)&x, &bytes) == 0);
+-   assert(bytes == expected && buffers == 2 && !section->sorted_indices_ready);
++   assert(bytes == expected && buffers == 2 && !section->sorted.ready);
+    const uint32_t sorted[] = {2, 3, 0, 0, 1, 2};
+    assert(horizon_gx2_terrain_section_update_indices(section, sorted, 5) == -1);
+    fail_map = true;
+    assert(horizon_gx2_terrain_section_update_indices(section, sorted, 6) == -3);
+    fail_map = false;
+-   assert(!section->sorted_indices_ready);
++   assert(!section->sorted.ready);
+    assert(horizon_gx2_terrain_section_update_indices(section, sorted, 6) == 0);
+    const uint16_t compact[] = {2, 3, 0, 0, 1, 2};
+-   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, compact, sizeof(compact)));
++   assert(section->sorted.ready && !memcmp(section->sorted.indices.buffer, compact, sizeof(compact)));
+    const uint32_t invalid[] = {2, 3, 4, 0, 1, 2};
+    assert(horizon_gx2_terrain_section_update_indices(section, invalid, 6) == -1);
+-   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, compact, sizeof(compact)));
++   assert(section->sorted.ready && !memcmp(section->sorted.indices.buffer, compact, sizeof(compact)));
+    draw_count = 0;
+-   terrain_draw_sorted(section);
++   terrain_draw_sorted(terrain_ready_sort_lane(section, 0));
+    assert(draw_count == 1 && draws[0].index_type == GX2_INDEX_TYPE_U16 && draws[0].index_count == 6);
+    assert(((HorizonTerrainVertex *)section->buffer.buffer)[0].position[0] == x);
+    horizon_gx2_terrain_section_destroy_after_wait(section);
+@@ -262,31 +269,74 @@ static void check_index_width_boundary(void)
+       assert(estimated - vertex_bytes == ((count * width + 63) & ~63u));
+       assert(horizon_gx2_terrain_section_create_sorted(
+          &section, vertices, fill_large, NULL, &actual) == 0);
+-      assert(actual == estimated && section->sorted_indices.elemSize == width);
++      assert(actual == estimated && section->sorted.indices.elemSize == width);
+       uint32_t *indices = malloc(count * sizeof(*indices));
+       assert(indices);
+       for (uint32_t i = 0; i < count; ++i) indices[i] = vertices - 1 - i % vertices;
+       assert(horizon_gx2_terrain_section_update_indices(section, indices, count) == 0);
+       for (uint32_t i = 0; i < count; ++i) {
+-         const uint32_t read = mode == 0 ? ((uint16_t *)section->sorted_indices.buffer)[i]
+-                                        : ((uint32_t *)section->sorted_indices.buffer)[i];
++         const uint32_t read = mode == 0 ? ((uint16_t *)section->sorted.indices.buffer)[i]
++                                        : ((uint32_t *)section->sorted.indices.buffer)[i];
+          assert(read == indices[i]);
+       }
+       free(indices);
+       draw_count = 0;
+-      terrain_draw_sorted(section);
++      terrain_draw_sorted(terrain_ready_sort_lane(section, 0));
+       assert(draw_count == 1 && draws[0].index_type == (mode == 0 ? GX2_INDEX_TYPE_U16 : GX2_INDEX_TYPE_U32));
+       horizon_gx2_terrain_section_destroy_after_wait(section);
+       assert(!sections && !buffers && !mapped);
+    }
+ }
+ 
++static void check_view_lanes(void)
++{
++   const uint32_t view_count = HORIZON_TERRAIN_MAX_SORT_VIEWS;
++   const uint32_t vertices = 20;
++   const uint32_t count = vertices / 4 * 6;
++   uint32_t estimated, bytes, verts;
++   HorizonGx2TerrainSection *section;
++   assert(horizon_gx2_terrain_section_estimate(vertices, &verts) == 0);
++   assert(horizon_gx2_terrain_section_estimate_sorted_views(vertices, view_count, &estimated) == 0);
++   assert(estimated == verts + view_count*64);
++   assert(horizon_gx2_terrain_section_create_sorted_views(
++      &section, vertices, view_count+1, fill_large, NULL, &bytes) == -1);
++   assert(!section && !bytes && !sections && !buffers);
++
++   fail_index_countdown = 3;
++   assert(horizon_gx2_terrain_section_create_sorted_views(
++      &section, vertices, view_count, fill_large, NULL, &bytes) == -2);
++   assert(!section && !bytes && !sections && !buffers);
++
++   assert(horizon_gx2_terrain_section_create_sorted_views(
++      &section, vertices, view_count, fill_large, NULL, &bytes) == 0);
++   assert(bytes == estimated && buffers == view_count+1 && sections == 2);
++   assert(!terrain_ready_sort_lane(section, view_count));
++   draw_count = 0;
++   for (uint32_t view = 0; view < view_count; ++view) {
++      uint32_t ordered[30];
++      for (uint32_t i = 0; i < count; ++i) ordered[i] = (i + 4*view) % vertices;
++      assert(!terrain_ready_sort_lane(section, view));
++      assert(horizon_gx2_terrain_section_update_indices_view(section, view, ordered, count) == 0);
++      terrain_draw_sorted(terrain_ready_sort_lane(section, view));
++   }
++   assert(draw_count == view_count);
++   for (uint32_t view = 0; view < view_count; ++view) {
++      const uint16_t *queued = draws[view].payload;
++      assert(draws[view].index_type == GX2_INDEX_TYPE_U16 && draws[view].index_count == count);
++      for (uint32_t n = 0; n < view; ++n) assert(draws[n].payload != queued);
++      for (uint32_t i = 0; i < count; ++i) assert(queued[i] == (i + 4*view) % vertices);
++   }
++   horizon_gx2_terrain_section_destroy(section);
++   assert(!sections && !buffers && !mapped);
++}
++
+ int main(void)
+ {
+    check_index_groups();
+    check_upload_lifetimes();
+    check_sorted_section();
+    check_index_width_boundary();
++   check_view_lanes();
+    puts("Indexed terrain buffer tests passed");
+    return 0;
+ }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 41b6352..76ede62 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -277,16 +277,18 @@ extern "C" {
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
+-    fn horizon_gx2_terrain_section_create_sorted(
++    fn horizon_gx2_terrain_section_create_sorted_views(
+         out: *mut *mut c_void,
+         count: u32,
++        views: u32,
+         fill: unsafe extern "C" fn(*mut c_void, *mut MaybeUninit<IndexedTerrainVertex>, u32) -> i32,
+         context: *mut c_void,
+         allocation_bytes: *mut u32,
+     ) -> i32;
+-    fn horizon_gx2_terrain_section_estimate_sorted(count: u32, bytes: *mut u32) -> i32;
+-    fn horizon_gx2_terrain_section_update_indices(
++    fn horizon_gx2_terrain_section_estimate_sorted_views(count: u32, views: u32, bytes: *mut u32) -> i32;
++    fn horizon_gx2_terrain_section_update_indices_view(
+         section: *mut c_void,
++        view: u32,
+         indices: *const u32,
+         count: u32,
+     ) -> i32;
+@@ -330,6 +332,13 @@ extern "C" {
+         ranges: *const [u32; 2],
+         range_count: u32,
+     ) -> i32;
++    fn horizon_gx2_terrain_draw_bound_view(
++        terrain: *mut c_void,
++        section: *mut c_void,
++        view: u32,
++        clip_rows: *const f32,
++        section_origin: *const f32,
++    ) -> i32;
+     fn horizon_gx2_terrain_draw_bound(
+         terrain: *mut c_void,
+         section: *mut c_void,
+@@ -566,12 +575,13 @@ use terrain_residency::{RESIDENT_VERTEX_BYTES, RETIRE_BATCH_BYTES};
+ #[derive(Clone, Copy)]
+ struct DeferredTerrain {
+     bytes: usize,
++    sort_views: u32,
+     bounds: Option<horizon_wiiu_gx2_terrain::TerrainBounds>,
+ }
+ 
+ mod solid_draw_plan;
+ mod terrain_translucency;
+-use terrain_translucency::{TerrainSection, TranslucentTerrain};
++use terrain_translucency::{TerrainSection, TerrainSortView, TranslucentTerrain};
+ 
+ struct TerrainUpload<'a> {
+     atlas: &'a TerrainAtlasLayout,
+@@ -698,6 +708,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_allocation_backoff: Option<Instant>,
+     terrain_evictions: u32,
+     translucent_terrain: TranslucentTerrain,
++    translucent_pair: u64,
+     generation: Option<u64>,
+     atlas_revision: Option<u64>,
+     cit_generation: Option<u64>,
+@@ -774,6 +785,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_allocation_backoff: None,
+             terrain_evictions: 0,
+             translucent_terrain: TranslucentTerrain::default(),
++            translucent_pair: 0,
+             generation: None,
+             atlas_revision: None,
+             cit_generation: None,
+@@ -1769,7 +1781,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             return Err("GX2 terrain section layout is not prepared".into());
+         }
+         let (info, bounds) =
+-            TerrainSection::estimate(mesh).ok_or("GX2 section allocation estimate overflow")?;
++            TerrainSection::estimate(mesh, 1).ok_or("GX2 section allocation estimate overflow")?;
+         if info.bytes == 0 {
+             if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+@@ -1816,6 +1828,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                         key,
+                         DeferredTerrain {
+                             bytes: old.budget_bytes,
++                            sort_views: old.sort_views(),
+                             bounds: old.bounds,
+                         },
+                     );
+@@ -2094,6 +2107,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         struct Draw<'a, 'frame, 'shader> {
+             presenter: &'a mut Gx2LoadingPresenter<'shader>,
+             frame: &'a Frame<'frame>,
++            translucent_pair: u64,
+             terrain_min_y: Option<i32>,
+             targets: [[u32; 4]; 2],
+             clear: [f32; 4],
+@@ -2405,6 +2419,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     }
+                     let [tested, drawn] = draw.presenter.translucent_terrain.draw(
+                         target,
++                        TerrainSortView::new(0, 0), // Stock outputs share the gameplay camera.
++                        draw.translucent_pair,
+                         legacy_bindings,
+                         &mut draw.presenter.sections,
+                         terrain,
+@@ -2650,7 +2666,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             horizon_loading_host_present_with_clear
+         };
+         let terrain_min_y = self.terrain_min_y;
++        self.translucent_pair = self.translucent_pair.wrapping_add(1);
+         let mut draw = Draw {
++            translucent_pair: self.translucent_pair,
+             presenter: self,
+             frame,
+             terrain_min_y,
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 297592c..6c1e293 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -1,5 +1,5 @@
+ use super::*;
+-use horizon_client::gfx::translucency::{SortState, Sorter, quad_center};
++use horizon_client::gfx::translucency::{SortCursor, Sorter, quad_center};
+ use horizon_client::mesher::{OPAQUE_LAYER, Sides};
+ use horizon_wiiu_gx2_terrain::TerrainBounds;
+ 
+@@ -13,11 +13,11 @@ pub(super) struct TerrainBuffer {
+ }
+ 
+ impl TerrainBuffer {
+-    fn estimate(count: u32, translucent: bool) -> Option<u32> {
++    fn estimate(count: u32, sort_views: u32) -> Option<u32> {
+         let mut bytes = 0;
+         let result = unsafe {
+-            if translucent {
+-                horizon_gx2_terrain_section_estimate_sorted(count, &mut bytes)
++            if sort_views != 0 {
++                horizon_gx2_terrain_section_estimate_sorted_views(count, sort_views, &mut bytes)
+             } else {
+                 horizon_gx2_terrain_section_estimate(count, &mut bytes)
+             }
+@@ -28,7 +28,7 @@ impl TerrainBuffer {
+     fn upload(
+         atlas: &TerrainAtlasLayout,
+         source: &[TerrainVertex],
+-        translucent: bool,
++        sort_views: u32,
+         bounds: Option<TerrainBounds>,
+     ) -> horizon_client::Result<Option<Self>> {
+         if source.is_empty() {
+@@ -36,30 +36,37 @@ impl TerrainBuffer {
+         }
+         let vertex_count = u32::try_from(source.len())?;
+         let vertex_bytes =
+-            Self::estimate(vertex_count, false).ok_or("GX2 vertex allocation estimate overflow")?;
++            Self::estimate(vertex_count, 0).ok_or("GX2 vertex allocation estimate overflow")?;
+         let mut upload = TerrainUpload {
+             atlas,
+             source,
+-            translucent,
++            translucent: sort_views != 0,
+             error: None,
+         };
+         let mut native = std::ptr::null_mut();
+         let mut gpu_bytes = 0;
+-        let create = if translucent {
+-            horizon_gx2_terrain_section_create_sorted
+-        } else {
+-            horizon_gx2_terrain_section_create
+-        };
+-        // C borrows the upload during the synchronous callback and unmaps it
+-        // before returning. This resource is not yet in the retirement queue.
++        // C borrows the upload only during its synchronous mapping callback.
++        // The new owner and all of its index lanes are unpublished here.
++        let context = std::ptr::from_mut(&mut upload).cast();
+         let code = unsafe {
+-            create(
+-                &mut native,
+-                vertex_count,
+-                fill_terrain_vertices,
+-                std::ptr::from_mut(&mut upload).cast(),
+-                &mut gpu_bytes,
+-            )
++            if sort_views != 0 {
++                horizon_gx2_terrain_section_create_sorted_views(
++                    &mut native,
++                    vertex_count,
++                    sort_views,
++                    fill_terrain_vertices,
++                    context,
++                    &mut gpu_bytes,
++                )
++            } else {
++                horizon_gx2_terrain_section_create(
++                    &mut native,
++                    vertex_count,
++                    fill_terrain_vertices,
++                    context,
++                    &mut gpu_bytes,
++                )
++            }
+         };
+         if let Some(error) = upload.error {
+             return Err(error.into());
+@@ -92,9 +99,105 @@ impl Drop for TerrainBuffer {
+     }
+ }
+ 
++/// A queue slot and its current seat assignment. A reassigned slot needs a
++/// fresh sort even if the new camera lies in the previous camera's block.
++#[derive(Clone, Copy)]
++pub(super) struct TerrainSortView {
++    slot: u32,
++    generation: u64,
++}
++
++impl TerrainSortView {
++    pub(super) const fn new(slot: u32, generation: u64) -> Self {
++        Self { slot, generation }
++    }
++}
++
++#[derive(Default)]
++struct ViewSortLane {
++    cursor: SortCursor,
++    generation: u64,
++    queued_pair: Option<u64>,
++}
++
++struct ViewSorts {
++    centers: Vec<[f32; 3]>,
++    primary: ViewSortLane,
++    additional: Box<[ViewSortLane]>,
++}
++
++impl ViewSorts {
++    fn new(centers: Vec<[f32; 3]>, count: u32) -> Self {
++        // The native allocation has already admitted this exact count.
++        Self {
++            centers,
++            primary: ViewSortLane::default(),
++            additional: (1..count).map(|_| ViewSortLane::default()).collect(),
++        }
++    }
++
++    fn additional_bytes(count: u32) -> usize {
++        count.saturating_sub(1) as usize * std::mem::size_of::<ViewSortLane>()
++    }
++
++    fn lane<'lane>(
++        primary: &'lane mut ViewSortLane,
++        additional: &'lane mut [ViewSortLane],
++        view: u32,
++    ) -> Result<&'lane mut ViewSortLane, &'static str> {
++        if view == 0 {
++            Ok(primary)
++        } else {
++            additional
++                .get_mut(view as usize - 1)
++                .ok_or("GX2 sort view is unavailable")
++        }
++    }
++
++    fn prepare(
++        &mut self,
++        view: TerrainSortView,
++        pair: u64,
++        camera: [f64; 3],
++        origin: [i32; 3],
++        sorter: &mut Sorter,
++        upload: impl FnOnce(&[u32]) -> bool,
++    ) -> Result<usize, &'static str> {
++        let lane = Self::lane(&mut self.primary, &mut self.additional, view.slot)?;
++        let mut cursor = if lane.generation == view.generation {
++            lane.cursor
++        } else {
++            SortCursor::default()
++        };
++        let Some(indices) = cursor.update(&self.centers, camera, origin, sorter) else {
++            return Ok(0);
++        };
++        // Rendering both outputs for one camera may read the same lane.
++        // Another order in that pair would update memory already queued.
++        if lane.queued_pair == Some(pair) {
++            return Err("GX2 sort view would overwrite a queued order");
++        }
++        if !upload(indices) {
++            return Err("GX2 translucent terrain index upload failed");
++        }
++        lane.cursor = cursor;
++        lane.generation = view.generation;
++        Ok(indices.len())
++    }
++
++    fn queued(&mut self, view: TerrainSortView, pair: u64) -> Result<(), &'static str> {
++        let lane = Self::lane(&mut self.primary, &mut self.additional, view.slot)?;
++        if lane.generation != view.generation {
++            return Err("GX2 sort view assignment changed before publication");
++        }
++        lane.queued_pair = Some(pair);
++        Ok(())
++    }
++}
++
+ struct SortedSection {
+     buffer: TerrainBuffer,
+-    sort: SortState,
++    sorts: ViewSorts,
+ }
+ 
+ pub(super) struct SolidRanges {
+@@ -140,16 +243,26 @@ pub(super) struct TerrainSection {
+ impl TerrainSection {
+     pub(super) fn estimate(
+         mesh: &SectionMesh,
++        sort_views: u32,
+     ) -> Option<(DeferredTerrain, [Option<TerrainBounds>; 2])> {
++        if sort_views == 0 {
++            return None;
++        }
+         let solid_count = u32::try_from(mesh.solid.len()).ok()?;
+         let translucent_count = u32::try_from(mesh.translucent.len()).ok()?;
+-        let solid_bytes = TerrainBuffer::estimate(solid_count, false)? as usize;
+-        let sorted_bytes = TerrainBuffer::estimate(translucent_count, true)? as usize;
++        let solid_bytes = TerrainBuffer::estimate(solid_count, 0)? as usize;
++        let sorted_bytes = TerrainBuffer::estimate(translucent_count, sort_views)? as usize;
+         let center_bytes =
+             (translucent_count as usize / 4).checked_mul(std::mem::size_of::<[f32; 3]>())?;
++        let view_bytes = if translucent_count == 0 {
++            0
++        } else {
++            ViewSorts::additional_bytes(sort_views)
++        };
+         let bytes = solid_bytes
+             .checked_add(sorted_bytes)?
+-            .checked_add(center_bytes)?;
++            .checked_add(center_bytes)?
++            .checked_add(view_bytes)?;
+         let solid_bounds = TerrainBounds::from_vertices(&mesh.solid);
+         let translucent_bounds = TerrainBounds::from_vertices(&mesh.translucent);
+         let bounds = match (solid_count != 0, translucent_count != 0) {
+@@ -161,7 +274,11 @@ impl TerrainSection {
+             (false, false) => None,
+         };
+         Some((
+-            DeferredTerrain { bytes, bounds },
++            DeferredTerrain {
++                bytes,
++                bounds,
++                sort_views,
++            },
+             [solid_bounds, translucent_bounds],
+         ))
+     }
+@@ -174,34 +291,41 @@ impl TerrainSection {
+         opaque_shader: bool,
+     ) -> horizon_client::Result<Self> {
+         let solid =
+-            TerrainBuffer::upload(atlas, &mesh.solid, false, solid_bounds)?.map(|mut buffer| {
++            TerrainBuffer::upload(atlas, &mesh.solid, 0, solid_bounds)?.map(|mut buffer| {
+                 // Match the native solid conversion. Inspect every vertex
+                 // because the fragment shader interpolates the cutout value.
+                 buffer.opaque_only = opaque_shader
+-                    && mesh.solid.iter().all(|vertex| vertex.layer & OPAQUE_LAYER != 0);
++                    && mesh
++                        .solid
++                        .iter()
++                        .all(|vertex| vertex.layer & OPAQUE_LAYER != 0);
+                 buffer
+             });
+-        let translucent =
+-            match TerrainBuffer::upload(atlas, &mesh.translucent, true, translucent_bounds) {
+-                Ok(buffer) => buffer.map(|buffer| {
+-                    let centers = mesh
+-                        .translucent
+-                        .chunks_exact(4)
+-                        .map(|quad| quad_center(quad[0].pos, quad[2].pos))
+-                        .collect();
+-                    SortedSection {
+-                        buffer,
+-                        sort: SortState::new(centers),
+-                    }
+-                }),
+-                Err(error) => {
+-                    // The opaque side of this pair has never been submitted.
+-                    if let Some(solid) = solid {
+-                        solid.destroy_after_wait();
+-                    }
+-                    return Err(error);
++        let translucent = match TerrainBuffer::upload(
++            atlas,
++            &mesh.translucent,
++            info.sort_views,
++            translucent_bounds,
++        ) {
++            Ok(buffer) => buffer.map(|buffer| {
++                let centers = mesh
++                    .translucent
++                    .chunks_exact(4)
++                    .map(|quad| quad_center(quad[0].pos, quad[2].pos))
++                    .collect();
++                SortedSection {
++                    buffer,
++                    sorts: ViewSorts::new(centers, info.sort_views),
+                 }
+-            };
++            }),
++            Err(error) => {
++                // The opaque side of this pair has never been submitted.
++                if let Some(solid) = solid {
++                    solid.destroy_after_wait();
++                }
++                return Err(error);
++            }
++        };
+         let solid_sides = solid.as_ref().and_then(|buffer| {
+             let sides = mesh.sides;
+             (unsafe { horizon_gx2_profile_solid_axis_ranges() }
+@@ -209,7 +333,7 @@ impl TerrainSection {
+                 && sides.quads() == buffer.vertex_count / 4
+                 && (0..13).all(|i| sides.part_end(i) <= sides.part_end(i + 1))
+                 && (0..7).all(|i| sides.bucket_plane(i).is_finite()))
+-                .then(|| Box::new(sides))
++            .then(|| Box::new(sides))
+         });
+         let section = Self {
+             solid,
+@@ -219,7 +343,10 @@ impl TerrainSection {
+             budget_bytes: info.bytes,
+             animated_layers: 0,
+         };
+-        if section.gpu_bytes() + section.center_bytes() != info.bytes {
++        let view_bytes = section.translucent.as_ref().map_or(0, |section| {
++            std::mem::size_of_val(section.sorts.additional.as_ref())
++        });
++        if section.gpu_bytes() + section.center_bytes() + view_bytes != info.bytes {
+             section.destroy_after_wait();
+             return Err(
+                 "GX2 reported a different allocation size from the checked estimate".into(),
+@@ -228,6 +355,12 @@ impl TerrainSection {
+         Ok(section)
+     }
+ 
++    pub(super) fn sort_views(&self) -> u32 {
++        self.translucent
++            .as_ref()
++            .map_or(1, |section| 1 + section.sorts.additional.len() as u32)
++    }
++
+     pub(super) fn gpu_bytes(&self) -> usize {
+         self.buffers().map(|buffer| buffer.gpu_bytes as usize).sum()
+     }
+@@ -254,8 +387,8 @@ impl TerrainSection {
+     }
+ }
+ 
+-/// Both outputs share terrain and sorted indices. A display culls against its
+-/// own frustum, but the upstream quad sort depends only on the common camera.
++/// Each draw culls against its own frustum. Logical views may share immutable
++/// geometry and centers; only an identical cached order may share a live lane.
+ #[derive(Default)]
+ pub(super) struct TranslucentTerrain {
+     visible: Vec<(f64, SectionKey)>,
+@@ -266,6 +399,8 @@ impl TranslucentTerrain {
+     pub(super) fn draw(
+         &mut self,
+         target: u32,
++        view: TerrainSortView,
++        pair: u64,
+         legacy_bindings: bool,
+         sections: &mut HashMap<SectionKey, TerrainSection>,
+         terrain: NonNull<c_void>,
+@@ -276,7 +411,10 @@ impl TranslucentTerrain {
+         fog_ranges: &[f32; 4],
+     ) -> Result<[usize; 2], &'static str> {
+         let _span = cafe_profile::Span::new(
+-            [cafe_profile::Stage::TranslucentTerrainTv, cafe_profile::Stage::TranslucentTerrainDrc][target as usize],
++            [
++                cafe_profile::Stage::TranslucentTerrainTv,
++                cafe_profile::Stage::TranslucentTerrainDrc,
++            ][target as usize],
+         );
+         self.visible.clear();
+         let mut index_upload_bytes = 0;
+@@ -314,41 +452,47 @@ impl TranslucentTerrain {
+                 .as_mut()
+                 .unwrap();
+             let world_origin = [key.0 * 16, projection.min_y + key.1 * 16, key.2 * 16];
+-            if let Some(indices) =
+-                section
+-                    .sort
+-                    .update(projection.camera, world_origin, &mut self.sorter)
+-            {
+-                // The previous WHB frame retired earlier consumers. A section
+-                // drawn by both outputs sorts once for their common camera.
+-                // A section first visible on this output has no earlier reader.
+-                let status = unsafe {
+-                    horizon_gx2_terrain_section_update_indices(
+-                        section.buffer.native.as_ptr(),
++            // The existing pair retirement checks protect prior uses. Within
++            // this pair only the logical view's own unused lane may be updated.
++            let native = section.buffer.native;
++            let uploaded = section.sorts.prepare(
++                view,
++                pair,
++                projection.camera,
++                world_origin,
++                &mut self.sorter,
++                |indices| unsafe {
++                    horizon_gx2_terrain_section_update_indices_view(
++                        native.as_ptr(),
++                        view.slot,
+                         indices.as_ptr(),
+                         indices.len() as u32,
+-                    )
+-                };
+-                if status != 0 {
+-                    section.sort.retry_upload();
+-                    return Err("GX2 translucent terrain index upload failed");
+-                }
+-                // Match the native section width. The sorter still holds a U32 scratch list.
+-                let index_width = if section.buffer.vertex_count <= u32::from(u16::MAX) + 1 {
+-                    std::mem::size_of::<u16>()
+-                } else {
+-                    std::mem::size_of::<u32>()
+-                };
+-                index_upload_bytes += indices.len() * index_width;
+-            }
++                    ) == 0
++                },
++            )?;
++            // Match the native width. The sorter still holds a U32 scratch list.
++            let index_width = if section.buffer.vertex_count <= u32::from(u16::MAX) + 1 {
++                std::mem::size_of::<u16>()
++            } else {
++                std::mem::size_of::<u32>()
++            };
++            index_upload_bytes += uploaded * index_width;
+             let origin = projection.section_origin(key);
+             let rows = projection.clip_rows(origin);
+             let [x, y, z] = origin.map(|v| v as f32);
+             if !bound || legacy_bindings {
+                 if unsafe {
+                     horizon_gx2_terrain_bind(
+-                        terrain.as_ptr(), size[0], size[1], rect[0], rect[1], rect[2], rect[3],
+-                        fog_color.as_ptr(), fog_ranges.as_ptr(), true,
++                        terrain.as_ptr(),
++                        size[0],
++                        size[1],
++                        rect[0],
++                        rect[1],
++                        rect[2],
++                        rect[3],
++                        fog_color.as_ptr(),
++                        fog_ranges.as_ptr(),
++                        true,
+                     )
+                 } != 0
+                 {
+@@ -357,9 +501,10 @@ impl TranslucentTerrain {
+                 bound = true;
+             }
+             if unsafe {
+-                horizon_gx2_terrain_draw_bound(
++                horizon_gx2_terrain_draw_bound_view(
+                     terrain.as_ptr(),
+                     section.buffer.native.as_ptr(),
++                    view.slot,
+                     rows.rows.as_ptr().cast(),
+                     [x, y, z, 0.0].as_ptr(),
+                 )
+@@ -367,6 +512,7 @@ impl TranslucentTerrain {
+             {
+                 return Err("GX2 translucent terrain draw failed");
+             }
++            section.sorts.queued(view, pair)?;
+             indices_drawn += section.buffer.vertex_count as usize / 4 * 6;
+         }
+         cafe_profile::sorted_index_bytes(index_upload_bytes);
