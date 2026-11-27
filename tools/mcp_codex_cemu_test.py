@@ -64,6 +64,8 @@ class CodexSession:
 
     def __enter__(self):
         self.client = Process([self.codex, "app-server", "--listen", "stdio://"], self.env)
+        self.thread = None
+        self.tools.clear()
         try:
             self.rpc("initialize", {
                 "clientInfo": {"name": "horizon-wiiu-qualification", "version": "1.0"},
@@ -83,6 +85,7 @@ class CodexSession:
             status = self.rpc("mcpServerStatus/list", {})
             server = next((item for item in status["data"] if item["name"] == self.server_name), None)
             if server is None:
+                self.tools.clear()
                 raise RuntimeError(f"Codex did not list the configured MCP server {self.server_name}.")
             self.tools = set(server["tools"])
             if tool not in self.tools:
@@ -185,8 +188,8 @@ def exercise(origin, ca, window, state, resume=False, game=False):
         assert versions[0]["minecraft"] == "26.3" and versions[0]["installed"] is True
     print("Two independent Codex processes listed and called the real Night versions tool.")
     if game:
-        run_game(lambda tool, args=None: call(codex, env, state, tool, args), window, "Codex",
-                 configure_permissions=not resume)
+        with CodexSession(codex, env, state) as session:
+            run_game(session.call, window, "Codex", configure_permissions=not resume)
 
 
 def run_game(invoke, window, client_name, *, configure_permissions=True):
@@ -237,6 +240,13 @@ def wait_for_save_return(log, offset, timeout):
     raise RuntimeError("The hosted game did not complete its save and return.")
 
 
+GAME_STATE_UNAVAILABLE = (
+    "Tool missing from the current catalog",
+    "did not list game_state",
+    "Tool call game_state failed. No Horizon game is running under Agent Control.",
+)
+
+
 def play_and_save(invoke, window, client_name, index, evidence):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -268,9 +278,7 @@ def play_and_save(invoke, window, client_name, index, evidence):
             reply = invoke("game_state")
         except RuntimeError as error:
             if not any(expected in str(error) for expected in (
-                "Tool missing from the current catalog",
-                "did not list game_state",
-                "game did not accept the request in time",
+                *GAME_STATE_UNAVAILABLE, "game did not accept the request in time",
             )):
                 raise
             now = time.monotonic()
@@ -340,12 +348,10 @@ def play_and_save(invoke, window, client_name, index, evidence):
     try:
         invoke("game_state")
     except RuntimeError as error:
-        if not any(expected in str(error) for expected in (
-            "Tool missing from the current catalog", "did not list game_state",
-        )):
+        if not any(expected in str(error) for expected in GAME_STATE_UNAVAILABLE):
             raise
     else:
-        raise RuntimeError("A fresh client could still call game_state after hosted quit.")
+        raise RuntimeError("The hosted game still accepts game_state after quit.")
     print(f"{client_name} requested the original hosted quit for session {index} and called Night again.",
           flush=True)
     if evidence:
