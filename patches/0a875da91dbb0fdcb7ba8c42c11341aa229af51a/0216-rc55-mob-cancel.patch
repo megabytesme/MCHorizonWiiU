@@ -1,0 +1,108 @@
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index 6a16fe7ed209b7abdc73d8175716486be77f62d1..5490dba5a1d40993a5f32113a95d267ae75e1f26 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -141,7 +141,7 @@ pub(super) fn load_world_rest(
+             .into_iter()
+             .map(|(k, v)| (k, Arc::new(v)))
+             .collect();
+-        let mut mob_data = startup::time("rest.mobs.data", || {
++        let mut mob_data = startup::time("rest.mobs.data", || -> Result<_> {
+             #[cfg(target_os = "cafe")]
+             if let Some(request) = progress.mob_seed() {
+                 return horizon_client::mobs::MobData::load_with_warm_seed(
+@@ -149,10 +149,11 @@ pub(super) fn load_world_rest(
+                     facts,
+                     request,
+                     progress.cancel_flag(),
+-                );
++                )
++                .ok_or_else(|| resource_load::LoadCancelled.into());
+             }
+-            horizon_client::mobs::MobData::load(resource_root, facts)
+-        });
++            Ok(horizon_client::mobs::MobData::load(resource_root, facts))
++        })?;
+         #[cfg(target_os = "cafe")]
+         if progress.mob_seed().is_some() {
+             progress.checkpoint()?;
+diff --git a/crates/horizon-client/src/mobs/data.rs b/crates/horizon-client/src/mobs/data.rs
+index bfd02026fbab34c9ef28be6df3a18742662a07f2..647c091f939d9c9d8340613459c068cbc59c1124 100644
+--- a/crates/horizon-client/src/mobs/data.rs
++++ b/crates/horizon-client/src/mobs/data.rs
+@@ -201,7 +201,10 @@ pub struct MobData {
+ }
+ impl MobData {
+     pub fn load(root: &ResourceRoot, facts: &BlockFacts) -> Self {
+-        Self::load_with_base(root, || Self::read_prepared(root.prepared(), facts))
++        let data = crate::spans::startup::time("rest.mobs.data.decode", || {
++            Self::read_prepared(root.prepared(), facts)
++        });
++        Self::load_source(root, data)
+     }
+ 
+     #[cfg(target_os = "cafe")]
+@@ -210,11 +213,18 @@ impl MobData {
+         facts: &BlockFacts,
+         request: &CafeMobSeedRequest,
+         cancelled: &std::sync::atomic::AtomicBool,
+-    ) -> Self {
+-        Self::load_with_base(root, || {
+-            request.load(root, facts, cancelled)
+-                .unwrap_or_else(|| Self::read_prepared(root.prepared(), facts))
+-        })
++    ) -> Option<Self> {
++        let data = crate::spans::startup::time("rest.mobs.data.decode", || {
++            let seed = request.load(root, facts, cancelled);
++            if cancelled.load(Ordering::Relaxed) {
++                return None;
++            }
++            Some(seed.unwrap_or_else(|| Self::read_prepared(root.prepared(), facts)))
++        })?;
++        if cancelled.load(Ordering::Relaxed) {
++            return None;
++        }
++        Some(Self::load_source(root, data))
+     }
+ 
+     fn read_prepared(root: &Path, facts: &BlockFacts) -> Self {
+@@ -224,12 +234,11 @@ impl MobData {
+             .unwrap_or_else(|| Self::fallback(facts))
+     }
+ 
+-    fn load_with_base(root: &ResourceRoot, decode: impl FnOnce() -> Self) -> Self {
++    fn load_source(root: &ResourceRoot, mut data: Self) -> Self {
+         let source = root.source();
+         let root = root.prepared();
+         use crate::spans::startup;
+ 
+-        let mut data = startup::time("rest.mobs.data.decode", decode);
+         (data.biome_tags, data.entity_tags) = startup::time("rest.mobs.data.tags", || {
+             let no_overlay = &horizon_world::loot::PackOverlay::NONE;
+             let biomes = crate::items::load_tags(root, "worldgen/biome", no_overlay);
+diff --git a/crates/horizon-client/src/mobs/data/cafe_seed.rs b/crates/horizon-client/src/mobs/data/cafe_seed.rs
+index 54e3f7df8848d1e14ea946ba472e64825631feb9..5b19c401a3fef160d068227d3368e44b880c43c5 100644
+--- a/crates/horizon-client/src/mobs/data/cafe_seed.rs
++++ b/crates/horizon-client/src/mobs/data/cafe_seed.rs
+@@ -135,15 +135,19 @@ impl CafeMobSeedRequest {
+             self.cancel();
+             return None;
+         };
++        if cancelled.load(Relaxed) {
++            self.cancel();
++            return None;
++        }
+         let key = Key {
+             export: startup::time("rest.mobs.data.seed_hash", || Sha256::digest(&bytes).into()),
+             rows: facts.states.len(),
+         };
+-        if !self.current() {
++        if cancelled.load(Relaxed) || !self.current() {
+             self.cancel();
+             return None;
+         }
+-        let matching = offered.filter(|seed| seed.key == key && !cancelled.load(Relaxed));
++        let matching = offered.filter(|seed| seed.key == key);
+         let prepared = if let Some(seed) = matching {
+             log::info!("Horizon Cafe mob seed: adopted");
+             Some(seed.data.into_live())
