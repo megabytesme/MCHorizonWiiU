@@ -293,6 +293,40 @@ class ProfileTests(unittest.TestCase):
         }])
         self.assertEqual(split["by_effective_scale"]["100"]["tv_through_solid_ms"]["median"], 2.0)
 
+    def test_pass_boundaries_require_both_targets_and_the_same_base_endpoints(self):
+        def pass_line(sequence, target, ticks):
+            cycles = "/".join(f"{value:016x}" for value in ticks)
+            return f"Horizon GX2 GPU passes seq={sequence} target={target} hz=27000000 cycles={cycles}\n"
+
+        tv = [100_000 + step * 27_000 for step in range(9)]
+        pad = [400_000 + step * 13_500 for step in range(9)]
+        endpoints = [tv[0], tv[-1], pad[0], pad[-1]]
+        inverted = [*tv[:3], tv[2] - 1, *tv[4:]]
+        frames = gpu_capture()
+        frames[0]["partial"] = 1
+        serial = "".join((
+            pass_line(0, 1, pad), pass_line(0, 0, tv), pass_line(0, 0, tv), gpu_serial(0, endpoints),
+            pass_line(1, 0, tv), gpu_serial(1, endpoints),
+            pass_line(3, 0, inverted), pass_line(3, 1, pad), gpu_serial(3, endpoints),
+            pass_line(4, 0, tv), pass_line(4, 1, pad), gpu_serial(4, [*endpoints[:3], pad[-1] + 1]),
+            pass_line(5, 0, tv), pass_line(5, 1, pad),
+        ))
+        result = profile.correlate_gpu_spans(frames, serial.splitlines(), 0, 1)["pass_boundaries"]
+        self.assertEqual(result["excluded_samples"], dict(
+            unmatched_pair=1, missing_target=1, invalid_boundaries=2,
+        ))
+        self.assertEqual(result["matched_samples"], 1)
+        sample, = result["samples"]
+        self.assertTrue(sample["partial"])
+        for display, expected in zip(sample["spans_ms_tv_gamepad"], (1, 0.5)):
+            self.assertEqual(tuple(display), profile.GPU_PASS_NAMES)
+            for elapsed in display.values():
+                self.assertAlmostEqual(elapsed, expected)
+
+        conflicting = serial + pass_line(0, 0, inverted)
+        with self.assertRaisesRegex(ValueError, "conflicting GPU pass records"):
+            profile.correlate_gpu_spans(frames, conflicting.splitlines(), 0, 1)
+
     def test_uwp_serial_capture_restores_split_lines_across_segments(self):
         trace = gpu_serial(0, [27, 108_027, 81_027, 162_027]).replace("\n", "\r\n").encode()
         with TemporaryDirectory() as folder:

@@ -54,3 +54,24 @@ The report separates complete pairs with terrain, pairs with missing terrain,
 and incomplete output. Its interval statistics use adjacent retained gameplay
 rows within each group. Worker spans use their completion interval and can
 overlap each other and the host loop. Unobserved counters appear as `null`.
+
+## GPU pass boundaries
+
+On a build with the sparse GPU pass sampler, use `gx2-gpu-pass-profile.enable`
+alongside plain profile `4`. The sampler adds seven bottom-of-pipe timestamps
+per output every 120 recorded frames. The existing finish must retire both
+outputs before the sampler reads from its slots. The regular outer endpoints
+are emitted for every valid sparse sample so the report can match records.
+
+```sh
+python3 -B tools/gx2_profile.py CAPTURE --gpu-serial MATCHED_SERIAL_LOG
+```
+
+The report keeps pass intervals only when both outputs match the same base
+GPU sample, HZP3 gameplay row, frequency, endpoints and successful terrain
+submission. Its intervals cover target setup, sky, opaque and cutout terrain,
+entities before translucency, translucent terrain, remaining overlays, world
+composite, and HUD with any active keyboard. The outer envelope begins after
+the initial WHB clear and ends before the scan copy. Intervals can contain
+submission gaps. Use the marker-off run for baseline pacing so any added
+timestamp commands and serial writes stay outside the acceptance run.

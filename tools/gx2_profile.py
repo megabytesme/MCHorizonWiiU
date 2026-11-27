@@ -60,6 +60,14 @@ GPU_SOLID_BOUNDARY = re.compile(
     r"tv=([0-9a-fA-F]{16})/([0-9a-fA-F]{16})/([0-9a-fA-F]{16}) "
     r"drc=([0-9a-fA-F]{16})/([0-9a-fA-F]{16})/([0-9a-fA-F]{16})\b"
 )
+GPU_PASSES = re.compile(
+    r"Horizon GX2 GPU passes seq=(\d+) target=([01]) hz=(\d+) "
+    r"cycles=([0-9a-fA-F]{16}(?:/[0-9a-fA-F]{16}){8})(?![0-9a-fA-F/])"
+)
+GPU_PASS_NAMES = (
+    "world_setup", "sky", "solid_terrain", "entities_before_translucency",
+    "translucent_terrain", "remaining_overlays", "world_composite", "hud_and_keyboard",
+)
 SERIAL_DELIMITER = re.compile(rb"\r\n|\r|\n")
 SERIAL_ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -407,7 +415,7 @@ def one_uwp_game_session(lines):
                 or "hosted save barrier completed" in line):
             active_session = False
         span = GPU_SPAN.search(line)
-        if (span or GPU_ENDPOINTS.search(line) or GPU_SOLID_BOUNDARY.search(line)
+        if (span or GPU_ENDPOINTS.search(line) or GPU_SOLID_BOUNDARY.search(line) or GPU_PASSES.search(line)
                 or "Horizon Wii U startup: Cafe Game handoff begin" in line
                 or "Horizon Cafe first original Game frame begin" in line):
             if not active_session:
@@ -424,7 +432,7 @@ def one_uwp_game_session(lines):
 
 def correlate_gpu_spans(frames, serial_lines, start, end):
     """Join a same-run serial log to its HZP3 frame sequence."""
-    spans, endpoints, solid_boundaries = {}, {}, {}
+    spans, endpoints, solid_boundaries, pass_boundaries = {}, {}, {}, {}
     for line in serial_lines:
         for match in GPU_SPAN.finditer(line):
             hz, sequence, tv, gamepad = map(int, match.groups())
@@ -435,6 +443,12 @@ def correlate_gpu_spans(frames, serial_lines, start, end):
         for match in GPU_SOLID_BOUNDARY.finditer(line):
             hz, sequence, *ticks = match.groups()
             _remember_gpu_record(solid_boundaries, int(sequence), (int(hz), *(int(tick, 16) for tick in ticks)))
+        for match in GPU_PASSES.finditer(line):
+            sequence, target, hz, ticks = match.groups()
+            views = pass_boundaries.setdefault(int(sequence), {})
+            record = (int(hz), tuple(int(tick, 16) for tick in ticks.split("/")))
+            if views.setdefault(int(target), record) != record:
+                raise ValueError(f"conflicting GPU pass records at HZP sequence {sequence}, target {target}")
     by_sequence = {frame["sequence"]: frame for frame in frames}
     excluded = dict(missing_serial_line=0, not_retained=0, outside_interval=0,
                     ineligible_frame=0, invalid_endpoints=0)
@@ -511,6 +525,8 @@ def correlate_gpu_spans(frames, serial_lines, start, end):
     }
     if solid_boundaries:
         report["solid_boundary"] = correlate_solid_boundaries(solid_boundaries, rows, by_sequence)
+    if pass_boundaries:
+        report["pass_boundaries"] = correlate_pass_boundaries(pass_boundaries, rows, by_sequence)
     return report
 
 
@@ -546,6 +562,54 @@ def correlate_solid_boundaries(boundaries, rows, frames):
         groups[str(scale)] = {key: stats(row[key] for row in matching) for key in timings}
     return {"matched_samples": len(samples), "unmatched_samples": unmatched, "invalid_samples": invalid,
             "by_effective_scale": groups, "samples": samples}
+
+
+def correlate_pass_boundaries(boundaries, rows, frames):
+    base = {row["sequence"]: row for row in rows}
+    excluded = dict(unmatched_pair=0, missing_target=0, invalid_boundaries=0)
+    samples = []
+    for sequence, views in sorted(boundaries.items()):
+        row = base.get(sequence)
+        if row is None:
+            excluded["unmatched_pair"] += 1
+            continue
+        if len(views) != 2:
+            excluded["missing_target"] += 1
+            continue
+        if (frames[sequence]["game_frames_built"] != 1 or frames[sequence]["presented"] != 1
+                or min(row["sections_drawn_tv_gamepad"]) <= 0):
+            excluded["unmatched_pair"] += 1
+            continue
+        valid = all(
+            hz == row["frequency_hz"] and list(ticks) == sorted(ticks)
+            and [ticks[0], ticks[-1]] == [int(value, 16) for value in row["endpoints_tv_gamepad"][view]]
+            for view, (hz, ticks) in views.items()
+        )
+        if not valid:
+            excluded["invalid_boundaries"] += 1
+            continue
+        tick_ms = 1000 / row["frequency_hz"]
+        spans = []
+        for view in range(2):
+            _, ticks = views[view]
+            elapsed = ((end - begin) * tick_ms for begin, end in zip(ticks, ticks[1:]))
+            spans.append(dict(zip(GPU_PASS_NAMES, elapsed)))
+        samples.append({
+            "sequence": sequence, "scale": row["scale"],
+            "sections_drawn_tv_gamepad": row["sections_drawn_tv_gamepad"],
+            "partial": bool(frames[sequence]["partial"]),
+            "spans_ms_tv_gamepad": spans,
+        })
+    groups = {}
+    for scale in sorted({row["scale"] for row in samples}):
+        matching = [row for row in samples if row["scale"] == scale]
+        groups[str(scale)] = [
+            {name: stats(row["spans_ms_tv_gamepad"][view][name] for row in matching)
+             for name in GPU_PASS_NAMES}
+            for view in range(2)
+        ]
+    return {"matched_samples": len(samples), "excluded_samples": excluded,
+            "by_effective_scale_tv_gamepad": groups, "samples": samples}
 
 
 def main():
