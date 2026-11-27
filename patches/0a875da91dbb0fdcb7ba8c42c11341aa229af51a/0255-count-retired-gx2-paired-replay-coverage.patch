@@ -1,0 +1,224 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index f7c0e31..c1748c5 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -4168,7 +4168,18 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.last_frame_partial = self.frame_work.omitted_pass_mask != 0;
+         if let Some(trial) = &mut self.solid_lists {
+-            trial.finish(solid_lists, !self.last_frame_partial && outputs == 3);
++            if let Some(row) = trial.finish(
++                solid_lists,
++                !self.last_frame_partial && outputs == 3,
++                self.frame_work.terrain_sections.map(|count| count as u32),
++            ) {
++                unsafe {
++                    OSReport(c"Horizon GX2 solid list replay first=%u last=%u tv_cold=%u drc_cold=%u tv_warm=%u drc_warm=%u warm_both=%u tv_min=%u drc_min=%u tv_max=%u drc_max=%u\n".as_ptr(),
++                             row.first, row.last, row.cold[0], row.cold[1], row.warm[0], row.warm[1],
++                             row.warm_both, row.min_sections[0], row.min_sections[1],
++                             row.max_sections[0], row.max_sections[1]);
++                }
++            }
+         }
+         if self.last_frame_partial {
+             cafe_profile::count(Counter::Partial, 1);
+diff --git a/wiiu/loading_host/solid_lists.rs b/wiiu/loading_host/solid_lists.rs
+index 66f6798..abb593c 100644
+--- a/wiiu/loading_host/solid_lists.rs
++++ b/wiiu/loading_host/solid_lists.rs
+@@ -72,6 +72,7 @@ pub(super) struct Frame {
+     keys: [Option<Key>; 2],
+     pub(super) uses: *mut Uses,
+     pub(super) called: [bool; 2],
++    warm: [bool; 2],
+ }
+ 
+ impl Frame {
+@@ -80,6 +81,7 @@ impl Frame {
+             sequence,
+             keys: [None; 2],
+             called: [false; 2],
++            warm: [false; 2],
+             uses,
+         }
+     }
+@@ -107,10 +109,65 @@ impl Slot {
+     }
+ }
+ 
++const PAIRS_PER_WINDOW: u32 = 120;
++const MAX_WINDOWS: u32 = 64;
++
++#[derive(Clone, Copy)]
++pub(super) struct Report {
++    pub(super) first: u32,
++    pub(super) last: u32,
++    pub(super) cold: [u32; 2],
++    pub(super) warm: [u32; 2],
++    pub(super) warm_both: u32,
++    pub(super) min_sections: [u32; 2],
++    pub(super) max_sections: [u32; 2],
++}
++
++#[derive(Default)]
++struct ReplayObservation {
++    window: Option<Report>,
++    reported: u32,
++}
++
++impl ReplayObservation {
++    fn complete_pair(&mut self, frame: &Frame, sections: [u32; 2]) -> Option<Report> {
++        if self.reported >= MAX_WINDOWS {
++            return None;
++        }
++        let sequence = frame.sequence;
++        if self.window.is_some_and(|window| window.last.checked_add(1) != Some(sequence)) {
++            self.window = None;
++        }
++        let report = self.window.get_or_insert(Report {
++            first: sequence,
++            last: sequence,
++            cold: [0; 2],
++            warm: [0; 2],
++            warm_both: 0,
++            min_sections: sections,
++            max_sections: sections,
++        });
++        report.last = sequence;
++        for (output, count) in sections.into_iter().enumerate() {
++            report.cold[output] += u32::from(frame.called[output] && !frame.warm[output]);
++            report.warm[output] += u32::from(frame.warm[output]);
++            report.min_sections[output] = report.min_sections[output].min(count);
++            report.max_sections[output] = report.max_sections[output].max(count);
++        }
++        report.warm_both += u32::from(frame.warm == [true; 2]);
++        if sequence - report.first == PAIRS_PER_WINDOW - 1 {
++            self.reported += 1;
++            return self.window.take();
++        }
++        None
++    }
++}
++
+ #[derive(Default)]
+ pub(super) struct Trial {
+     slots: [Slot; 2],
+     scratch: Vec<ListDraw>,
++    observation: ReplayObservation,
+ }
+ 
+ impl Trial {
+@@ -126,14 +183,21 @@ impl Trial {
+         slot.stable(frame.sequence, key) && !slot.allocation_failed && slot.refused != Some(key)
+     }
+ 
+-    pub(super) fn finish(&mut self, frame: Option<Frame>, complete: bool) {
++    pub(super) fn finish(
++        &mut self,
++        frame: Option<Frame>,
++        complete: bool,
++        sections: [u32; 2],
++    ) -> Option<Report> {
+         if let Some(frame) = frame.filter(|_| complete) {
+             for (slot, key) in self.slots.iter_mut().zip(frame.keys) {
+                 slot.recent = key.map(|key| (frame.sequence, key));
+             }
+-        } else {
+-            self.invalidate();
++            return self.observation.complete_pair(&frame, sections);
+         }
++        self.invalidate();
++        self.observation.window = None;
++        None
+     }
+ 
+     pub(super) fn draw(
+@@ -203,6 +267,7 @@ impl Trial {
+         };
+         frame.called[index] =
+             unsafe { horizon_gx2_solid_list_queue(arena, frame.uses, index as u32) };
++        frame.warm[index] = frame.called[index] && warm;
+         frame.called[index].then_some((counts, warm))
+     }
+ }
+@@ -235,11 +300,11 @@ mod tests {
+         let mut first = Frame::new(20, &raw mut uses);
+         assert!(!trial.observe(&mut first, 0, key(0.0)));
+         assert!(!trial.observe(&mut first, 1, key(32.)));
+-        trial.finish(Some(first), true);
++        trial.finish(Some(first), true, [0; 2]);
+         let mut next = Frame::new(21, &raw mut uses);
+         assert!(!trial.observe(&mut next, 0, key(-0.0)));
+         assert!(trial.observe(&mut next, 1, key(32.)));
+-        trial.finish(Some(next), false);
++        trial.finish(Some(next), false, [0; 2]);
+         let mut after = Frame::new(22, &raw mut uses);
+         assert!(!trial.observe(&mut after, 1, key(32.)));
+     }
+@@ -261,16 +326,64 @@ mod tests {
+         assert!(uses.sealed([true; 2]));
+     }
+ 
++    #[test]
++    fn counts_only_retired_complete_pairs_and_resumes_across_mesh_changes() {
++        let mut trial = Trial::default();
++        let mut uses = Uses::default();
++        let mut incomplete = Frame::new(49, &raw mut uses);
++        incomplete.called = [true; 2];
++        incomplete.warm = [true; 2];
++        assert!(trial.finish(Some(incomplete), false, [4, 4]).is_none());
++        for sequence in 50..169 {
++            let mut frame = Frame::new(sequence, &raw mut uses);
++            match sequence {
++                51 => frame.called = [true, false],
++                52 => {
++                    frame.called = [true; 2];
++                    frame.warm = [true, false];
++                }
++                _ => {}
++            }
++            assert!(trial.finish(Some(frame), true, [100, 174]).is_none());
++            if sequence == 100 {
++                trial.invalidate();
++            }
++        }
++        let mut final_frame = Frame::new(169, &raw mut uses);
++        final_frame.called = [true; 2];
++        final_frame.warm = [true; 2];
++        let row = trial.finish(Some(final_frame), true, [174, 100]).unwrap();
++        assert_eq!((row.first, row.last), (50, 169));
++        assert_eq!((row.cold, row.warm, row.warm_both), ([1, 1], [2, 1], 1));
++        assert_eq!((row.min_sections, row.max_sections), ([100, 100], [174, 174]));
++    }
++
++    #[test]
++    fn treats_sequence_wrap_and_holes_as_new_windows_and_caps_reports() {
++        let mut observation = ReplayObservation::default();
++        let mut uses = Uses::default();
++        for sequence in [u32::MAX - 1, u32::MAX, 0, 1, 4] {
++            assert!(observation.complete_pair(&Frame::new(sequence, &raw mut uses), [3; 2]).is_none());
++        }
++        assert_eq!(observation.window.unwrap().first, 4);
++        for sequence in 5..(4 + PAIRS_PER_WINDOW * MAX_WINDOWS) {
++            observation.complete_pair(&Frame::new(sequence, &raw mut uses), [3; 2]);
++        }
++        assert_eq!(observation.reported, MAX_WINDOWS);
++        assert!(observation.complete_pair(&Frame::new(8000, &raw mut uses), [3; 2]).is_none());
++        assert!(observation.window.is_none());
++    }
++
+     #[test]
+     fn seam_invalidation_refuses_same_address_and_sequence_gap() {
+         let mut trial = Trial::default();
+         let mut uses = Uses::default();
+         let mut first = Frame::new(3, &raw mut uses);
+         assert!(!trial.observe(&mut first, 0, key(0.0)));
+-        trial.finish(Some(first), true);
++        trial.finish(Some(first), true, [0; 2]);
+         let mut after_gap = Frame::new(5, &raw mut uses);
+         assert!(!trial.observe(&mut after_gap, 0, key(0.0)));
+-        trial.finish(Some(after_gap), true);
++        trial.finish(Some(after_gap), true, [0; 2]);
+         trial.invalidate();
+         let mut next = Frame::new(6, &raw mut uses);
+         assert!(!trial.observe(&mut next, 0, key(0.0)));
