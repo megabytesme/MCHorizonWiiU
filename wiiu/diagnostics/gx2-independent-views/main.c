@@ -6,6 +6,7 @@
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
 #include <gx2/registers.h>
+#include <gx2/semaphore.h>
 #include <whb/gfx.h>
 #include <whb/proc.h>
 
@@ -31,6 +32,44 @@ typedef struct {
    bool distant;
    enum Fault fault;
 } Fixture;
+
+static void retire_for_teardown(Stage *stage)
+{
+   // Submit a new command on the same lane even if the old copy ticket never
+   // advanced or no frame reached the renderer.
+   static _Alignas(CACHE_LINE) GX2Semaphore fence_line[CACHE_LINE / sizeof(GX2Semaphore)];
+   const OSTime before = GX2GetLastSubmittedTimeStamp();
+   stage_observe(stage, before, GX2GetRetiredTimeStamp());
+   const OSTime floor = stage->watermark_floor;
+   DCFlushRange(fence_line, sizeof(fence_line));
+   GX2SetSemaphore(fence_line, GX2_SEMAPHORE_ACTION_SIGNAL);
+   GX2Flush();
+   stage_observe(stage, GX2GetLastSubmittedTimeStamp(), 0);
+
+   // Keep the existing synchronization, including Cemu's Vulkan full sync.
+   GX2DrawDone();
+   bool reported = false;
+   for (;;) {
+      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+      const OSTime retired = GX2GetRetiredTimeStamp();
+      if (submitted > floor && submitted >= stage->watermark_floor && retired >= submitted) {
+         stage->copy_pending = false;
+         if (reported)
+            OSReport("GX2 independent views teardown retired submitted=%lld retired=%lld\n",
+                     (long long)submitted, (long long)retired);
+         return;
+      }
+      stage_observe(stage, submitted, 0);
+      if (!reported) {
+         reported = true;
+         OSReport("GX2 independent views teardown retaining GPU resources floor=%lld pending_copy=%u\n",
+                  (long long)floor, (unsigned)stage->copy_pending);
+      }
+      // One fence is outstanding. Retain the process and all allocations
+      // while polling instead of enqueuing more work or pumping release.
+      OSSleepTicks(OSMillisecondsToTicks(16));
+   }
+}
 
 static void quad(HorizonTerrainVertex *v, float x, float y, float w, float h, float z,
                  const uint8_t color[4])
@@ -306,22 +345,19 @@ int main(void)
    if (ok) {
       ok = render(&f, 4, 1, GENERAL_SHADER);
       const enum Fault faults[] = {CROSS_VIEW, REUSE_CAMERA, NO_DEPTH, WRONG_SITE, NO_SCISSOR};
-      for (unsigned i = 0; i < sizeof(faults)/sizeof(faults[0]) && !f.stage.copy_pending; ++i)
-         ok &= render(&f, 4, 0, faults[i]);
+      for (unsigned i = 0; ok && i < sizeof(faults)/sizeof(faults[0]); ++i)
+         ok = render(&f, 4, 0, faults[i]);
    }
 
-   // A failed copy may still own this backing. Do not destroy anything while it is outstanding.
-   OSTime submitted, retired;
-   if (!f.stage.copy_pending && (!graphics || finish_commands(&submitted, &retired))) {
-      if (ok) OSSleepTicks(OSMillisecondsToTicks(1300));
-      if (f.stage.storage) MEMFreeToDefaultHeap(f.stage.storage);
-      if (f.rgba) MEMFreeToDefaultHeap(f.rgba);
-      drop_sections(&f);
-      for (unsigned i = 0; i < SEATS; ++i) horizon_gx2_hud_destroy(f.hud[i]);
-      horizon_gx2_terrain_destroy(f.terrain);
-      if (graphics) WHBGfxShutdown();
-      WHBProcShutdown();
-   } else ok = false;
+   if (graphics) retire_for_teardown(&f.stage);
+   if (ok) OSSleepTicks(OSMillisecondsToTicks(1300));
+   if (f.stage.storage) MEMFreeToDefaultHeap(f.stage.storage);
+   if (f.rgba) MEMFreeToDefaultHeap(f.rgba);
+   drop_sections(&f);
+   for (unsigned i = 0; i < SEATS; ++i) horizon_gx2_hud_destroy(f.hud[i]);
+   horizon_gx2_terrain_destroy(f.terrain);
+   if (graphics) WHBGfxShutdown();
+   WHBProcShutdown();
    OSReport("GX2 independent views fixture %s\n", ok ? "PASS" : "FAIL");
    return ok ? 0 : 1;
 }

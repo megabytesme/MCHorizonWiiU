@@ -11,8 +11,10 @@ quadrants. Every layout presents an independent full GamePad view with
 seat ID four. Each rectangle uses its own camera, aspect, terrain
 viewport, column scissor, depth-tested world and preuploaded HUD marker.
 The production WHB callback owns both scan copies. Each case checks
-one completed pair, both physical outputs, all expected view IDs and
-draw submissions. Both camera poses and both residency arms run.
+one accepted paired submission, both WHB color buffers, all expected view
+IDs and draw submissions. The readback samples render buffers.
+Independent physical scanout needs separate evidence. Both camera poses
+and both residency arms run.
 
 - Nearby views share one immutable 174-section mesh site. Distant views
   draw separate 174-section sites spaced 1,024 blocks apart.
@@ -38,6 +40,15 @@ draw submissions. Both camera poses and both residency arms run.
   Using the wrong site fails both GamePad terrain samples. Each fault
   preserves the HUD samples.
 
+An unexpected draw, oracle or staged-readback failure stops the matrix
+before another HUD upload. The final teardown submits one new signal on
+the same GX2 lane. Stage storage, meshes, HUD and WHB stay live until an
+independently queried retired watermark covers its fresh submission and
+earlier commands. This applies when the copy's own ticket was unverified.
+If proof is delayed, the fixture polls the same fence and retains process
+ownership, without repeating the copy or releasing foreground surfaces.
+A failed case stays failed after a recovered drain.
+
 The optional analytic host test links the generated projection object
 for the host and checks the camera geometry and masks at three TV sizes.
 In the output directory run the following after the native build.
@@ -52,7 +63,9 @@ and pixel oracle. Stock/custom packs, translucent draws, terrain
 streaming, gameplay, native render time and memory stability each
 require their own evidence.
 
-## Qualification
+## Original runtime qualification
+
+The Cemu run below predates the guarded teardown change.
 
 The production C renderer, shader inputs and Rust projection match RC 47
 engine tree `499ba0705dce6703c521417ba92e2542380e074a`. The build used
@@ -77,3 +90,19 @@ The current fixture checks actual adjacent ownership at the seam and
 detects a deliberate 16-row overlap. The original inset behavior,
 physical timing, full material parity and local player controls remain
 open.
+
+## Guarded teardown qualification
+
+The revised package reproduced both hashes in two independent Cafe
+builds with the same engine inputs. It passed all twelve positive cases,
+all three crop checks, the shader comparison and all five injected
+faults in Cemu 2.6 Vulkan, then exited normally through the new fence.
+The host retirement control also passed delayed retirement and a stale
+copy ticket.
+
+    bash wiiu/diagnostics/gx2-independent-views/tests/run.sh
+
+| Artifact | SHA-256 |
+| --- | --- |
+| RPX | `935726178ec74d19fb1dd27976d79e9c49a3f5b4cfd41a3b1788b97af098d42c` |
+| WUHB | `95902a4068f9feee80af4f731bbbc586ba51fd3185968d68ac95546d7a24828b` |

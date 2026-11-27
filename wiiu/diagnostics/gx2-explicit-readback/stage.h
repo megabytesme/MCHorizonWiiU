@@ -21,6 +21,7 @@ enum {
 typedef struct {
    uint8_t *storage;
    bool copy_pending;
+   OSTime watermark_floor;
 } Stage;
 
 enum ReadStatus {
@@ -39,10 +40,16 @@ static bool finish_commands(OSTime *submitted, OSTime *retired)
 {
    GX2Flush();
    *submitted = GX2GetLastSubmittedTimeStamp();
-   // Cemu's GX2DrawDone import has no return value. It still supplies Vulkan's full sync.
+   // Older Cemu exports discard the return value. Keep the Vulkan synchronization.
    GX2DrawDone();
    *retired = GX2GetRetiredTimeStamp();
    return *submitted > 0 && *retired >= *submitted;
+}
+
+static void stage_observe(Stage *stage, OSTime submitted, OSTime retired)
+{
+   if (submitted > stage->watermark_floor) stage->watermark_floor = submitted;
+   if (retired > stage->watermark_floor) stage->watermark_floor = retired;
 }
 
 static enum ReadStatus stage_read(Stage *stage, const GX2ColorBuffer *color,
@@ -87,11 +94,15 @@ static enum ReadStatus stage_read(Stage *stage, const GX2ColorBuffer *color,
    // Order the producer's color writes before the copy.
    GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, src->image, src->imageSize);
    OSTime submitted, retired;
-   if (!finish_commands(&submitted, &retired)) return READ_PRODUCER;
+   const bool producer_done = finish_commands(&submitted, &retired);
+   stage_observe(stage, submitted, retired);
+   if (!producer_done) return READ_PRODUCER;
    const OSTime before = GX2GetLastSubmittedTimeStamp();
+   stage_observe(stage, before, retired);
    stage->copy_pending = true;
    GX2CopySurface(src, 0, 0, &dst, 0, 0);
    const bool done = finish_commands(&submitted, &retired);
+   stage_observe(stage, submitted, retired);
    OSReport("GX2 stage fence before=%lld submitted=%lld retired=%lld complete=%u bytes=%u pitch=%u\n",
             (long long)before, (long long)submitted, (long long)retired,
             (unsigned)done, dst.imageSize, dst.pitch);
