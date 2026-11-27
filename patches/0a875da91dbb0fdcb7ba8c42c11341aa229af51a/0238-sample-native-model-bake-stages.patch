@@ -1,0 +1,293 @@
+diff --git a/crates/horizon-client-render/src/models/catalog.rs b/crates/horizon-client-render/src/models/catalog.rs
+index 71d789a..c51589a 100644
+--- a/crates/horizon-client-render/src/models/catalog.rs
++++ b/crates/horizon-client-render/src/models/catalog.rs
+@@ -1,7 +1,8 @@
+ //! Bind prepared registry states to model choices; bake each transformed model
+ //! once and share its geometry across positions. Resource failure recovery and
+ //! resource-pack reloads remain separate work.
+-use crate::{Result, sprites::Sprites};
++use crate::{Result, spans::startup, sprites::Sprites};
++mod bake_sample;
+ use horizon_assets::{
+     bake::{BlockModelTransform, ModelQuad, RenderType, bake_block_model},
+     blockstate::{
+@@ -160,7 +161,7 @@ fn bake_variant(
+     turns: [u8; 3],
+     lock: bool,
+ ) -> Result<BakedModel> {
+-    bake_resolved(sprites, &library.resolve(name)?, turns, lock)
++    bake_resolved(sprites, &library.resolve(name)?, turns, lock, None)
+ }
+ /// Bakes a resolved `model`, turned and UV-locked as a variant says.
+ fn bake_resolved(
+@@ -168,12 +169,16 @@ fn bake_resolved(
+     model: &horizon_assets::resolve::ResolvedCuboidModel,
+     turns: [u8; 3],
+     lock: bool,
++    mut laps: Option<bake_sample::BakeLaps<'_>>,
+ ) -> Result<BakedModel> {
+     let particle = model
+         .material("particle")?
+         .map(|material| sprites.insert(&material.sprite))
+         .transpose()?;
+-    let faces: Vec<BakedFace> = bake_block_model(model, BlockModelTransform::new(turns, lock))?
++    bake_sample::lap(&mut laps, 0);
++    let quads = bake_block_model(model, BlockModelTransform::new(turns, lock))?;
++    bake_sample::lap(&mut laps, 1);
++    let faces: Vec<BakedFace> = quads
+         .into_iter()
+         .map(|quad| {
+             let layer = sprites.insert(&quad.material.sprite)?;
+@@ -190,7 +195,9 @@ fn bake_resolved(
+             Ok(BakedFace::new(quad, layer, opaque, translucent, None))
+         })
+         .collect::<Result<_>>()?;
++    bake_sample::lap(&mut laps, 2);
+     let cube = super::cube::cube_styles(&faces);
++    bake_sample::finish(&mut laps, faces.len());
+     Ok(BakedModel {
+         ambient_occlusion: model.ambient_occlusion,
+         particle,
+@@ -512,6 +519,8 @@ impl StateModels {
+         facts: &ModelStateFacts<'_>,
+         models: &crate::model_library::ParsedModels,
+     ) -> Result<Self> {
++        let mut samples = startup::model_bake_phase().map(bake_sample::BakeSamples::new);
++        let bind = samples.as_ref().and_then(|_| startup::step("core.bake_states.bind"));
+         let mut choices = Vec::new();
+         let mut states = vec![None; registry.len()];
+         let mut variants = BTreeSet::new();
+@@ -601,6 +610,8 @@ impl StateModels {
+                 choices.push(CompiledChoices::new(&definition)?);
+             }
+         }
++        drop(bind);
++        let resolve = samples.as_ref().and_then(|_| startup::step("core.bake_states.resolve"));
+         let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
+         let library = match models.block_library(root, names.clone()) {
+             Ok(library) => library,
+@@ -613,6 +624,8 @@ impl StateModels {
+             .iter()
+             .map(|(name, ..)| library.resolve(name))
+             .collect();
++        drop(resolve);
++        let prefetch = samples.as_ref().and_then(|_| startup::step("core.bake_states.prefetch"));
+         // Every texture the models name, decoded side by side before the bake adds them one
+         // by one in its own order, as many as the renderer's arrays hold.
+         let named: Vec<&str> = resolved
+@@ -623,10 +636,16 @@ impl StateModels {
+             .collect();
+         sprites.plan_within_capacity(named.iter().copied());
+         sprites.prefetch(named);
++        drop(prefetch);
++        let convert = samples.as_ref().and_then(|_| startup::step("core.bake_states.convert"));
+         let mut baked = Vec::with_capacity(variants.len());
+         let mut index = BTreeMap::new();
+         for ((name, turns, lock), model) in variants.into_iter().zip(resolved) {
+-            let model = bake_resolved(sprites, &model?, turns, lock)?;
++            let laps = samples.as_mut().and_then(|samples| samples.sample(baked.len()));
++            let model = bake_resolved(sprites, &model?, turns, lock, laps)?;
++            if let Some(samples) = &mut samples {
++                samples.count_faces(model.faces.len());
++            }
+             index.insert((name.clone(), turns, lock), baked.len() as u32);
+             let variant = Variant {
+                 model: name,
+@@ -635,6 +654,8 @@ impl StateModels {
+             };
+             baked.push((variant, model));
+         }
++        drop(convert);
++        let remap = samples.as_ref().and_then(|_| startup::step("core.bake_states.remap"));
+         // Every variant of every definition was baked above.
+         let choices: Vec<_> = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+         let single_models = states
+@@ -644,6 +665,10 @@ impl StateModels {
+                 choices[*choice].single_variant(selected).copied()
+             })
+             .collect();
++        drop(remap);
++        if let Some(samples) = samples {
++            samples.report(baked.len());
++        }
+         Ok(Self {
+             choices,
+             bounds: OnceLock::new(),
+diff --git a/crates/horizon-client-render/src/models/catalog/bake_sample.rs b/crates/horizon-client-render/src/models/catalog/bake_sample.rs
+new file mode 100644
+index 0000000..9230f66
+--- /dev/null
++++ b/crates/horizon-client-render/src/models/catalog/bake_sample.rs
+@@ -0,0 +1,84 @@
++use std::time::{Duration, Instant};
++
++const STRIDE: usize = 32;
++const CLOCK_PAIRS: u32 = 16;
++
++#[derive(Default)]
++struct Sample {
++    elapsed: [Duration; 4],
++    models: usize,
++    faces: usize,
++}
++
++pub(super) struct BakeSamples {
++    phase: u8,
++    sampled: Sample,
++    faces: usize,
++}
++
++impl BakeSamples {
++    pub(super) fn new(phase: u8) -> Self {
++        Self {
++            phase,
++            sampled: Sample::default(),
++            faces: 0,
++        }
++    }
++
++    pub(super) fn sample(&mut self, index: usize) -> Option<BakeLaps<'_>> {
++        let group = index / STRIDE;
++        // Pick one per complete group. The two phases always choose different models.
++        let offset = (group * 17 + 5 + usize::from(self.phase) * (STRIDE / 2)) % STRIDE;
++        (index % STRIDE == offset).then(|| BakeLaps {
++            sample: &mut self.sampled,
++            at: Instant::now(),
++        })
++    }
++
++    pub(super) fn count_faces(&mut self, faces: usize) {
++        self.faces += faces;
++    }
++
++    pub(super) fn report(&self, variants: usize) {
++        let mut clock = Duration::ZERO;
++        for _ in 0..CLOCK_PAIRS {
++            let start = Instant::now();
++            clock += Instant::now().saturating_duration_since(start);
++        }
++        let [particle, raw, faces, cube] = self.sampled.elapsed.map(|d| d.as_nanos());
++        log::info!(
++            "Horizon model bake phase={} models={}/{} quads={}/{} clock_pair_ns={} particle_ns={} raw_ns={} bind_ns={} cube_ns={}",
++            self.phase,
++            self.sampled.models,
++            variants,
++            self.sampled.faces,
++            self.faces,
++            clock.as_nanos() / u128::from(CLOCK_PAIRS),
++            particle,
++            raw,
++            faces,
++            cube,
++        );
++    }
++}
++
++pub(super) struct BakeLaps<'a> {
++    sample: &'a mut Sample,
++    at: Instant,
++}
++
++pub(super) fn lap(laps: &mut Option<BakeLaps<'_>>, stage: usize) {
++    if let Some(laps) = laps {
++        let now = Instant::now();
++        laps.sample.elapsed[stage] += now.saturating_duration_since(laps.at);
++        laps.at = now;
++    }
++}
++
++pub(super) fn finish(laps: &mut Option<BakeLaps<'_>>, faces: usize) {
++    lap(laps, 3);
++    if let Some(laps) = laps {
++        laps.sample.models += 1;
++        laps.sample.faces += faces;
++    }
++}
+diff --git a/crates/horizon-client-render/src/spans.rs b/crates/horizon-client-render/src/spans.rs
+index 77dc71d..d3e8f1f 100644
+--- a/crates/horizon-client-render/src/spans.rs
++++ b/crates/horizon-client-render/src/spans.rs
+@@ -489,6 +489,27 @@ pub mod startup {
+         ON.store(true, Ordering::Relaxed);
+     }
+ 
++    #[cfg(target_os = "cafe")]
++    static MODEL_BAKE_PHASE: AtomicU32 = AtomicU32::new(0);
++
++    /// Opt-in Cafe model startup sampling. The ordinary startup trace is independent.
++    #[cfg(target_os = "cafe")]
++    pub fn set_model_bake_phase(phase: Option<u8>) {
++        MODEL_BAKE_PHASE.store(phase.map_or(0, |phase| u32::from(phase) + 1), Ordering::Relaxed);
++    }
++
++    #[inline]
++    pub(crate) fn model_bake_phase() -> Option<u8> {
++        #[cfg(target_os = "cafe")]
++        return match MODEL_BAKE_PHASE.load(Ordering::Relaxed) {
++            1 => Some(0),
++            2 => Some(1),
++            _ => None,
++        };
++        #[cfg(not(target_os = "cafe"))]
++        None
++    }
++
+     static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+     static ORIGIN: OnceLock<Instant> = OnceLock::new();
+     static NEXT_THREAD: AtomicU32 = AtomicU32::new(1);
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 9ef9859..610aa2a 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -297,7 +297,7 @@ pub extern "C" fn horizon_hosted_game_run() -> i32 {
+         clear_parked_stock_hud();
+         return RESOURCES;
+     }
+-    horizon_client::spans::startup::enable_log_sink();
++    super::enable_cafe_startup_diagnostics();
+     horizon_client_platform::cafe_memory::report("hosted.before_game");
+     #[cfg(feature = "stock-hud-seed")]
+     let stock_hud = stock_hud_request(&launch);
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 2db60f2..39aa709 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -166,6 +166,28 @@ fn report_core_topology_once() {
+ 
+ mod hosted;
+ 
++fn model_bake_profile_phase() -> Option<u8> {
++    use std::io::Read as _;
++    // Hosted launches switch to the world directory before startup diagnostics.
++    const MARKER: &str = "/vol/external01/wiiu/apps/HorizonWiiU/model-bake-profile.enable";
++    let mut marker = std::fs::File::open(MARKER).ok()?;
++    let len = marker.metadata().ok()?.len();
++    let mut bytes = [0; 3];
++    let text = bytes.get_mut(..usize::try_from(len).ok()?)?;
++    marker.read_exact(text).ok()?;
++    match &*text {
++        b"" | b"0" | b"0\n" | b"0\r\n" => Some(0),
++        b"1" | b"1\n" | b"1\r\n" => Some(1),
++        _ => None,
++    }
++}
++
++fn enable_cafe_startup_diagnostics() {
++    use horizon_client::spans::startup;
++    startup::enable_log_sink();
++    startup::set_model_bake_phase(model_bake_profile_phase());
++}
++
+ /// Called by C before WHB/GX2 initialization so all getrandom versions are
+ /// anchored and the Cafe system RNG is checked before platform startup.
+ #[no_mangle]
+@@ -191,7 +213,7 @@ pub extern "C" fn horizon_wiiu_app_run() -> i32 {
+ 
+     // Detailed startup spans identify UI and core resource stages. Cafe std
+     // cannot create the optional trace file, so send them to OSConsole/serial.
+-    horizon_client::spans::startup::enable_log_sink();
++    enable_cafe_startup_diagnostics();
+ 
+     // SAFETY: C calls this only after WHBGfxInit and keeps GX2 alive until it
+     // returns. The presenter is dropped on this same thread before C shuts GX2
