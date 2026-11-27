@@ -1,0 +1,116 @@
+diff --git a/crates/horizon-core/src/nbt.rs b/crates/horizon-core/src/nbt.rs
+index a72ec66..fd4b155 100644
+--- a/crates/horizon-core/src/nbt.rs
++++ b/crates/horizon-core/src/nbt.rs
+@@ -722,6 +722,84 @@ impl ListElements<'_, '_, '_> {
+     pub fn is_empty(&self) -> bool {
+         self.len == 0
+     }
++    /// Consume the next real ASCII block-state row without allocating Tags.
++    /// A miss leaves the ordinary NBT cursor and accounting unchanged.
++    pub fn consume_ascii_state<'p>(
++        &mut self,
++        name: &str,
++        property_count: usize,
++        property: impl FnMut(&[u8]) -> Option<(usize, &'p str)>,
++    ) -> bool {
++        fn bytes<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
++            let [a, b, ..] = *input else {
++                return None;
++            };
++            let len = u16::from_be_bytes([*a, *b]) as usize;
++            let rest = input.get(2..)?;
++            let (field, tail) = rest.split_at_checked(len)?;
++            *input = tail;
++            field.is_ascii().then_some(field)
++        }
++        fn row<'a, 'p>(
++            mut input: &'a [u8],
++            name: &str,
++            property_count: usize,
++            mut property: impl FnMut(&[u8]) -> Option<(usize, &'p str)>,
++        ) -> Option<&'a [u8]> {
++            input = input.strip_prefix(b"\x08\x00\x02id")?;
++            if bytes(&mut input)? != name.as_bytes() {
++                return None;
++            }
++            if property_count != 0 {
++                input = input.strip_prefix(b"\x0a\x00\x0aproperties")?;
++                let mut observed = 0_u64;
++                for _ in 0..property_count {
++                    input = input.strip_prefix(b"\x08")?;
++                    let (index, expected) = property(bytes(&mut input)?)?;
++                    let bit = 1u64.checked_shl(u32::try_from(index).ok()?)?;
++                    if index >= property_count
++                        || observed & bit != 0
++                        || bytes(&mut input)? != expected.as_bytes()
++                    {
++                        return None;
++                    }
++                    observed |= bit;
++                }
++                input = input.strip_prefix(b"\x00")?;
++            }
++            input.strip_prefix(b"\x00")
++        }
++
++        let reader = &mut self.reader;
++        if self.left == 0
++            || self.element_id != 10
++            || property_count > 64
++            || reader.heap.is_some()
++            || reader.bounded.is_some()
++            || reader.strict
++            || reader.entering != 0
++            || self.depth >= reader.limits.max_depth
++            || (property_count != 0 && self.depth + 1 >= reader.limits.max_depth)
++        {
++            return false;
++        }
++        let nodes = property_count + if property_count == 0 { 2 } else { 3 };
++        if nodes > reader.limits.max_nodes.saturating_sub(reader.nodes) {
++            return false;
++        }
++        let end = reader.bytes.len().min(reader.limits.max_bytes);
++        let Some(input) = reader.bytes.get(reader.offset..end) else {
++            return false;
++        };
++        let Some(rest) = row(input, name, property_count, property) else {
++            return false;
++        };
++        reader.offset = end - rest.len();
++        reader.nodes += nodes;
++        self.left -= 1;
++        true
++    }
++
+     /// The next element, unwrapped as [`read_named`] unwraps mixed-list
+     /// elements; `None` past the last.
+     pub fn next_element(&mut self) -> Result<Option<Tag>, Error> {
+diff --git a/crates/horizon-world/src/registry.rs b/crates/horizon-world/src/registry.rs
+index 666a27b..7eb4d02 100644
+--- a/crates/horizon-world/src/registry.rs
++++ b/crates/horizon-world/src/registry.rs
+@@ -489,8 +489,20 @@ impl<'r> BlockTableFile<'r> {
+                 return Err(states.error("table registry size mismatch"));
+             }
+             let mut id = 0u32;
+-            while let Some(tag) = states.next_element()? {
+-                let matches = matches_table_state(registry.state(BlockStateId(id)), &tag)
++            while (id as usize) < states.len() {
++                let expected = registry.state(BlockStateId(id));
++                if expected.is_some_and(|state| {
++                    states.consume_ascii_state(&state.name, state.properties.len(), |name| {
++                        state.properties.iter().enumerate().find_map(|(index, (key, value))| {
++                            (key.as_bytes() == name).then_some((index, value.as_str()))
++                        })
++                    })
++                }) {
++                    id += 1;
++                    continue;
++                }
++                let tag = states.next_element()?.expect("read count below state list length");
++                let matches = matches_table_state(expected, &tag)
+                     .map_err(|_| states.error("invalid table state"))?;
+                 if !matches {
+                     return Err(states.error("table state identities differ"));
