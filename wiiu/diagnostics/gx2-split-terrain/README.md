@@ -32,6 +32,16 @@ quad sample reserves 128 vertex payload bytes once per mesh and 360 bytes
 for its five retained indices and sort centers. These are fixture payload
 counts before native alignment and in-flight memory.
 
+A second five-seat case uses 1,335 candidate sections per site. With one
+shared site, each of the five views tests its 1,335 candidates. With
+five disjoint sites, the same view-owned lists perform 6,675 exact
+frustum tests across one shared residency of 6,675 sections. Walking
+the full residency for every view would visit 33,375 candidates. The
+fixture matches 1,544 visible draws from separate client-world lists,
+including their clip rows and original submission order. That models
+client membership before culling. It does not approximate visibility
+from distance or skip a section owned by the view.
+
 ## Native integration
 
 Start with separate local players in one dimension and one view on each

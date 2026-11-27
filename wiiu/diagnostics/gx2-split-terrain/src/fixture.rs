@@ -404,3 +404,68 @@ fn five_independent_views_share_nearby_meshes_and_keep_distant_plans_disjoint() 
             .all(|draw| draw.uploaded)
     );
 }
+
+#[test]
+fn view_owned_section_lists_bound_exact_culling_work_to_each_client() {
+    const SEATS: usize = 5;
+    const SECTIONS_PER_SITE: i32 = 1335;
+    let site_sections = |site: usize| {
+        (0..SECTIONS_PER_SITE)
+            .map(|section| {
+                let (layer, square) = (section / 225, section % 225);
+                (
+                    site as i32 * 64 + square % 15 - 7,
+                    layer + 5,
+                    square / 15 - 7,
+                )
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    for sites in [1, SEATS] {
+        let sections: Vec<_> = (0..sites).map(site_sections).collect();
+        let resident: BTreeSet<_> = sections.iter().flatten().copied().collect();
+        let mut planned_tests = 0;
+        let mut exact_visibility = 0;
+        for seat in 0..SEATS {
+            let site = if sites == 1 { 0 } else { seat };
+            let view = View::new(
+                [site as f64 * 1024.0 + 8.0 + seat as f64, 72.25, -16.0],
+                180.0 + seat as f32 * 3.0,
+                seat as f32 - 2.0,
+                if seat == 4 { 854.0 / 480.0 } else { 16.0 / 9.0 },
+                70.0,
+            );
+            let bounds = section_bounds();
+            // The decoded client world owns this membership even when
+            // another seat keeps additional meshes in the shared residency.
+            let expected: Vec<_> = resident
+                .iter()
+                .copied()
+                .filter(|key| sections[site].contains(key))
+                .filter_map(|key| single_solid(key, bounds, &view.projection))
+                .collect();
+            let mut plan = SolidDrawPlan::default();
+            plan.prepare(
+                sections[site].iter().map(|&key| (key, bounds)),
+                &view.projection,
+            );
+            let (tested, actual) = plan.ready().unwrap();
+            planned_tests += tested;
+            exact_visibility += actual.len();
+            assert_eq!(expected.len(), actual.len());
+            assert!(
+                expected
+                    .iter()
+                    .zip(actual)
+                    .all(|(a, b)| { a.key == b.key && a.origin == b.origin && a.clip == b.clip })
+            );
+            assert!(actual.iter().all(|draw| resident.contains(&draw.key)));
+        }
+        assert_eq!(planned_tests, SEATS * SECTIONS_PER_SITE as usize);
+        assert_eq!(resident.len(), sites * SECTIONS_PER_SITE as usize);
+        eprintln!(
+            "{sites} sites, {} full-union candidates, {planned_tests} view-owned candidates, {exact_visibility} visible",
+            resident.len() * SEATS
+        );
+    }
+}
