@@ -64,6 +64,29 @@ presentation and geometry comparisons. Its two startup sampling phases
 and automatic DRS recovery checks use separate runs.
 [RC 63 package](rc63-qualification.md)
 
+### Paired publication timing
+
+The physical RC 38 long window averaged 50.064 ms per loop, with
+5.027 ms waiting for the previous flip, 2.944 ms in terrain waits and
+0.387 ms in the terminal finish. After the deadline diagnostic passes its
+native and hosted checks, use a separate 174-section saved-view run with
+plain `4` and `gx2-present-deadlines.enable`. For the independently tested
+grouped path, add `gx2-grouped-retirement.enable` to sample after its
+existing flush. Collect the HZP3 file and serial stream from the same run.
+
+```sh
+python3 -B tools/gx2_present_deadlines.py CAPTURE.hzp SERIAL.log \
+  --first-sequence FIRST --last-sequence LAST --scale 75 --sections 174
+```
+
+The reducer reports independent refresh observations for an empty swap
+queue before publication, the publication bracket with GPU work pending,
+and an already retired pair still waiting for a flip. These sparse
+observations describe the combined queue. Use each world's independent
+draw counts and timings alongside them. Cemu's aliased refresh and flip
+clocks can confirm record handling. A physical capture is needed to
+attribute elapsed refreshes.
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
