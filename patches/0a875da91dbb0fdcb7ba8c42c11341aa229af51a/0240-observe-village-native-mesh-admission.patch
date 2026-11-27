@@ -1,0 +1,524 @@
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index 74107c9..c942e29 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -1,6 +1,8 @@
+ //! Commands from the control socket (`horizon-ctl`), run on the game thread.
+ use super::event_loop::EventLoopCtl;
+ use super::{Game, Screen};
++#[cfg(target_os = "cafe")]
++use super::cafe::{CafeFrameWork, CafeTerrainAdmission};
+ use horizon_client::gfx::pack_timing;
+ use horizon_client::held::Source;
+ use horizon_client::{Result, items::ItemStack};
+@@ -99,10 +101,21 @@ struct CafeVillageTrace {
+     next: Duration,
+     previously_present: Option<bool>,
+     logged_edges: u8,
++    admission: Option<CafeTerrainAdmission>,
+ }
+ 
+ #[cfg(target_os = "cafe")]
+ impl CafeVillageTrace {
++    fn record_admission(&mut self, sequence: u32, admission: Option<(u32, CafeTerrainAdmission)>) {
++        if let Some((start, frame)) = admission
++            && start == sequence
++        {
++            self.admission
++                .get_or_insert_with(CafeTerrainAdmission::default)
++                .merge(frame);
++        }
++    }
++
+     fn sample(&mut self, elapsed: Duration, present: bool) -> Option<&'static str> {
+         let previous = self.previously_present.replace(present);
+         if previous.is_some_and(|last| last != present) && self.logged_edges < 2 {
+@@ -119,18 +132,32 @@ impl CafeVillageTrace {
+ 
+ impl Game<'_> {
+     #[cfg(target_os = "cafe")]
+-    pub(super) fn trace_cafe_village_terrain(&mut self, work: &super::cafe::CafeFrameWork) {
+-        if self.options.benchmark.as_deref() != Some("village") {
+-            return;
++    pub(super) fn cafe_village_trace_sequence(&self) -> Option<u32> {
++        // The raw request is the timed route. Setup sends a short non-raw hold.
++        if self.options.benchmark.as_deref() != Some("village")
++            || !self.flight.as_ref().is_some_and(|flight| flight.raw)
++        {
++            return None;
+         }
+-        let (Some(flight), Some(camera)) = (&mut self.flight, work.terrain_camera) else {
++        horizon_client_platform::cafe_profile::playing_frame_sequence()
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub(super) fn trace_cafe_village_terrain(
++        &mut self,
++        work: &CafeFrameWork,
++        admission: Option<(u32, CafeTerrainAdmission)>,
++    ) {
++        let Some(sequence) = self.cafe_village_trace_sequence() else {
+             return;
+         };
+-        // The raw request is the timed route. Setup sends a short non-raw hold.
+-        if !flight.raw {
++        let Some(flight) = &mut self.flight else {
+             return;
+-        }
+-        let Some(sequence) = horizon_client_platform::cafe_profile::playing_frame_sequence() else {
++        };
++        // Terrain admission precedes presentation. Keep its measured outcomes
++        // even when an output guard declines the frame before setting a camera.
++        flight.village_trace.record_admission(sequence, admission);
++        let Some(camera) = work.terrain_camera else {
+             return;
+         };
+         let elapsed = flight.started.elapsed();
+@@ -138,6 +165,7 @@ impl Game<'_> {
+         let Some(reason) = flight.village_trace.sample(elapsed, present) else {
+             return;
+         };
++        let admission = flight.village_trace.admission.take();
+         let [x, _, z] = camera;
+         let dx = flight.to.x - flight.from.x;
+         let dz = flight.to.z - flight.from.z;
+@@ -167,6 +195,9 @@ impl Game<'_> {
+             self.pending_uploads.len(),
+             self.remote_backlog(),
+         );
++        if let Some(admission) = admission {
++            log::info!("Cafe Village admission seq={sequence} reason={reason} {admission}");
++        }
+     }
+ 
+     /// Move the camera along the running flight; reply when it ends.
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 441d14b..839db94 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -135,6 +135,10 @@ mod performance;
+ pub use performance::{CafeFrameWork, CafeGpuSample};
+ pub(super) use performance::CafePerformance;
+ 
++#[path = "cafe_terrain_admission.rs"]
++mod terrain_admission;
++pub use terrain_admission::{CafeTerrainAdmission, CafeTerrainUpload};
++
+ impl Game<'_> {
+     pub(super) fn cafe_drs_trial_active(&self) -> bool {
+         self.options.benchmark.is_none()
+@@ -167,6 +171,12 @@ pub trait CafeGameBackend:
+         CafeFrameWork::default()
+     }
+ 
++    fn begin_village_terrain_admission(&mut self) {}
++
++    fn take_village_terrain_admission(&mut self) -> Option<CafeTerrainAdmission> {
++        None
++    }
++
+     fn benchmark_display_sizes(&self) -> [[u32; 2]; 2] {
+         [[0; 2]; 2]
+     }
+@@ -1122,6 +1132,12 @@ impl CafeGameSession<'_> {
+         }
+         self.game.frame_drawn = false;
+         self.game.cafe_frame_built = false;
++        #[cfg(target_os = "cafe")]
++        let village_sequence = self.game.cafe_village_trace_sequence();
++        #[cfg(target_os = "cafe")]
++        if village_sequence.is_some() {
++            backend.begin_village_terrain_admission();
++        }
+         let redraw = Instant::now();
+         self.game.handle_window_event_with_cafe(
+             &Loop(event_loop),
+@@ -1137,7 +1153,14 @@ impl CafeGameSession<'_> {
+         let work = backend.take_frame_work();
+         let end = Instant::now();
+         #[cfg(target_os = "cafe")]
+-        self.game.trace_cafe_village_terrain(&work);
++        {
++            let admission = village_sequence.and_then(|sequence| {
++                backend
++                    .take_village_terrain_admission()
++                    .map(|frame| (sequence, frame))
++            });
++            self.game.trace_cafe_village_terrain(&work, admission);
++        }
+         if self.game.cafe_drs_trial_active() {
+             let graphics = &self.game.settings.horizon;
+             let frame = end.duration_since(start);
+diff --git a/crates/horizon-client/src/platform/cafe_terrain_admission.rs b/crates/horizon-client/src/platform/cafe_terrain_admission.rs
+new file mode 100644
+index 0000000..1b03557
+--- /dev/null
++++ b/crates/horizon-client/src/platform/cafe_terrain_admission.rs
+@@ -0,0 +1,166 @@
++//! Fixed-size upload accounting for the profiled Village route.
++
++use std::fmt;
++
++#[derive(Clone, Copy)]
++pub enum CafeTerrainUpload {
++    Published,
++    Empty,
++    OverBudget,
++    RankRefused,
++    Backoff,
++    HeapRefused,
++    AllocationDeferred,
++    Invalid,
++}
++
++#[derive(Default)]
++pub struct CafeTerrainAdmission {
++    outcomes: [u32; 8],
++    victim_bytes: u64,
++    victim_without_commit_bytes: u64,
++    released_accounted_bytes: u64,
++    retry_issued: u32,
++    retry_heap_refused: u32,
++    // Current occupancy at the edge of a trace window, rather than a sum.
++    occupied: [usize; 3],
++}
++
++impl CafeTerrainAdmission {
++    pub fn upload(&mut self, outcome: CafeTerrainUpload, victim_bytes: usize) {
++        let count = &mut self.outcomes[outcome as usize];
++        *count = count.saturating_add(1);
++        let victim_bytes = victim_bytes as u64;
++        self.victim_bytes = self.victim_bytes.saturating_add(victim_bytes);
++        if !matches!(outcome, CafeTerrainUpload::Published) {
++            self.victim_without_commit_bytes = self
++                .victim_without_commit_bytes
++                .saturating_add(victim_bytes);
++        }
++    }
++
++    pub fn released(&mut self, accounted_bytes: usize) {
++        self.released_accounted_bytes = self
++            .released_accounted_bytes
++            .saturating_add(accounted_bytes as u64);
++    }
++
++    pub fn retry(&mut self, issued: bool) {
++        let count = if issued {
++            &mut self.retry_issued
++        } else {
++            &mut self.retry_heap_refused
++        };
++        *count = count.saturating_add(1);
++    }
++
++    pub fn set_occupancy(&mut self, resident: usize, retired: usize, deferred: usize) {
++        self.occupied = [resident, retired, deferred];
++    }
++
++    pub fn merge(&mut self, frame: Self) {
++        for (count, observed) in self.outcomes.iter_mut().zip(frame.outcomes) {
++            *count = count.saturating_add(observed);
++        }
++        self.victim_bytes = self.victim_bytes.saturating_add(frame.victim_bytes);
++        self.victim_without_commit_bytes = self
++            .victim_without_commit_bytes
++            .saturating_add(frame.victim_without_commit_bytes);
++        self.released_accounted_bytes = self
++            .released_accounted_bytes
++            .saturating_add(frame.released_accounted_bytes);
++        self.retry_issued = self.retry_issued.saturating_add(frame.retry_issued);
++        self.retry_heap_refused = self
++            .retry_heap_refused
++            .saturating_add(frame.retry_heap_refused);
++        self.occupied = frame.occupied;
++    }
++}
++
++impl fmt::Display for CafeTerrainAdmission {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        let [
++            published,
++            empty,
++            over_budget,
++            rank_refused,
++            backoff,
++            heap_refused,
++            allocation_deferred,
++            invalid,
++        ] = self.outcomes;
++        let attempts: u64 = self.outcomes.iter().copied().map(u64::from).sum();
++        let [resident, retired, deferred] = self.occupied;
++        write!(
++            f,
++            "attempts={attempts} published={published} empty={empty} over_budget={over_budget} rank_refused={rank_refused} backoff={backoff} heap_refused={heap_refused} allocation_deferred={allocation_deferred} invalid={invalid} victim_bytes={} victim_without_commit_bytes={} released_accounted_bytes={} retry_issued={} retry_heap_refused={} resident_bytes={resident} retired_bytes={retired} deferred={deferred}",
++            self.victim_bytes,
++            self.victim_without_commit_bytes,
++            self.released_accounted_bytes,
++            self.retry_issued,
++            self.retry_heap_refused,
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn combines_attempt_dispositions_and_keeps_latest_occupancy() {
++        use CafeTerrainUpload::*;
++        let mut window = CafeTerrainAdmission::default();
++        window.upload(Published, 30);
++        window.upload(Empty, 0);
++        window.upload(HeapRefused, 70);
++        window.released(160);
++        window.retry(true);
++        window.set_occupancy(100, 30, 80);
++
++        let mut next = CafeTerrainAdmission::default();
++        next.upload(AllocationDeferred, 100);
++        next.upload(Invalid, 10);
++        next.upload(RankRefused, 0);
++        next.upload(Backoff, 0);
++        next.upload(OverBudget, 0);
++        next.released(40);
++        next.retry(false);
++        next.set_occupancy(120, 0, 75);
++        window.merge(next);
++
++        assert_eq!(
++            window.to_string(),
++            "attempts=8 published=1 empty=1 over_budget=1 rank_refused=1 backoff=1 heap_refused=1 allocation_deferred=1 invalid=1 victim_bytes=210 victim_without_commit_bytes=180 released_accounted_bytes=200 retry_issued=1 retry_heap_refused=1 resident_bytes=120 retired_bytes=0 deferred=75",
++        );
++    }
++
++    #[test]
++    fn counters_saturate_without_wrap() {
++        let mut full = CafeTerrainAdmission {
++            outcomes: [u32::MAX; 8],
++            victim_bytes: u64::MAX,
++            victim_without_commit_bytes: u64::MAX,
++            released_accounted_bytes: u64::MAX,
++            retry_issued: u32::MAX,
++            retry_heap_refused: u32::MAX,
++            ..Default::default()
++        };
++        let mut next = CafeTerrainAdmission::default();
++        next.upload(CafeTerrainUpload::HeapRefused, 128);
++        next.released(256);
++        next.retry(true);
++        next.retry(false);
++        full.merge(next);
++        full.upload(CafeTerrainUpload::HeapRefused, 1);
++        full.retry(false);
++        full.released(1);
++        assert_eq!(full.outcomes, [u32::MAX; 8]);
++        assert_eq!(full.victim_bytes, u64::MAX);
++        assert_eq!(full.victim_without_commit_bytes, u64::MAX);
++        assert_eq!(full.released_accounted_bytes, u64::MAX);
++        assert_eq!(full.retry_issued, u32::MAX);
++        assert_eq!(full.retry_heap_refused, u32::MAX);
++        assert!(full.to_string().starts_with("attempts=34359738360 "));
++    }
++}
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index e841761..ceec5e2 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -46,7 +46,7 @@ use horizon_client::{
+     game::{
+         CafeBlockEntitySections, CafeFrameWork, CafeGameArtwork, CafeGameBackend, CafeGpuSample,
+         CafeLoadingArtwork, CafeLoadingPresenter, CafeScreenshot, CafeScreenshotOutput,
+-        CafeTerrainBuffers,
++        CafeTerrainAdmission, CafeTerrainBuffers, CafeTerrainUpload,
+     },
+     gfx::{Frame, panorama},
+     presentation::{HudBackend, PresentationBackend, TerrainBackend, WorldResolution},
+@@ -884,6 +884,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     reverse_translucent_quads: bool,
+     solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
++    village_terrain_admission: Option<CafeTerrainAdmission>,
+     retired_pair: u64,
+     #[cfg(feature = "gx2-hud-view-lanes")]
+     hud_views: HudViewTrial,
+@@ -977,6 +978,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             reverse_translucent_quads: unsafe { horizon_gx2_profile_reverse_translucent_quads() },
+             solid_draw_plans: Default::default(),
+             frame_work: CafeFrameWork::default(),
++            village_terrain_admission: None,
+             retired_pair: 0,
+             #[cfg(feature = "gx2-hud-view-lanes")]
+             hud_views: HudViewTrial::default(),
+@@ -1848,6 +1850,20 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         work
+     }
+ 
++    fn begin_village_terrain_admission(&mut self) {
++        self.village_terrain_admission = Some(CafeTerrainAdmission::default());
++    }
++
++    fn take_village_terrain_admission(&mut self) -> Option<CafeTerrainAdmission> {
++        let mut admission = self.village_terrain_admission.take()?;
++        admission.set_occupancy(
++            self.terrain_resident_bytes,
++            self.terrain_retired_bytes,
++            self.deferred_terrain.len(),
++        );
++        Some(admission)
++    }
++
+     fn set_cafe_world_resolution_scale(&mut self, percent: u32, retry_failed: bool) {
+         self.set_world_resolution_scale(percent);
+         self.retry_world_scale = retry_failed;
+@@ -2171,6 +2187,9 @@ impl Gx2LoadingPresenter<'_> {
+         for section in self.retired_terrain.drain(..) {
+             section.destroy_after_wait();
+         }
++        if let Some(admission) = &mut self.village_terrain_admission {
++            admission.released(self.terrain_retired_bytes);
++        }
+         self.terrain_retired_bytes = 0;
+     }
+ 
+@@ -2212,6 +2231,12 @@ impl Gx2LoadingPresenter<'_> {
+         self.flush_retired();
+     }
+ 
++    fn record_terrain_upload(&mut self, outcome: CafeTerrainUpload, victim_bytes: usize) {
++        if let Some(admission) = &mut self.village_terrain_admission {
++            admission.upload(outcome, victim_bytes);
++        }
++    }
++
+     fn defer_native_section(&mut self, key: SectionKey, info: DeferredTerrain) {
+         if info.bytes <= RESIDENT_VERTEX_BYTES {
+             self.deferred_terrain.insert(key, info);
+@@ -2241,24 +2266,30 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .iter()
+             .all(|vertices| vertices.len().is_multiple_of(4))
+         {
++            self.record_terrain_upload(CafeTerrainUpload::Invalid, 0);
+             return Err("Horizon terrain section mesh is not quad aligned".into());
+         }
+         if self.terrain_min_y.is_none() {
++            self.record_terrain_upload(CafeTerrainUpload::Invalid, 0);
+             return Err("GX2 terrain section layout is not prepared".into());
+         }
+         let allow_half = self
+             .terrain
+             .as_ref()
+             .is_some_and(|terrain| terrain.half_position_shader);
+-        let (info, bounds, layouts) =
++        let Some((info, bounds, layouts)) =
+             TerrainSection::estimate(mesh, allow_half, self.reverse_translucent_quads)
+-            .ok_or("GX2 section allocation estimate overflow")?;
++        else {
++            self.record_terrain_upload(CafeTerrainUpload::Invalid, 0);
++            return Err("GX2 section allocation estimate overflow".into());
++        };
+         if info.bytes == 0 {
+             if let Some(old) = self.remove_native_section(key) {
+                 self.retire_section(old)
+             }
+             Arc::make_mut(&mut self.block_entity_sections).replace(key, &mesh.block_entities);
+             self.deferred_terrain.remove(&key);
++            self.record_terrain_upload(CafeTerrainUpload::Empty, 0);
+             return Ok(());
+         }
+         if self
+@@ -2266,6 +2297,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .is_some_and(|retry| retry > Instant::now())
+         {
+             self.defer_native_section(key, info);
++            self.record_terrain_upload(CafeTerrainUpload::Backoff, 0);
+             return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+         }
+         let old_bytes = self
+@@ -2276,8 +2308,10 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .saturating_add(info.bytes)
+             .saturating_sub(RESIDENT_VERTEX_BYTES);
+         if info.bytes > RESIDENT_VERTEX_BYTES {
++            self.record_terrain_upload(CafeTerrainUpload::OverBudget, 0);
+             return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+         }
++        let before_victims = self.terrain_resident_bytes;
+         if need != 0 {
+             let rank = self.section_rank(key, info.bounds);
+             self.ensure_terrain_ranks();
+@@ -2291,6 +2325,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                 .map(|(&current, &bytes)| (current, bytes));
+             let Some(victims) = terrain_residency::victims(rank, need, candidates) else {
+                 self.defer_native_section(key, info);
++                self.record_terrain_upload(CafeTerrainUpload::RankRefused, 0);
+                 return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+             };
+             for key in victims {
+@@ -2307,6 +2342,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                 }
+             }
+         }
++        let victim_bytes = before_victims.saturating_sub(self.terrain_resident_bytes);
+         // Preserve the current section if its replacement cannot coexist with
+         // it for this upload. Retired buffers count until GX2 has finished.
+         if self.terrain_resident_bytes + self.terrain_retired_bytes + info.bytes
+@@ -2319,14 +2355,18 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         // out of the headroom reserve. The published residency remains capped.
+         if unsafe { horizon_wiiu_memory_can_upload_terrain(info.bytes as u32) } == 0 {
+             self.defer_native_section(key, info);
++            self.record_terrain_upload(CafeTerrainUpload::HeapRefused, victim_bytes);
+             return Err(horizon_client::presentation::TerrainUploadDeferred.into());
+         }
+-        let atlas = self
+-            .terrain_atlas
+-            .as_ref()
+-            .ok_or("GX2 terrain atlas is not prepared")?;
++        let Some(atlas) = self.terrain_atlas.as_ref() else {
++            self.record_terrain_upload(CafeTerrainUpload::Invalid, victim_bytes);
++            return Err("GX2 terrain atlas is not prepared".into());
++        };
+         let _upload = Span::new(Stage::TerrainUpload);
+-        let terrain = self.terrain.as_ref().ok_or("GX2 terrain is not prepared")?;
++        let Some(terrain) = self.terrain.as_ref() else {
++            self.record_terrain_upload(CafeTerrainUpload::Invalid, victim_bytes);
++            return Err("GX2 terrain is not prepared".into());
++        };
+         let mut section = match TerrainSection::upload(
+             atlas,
+             mesh,
+@@ -2351,9 +2391,13 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+                 };
+                 self.terrain_allocation_backoff = Some(Instant::now() + Duration::from_millis(300));
+                 self.defer_native_section(key, info);
++                self.record_terrain_upload(CafeTerrainUpload::AllocationDeferred, victim_bytes);
++                return Err(error);
++            }
++            Err(error) => {
++                self.record_terrain_upload(CafeTerrainUpload::Invalid, victim_bytes);
+                 return Err(error);
+             }
+-            Err(error) => return Err(error),
+         };
+         if let Some(residents) = self.resident_animations.as_mut() {
+             section.animated_layers = residents.layers(mesh.sprite_layers.iter().copied());
+@@ -2392,6 +2436,7 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         self.frame_work.uploaded_sections += 1;
+         self.frame_work.uploaded_bytes += gpu_bytes as u64;
+         self.deferred_terrain.remove(&key);
++        self.record_terrain_upload(CafeTerrainUpload::Published, victim_bytes);
+         Ok(())
+     }
+ 
+@@ -2439,7 +2484,11 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             enough.then_some((rank, info.bytes))
+         });
+         for ((_, _, key), bytes) in terrain_residency::best_retries(ready) {
+-            if unsafe { horizon_wiiu_memory_can_upload_terrain(bytes as u32) } != 0 {
++            let issued = unsafe { horizon_wiiu_memory_can_upload_terrain(bytes as u32) } != 0;
++            if let Some(admission) = &mut self.village_terrain_admission {
++                admission.retry(issued);
++            }
++            if issued {
+                 self.deferred_terrain.remove(&key);
+                 retry(key);
+             }
