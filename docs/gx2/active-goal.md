@@ -169,6 +169,12 @@ before expanding that architecture.
   arm and 0.027–0.031 ms on the replay arm. Both lifecycle runs saved,
   resumed Night and recovered the full GX2 bulk heap. Physical cadence
   and active-frame coverage remain open. [RC 66 evidence](rc66-qualification.md)
+- RC 67 reuses prepared shape results and borrows collision and density
+  keys. Its matched cold Cemu run reached Game in 50.705 seconds and
+  tracked about 9.2 MB less peak Rust allocation than RC 66. The exact
+  count gate joined all 32 valid Cemu timing samples at 210 sections on
+  both outputs. The supervised physical run uses the prepared `174`
+  marker and original saved view. [RC 67 evidence](rc67-qualification.md)
 - The standalone stock-fog light-packing fixture preserved all pixels on
   both outputs for opaque and cutout terrain, including a second scene
   with sorted translucency. The combined program reduces vertex ALU

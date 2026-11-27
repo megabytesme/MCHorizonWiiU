@@ -325,6 +325,20 @@
     "physical_replay": "pending_updated_recorder_guard_and_active_cohort_observation",
     "receipt": "rc66-qualification.md"
   },
+  "prepared_lookups_and_settled_deadline_gate": {
+    "candidate": "0.8.0-rc.67",
+    "engine_tree": "3bda241b08f976b6145bc6e69d72cb7d1aa77f66",
+    "rpx_sha256": "6d2c51019f262ee4c00894e82497c2882f9221794cb79b7b11e5cc59e5afe5de",
+    "wuhb_sha256": "81733b08b0dbb92e9c95f646f619d1e8646eadca7295aa47a0dc414a629e228d",
+    "matched_cemu_first_game_ms": [51340, 50705],
+    "matched_cemu_peak_rust_bytes": [349390583, 340162709],
+    "cemu_exact_timer_joins": 32,
+    "cemu_sections_each_output": 210,
+    "cemu_independent_refresh_clock": false,
+    "physical_marker_sections_each_output": 174,
+    "physical": "queued_supervised",
+    "receipt": "rc67-qualification.md"
+  },
   "terrain_light_packing": {
     "rpx_sha256": "a9013d7153619d7c94675145256294f63c0925c108736c948103603b8b25a701",
     "wuhb_sha256": "a9bf760c8803c9adb0bf1c2085bd69bb1f5a9dd4e813c009db43a6ac57005b13",

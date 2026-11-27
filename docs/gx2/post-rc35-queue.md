@@ -95,11 +95,13 @@ blend diagnostics remain available as separate correctness checks.
 
 The physical RC 38 long window averaged 50.064 ms per loop, with
 5.027 ms waiting for the previous flip, 2.944 ms in terrain waits and
-0.387 ms in the terminal finish. After the deadline diagnostic passes its
-native and hosted checks, use a separate 174-section saved-view run with
-plain `4` and `gx2-present-deadlines.enable`. For the independently tested
-grouped path, add `gx2-grouped-retirement.enable` to sample after its
-existing flush. Collect the HZP3 file and serial stream from the same run.
+0.387 ms in the terminal finish. RC 67 passed its native build and
+joined 32 settled Cemu records. Use the staged WUHB in a separate
+174-section saved-view run with plain `4` and literal `174` in
+`gx2-present-deadlines.enable`. For the independently tested grouped
+path, add `gx2-grouped-retirement.enable` to sample after its existing
+flush. Collect the HZP3 file and serial stream from the same run.
+[RC 67 qualification](rc67-qualification.md)
 
 ```sh
 python3 -B tools/gx2_present_deadlines.py CAPTURE.hzp SERIAL.log \
@@ -113,6 +115,13 @@ observations describe the combined queue. Use each world's independent
 draw counts and timings alongside them. Cemu's aliased refresh and flip
 clocks can confirm record handling. A physical capture is needed to
 attribute elapsed refreshes.
+
+After the compact fixed-75% primary sweep, use the same RC 67 WUHB and
+original 174-section pose for fixed scales in the order 75, 65, 65, 75,
+then a fixed-50% control. Keep DRS off and check paired sections, indices,
+output shapes and stock passes at each setting. Use the actual scale in
+the reducer. The 65 and 50 runs measure the response to changes in world
+resolution. The primary qualification uses the stock fixed-75% workload.
 
 ## Additional supervised checks
 
