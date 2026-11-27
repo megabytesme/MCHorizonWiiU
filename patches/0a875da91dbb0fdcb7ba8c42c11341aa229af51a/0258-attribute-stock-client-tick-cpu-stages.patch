@@ -1,0 +1,315 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index b118f89..2fee6e3 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -2,6 +2,9 @@
+ //! Thread-independent workload totals are recorded by Worker scopes.
+ use std::marker::PhantomData;
+ 
++mod client_tick;
++pub use client_tick::{ClientTickLaps, ClientTickStage};
++
+ mod server_pump;
+ pub use server_pump::ServerPumpProfile;
+ 
+diff --git a/crates/horizon-client-platform/src/cafe_profile/client_tick.rs b/crates/horizon-client-platform/src/cafe_profile/client_tick.rs
+new file mode 100644
+index 0000000..763237c
+--- /dev/null
++++ b/crates/horizon-client-platform/src/cafe_profile/client_tick.rs
+@@ -0,0 +1,66 @@
++//! Fixed-size wall laps for a sampled ordinary local client's tick loop.
++
++const STAGES: usize = 6;
++
++unsafe extern "C" {
++    fn horizon_gx2_profile_client_tick_begin(steps: u32) -> bool;
++    fn horizon_gx2_profile_client_tick_complete(steps: u32, ticks: *const u64);
++}
++
++#[repr(usize)]
++#[derive(Clone, Copy)]
++pub enum ClientTickStage {
++    Pre,
++    Game,
++    Ambience,
++    GuiMusic,
++    Sound,
++    Post,
++}
++
++pub struct ClientTickLaps {
++    last: u64,
++    stages: [u64; STAGES],
++    edges: usize,
++    steps: u32,
++}
++
++impl ClientTickLaps {
++    pub fn begin(steps: u32) -> Option<Self> {
++        if !unsafe { horizon_gx2_profile_client_tick_begin(steps) } {
++            return None;
++        }
++        let last = unsafe { super::horizon_gx2_profile_stamp() };
++        (last != 0).then_some(Self {
++            last,
++            stages: [0; STAGES],
++            edges: 0,
++            steps,
++        })
++    }
++
++    pub fn mark(sample: &mut Option<Self>, stage: ClientTickStage) {
++        let Some(laps) = sample else { return };
++        let stage = stage as usize;
++        if stage != laps.edges % STAGES {
++            *sample = None;
++            return;
++        }
++        let now = unsafe { super::horizon_gx2_profile_stamp() };
++        let Some(ticks) = now.checked_sub(laps.last) else {
++            *sample = None;
++            return;
++        };
++        // Each interval is disjoint on the monotonic wall clock.
++        laps.stages[stage] += ticks;
++        laps.last = now;
++        laps.edges += 1;
++    }
++
++    pub fn complete(self) {
++        if self.edges % STAGES == 0 && self.edges / STAGES == self.steps as usize {
++            // C copies this bounded array before returning on the same thread.
++            unsafe { horizon_gx2_profile_client_tick_complete(self.steps, self.stages.as_ptr()) };
++        }
++    }
++}
+diff --git a/crates/horizon-client/src/game/runtime/client_tick_steps.rs b/crates/horizon-client/src/game/runtime/client_tick_steps.rs
+index 400f23e..e642236 100644
+--- a/crates/horizon-client/src/game/runtime/client_tick_steps.rs
++++ b/crates/horizon-client/src/game/runtime/client_tick_steps.rs
+@@ -1,6 +1,8 @@
+ //! The client ticks of one frame (`Minecraft.runTick`'s tick loop), after the frame has handled
+ //! what the server sent (`update_world`).
+ use super::*;
++#[cfg(target_os = "cafe")]
++use horizon_client_platform::cafe_profile::{ClientTickLaps, ClientTickStage};
+ 
+ impl Game<'_> {
+     /// Runs `steps` client ticks: each tells `client_tick_pre`, ticks the game unless it is
+@@ -12,6 +14,16 @@ impl Game<'_> {
+         steps: u32,
+         event_loop: Option<&dyn EventLoopCtl>,
+     ) -> Result<()> {
++        #[cfg(target_os = "cafe")]
++        let mut laps = if self.integrated.is_some()
++            && self.options.benchmark.is_none()
++            && !self.options.paced_by_split
++            && !self.pause
++        {
++            ClientTickLaps::begin(steps)
++        } else {
++            None
++        };
+         for _ in 0..steps {
+             let started = Instant::now();
+             horizon_client::social::set_presence_status(self.presence_status());
+@@ -24,7 +36,11 @@ impl Game<'_> {
+                 {
+                     self.tick_script_step(event_loop);
+                 }
++                #[cfg(target_os = "cafe")]
++                ClientTickLaps::mark(&mut laps, ClientTickStage::Pre);
+                 horizon_client::spans::time("tick", || self.tick())?;
++                #[cfg(target_os = "cafe")]
++                ClientTickLaps::mark(&mut laps, ClientTickStage::Game);
+                 // Cave mood (a shader pack's playerMood) samples on a random
+                 // seeded from the clock: under `HORIZON_STILL` it waits for the
+                 // world and draws from its tick.
+@@ -35,13 +51,19 @@ impl Game<'_> {
+                     self.tick_ambience();
+                 }
+                 self.tick_fov();
++                #[cfg(target_os = "cafe")]
++                ClientTickLaps::mark(&mut laps, ClientTickStage::Ambience);
+             }
+             self.tick_win_screen()?;
+             self.native_configs_tick_client();
+             // Gui.tick runs ChatListener.tick paused or not.
+             self.tick_chat_queue();
+             self.tick_music();
++            #[cfg(target_os = "cafe")]
++            ClientTickLaps::mark(&mut laps, ClientTickStage::GuiMusic);
+             self.tick_sound_engine();
++            #[cfg(target_os = "cafe")]
++            ClientTickLaps::mark(&mut laps, ClientTickStage::Sound);
+             // ClientTickEvent.Post, the tick's work done.
+             self.native_client_tick_post();
+             self.clock.record(started.elapsed());
+@@ -49,6 +71,12 @@ impl Game<'_> {
+                 self.sprint_report(&report);
+                 self.on_tick_rate_changed();
+             }
++            #[cfg(target_os = "cafe")]
++            ClientTickLaps::mark(&mut laps, ClientTickStage::Post);
++        }
++        #[cfg(target_os = "cafe")]
++        if let Some(laps) = laps {
++            laps.complete();
+         }
+         Ok(())
+     }
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 42c3209..5ec831d 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -27,6 +27,7 @@
+ #define WORLD_STAGES 16
+ #define WORLD_COUNTERS 8
+ #define SCREENSHOT_STAGE 16
++#define CLIENT_TICK_STAGE 4
+ #define PLAYING_PHASE 5
+ #define CLOSING_PHASE 7
+ 
+@@ -89,6 +90,17 @@ static uint32_t deadline_count, deadline_sections;
+ static DeadlineSample deadlines[DEADLINE_CAPACITY], *deadline_current, *deadline_follow;
+ _Static_assert(sizeof(deadlines) <= 16 * 1024, "bounded present deadline storage");
+ 
++enum { CLIENT_TICK_PERIOD = 120, CLIENT_TICK_CAPACITY = 32, CLIENT_TICK_STAGES = 6,
++       CLIENT_TICK_MAX_STEPS = 10 };
++typedef struct {
++   uint64_t start, ticks[CLIENT_TICK_STAGES];
++   uint32_t sequence, steps;
++} ClientTickSample;
++static ClientTickSample client_tick_pending, client_tick_rows[CLIENT_TICK_CAPACITY];
++static uint32_t client_tick_bucket = UINT32_MAX, client_tick_count, client_tick_next;
++static bool client_tick_marker, client_tick_ready;
++_Static_assert(sizeof(client_tick_rows) <= 2 * 1024, "bounded client tick storage");
++
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+ typedef struct {
+@@ -270,6 +282,81 @@ static void report_deadlines(void)
+    deadline_count = 0;
+ }
+ 
++static bool client_tick_playing(void)
++{
++   return client_tick_marker && recording && history == &process_history &&
++      current.phase == PLAYING_PHASE && ProcUIInForeground();
++}
++
++bool horizon_gx2_profile_client_tick_begin(uint32_t steps)
++{
++   if (!steps || steps > CLIENT_TICK_MAX_STEPS || !client_tick_playing()) return false;
++   // Use the first advancing tick in each frame bucket. A fixed modulo
++   // edge can alias zero-tick frames throughout 60 Hz play at 20 TPS.
++   const uint32_t bucket = history->total / CLIENT_TICK_PERIOD;
++   if (bucket == client_tick_bucket) return false;
++   client_tick_bucket = bucket;
++   client_tick_pending = (ClientTickSample){.start = started - history->epoch,
++      .sequence = history->total, .steps = steps};
++   client_tick_ready = false;
++   return true;
++}
++
++void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[CLIENT_TICK_STAGES])
++{
++   if (!client_tick_playing() || !client_tick_pending.steps ||
++       steps != client_tick_pending.steps || history->total != client_tick_pending.sequence ||
++       started - history->epoch != client_tick_pending.start) return;
++   memcpy(client_tick_pending.ticks, ticks, sizeof(client_tick_pending.ticks));
++   client_tick_ready = true;
++}
++
++static void client_tick_finish(void)
++{
++   if (!client_tick_pending.steps) return;
++   const ClientTickSample sample = client_tick_pending;
++   client_tick_pending.steps = 0;
++   if (!client_tick_ready || !client_tick_playing() || sample.sequence != history->total ||
++       sample.start != started - history->epoch || current.stages[SCREENSHOT_STAGE] ||
++       current.counters[GX2_PROFILE_PRESENTED] != 1) return;
++   const uint32_t *extra = current.extra_counters;
++   if (extra[TV_SUBMISSIONS] != 1 || extra[DRC_SUBMISSIONS] != 1 ||
++       !extra[TV_SECTIONS_DRAWN] || !extra[DRC_SECTIONS_DRAWN]) return;
++
++   // The laps run entirely inside Stage::Tick. Reject invalid elapsed
++   // values without overflowing a sum and keep the HZP3 format unchanged.
++   uint64_t remaining = current.stages[CLIENT_TICK_STAGE];
++   for (unsigned i = 0; i < CLIENT_TICK_STAGES; ++i) {
++      if (sample.ticks[i] > remaining) return;
++      remaining -= sample.ticks[i];
++   }
++   if (remaining == current.stages[CLIENT_TICK_STAGE]) return;
++
++   client_tick_rows[client_tick_next] = sample;
++   client_tick_next = (client_tick_next + 1) % CLIENT_TICK_CAPACITY;
++   if (client_tick_count < CLIENT_TICK_CAPACITY) ++client_tick_count;
++}
++
++static void report_client_tick_laps(void)
++{
++   uint32_t index = (client_tick_next + CLIENT_TICK_CAPACITY - client_tick_count) % CLIENT_TICK_CAPACITY;
++   for (uint32_t i = 0; i < client_tick_count; ++i, index = (index + 1) % CLIENT_TICK_CAPACITY) {
++      const ClientTickSample *sample = &client_tick_rows[index];
++      // Long runs can overwrite an earlier sample's HZP3 row.
++      if (sample->sequence >= history->total || history->total - sample->sequence > CAPACITY) continue;
++      const ProfileFrame *frame = &history->ring[sample->sequence % CAPACITY];
++      const uint64_t start = (uint64_t)frame->start_hi << 32 | frame->start_lo;
++      if (frame->sequence != sample->sequence || start != sample->start) continue;
++      const uint64_t *v = sample->ticks;
++      OSReport("Horizon Cafe client tick wall seq=%u start_ticks=%llu clock_hz=%u steps=%u "
++               "stages=%llu/%llu/%llu/%llu/%llu/%llu\n", sample->sequence,
++               (unsigned long long)sample->start, OSTimerClockSpeed, sample->steps,
++               (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2],
++               (unsigned long long)v[3], (unsigned long long)v[4], (unsigned long long)v[5]);
++   }
++   client_tick_count = 0;
++}
++
+ static uint32_t ticks(uint64_t begin, uint64_t end)
+ {
+    uint64_t elapsed = end - begin;
+@@ -471,6 +558,12 @@ void horizon_gx2_profile_init(void)
+          else if (deadline_sections)
+             OSReport("Horizon GX2 present deadlines require %u sections on each output\n", deadline_sections);
+       }
++      FILE *client_tick = fopen(ROOT "gx2-client-tick-profile.enable", "rb");
++      client_tick_marker = client_tick != NULL;
++      if (client_tick) {
++         fclose(client_tick);
++         OSReport("Horizon Cafe client tick wall laps requested\n");
++      }
+       FILE *census = fopen(ROOT "gx2-solid-list-census.enable", "rb");
+       solid_list_census = census != NULL;
+       if (census) fclose(census);
+@@ -1198,6 +1291,7 @@ void horizon_gx2_profile_finish(void)
+ {
+    if (!recording) return;
+    deadline_finish();
++   client_tick_finish();
+    const uint64_t now = (uint64_t)OSGetSystemTime(), offset = started - history->epoch;
+    current.sequence = history->total;
+    current.start_hi = (uint32_t)(offset >> 32);
+@@ -1344,6 +1438,7 @@ void horizon_gx2_profile_checkpoint_session(void)
+    const uint32_t presents = history->phase_frames[PLAYING_PHASE];
+    if (grouped_retirement_count != 0) report_grouped_retirement();
+    if (history == &process_history && deadline_count != 0) report_deadlines();
++   if (history == &process_history && client_tick_count != 0) report_client_tick_laps();
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 46b31c8..ba368de 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -96,6 +96,8 @@ bool horizon_gx2_profile_take_gpu_sample(HorizonGx2GpuSample *sample);
+ bool horizon_gx2_profile_begin(uint32_t phase);
+ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
+ bool horizon_gx2_profile_frame_laps_mode(void);
++bool horizon_gx2_profile_client_tick_begin(uint32_t steps);
++void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[6]);
+ bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_ticks);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ void horizon_gx2_profile_server_pump_scope(bool ordinary_focused);
