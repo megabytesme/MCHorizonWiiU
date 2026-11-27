@@ -6,7 +6,6 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
-import struct
 
 import gx2_profile as analyzer
 
@@ -21,7 +20,6 @@ RECORD = re.compile(
     r"group=([0-3]) samples=\[([\d, ]+)\]"
 )
 MISSING = (1 << 32) - 1
-FRAME_PREFIX = struct.Struct(">4I")
 HZP_WALL_MS = (
     "loop", "world_update", "streaming", "tick", "stage_artwork", "terrain_upload",
     "texture_upload", "terrain_wait", "wait_flip", "finish_present", "submit_tv", "submit_drc",
@@ -36,11 +34,8 @@ def join(data, serial):
     # The canonical reader validated sizes, ranges and phases. Read only the
     # raw HZP3 prefix here so the join compares integer ticks without a float
     # round trip through start_ms.
-    by_sequence = {}
-    for i, frame in enumerate(frames):
-        offset = analyzer.HEADER.size + i * analyzer.V3_ROW.size
-        sequence, _, hi, lo = FRAME_PREFIX.unpack_from(data, offset)
-        by_sequence[sequence] = ((hi << 32) | lo, frame)
+    raw_ticks = analyzer.hzp3_sequence_ticks(data, frames)
+    by_sequence = {frame["sequence"]: (raw_ticks[frame["sequence"]], frame) for frame in frames}
 
     samples = defaultdict(dict)
     mismatched = set()

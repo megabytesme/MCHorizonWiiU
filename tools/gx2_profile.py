@@ -127,6 +127,14 @@ def read(data):
             "total": total, "retained": count}, frames
 
 
+def hzp3_sequence_ticks(data, frames):
+    """Get exact start ticks after read() has validated an HZP3 capture."""
+    return {
+        frame["sequence"]: int.from_bytes(data[offset + 8:offset + 16], "big")
+        for offset, frame in zip(range(HEADER.size, len(data), V3_ROW.size), frames)
+    }
+
+
 def stats(values):
     ordered = sorted(values)
     if not ordered:
