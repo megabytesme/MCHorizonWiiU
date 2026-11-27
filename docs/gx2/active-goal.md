@@ -88,6 +88,9 @@ before expanding that architecture.
 - RC 53 packages the forward upload fix and verified warm reopening.
   The bounded host fixture admitted 28 forward sections from a full
   queue and rearmed each parked request. [RC 53 qualification](rc53-qualification.md)
+- RC 54 packages guarded scaled screen effects, a clear-fog opaque shader,
+  and frame-stage timing. Both pinned shaders and the exact native package
+  built. [RC 54 qualification](rc54-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

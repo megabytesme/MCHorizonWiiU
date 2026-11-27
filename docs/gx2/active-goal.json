@@ -65,6 +65,17 @@
     "physical": "queued",
     "receipt": "rc53-qualification.md"
   },
+  "screen_parity_shader_and_frame_timings": {
+    "candidate": "0.8.0-rc.54",
+    "engine_tree": "784d41f558c29868b67620d0bd496aeda0fd2178",
+    "rpx_sha256": "ea9998df0b05ad7326620843e55441c86ee763f7d49d00a484682b09090e0c9d",
+    "wuhb_sha256": "90d18707575cfa1d649edaa971d871d65426da25e3537b979986a7e74fd3535b",
+    "native_build": "passed",
+    "clear_fog_pixel_dwords_control_trial": [112, 64],
+    "runtime": "queued",
+    "physical": "queued",
+    "receipt": "rc54-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
