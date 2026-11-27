@@ -1,0 +1,36 @@
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index e7fbb15bba3e87648546260472f595bb079aee2f..9215fc9be4cdf573ea86cb3b33fb32e1e00f842e 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -706,18 +706,20 @@ int horizon_loading_host_present_view_hud(
+    *retired_pair = 0;
+    last_outputs = 0;
+    last_wait_ns = 0;
+-   bool verified_finish = false;
+-   // Keep WHB flip wait, both target copies and keyboard ordering. In contrast
+-   // to the guarded shared HUD, this entry cannot fall through to an
+-   // unverified finish when the keyboard is active or the foreground is lost.
+-   int result = HORIZON_LOADING_RETRY_FLIP;
+-   if (ProcUIInForeground()) {
+-      result = grouped && active_lanes
+-         ? present_grouped(draw, context, rgba, NULL, retired_pair, &verified_finish, prepare_drc)
+-         : present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
++   const bool foreground = ProcUIInForeground();
++   if (!active_lanes) {
++      // No lane owner needs a retirement handoff on the direct path.
++      return foreground
++         ? present_with_clear(draw, context, rgba, NULL, false, retired_pair, NULL, false)
++         : HORIZON_LOADING_RETRY_FLIP;
+    }
+-   if (active_lanes &&
+-       !horizon_gx2_hud_view_lanes_seal(active_lanes, *retired_pair)) {
++
++   // Every return from either active present path must go through seal.
++   bool verified_finish = false;
++   const int result = !foreground ? HORIZON_LOADING_RETRY_FLIP : grouped
++      ? present_grouped(draw, context, rgba, NULL, retired_pair, &verified_finish, prepare_drc)
++      : present_with_clear(draw, context, rgba, NULL, false, retired_pair, &verified_finish, false);
++   if (!horizon_gx2_hud_view_lanes_seal(active_lanes, *retired_pair)) {
+       if (!verified_finish) drain_guarded_commands();
+       horizon_gx2_hud_view_lanes_finish_verified(active_lanes);
+    }
