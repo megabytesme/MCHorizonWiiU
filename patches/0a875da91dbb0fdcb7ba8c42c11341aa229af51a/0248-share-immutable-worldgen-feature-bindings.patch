@@ -1,0 +1,564 @@
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index d9b5530..3c73a9f 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -14,6 +14,35 @@ pub(in crate::worldgen) struct FeatureResources {
+     pub(in crate::worldgen) blocks: Option<super::super::generator_blocks::BlockBehavior>,
+ }
+ 
++/// Resolved, generation-local feature constructor inputs. Runtime execution
++/// state and per-biome/decoration choices stay with their original owners.
++pub(in crate::worldgen) struct PreparedFeatureInputs {
++    pub(in crate::worldgen) tags: super::super::tags::TagDefinitions,
++    pub(in crate::worldgen) catalog: super::super::feature_catalog::FeatureCatalog,
++    pub(in crate::worldgen) bindings: super::super::block_feature::FeatureBlockBindings<'static>,
++}
++
++/// Share only while construction or a consumer needs this generation's inputs.
++#[derive(Default)]
++struct FeaturePreparation(std::sync::Mutex<std::sync::Weak<PreparedFeatureInputs>>);
++impl FeaturePreparation {
++    fn get(
++        &self,
++        build: impl FnOnce() -> Result<PreparedFeatureInputs, GeneratorError>,
++    ) -> Result<Arc<PreparedFeatureInputs>, GeneratorError> {
++        let mut slot = self
++            .0
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if let Some(prepared) = slot.upgrade() {
++            return Ok(prepared);
++        }
++        let prepared = Arc::new(build()?);
++        *slot = Arc::downgrade(&prepared);
++        Ok(prepared)
++    }
++}
++
+ /// Raw structure, structure-set and template-pool resources.
+ pub(in crate::worldgen) struct StructureBundles {
+     pub(in crate::worldgen) structures: BTreeMap<String, String>,
+@@ -62,6 +91,7 @@ pub struct GeneratorData {
+     pub(super) bound_block_tags: std::sync::OnceLock<super::super::block_feature::BoundBlockTags>,
+     pub(in crate::worldgen) biome_tags: BTreeMap<String, Vec<String>>,
+     pub(in crate::worldgen) feature_resources: Option<FeatureResources>,
++    prepared_features: FeaturePreparation,
+     /// Templates, processor lists and per-state template transforms.
+     pub(in crate::worldgen) structures: Option<Arc<super::super::structure::StructureResources>>,
+     pub(in crate::worldgen) structure_resources: Option<StructureBundles>,
+@@ -428,6 +458,7 @@ impl GeneratorData {
+             block_tags,
+             biome_tags,
+             feature_resources,
++            prepared_features: FeaturePreparation::default(),
+             ring_cache: Mutex::new(Vec::new()),
+             decorations: Mutex::new(Vec::new()),
+             old_chunk_facts: OnceLock::new(),
+@@ -643,6 +674,75 @@ impl GeneratorData {
+     pub(in crate::worldgen) fn integers(&self) -> &BTreeSet<(String, String)> {
+         &self.integers
+     }
++    pub(in crate::worldgen) fn prepared_features(
++        &self,
++    ) -> Result<Option<(&FeatureResources, Arc<PreparedFeatureInputs>)>, GeneratorError> {
++        use super::super::{
++            biome_predicate::BiomePredicateBindings,
++            feature_catalog::FeatureCatalog,
++            state_provider::{StateProviderBindings, StateProviderCatalog},
++        };
++        use crate::block_placement::BlockPlacementBindings;
++        let Some(resources) = &self.feature_resources else {
++            return Ok(None);
++        };
++        let prepared = self.prepared_features.get(|| {
++            let registry = self.registry();
++            let mut feature_tags = TagDefinitions::default();
++            for (name, json) in &resources.feature_tags {
++                feature_tags.apply_json(name, "vanilla", json)?;
++            }
++            let catalog = FeatureCatalog::from_resources(
++                &resources.features,
++                &resources.placed,
++                &feature_tags,
++            )?;
++            let biomes = Arc::new(BiomePredicateBindings::new(
++                &self
++                    .biome_names()
++                    .iter()
++                    .enumerate()
++                    .map(|(i, name)| (name.to_string(), BiomeId(i as u32)))
++                    .collect(),
++                &self.biome_tags,
++            )?);
++            let mut bindings = self
++                .feature_block_bindings()?
++                .with_fluid_tags(&resources.fluid_tags)?
++                .with_biomes(biomes.clone());
++            if let Some(structures) = &self.structures {
++                bindings = bindings.with_structures(structures.clone());
++            }
++            if let Some(blocks) = &resources.blocks {
++                bindings = bindings
++                    .with_block_properties(&blocks.properties)?
++                    .with_state_providers(
++                        StateProviderBindings::new(
++                            registry,
++                            self.integers().clone(),
++                            &self.block_tags,
++                        )?
++                        .with_block_properties(&blocks.properties)?
++                        .with_fluid_tags(&resources.fluid_tags)?
++                        .with_biomes(biomes),
++                        StateProviderCatalog::from_resources(&resources.state_providers)?,
++                        BlockPlacementBindings::new(
++                            registry,
++                            &blocks.properties,
++                            &blocks.double_plants,
++                            &blocks.mossy_carpets,
++                        )?,
++                    )?;
++            }
++            Ok(PreparedFeatureInputs {
++                tags: feature_tags,
++                catalog,
++                bindings,
++            })
++        })?;
++        Ok(Some((resources, prepared)))
++    }
++
+     /// Feature block bindings over this data's blocks and block tags. The tags'
+     /// state sets are bound once and shared: each binding held 5 MB of them.
+     pub(in crate::worldgen) fn feature_block_bindings(
+diff --git a/crates/horizon-world/src/worldgen/generator_decoration.rs b/crates/horizon-world/src/worldgen/generator_decoration.rs
+index 4bbe812..5a19055 100644
+--- a/crates/horizon-world/src/worldgen/generator_decoration.rs
++++ b/crates/horizon-world/src/worldgen/generator_decoration.rs
+@@ -4,36 +4,29 @@
+ //! Roots whose algorithm or bindings are not implemented are left out of
+ //! execution (but keep their place in vanilla's per-step feature ordering, so
+ //! decoration seeds of the remaining features are unchanged).
++use super::generator_blocks::BlockBehavior;
+ use super::{
+     anchor::WorldGenerationContext,
+     biome::BiomeId,
+     biome_chunk::BiomeRegion,
+-    biome_predicate::BiomePredicateBindings,
+     biome_source::ResolvedBiomeSource,
+     biome_temperature::BiomeTemperature,
+     biome_weather::BiomeWeatherBindings,
+-    block_feature::FeatureBlockBindings,
+     decoration::{DecorationWorld, FeatureDecorationPlan},
+     feature::{FeatureBlocks, FeatureWorld},
+-    feature_catalog::FeatureCatalog,
+     feature_graph::PlacedFeatureDefinition,
+     feature_region::{RegionError, TerrainRegion},
+     feature_sort::FeatureIdentity,
+     generator::{
+         DecorateStats, GenBlockStates, GeneratorData, GeneratorError, ProtoChunk, WorkerState,
++        data::PreparedFeatureInputs,
+     },
+     placement::{FeaturePlacer, LayerBlock, PlacementContext, PlacementQueryError},
+-    tags::TagDefinitions,
+     terrain::PreLightChunkStage,
+     write_zone::GenerationWriteZone,
+ };
+-use super::{
+-    generator_blocks::BlockBehavior,
+-    state_provider::{StateProviderBindings, StateProviderCatalog},
+-};
+ use crate::{
+     block_collision::{DynamicCollisionWorld, ShulkerCollisionState},
+-    block_placement::BlockPlacementBindings,
+     block_support::SupportType,
+     block_survival::SurvivalWorld,
+     dynamic_support::DynamicSupportWorld,
+@@ -66,10 +59,9 @@ pub(super) struct Decoration {
+     /// Placed features of each biome's generation settings, by BiomeId: a
+     /// bit per FeatureIdentity.
+     biome_features: Vec<Vec<u64>>,
+-    bindings: FeatureBlockBindings<'static>,
++    prepared: Arc<PreparedFeatureInputs>,
+     weather: Option<BiomeWeatherBindings>,
+     blocks: FeatureBlocks,
+-    catalog: FeatureCatalog,
+     /// Placed features referenced by name (feature pool elements), decoded lazily.
+     named: std::sync::Mutex<HashMap<String, Option<Arc<PlacedFeatureDefinition>>>>,
+     /// BlockBehaviour.Properties.postProcess: states whose worldgen writes mark
+@@ -172,53 +164,13 @@ impl Decoration {
+         source: &ResolvedBiomeSource,
+         flat: Option<FlatDecoration>,
+     ) -> Result<Option<Self>, GeneratorError> {
+-        let Some(resources) = &data.feature_resources else {
++        let Some((resources, prepared)) = data.prepared_features()? else {
+             return Ok(None);
+         };
+         let registry = data.registry();
+-        let mut feature_tags = TagDefinitions::default();
+-        for (name, json) in &resources.feature_tags {
+-            feature_tags.apply_json(name, "vanilla", json)?;
+-        }
+-        let catalog =
+-            FeatureCatalog::from_resources(&resources.features, &resources.placed, &feature_tags)?;
+-        let biomes = Arc::new(BiomePredicateBindings::new(
+-            &data
+-                .biome_names()
+-                .iter()
+-                .enumerate()
+-                .map(|(i, name)| (name.to_string(), BiomeId(i as u32)))
+-                .collect(),
+-            &data.biome_tags,
+-        )?);
+-        let mut bindings = data
+-            .feature_block_bindings()?
+-            .with_fluid_tags(&resources.fluid_tags)?
+-            .with_biomes(biomes.clone());
+-        if let Some(structures) = &data.structures {
+-            bindings = bindings.with_structures(structures.clone());
+-        }
+-        if let Some(blocks) = &resources.blocks {
+-            bindings = bindings
+-                .with_block_properties(&blocks.properties)?
+-                .with_state_providers(
+-                    StateProviderBindings::new(
+-                        registry,
+-                        data.integers().clone(),
+-                        &data.block_tags,
+-                    )?
+-                    .with_block_properties(&blocks.properties)?
+-                    .with_fluid_tags(&resources.fluid_tags)?
+-                    .with_biomes(biomes),
+-                    StateProviderCatalog::from_resources(&resources.state_providers)?,
+-                    BlockPlacementBindings::new(
+-                        registry,
+-                        &blocks.properties,
+-                        &blocks.double_plants,
+-                        &blocks.mossy_carpets,
+-                    )?,
+-                )?;
+-        }
++        let feature_tags = &prepared.tags;
++        let catalog = &prepared.catalog;
++        let bindings = &prepared.bindings;
+         let tags = feature_tags
+             .build(|name, _| resources.placed.contains_key(name).then(|| name.to_owned()))
+             .map_err(|e| resource(format!("feature tags: {e:?}")))?
+@@ -232,7 +184,7 @@ impl Decoration {
+                 names.push(name.to_owned());
+                 features.push(
+                     catalog
+-                        .placed_feature_with_blocks(&Value::from(name).to_string(), &bindings)
++                        .placed_feature_with_blocks(&Value::from(name).to_string(), bindings)
+                         .map_err(|e| e.to_string()),
+                 );
+                 id
+@@ -300,7 +252,7 @@ impl Decoration {
+             plan.push((id, steps));
+         }
+         let plan = FeatureDecorationPlan::new(plan).map_err(|e| resource(e.to_string()))?;
+-        let weather = BiomeWeatherBindings::new(&bindings).ok();
++        let weather = BiomeWeatherBindings::new(bindings).ok();
+         let states = |names: &[&str]| -> Vec<BlockStateId> {
+             names
+                 .iter()
+@@ -317,9 +269,8 @@ impl Decoration {
+             features,
+             biome_features,
+             weather,
++            prepared,
+             blocks: FeatureBlocks::from_registry(registry)?,
+-            bindings,
+-            catalog,
+             named: std::sync::Mutex::new(HashMap::new()),
+             top_layers: Vec::new(),
+         }))
+@@ -329,8 +280,12 @@ impl Decoration {
+         named
+             .entry(name.to_owned())
+             .or_insert_with(|| {
+-                self.catalog
+-                    .placed_feature_with_blocks(&Value::from(name).to_string(), &self.bindings)
++                self.prepared
++                    .catalog
++                    .placed_feature_with_blocks(
++                        &Value::from(name).to_string(),
++                        &self.prepared.bindings,
++                    )
+                     .ok()
+                     .map(Arc::new)
+             })
+@@ -446,7 +401,7 @@ impl Decoration {
+             biomes.push(chunk.biomes().clone());
+         }
+         let terrain = TerrainRegion::new(chunks, generation)
+-            .and_then(|region| region.with_block_bindings(&self.bindings))
++            .and_then(|region| region.with_block_bindings(&self.prepared.bindings))
+             .map(|region| region.with_world_seed(seed));
+         let terrain = match terrain {
+             Ok(terrain) => terrain,
+@@ -492,6 +447,7 @@ impl Decoration {
+         // The blocks' facts: `BlockState.isSolidRender` and the rest, the
+         // structure pieces ask them of the blocks around them.
+         let tree_blocks = self
++            .prepared
+             .bindings
+             .tree_blocks()
+             .map_err(|e| resource(e.to_string()))?;
+@@ -998,7 +954,7 @@ impl FeatureWorld for World<'_> {
+         self.raise_floor_bound(position);
+         // ProtoChunk keeps a block entity that already exists when the same kind
+         // of block is set again (a chest turning waterlogged); other changes drop it.
+-        let registry = self.decoration.bindings.registry();
++        let registry = self.decoration.prepared.bindings.registry();
+         let same_block = old == state
+             || registry.state(old).map(|s| s.name.as_str())
+                 == registry.state(state).map(|s| s.name.as_str());
+@@ -1146,7 +1102,7 @@ impl PlacementContext for World<'_> {
+     ) -> Result<(), PlacementQueryError> {
+         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
+         let state = chunk.block(position[0], position[1], position[2]);
+-        let registry = self.decoration.bindings.registry();
++        let registry = self.decoration.prepared.bindings.registry();
+         let Some(nbt) = loot_table_nbt(registry, state, table, random) else {
+             return Ok(());
+         };
+@@ -1161,7 +1117,7 @@ impl PlacementContext for World<'_> {
+     ) -> Result<(), PlacementQueryError> {
+         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
+         let state = chunk.block(position[0], position[1], position[2]);
+-        let registry = self.decoration.bindings.registry();
++        let registry = self.decoration.prepared.bindings.registry();
+         if !matches!(
+             registry.state(state).map(|s| s.name.as_str()),
+             Some("minecraft:bee_nest" | "minecraft:beehive")
+@@ -1178,7 +1134,7 @@ impl PlacementContext for World<'_> {
+     ) -> Result<(), PlacementQueryError> {
+         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
+         let state = chunk.block(position[0], position[1], position[2]);
+-        let registry = self.decoration.bindings.registry();
++        let registry = self.decoration.prepared.bindings.registry();
+         if registry.state(state).map(|s| s.name.as_str()) != Some("minecraft:spawner") {
+             return Ok(());
+         }
+@@ -1366,7 +1322,7 @@ impl PlacementContext for World<'_> {
+     ) -> Result<(), PlacementQueryError> {
+         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
+         let state = chunk.block(position[0], position[1], position[2]);
+-        let registry = self.decoration.bindings.registry();
++        let registry = self.decoration.prepared.bindings.registry();
+         if registry.state(state).map(|s| s.name.as_str()) != Some("minecraft:end_gateway") {
+             return Ok(());
+         }
+@@ -1511,6 +1467,7 @@ impl PlacementContext for World<'_> {
+         }
+         let air = self
+             .decoration
++            .prepared
+             .bindings
+             .registry()
+             .default_state("minecraft:air")
+@@ -1629,7 +1586,7 @@ impl PlacementContext for World<'_> {
+             .as_ref()
+             .is_none_or(|(name, _)| **name != *tag)
+         {
+-            let states = self.decoration.bindings.tags.get(tag).cloned();
++            let states = self.decoration.prepared.bindings.tags.get(tag).cloned();
+             self.last_tag = Some((tag.into(), states));
+         }
+         let states = self
+diff --git a/crates/horizon-world/src/worldgen/live.rs b/crates/horizon-world/src/worldgen/live.rs
+index 6017d87..55f1130 100644
+--- a/crates/horizon-world/src/worldgen/live.rs
++++ b/crates/horizon-world/src/worldgen/live.rs
+@@ -5,17 +5,12 @@
+ //! worldgen bundle as decoration and cached.
+ use super::{
+     biome::BiomeId,
+-    biome_predicate::BiomePredicateBindings,
+-    block_feature::FeatureBlockBindings,
+     feature::{FeatureBlocks, FeatureWorld},
+-    feature_catalog::FeatureCatalog,
+     feature_graph::{FeatureDefinition, PlacedFeatureDefinition},
+-    generator::{GeneratorData, GeneratorError},
++    generator::{GeneratorData, GeneratorError, data::PreparedFeatureInputs},
+     placement::PlacementContext,
+-    state_provider::{StateProviderBindings, StateProviderCatalog},
+     tags::TagDefinitions,
+ };
+-use crate::block_placement::BlockPlacementBindings;
+ use horizon_core::random::RandomSource;
+ use serde_json::Value;
+ use std::{
+@@ -27,8 +22,7 @@ type Cache<T> = Mutex<HashMap<String, Option<Arc<T>>>>;
+ 
+ pub struct LiveFeatures {
+     data: Arc<GeneratorData>,
+-    catalog: FeatureCatalog,
+-    bindings: FeatureBlockBindings<'static>,
++    prepared: Arc<PreparedFeatureInputs>,
+     blocks: FeatureBlocks,
+     configured: Cache<FeatureDefinition>,
+     placed: Cache<PlacedFeatureDefinition>,
+@@ -88,53 +82,11 @@ fn nested_features(
+ impl LiveFeatures {
+     /// None when the bundle carries no feature resources.
+     pub fn new(data: &Arc<GeneratorData>) -> Result<Option<Self>, GeneratorError> {
+-        let Some(resources) = &data.feature_resources else {
++        let Some((resources, prepared)) = data.prepared_features()? else {
+             return Ok(None);
+         };
+         let registry = data.registry();
+-        let mut feature_tags = TagDefinitions::default();
+-        for (name, json) in &resources.feature_tags {
+-            feature_tags.apply_json(name, "vanilla", json)?;
+-        }
+-        let catalog =
+-            FeatureCatalog::from_resources(&resources.features, &resources.placed, &feature_tags)?;
+-        let biomes = Arc::new(BiomePredicateBindings::new(
+-            &data
+-                .biome_names()
+-                .iter()
+-                .enumerate()
+-                .map(|(i, name)| (name.to_string(), BiomeId(i as u32)))
+-                .collect(),
+-            &data.biome_tags,
+-        )?);
+-        let mut bindings = data
+-            .feature_block_bindings()?
+-            .with_fluid_tags(&resources.fluid_tags)?
+-            .with_biomes(biomes.clone());
+-        if let Some(structures) = &data.structures {
+-            bindings = bindings.with_structures(structures.clone());
+-        }
+-        if let Some(blocks) = &resources.blocks {
+-            bindings = bindings
+-                .with_block_properties(&blocks.properties)?
+-                .with_state_providers(
+-                    StateProviderBindings::new(
+-                        registry,
+-                        data.integers().clone(),
+-                        &data.block_tags,
+-                    )?
+-                    .with_block_properties(&blocks.properties)?
+-                    .with_fluid_tags(&resources.fluid_tags)?
+-                    .with_biomes(biomes),
+-                    StateProviderCatalog::from_resources(&resources.state_providers)?,
+-                    BlockPlacementBindings::new(
+-                        registry,
+-                        &blocks.properties,
+-                        &blocks.double_plants,
+-                        &blocks.mossy_carpets,
+-                    )?,
+-                )?;
+-        }
++        let feature_tags = &prepared.tags;
+         // Configured-feature tag membership (feature_tags names configured features).
+         let mut bone_meal_tag = BTreeSet::new();
+         if let Some(json) = resources
+@@ -235,8 +187,7 @@ impl LiveFeatures {
+         Ok(Some(Self {
+             temperatures,
+             data: data.clone(),
+-            catalog,
+-            bindings,
++            prepared,
+             blocks: FeatureBlocks::from_registry(registry)?,
+             configured: Mutex::new(HashMap::new()),
+             placed: Mutex::new(HashMap::new()),
+@@ -255,21 +206,23 @@ impl LiveFeatures {
+     pub fn registry_ids(&self, registry: &str) -> Option<&BTreeSet<String>> {
+         Some(match registry {
+             "minecraft:worldgen/feature" => self.configured_ids.get_or_init(|| {
+-                self.catalog
++                self.prepared
++                    .catalog
+                     .feature_names()
+                     .filter(|name| self.configured(name).is_some())
+                     .map(str::to_owned)
+                     .collect()
+             }),
+             "minecraft:worldgen/placed_feature" => self.placed_ids.get_or_init(|| {
+-                self.catalog
++                self.prepared
++                    .catalog
+                     .placed_names()
+                     .filter(|name| self.placed(name).is_some())
+                     .map(str::to_owned)
+                     .collect()
+             }),
+             "minecraft:worldgen/block_state_provider" => self.provider_ids.get_or_init(|| {
+-                let Some((bindings, catalog, _)) = &self.bindings.simple_blocks else {
++                let Some((bindings, catalog, _)) = &self.prepared.bindings.simple_blocks else {
+                     return BTreeSet::new();
+                 };
+                 catalog
+@@ -293,7 +246,7 @@ impl LiveFeatures {
+             return None;
+         }
+         if registry == "minecraft:worldgen/placed_feature" {
+-            return Some(self.catalog.placed_in_tag(id, tag));
++            return Some(self.prepared.catalog.placed_in_tag(id, tag));
+         }
+         if registry != "minecraft:worldgen/feature" {
+             return Some(false);
+@@ -322,12 +275,12 @@ impl LiveFeatures {
+     /// The structure templates and processor lists of this bundle, for the
+     /// pieces a level places live (`/place structure`).
+     pub(crate) fn structures(&self) -> Option<&super::structure::StructureResources> {
+-        self.bindings.structures.as_deref()
++        self.prepared.bindings.structures.as_deref()
+     }
+     /// `BlockState.isSolidRender` facts, which legacy structure pieces ask of
+     /// the blocks around them.
+     pub(crate) fn tree_blocks(&self) -> Option<Arc<super::tree_blocks::TreeBlocks>> {
+-        self.bindings.tree_blocks().ok()
++        self.prepared.bindings.tree_blocks().ok()
+     }
+     pub fn biome_id(&self, name: &str) -> Option<BiomeId> {
+         self.data.biome_id(name)
+@@ -340,7 +293,7 @@ impl LiveFeatures {
+     }
+     /// The structure templates and processor lists features place from.
+     pub fn structure_resources(&self) -> Option<Arc<super::structure::StructureResources>> {
+-        self.bindings.structures.clone()
++        self.prepared.bindings.structures.clone()
+     }
+     pub fn configured(&self, name: &str) -> Option<Arc<FeatureDefinition>> {
+         let mut cache = self.configured.lock().unwrap();
+@@ -348,8 +301,9 @@ impl LiveFeatures {
+             .entry(name.to_owned())
+             .or_insert_with(|| {
+                 match self
++                    .prepared
+                     .catalog
+-                    .feature_with_blocks(&Value::from(name).to_string(), &self.bindings)
++                    .feature_with_blocks(&Value::from(name).to_string(), &self.prepared.bindings)
+                 {
+                     Ok(f) => Some(Arc::new(f)),
+                     Err(e) => {
+@@ -365,10 +319,10 @@ impl LiveFeatures {
+         cache
+             .entry(name.to_owned())
+             .or_insert_with(|| {
+-                match self
+-                    .catalog
+-                    .placed_feature_with_blocks(&Value::from(name).to_string(), &self.bindings)
+-                {
++                match self.prepared.catalog.placed_feature_with_blocks(
++                    &Value::from(name).to_string(),
++                    &self.prepared.bindings,
++                ) {
+                     Ok(f) => Some(Arc::new(f)),
+                     Err(e) => {
+                         eprintln!("Horizon: placed feature {name} cannot be placed: {e}");
+@@ -414,7 +368,9 @@ impl LiveFeatures {
+         &self,
+         json: &str,
+     ) -> Result<FeatureDefinition, crate::worldgen::DecodeError> {
+-        self.catalog.feature_with_blocks(json, &self.bindings)
++        self.prepared
++            .catalog
++            .feature_with_blocks(json, &self.prepared.bindings)
+     }
+     /// `Feature.place` for a decoded feature; `label` names it in errors.
+     /// Execution errors report failure.
