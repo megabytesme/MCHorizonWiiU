@@ -80,3 +80,14 @@ The Cemu receipt SHA-256 is
 The point-tap path serves as a reference. Full-display cost, Wii U
 filter precision and live menu integration remain open. The renderer
 continues to record the menu blur omission.
+
+The six-sample filter also matched all eight paired cases on both Cemu
+backends when it explicitly rounded the output to the nearest RGBA8
+value before export. It used the original linear sampler, unchanged copy
+path and the same exact references. A second six-sample variant that
+rounded every half-texel pair also passed. Both variants end with the
+same output rounding. The output-only variant uses fewer ALU words
+and remains a candidate for native timing. Its RPX SHA-256 is
+`d3913dda7c1aede245bce704b1ac4c7da0db3f1e92442c27eebacbb3869e1e21`.
+The Cemu receipt SHA-256 is
+`7b92946774fc26af6a65f661cdde415f651a0099423c707ceb30c6543ebc349e`.
