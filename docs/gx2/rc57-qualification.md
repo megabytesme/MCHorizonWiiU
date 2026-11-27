@@ -80,6 +80,9 @@ before and after a 30-second dwell.
 | HUD lane destruction | Assertion | Assertion |
 
 The disposable saves contain the same moved position in both runs.
+Six region files in each save passed sector bounds, overlap and NBT
+stream checks. The control had 376 readable chunk streams and the
+early-requested run had 377.
 After the Game and world-cache release, both sessions stopped at the
 native HUD arena destruction assertion. Each reported a lane-token
 fallback before exit. The grouped control reproduces the failure with
@@ -92,3 +95,25 @@ terrain worker validation remain eligible for testing.
 Acceptance receipt SHA-256, grouped control then early request:
 `31c956c9886897f69156b629e31ad94a6e0dd33342b6ea442e20cfa16235816d` and
 `a955d0c54799d780c42a8cdedd6d353e054d8f712c4d3432579182e5a96b212f`.
+
+## Stock direct Cemu replay
+
+The exact RC 57 package completed a separate multicore replay with
+plain `4` and the renderer markers absent. It returned gameplay at
+75.075 seconds and first paired terrain at 77.872 seconds. Independent
+captures passed before and after a 60-second stationary dwell. The
+session profile has 616 gameplay pairs, 417 without a partial flag,
+with up to 147 terrain sections per output.
+
+Backward movement of 8.623 blocks persisted. All six region files
+passed the structural checks, covering 377 readable chunk streams.
+The process drained all 34,996 queued audio items, returned to Night
+and exited cleanly. Rust tracked 53,754,971 live bytes after Game drop.
+GX2 bulk free returned to 234,880,920 bytes with a largest free block
+of 234,880,896 bytes. Native pacing needs the supervised 174-section
+reference.
+
+Session profile SHA-256 is
+`1a30e37dc10777d98479132ccc8e5c31179029f6c365c5af93791f5b3a199576`.
+Acceptance receipt SHA-256 is
+`76f6e5d54dce32d97f3a5d3feb04ae67840b87187cb06cbdb9fda4e51896d7d7`.

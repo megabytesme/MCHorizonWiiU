@@ -108,7 +108,9 @@ before expanding that architecture.
   submission while the previous flip is pending. The host grid fixture
   matched all 4,056 sections and cut its measured grid-fill span by
   13.5%. Both grouped Cemu arms kept the saved movement and stopped at
-  HUD lane teardown. The staged grouped physical arms await resolution.
+  HUD lane teardown. The stock direct run drew up to 147 sections per
+  display and passed save and heap checks. The staged grouped physical
+  arms await resolution.
   [RC 57 qualification](rc57-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the

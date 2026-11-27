@@ -133,6 +133,15 @@
     "host_grouped_timeline_cases": 16,
     "cemu_grouped_control_and_early": "dual_output_and_durable_movement_passed_hud_lane_destruction_assertion_in_both",
     "cemu_early_flush_activation": "unestablished",
+    "cemu_stock_direct": {
+      "status": "multicore_independent_displays_dwell_save_and_clean_exit_passed",
+      "dwell_seconds": 60,
+      "paired_rows": 616,
+      "no_partial_rows": 417,
+      "max_sections_per_output": 147,
+      "bulk_free_after_drop_bytes": 234880920,
+      "readable_region_chunk_streams": 377
+    },
     "physical": "grouped_arms_staged_hold_for_teardown",
     "receipt": "rc57-qualification.md"
   },

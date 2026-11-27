@@ -40,7 +40,7 @@ the marker files for each arm. [RC 55 package](rc55-qualification.md) ·
 [RC 57 package](rc57-qualification.md)
 
 The grouped HUD comparisons are on hold after matched Cemu arms
-reproduced a HUD arena destruction assertion. Use the stocked direct path
+reproduced a HUD arena destruction assertion. Use the stock direct path
 for independent verification while this is resolved. The clear-fog arm
 also needs the corrected shader loader and an observed activation.
 
