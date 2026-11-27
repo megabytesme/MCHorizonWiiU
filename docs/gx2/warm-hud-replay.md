@@ -31,3 +31,31 @@ The first attempt reached a save barrier after a delayed reply and
 stopped before an observed return to Night. The complete replay used
 the same package with separate scratch inputs. The physical acceptance
 target remains sub-minute entry with faster reopen.
+
+## Matched RC 68 comparison
+
+Two isolated multicore Cemu processes each opened and saved the same fixture
+twice. The starting archive, loose prepared resources, save and settings
+matched by digest. Both ran stock Full Performance at fixed 75%, with DRS
+off and separate TV and GamePad world rendering. The trial added only
+`stock-hud-warm.enable` to the shared seed and profiling markers.
+
+| Measurement | Marker off, first | Marker on, first | Marker off, reopen | Marker on, reopen |
+| --- | ---: | ---: | ---: | ---: |
+| First ready Game frame | 57.531 s | 56.984 s | 55.825 s | 50.990 s |
+| Elapsed wall time to first observed paired terrain | 60.217 s | 59.694 s | 58.405 s | 53.376 s |
+| HUD seed preparation | 5.158 s | 4.902 s | 6.381 s | 0.810 s |
+| Prepared archive verification | 1.810 s | 1.663 s | 1.419 s | 1.403 s |
+
+The marker admitted the mapped HUD seed on the trial reopen only.
+Both reopen rounds restored the fixture player position and kept all
+original terrain region slots. Each of the four saves recovered
+234,880,920 bytes of GX2 bulk space with a 234,880,896-byte largest block.
+Both processes exited normally. Reopen time fell by 4.835 s for the first
+Game frame and 5.029 s for the observed paired terrain gate in this
+comparison. Each arm has one measured reopen. The physical time and
+peak-memory impact remain pending.
+
+RC 68 RPX SHA-256 `032e2fa2a7e30a1bdb650a3b8e460556ebf08185a6311f33c666a0f93df9d323`.
+Matched comparison receipt SHA-256
+`950e3729ccd7d1ad6f8579082d125ae4296f90dd106faaf7722d091d1d835cd0`.

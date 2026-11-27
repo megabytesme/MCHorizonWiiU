@@ -74,6 +74,10 @@ before expanding that architecture.
   awaits the corrected instrumentation. The same-run replay reducer
   joined 1,680 paired frames, including 1,545 with warm lists on both
   displays. Physical throughput is still pending.
+- The matched RC 68 warm HUD test reduced the first ready Game frame
+  from 55.825 s to 50.990 s on reopen in Cemu. Both arms retained the
+  starting player pose and terrain slots and recovered the full bulk
+  heap after each save. [Matched warm reopen](warm-hud-replay.md#matched-rc-68-comparison)
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)

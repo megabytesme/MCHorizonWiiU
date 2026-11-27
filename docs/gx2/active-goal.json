@@ -7,6 +7,16 @@
     "authentication_and_security_changes": "pending_separate_review",
     "physical_qualification": "queued"
   },
+  "matched_warm_hud_reopen": {
+    "candidate": "0.8.0-rc.68",
+    "evidence": "cemu_multicore_marker_only",
+    "marker_off_on_first_ready_game_ms": [55825, 50990],
+    "marker_off_on_first_observed_paired_terrain_ms": [58405, 53376],
+    "marker_off_on_hud_seed_ms": [6381, 810],
+    "four_clean_save_heap_recoveries": true,
+    "physical": "pending",
+    "receipt": "warm-hud-replay.md#matched-rc-68-comparison"
+  },
   "compact_terrain_and_replay_cemu": {
     "candidate": "0.8.0-rc.69",
     "engine_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503",
