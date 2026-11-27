@@ -1,0 +1,106 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index f13b974f8e9de5ae72c6668b10f1f955f565d65e..04e7b1305a69169ccf46e103acf64aa2eaec8068 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -278,6 +278,11 @@ void horizon_gx2_profile_init(void)
+    }
+ }
+ 
++bool horizon_gx2_profile_process_history(void)
++{
++   return history == &process_history;
++}
++
+ bool horizon_gx2_profile_legacy_pacing(void)
+ {
+    return legacy_pacing;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 98db2ce8c530c76c45d02402d3a12cf77af2fb0f..2d308efcc4c24842bae71192002dbc6b44dcc0de 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -35,6 +35,7 @@ typedef struct {
+ } HorizonGx2GpuSample;
+ 
+ void horizon_gx2_profile_init(void);
++bool horizon_gx2_profile_process_history(void);
+ bool horizon_gx2_profile_begin_trial(uint32_t mode);
+ bool horizon_gx2_profile_end_trial(const char *path);
+ bool horizon_gx2_profile_legacy_pacing(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 4267e22d1ccc5f44a799d50d9f64bc12b0f20512..f30dd46b65e10f898b1c0463230ba769037bc307 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -2423,6 +2423,8 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+     }
+ 
+     fn present_frame(&mut self, frame: &Frame<'_>) -> horizon_client::Result<bool> {
++        // The capture callback clears this request while drawing its output.
++        let screenshot_pending = self.screenshot_requested.is_some();
+         let prior_pair = std::mem::take(&mut self.retired_pair);
+         let old_resolution = self.world_scale.resolution();
+         #[cfg(feature = "gx2-hud-view-lanes")]
+@@ -3509,7 +3511,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         if let Some(probe) = self.opaque_tiles.as_mut().filter(|_| {
+             host == 0 && outputs == 3 && draw_result.is_ok()
+         }) {
+-            if !frame.title && self.screenshot_requested.is_none()
++            if !frame.title && !screenshot_pending
+                 && self.world_scale.resolution().is_some_and(|r| r.effective_scale == 75)
+                 && self.frame_work.terrain_sections.iter().all(|&n| n > 0)
+                 && unsafe {
+diff --git a/wiiu/loading_host/opaque_tiles.rs b/wiiu/loading_host/opaque_tiles.rs
+index 04526d97adb19c24472bc62d0635ea5dbb3caa89..403a811b93a5a1f3eb766534986763fd08550d26 100644
+--- a/wiiu/loading_host/opaque_tiles.rs
++++ b/wiiu/loading_host/opaque_tiles.rs
+@@ -7,6 +7,10 @@ use horizon_client::{
+ use horizon_wiiu_gx2_terrain::{TerrainBounds, TerrainClipRows};
+ use std::{collections::HashMap, fs::File, io::Read, path::Path, time::Instant};
+ 
++unsafe extern "C" {
++    fn horizon_gx2_profile_process_history() -> bool;
++}
++
+ const APP: &str = "/vol/external01/wiiu/apps/HorizonWiiU";
+ const SLOTS: usize = 48;
+ const AXES: [[usize; 2]; 3] = [[1, 2], [0, 2], [0, 1]];
+@@ -56,7 +60,9 @@ pub(super) struct Probe {
+ 
+ impl Probe {
+     pub(super) fn from_marker() -> Option<Self> {
+-        if !Path::new(APP).join("gx2-opaque-tiles.enable").is_file() {
++        if !unsafe { horizon_gx2_profile_process_history() }
++            || !Path::new(APP).join("gx2-opaque-tiles.enable").is_file()
++        {
+             return None;
+         }
+         let mut profile = Vec::new();
+@@ -98,6 +104,9 @@ impl Probe {
+     }
+ 
+     pub(super) fn advance(&mut self, origin: SectionKey) {
++        if !unsafe { horizon_gx2_profile_process_history() } {
++            return;
++        }
+         self.upload_quads = UPLOAD_QUADS;
+         if self.origin == Some(origin) {
+             return;
+@@ -131,6 +140,9 @@ impl Probe {
+         generation: Option<u64>,
+         solid: &[TerrainVertex],
+     ) {
++        if !unsafe { horizon_gx2_profile_process_history() } {
++            return;
++        }
+         self.forget(key);
+         let Some(origin) = self.origin else { return };
+         let rank = priority(key, origin);
+@@ -206,6 +218,9 @@ impl Probe {
+         projections: &[Option<TerrainProjection>; 2],
+         sections: &HashMap<SectionKey, TerrainSection>,
+     ) {
++        if !unsafe { horizon_gx2_profile_process_history() } {
++            return;
++        }
+         self.pairs = self.pairs.wrapping_add(1);
+         if !self.pairs.is_multiple_of(120) {
+             return;
