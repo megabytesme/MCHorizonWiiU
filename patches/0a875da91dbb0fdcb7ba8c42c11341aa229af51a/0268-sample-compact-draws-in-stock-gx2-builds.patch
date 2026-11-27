@@ -1,0 +1,39 @@
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 30aeb9f..be7d432 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -865,7 +865,7 @@ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, p
+     }
+ }
+ 
+-#[derive(Clone, Copy)]
++#[derive(Clone, Copy, PartialEq, Eq)]
+ enum HalfLayout {
+     Position24,
+     Compact20,
+@@ -3514,12 +3514,13 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     if near_bound {
+                         draw.near_fog_indices[index] += submitted_indices;
+                     }
+-                    if GX2_PROFILE_ENABLED {
+-                        if let Some(usage) = draw.half_usage.as_mut().filter(|_| section.half_layout.is_some())
+-                        {
++                    if let Some(usage) = &mut draw.half_usage {
++                        if section.half_layout == Some(usage.layout) {
+                             usage.draws[index] = usage.draws[index].saturating_add(1);
+                             usage.indices[index] = usage.indices[index].saturating_add(submitted_indices);
+                         }
++                    }
++                    if GX2_PROFILE_ENABLED {
+                         draw.profile.section_draws = draw.profile.section_draws.saturating_add(1);
+                         draw.profile.vertex_draws = draw
+                             .profile
+@@ -4014,7 +4015,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             None
+         };
+-        let half_usage = if GX2_PROFILE_ENABLED && !frame.title && !screenshot_pending {
++        let half_usage = if self.half_position_requested && !frame.title && !screenshot_pending {
+             self.terrain
+                 .as_ref()
+                 .and_then(|terrain| terrain.half_layout)
