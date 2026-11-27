@@ -1,0 +1,168 @@
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 2a95bf3..0d5b4ea 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -7998,12 +7998,13 @@ impl Game<'_> {
+         backend: &mut dyn CafeGameBackend,
+     ) -> Result<bool> {
+         let graphics = &self.settings.horizon;
+-        let scale = if self.cafe_drs_trial_active() {
++        let automatic = self.cafe_drs_trial_active();
++        let scale = if automatic {
+             self.dynamic_resolution.scale(graphics.resolution_scale)
+         } else {
+             graphics.resolution_scale
+         };
+-        backend.set_world_resolution_scale(scale);
++        backend.set_cafe_world_resolution_scale(scale, automatic && self.screen == Screen::Playing);
+         let mut built = false;
+         let block_entities = backend.block_entity_sections();
+         let rendered = self.render_to(
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index f49af50..66d6cd3 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -111,6 +111,11 @@ pub trait CafeGameBackend:
+         [[0; 2]; 2]
+     }
+ 
++    /// Retry a failed scaled-target allocation only during automatic gameplay.
++    fn set_cafe_world_resolution_scale(&mut self, percent: u32, _retry_failed: bool) {
++        self.set_world_resolution_scale(percent);
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         None
+     }
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 9cdc6e0..9e5eb5a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -724,6 +724,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     hud_views: HudViewTrial,
+     world_scale: WorldScale,
+     requested_world_scale: u32,
++    retry_world_scale: bool,
+     terrain_ranks: Option<std::collections::BTreeMap<terrain_residency::Priority, usize>>,
+     next_terrain_retry: Option<Instant>,
+     terrain_allocation_backoff: Option<Instant>,
+@@ -802,6 +803,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             hud_views: HudViewTrial::default(),
+             world_scale: WorldScale::default(),
+             requested_world_scale: 100,
++            retry_world_scale: false,
+             terrain_ranks: None,
+             next_terrain_retry: None,
+             terrain_allocation_backoff: None,
+@@ -1518,6 +1520,11 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+         work
+     }
+ 
++    fn set_cafe_world_resolution_scale(&mut self, percent: u32, retry_failed: bool) {
++        self.set_world_resolution_scale(percent);
++        self.retry_world_scale = retry_failed;
++    }
++
+     fn gx2_flip_count(&self) -> Option<u32> {
+         Some(unsafe { horizon_loading_host_flip_count() })
+     }
+@@ -2092,6 +2099,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+ 
+     fn set_world_resolution_scale(&mut self, percent: u32) {
+         self.requested_world_scale = percent;
++        self.retry_world_scale = false;
+     }
+ 
+     fn world_resolution(&self) -> Option<WorldResolution> {
+@@ -2194,7 +2202,11 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         if frame.title {
+             self.world_scale.release();
+         } else {
+-            self.world_scale.prepare(self.requested_world_scale, targets);
++            self.world_scale.prepare(
++                self.requested_world_scale,
++                targets,
++                self.retry_world_scale.then(Instant::now),
++            );
+             if let Some(world) = self.world_scale.resolution() {
+                 cafe_profile::world_resolution(
+                     world.requested_scale, world.effective_scale, world.dimensions, world.surface_bytes,
+diff --git a/wiiu/loading_host/world_scale.rs b/wiiu/loading_host/world_scale.rs
+index 5c4eaa9..302b317 100644
+--- a/wiiu/loading_host/world_scale.rs
++++ b/wiiu/loading_host/world_scale.rs
+@@ -1,5 +1,11 @@
+ use horizon_client::presentation::WorldResolution;
+-use std::{ffi::c_void, ptr::NonNull};
++use std::{
++    ffi::c_void,
++    ptr::NonNull,
++    time::{Duration, Instant},
++};
++
++const ALLOCATION_RETRY_DELAY: Duration = Duration::from_secs(2);
+ 
+ unsafe extern "C" {
+     fn horizon_gx2_world_scale_create(
+@@ -23,6 +29,7 @@ pub(super) struct WorldScale {
+     native: Option<NonNull<c_void>>,
+     request: Option<(u32, [[u32; 2]; 2])>,
+     resolution: Option<WorldResolution>,
++    retry_not_before: Option<Instant>,
+ }
+ 
+ impl WorldScale {
+@@ -30,11 +37,26 @@ impl WorldScale {
+         self.resolution
+     }
+ 
+-    pub(super) fn prepare(&mut self, requested_scale: u32, viewports: [[u32; 4]; 2]) {
++    pub(super) fn prepare(
++        &mut self,
++        requested_scale: u32,
++        viewports: [[u32; 4]; 2],
++        retry_at: Option<Instant>,
++    ) {
+         let base = viewports.map(|[_, _, w, h]| [w, h]);
+         let request = Some((requested_scale, base));
++        let percent = requested_scale.clamp(50, 100);
+         if self.request == request {
+-            return;
++            // A failed pair leaves only the direct WHB output. A retry
++            // has no previous scaled allocation to destroy.
++            let retry = self.native.is_none()
++                && percent < 100
++                && retry_at.is_some_and(|now| {
++                    self.retry_not_before.is_none_or(|deadline| now >= deadline)
++                });
++            if !retry {
++                return;
++            }
+         }
+         // The preceding WHB frame ended with GX2DrawDone. Release the old pair
+         // before allocating the replacement to avoid peaking at two live pairs.
+@@ -46,7 +68,6 @@ impl WorldScale {
+             dimensions: base,
+             surface_bytes: 0,
+         };
+-        let percent = requested_scale.clamp(50, 100);
+         let mut mode = c"direct";
+         if percent < 100 {
+             mode = c"direct_allocation_fallback";
+@@ -62,6 +83,8 @@ impl WorldScale {
+                 mode = c"fixed";
+                 resolution.effective_scale = percent;
+                 resolution.dimensions = dimensions;
++            } else {
++                self.retry_not_before = retry_at.map(|now| now + ALLOCATION_RETRY_DELAY);
+             }
+         }
+         self.resolution = Some(resolution);
+@@ -84,6 +107,7 @@ impl WorldScale {
+         }
+         self.request = None;
+         self.resolution = None;
++        self.retry_not_before = None;
+     }
+ 
+     pub(super) fn bind(
