@@ -1,0 +1,246 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index e29cc73..ca750c4 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -7,6 +7,7 @@
+ #include <coreinit/filesystem_fsa.h>
+ #include <coreinit/time.h>
+ #include <gx2/event.h>
++#include <proc_ui/procui.h>
+ #include <errno.h>
+ #include <stdatomic.h>
+ #include <stdbool.h>
+@@ -70,6 +71,24 @@ static bool grouped_drc_no_entry_drain_enabled;
+ static uint32_t grouped_retirement_count;
+ static HorizonGx2GroupedRetirement grouped_retirement[GROUPED_RETIREMENT_CAPACITY];
+ 
++enum { DEADLINE_PERIOD = 60, DEADLINE_CAPACITY = 32 };
++typedef struct {
++   uint64_t cpu, vblank, flip_time, submitted, retired;
++   uint32_t swaps, flips;
++} DeadlinePoint;
++
++typedef struct {
++   DeadlinePoint points[GX2_DEADLINE_EDGES];
++   uint64_t start;
++   uint32_t sequence, mask;
++   bool grouped;
++} DeadlineSample;
++
++static bool deadline_enabled;
++static uint32_t deadline_count;
++static DeadlineSample deadlines[DEADLINE_CAPACITY], *deadline_current, *deadline_follow;
++_Static_assert(sizeof(deadlines) <= 16 * 1024, "bounded present deadline storage");
++
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+ typedef struct {
+@@ -140,6 +159,102 @@ static ProfileHistory process_history;
+ static ProfileHistory *history = &process_history;
+ static bool flush_to(const char *path, const char *temporary);
+ 
++static void deadline_point(DeadlineSample *sample, uint32_t edge, uint32_t swaps, uint32_t flips,
++                           OSTime flip_time, OSTime vsync)
++{
++   if (!ProcUIInForeground()) return;
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   const OSTime retired = GX2GetRetiredTimeStamp();
++   sample->points[edge] = (DeadlinePoint){
++      .cpu = (uint64_t)OSGetSystemTime() - process_history.epoch,
++      .vblank = (uint64_t)vsync,
++      .flip_time = (uint64_t)flip_time,
++      .submitted = (uint64_t)submitted,
++      .retired = (uint64_t)retired,
++      .swaps = swaps,
++      .flips = flips,
++   };
++   sample->mask |= 1u << edge;
++}
++
++static void deadline_poll(DeadlineSample *sample, uint32_t edge)
++{
++   if (!ProcUIInForeground()) return;
++   uint32_t swaps, flips;
++   OSTime flip_time, vsync;
++   GX2GetSwapStatus(&swaps, &flips, &flip_time, &vsync);
++   deadline_point(sample, edge, swaps, flips, flip_time, vsync);
++}
++
++void horizon_gx2_profile_deadline_sample(uint32_t edge)
++{
++   if (!deadline_current || !recording || current.phase != PLAYING_PHASE) return;
++   // A retry and fallback in the same HZP3 frame must not share a timeline.
++   if (deadline_current->mask & (1u << edge)) {
++      deadline_current = NULL;
++      return;
++   }
++   deadline_poll(deadline_current, edge);
++}
++
++void horizon_gx2_profile_deadline_ready(bool grouped)
++{
++   if (!deadline_current) return;
++   deadline_current->grouped = grouped;
++   horizon_gx2_profile_deadline_sample(GX2_DEADLINE_READY);
++}
++
++static void deadline_begin(void)
++{
++   // The hosted loop starts each row as Loading before the game selects
++   // its phase. Retain a sample only if finish confirms ordinary playing.
++   const bool after_playing = history->previous_phase == PLAYING_PHASE;
++   if (deadline_follow && after_playing && deadline_follow->sequence + 1 == history->total)
++      deadline_poll(deadline_follow, GX2_DEADLINE_NEXT_START);
++   deadline_follow = NULL;
++   if (!after_playing || history->total % DEADLINE_PERIOD != 0 ||
++       deadline_count == DEADLINE_CAPACITY) return;
++   deadline_current = &deadlines[deadline_count];
++   *deadline_current = (DeadlineSample){.start = started - process_history.epoch,
++                                        .sequence = history->total};
++   deadline_poll(deadline_current, GX2_DEADLINE_START);
++}
++
++static void deadline_finish(void)
++{
++   if (!deadline_current) return;
++   const uint32_t required = (1u << GX2_DEADLINE_START) | (1u << GX2_DEADLINE_AFTER_FLIP_WAIT) |
++                             (1u << GX2_DEADLINE_READY) | (1u << GX2_DEADLINE_FINISHED);
++   if (current.phase == PLAYING_PHASE && current.counters[GX2_PROFILE_PRESENTED] == 1 &&
++       !current.stages[SCREENSHOT_STAGE] && (deadline_current->mask & required) == required) {
++      ++deadline_count;
++      deadline_follow = deadline_current;
++   }
++   deadline_current = NULL;
++}
++
++static void report_deadlines(void)
++{
++   static const char *const names[GX2_DEADLINE_EDGES] = {
++      "start", "waited", "ready", "posted", "finished", "next",
++   };
++   for (uint32_t i = 0; i < deadline_count; ++i) {
++      const DeadlineSample *sample = &deadlines[i];
++      for (uint32_t edge = 0; edge < GX2_DEADLINE_EDGES; ++edge) {
++         if (!(sample->mask & (1u << edge))) continue;
++         const DeadlinePoint *point = &sample->points[edge];
++         OSReport("Horizon GX2 deadline seq=%u start=%llx mode=%u edge=%s cpu=%llx "
++                  "s=%x f=%x v=%llx l=%llx q=%llx r=%llx\n",
++                  sample->sequence, (unsigned long long)sample->start, (unsigned)sample->grouped,
++                  names[edge], (unsigned long long)point->cpu, point->swaps, point->flips,
++                  (unsigned long long)point->vblank, (unsigned long long)point->flip_time,
++                  (unsigned long long)point->submitted, (unsigned long long)point->retired);
++      }
++   }
++   deadline_follow = NULL;
++   deadline_count = 0;
++}
++
+ static uint32_t ticks(uint64_t begin, uint64_t end)
+ {
+    uint64_t elapsed = end - begin;
+@@ -299,6 +414,9 @@ void horizon_gx2_profile_init(void)
+ #endif
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) {
++      FILE *deadline_marker = fopen(ROOT "gx2-present-deadlines.enable", "rb");
++      deadline_enabled = deadline_marker != NULL;
++      if (deadline_marker) fclose(deadline_marker);
+       FILE *census = fopen(ROOT "gx2-solid-list-census.enable", "rb");
+       solid_list_census = census != NULL;
+       if (census) fclose(census);
+@@ -760,6 +878,11 @@ bool horizon_gx2_profile_begin(uint32_t phase)
+    current = (ProfileFrame){.phase = phase};
+    if (profile_terrain_animation) animation_sample = (TerrainAnimationSample){0};
+    recording = true;
++   if (deadline_enabled) {
++      deadline_current = NULL;
++      if (history == &process_history) deadline_begin();
++      else deadline_follow = NULL;
++   }
+    return true;
+ }
+ 
+@@ -908,6 +1031,9 @@ void horizon_gx2_profile_outputs(uint32_t mask, const uint32_t dimensions[4])
+    uint32_t swaps = 0, flips = 0;
+    OSTime flip_time = 0, vsync = 0;
+    GX2GetSwapStatus(&swaps, &flips, &flip_time, &vsync);
++   if (deadline_current && mask == 3 &&
++       !(deadline_current->mask & (1u << GX2_DEADLINE_FINISHED)))
++      deadline_point(deadline_current, GX2_DEADLINE_FINISHED, swaps, flips, flip_time, vsync);
+    if (history->previous_output.known) {
+       extra[SWAP_DELTA] = swaps - history->previous_output.swaps;
+       extra[FLIP_DELTA] = flips - history->previous_output.flips;
+@@ -1005,6 +1131,7 @@ static void report_animation_window(uint64_t now)
+ void horizon_gx2_profile_finish(void)
+ {
+    if (!recording) return;
++   deadline_finish();
+    const uint64_t now = (uint64_t)OSGetSystemTime(), offset = started - history->epoch;
+    current.sequence = history->total;
+    current.start_hi = (uint32_t)(offset >> 32);
+@@ -1150,6 +1277,7 @@ void horizon_gx2_profile_checkpoint_session(void)
+    }
+    const uint32_t presents = history->phase_frames[PLAYING_PHASE];
+    if (grouped_retirement_count != 0) report_grouped_retirement();
++   if (history == &process_history && deadline_count != 0) report_deadlines();
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index df0eb02..a8e19cf 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -64,6 +64,17 @@ typedef struct {
+    bool draw_done, accepted;
+ } HorizonGx2GroupedRetirement;
+ HorizonGx2GroupedRetirement *horizon_gx2_profile_grouped_retirement_sample(void);
++enum {
++   GX2_DEADLINE_START,
++   GX2_DEADLINE_AFTER_FLIP_WAIT,
++   GX2_DEADLINE_READY,
++   GX2_DEADLINE_POSTED,
++   GX2_DEADLINE_FINISHED,
++   GX2_DEADLINE_NEXT_START,
++   GX2_DEADLINE_EDGES,
++};
++void horizon_gx2_profile_deadline_sample(uint32_t edge);
++void horizon_gx2_profile_deadline_ready(bool grouped);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ /* 0 is off, 1 forces both waits, 2 permits the verified TV-only skip. */
+ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index e0bf2f9..2ba454a 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -207,6 +207,7 @@ static OSTime wait_for_previous_flip(void)
+    WHBGfxBeginRender();
+    const OSTime elapsed = OSGetTime() - start;
+    horizon_gx2_profile_end(GX2_PROFILE_WAIT_FLIP, stamp);
++   horizon_gx2_profile_deadline_sample(GX2_DEADLINE_AFTER_FLIP_WAIT);
+    return elapsed;
+ }
+ 
+@@ -308,6 +309,7 @@ static void grouped_finish_observed(HorizonGx2GroupedRetirement *sample)
+    GX2Flush();
+    sample->submitted = GX2GetLastSubmittedTimeStamp();
+    sample->retired_after_flush = GX2GetRetiredTimeStamp();
++   horizon_gx2_profile_deadline_sample(GX2_DEADLINE_POSTED);
+    sample->draw_done = GX2DrawDone();
+    sample->submitted_after_draw_done = GX2GetLastSubmittedTimeStamp();
+    sample->retired_after_draw_done = GX2GetRetiredTimeStamp();
+@@ -507,6 +509,7 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_DRC, stamp);
+    horizon_gx2_profile_end(GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
++   horizon_gx2_profile_deadline_ready(true);
+    HorizonGx2GroupedRetirement *sample = horizon_gx2_profile_grouped_retirement_sample();
+    stamp = horizon_gx2_profile_stamp();
+    const OSTime before_finish = GX2GetLastSubmittedTimeStamp();
+@@ -655,6 +658,7 @@ static int present_with_clear(HorizonLoadingDrawTarget draw, void *context, cons
+ 
+    stamp = horizon_gx2_profile_stamp();
+ 
++   horizon_gx2_profile_deadline_ready(false);
+    const OSTime before_finish = retired_pair ? GX2GetLastSubmittedTimeStamp() : 0;
+    const OSTime finish_start = OSGetTime();
+    WHBGfxFinishRender();
