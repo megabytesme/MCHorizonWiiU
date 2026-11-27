@@ -1,0 +1,1135 @@
+diff --git a/wiiu/gx2_terrain/src/lib.rs b/wiiu/gx2_terrain/src/lib.rs
+index ef7b6cf87343ff71ffb5df150e48c97409b2f37b..3120304303c84e4df858db06acb103d45f41ac5b 100644
+--- a/wiiu/gx2_terrain/src/lib.rs
++++ b/wiiu/gx2_terrain/src/lib.rs
+@@ -32,6 +32,127 @@ pub struct IndexedTerrainVertex {
+     pub color_cutout: [u8; 4],
+ }
+ 
++/// Indexed terrain feed with signed 16-bit UVs and integer atlas cells.
++#[repr(C)]
++#[derive(Clone, Copy, Debug)]
++pub struct AtlasCellTerrainVertex {
++    pub position: [f32; 4],
++    pub uv_cell: [i16; 4],
++    pub color_cutout: [u8; 4],
++}
++
++/// Validated atlas dimensions for the signed vertex feed.
++#[cfg(feature = "atlas")]
++#[derive(Clone, Copy)]
++pub struct AtlasCellLayout {
++    columns: u32,
++    layers: u32,
++}
++
++#[cfg(feature = "atlas")]
++impl AtlasCellLayout {
++    pub fn writer(self) -> AtlasCellWriter {
++        AtlasCellWriter {
++            atlas: self,
++            last_cell: None,
++        }
++    }
++}
++
++/// Cache one atlas cell for a contiguous run of vertices on the same layer.
++/// A writer is local to one mapped section upload, including reversed quads.
++#[cfg(feature = "atlas")]
++pub struct AtlasCellWriter {
++    atlas: AtlasCellLayout,
++    last_cell: Option<(u32, [i16; 2], [u32; 2])>,
++}
++
++#[cfg(feature = "atlas")]
++fn atlas_uv_quantum_shift(layer_byte: u8) -> u32 {
++    // Zero means the packed value's exponent depends on the UV.
++    if layer_byte == 0 {
++        0
++    } else {
++        layer_byte.ilog2() + 8
++    }
++}
++
++/// Preserve the stock CafeGLSL mix export. Intermediate cancellation rounds
++/// the intended UV to the packed float's ULP before its layer bits cancel.
++#[cfg(feature = "atlas")]
++fn quantized_atlas_uv(uv: u16, layer_shift: u32) -> i16 {
++    if uv & 0x7fff == 0 {
++        // Zero and one survive all stock layer placements exactly.
++        return (uv ^ 0x8000) as i16;
++    }
++    let uv = u32::from(uv);
++    let shift = if layer_shift == 0 {
++        uv.ilog2().saturating_sub(8)
++    } else {
++        layer_shift
++    };
++    let rounded = if shift == 0 {
++        uv
++    } else {
++        let quantum = 1 << shift;
++        let tie_to_even = (uv >> shift) & 1;
++        (uv + (quantum >> 1) - 1 + tie_to_even) & !(quantum - 1)
++    };
++    // Stock can export 65536/32768 but never 65535/32768. Reserve the
++    // signed endpoint for 2.0 and decode it in the vertex shader.
++    (rounded.min(u16::MAX as u32) as u16 ^ 0x8000) as i16
++}
++
++#[cfg(feature = "atlas")]
++impl AtlasCellWriter {
++    pub fn write_vertices(
++        &mut self,
++        source: &[TerrainVertex],
++        output: &mut [core::mem::MaybeUninit<AtlasCellTerrainVertex>],
++        translucent: bool,
++    ) -> Result<(), &'static str> {
++        if source.len() % 4 != 0 || source.len() != output.len() {
++            return Err("GX2 terrain quad vertex count mismatch");
++        }
++        for (&vertex, dest) in source.iter().zip(output) {
++            let layer = u32::from(vertex.layer & 0x7fff);
++            let ([col, row], [u_shift, v_shift]) = match self.last_cell {
++                Some((last, cell, shifts)) if layer == last => (cell, shifts),
++                _ => {
++                    if layer >= self.atlas.layers {
++                        return Err("terrain vertex references absent sprite layer");
++                    }
++                    let row = layer / self.atlas.columns;
++                    let col = layer - row * self.atlas.columns;
++                    // Admission bounded both cell counts to the signed ABI.
++                    let cell = [col as i16, row as i16];
++                    let shifts = [layer as u8, (layer >> 8) as u8].map(atlas_uv_quantum_shift);
++                    self.last_cell = Some((layer, cell, shifts));
++                    (cell, shifts)
++                }
++            };
++            let [u, v] = vertex.uv;
++            let u = quantized_atlas_uv(u, u_shift);
++            let v = quantized_atlas_uv(v, v_shift);
++            let [x, y, z] = vertex.pos;
++            let [r, g, b, a] = vertex.rgba();
++            let material = if translucent {
++                a
++            } else if vertex.layer & 0x8000 == 0 {
++                u8::MAX
++            } else {
++                0
++            };
++            dest.write(AtlasCellTerrainVertex {
++                position: [x, y, z, f32::from(vertex.light)],
++                uv_cell: [u, v, col, row],
++                color_cutout: [r, g, b, material],
++            });
++        }
++        Ok(())
++    }
++}
++
+ /// Qualified GX2 half-position vertex. The fourth half is padding. Packed
+ /// light, UVs and colour keep their stock representations.
+ #[repr(C)]
+@@ -71,6 +192,10 @@ const _: () = {
+     assert!(core::mem::size_of::<IndexedTerrainVertex>() == 28);
+     assert!(core::mem::offset_of!(IndexedTerrainVertex, uv) == 16);
+     assert!(core::mem::offset_of!(IndexedTerrainVertex, color_cutout) == 24);
++    assert!(core::mem::size_of::<AtlasCellTerrainVertex>() == 28);
++    assert!(core::mem::align_of::<AtlasCellTerrainVertex>() == 4);
++    assert!(core::mem::offset_of!(AtlasCellTerrainVertex, uv_cell) == 16);
++    assert!(core::mem::offset_of!(AtlasCellTerrainVertex, color_cutout) == 24);
+     assert!(core::mem::size_of::<HalfTerrainVertex>() == 24);
+     assert!(core::mem::offset_of!(HalfTerrainVertex, light) == 8);
+     assert!(core::mem::offset_of!(HalfTerrainVertex, uv) == 12);
+@@ -643,6 +768,29 @@ impl TerrainAtlasLayout {
+         Ok(())
+     }
+ 
++    /// Verify every addressable atlas cell fits the signed fetch format.
++    pub fn atlas_cell_layout(&self) -> Option<AtlasCellLayout> {
++        let max_cells = u32::from(i16::MAX as u16) + 1;
++        if self.columns == 0
++            || self.columns > max_cells
++            || self.cell_size <= 2
++            || self.columns.checked_mul(self.cell_size) != Some(self.width)
++            || self.height % self.cell_size != 0
++            || self.layers == 0
++            || self.layers > 0x8000
++        {
++            return None;
++        }
++        let rows = self.height / self.cell_size;
++        if rows > max_cells || self.layers > self.columns * rows {
++            return None;
++        }
++        Some(AtlasCellLayout {
++            columns: self.columns,
++            layers: self.layers,
++        })
++    }
++
+     /// Fill mapped native storage from canonical quads, without an intermediate
+     /// copy. The index buffer chooses the same triangles as `expand_quads_into`.
+     pub fn write_quad_vertices(
+@@ -899,6 +1047,72 @@ mod indexed_vertex_tests {
+         }
+     }
+ 
++    #[test]
++    fn signed_atlas_uv_preserves_the_stock_cafeglsl_export() {
++        for layer_byte in 0..=u8::MAX {
++            let layer_shift = atlas_uv_quantum_shift(layer_byte);
++            for uv in 0..=u16::MAX {
++                let packed = ((u32::from(layer_byte) << 16) | u32::from(uv)) as f32;
++                let ideal = f32::from(uv) / 32768.0;
++                // Stock CafeGLSL emits two separate MULADD instructions.
++                let delta = ideal - packed;
++                let expected = delta + packed;
++                let code = quantized_atlas_uv(uv, layer_shift);
++                let actual = if code == i16::MAX {
++                    2.0
++                } else {
++                    f32::from(code) / 32768.0 + 1.0
++                };
++                assert_eq!(
++                    actual.to_bits(),
++                    expected.to_bits(),
++                    "UV {uv}, layer byte {layer_byte}"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn signed_atlas_writer_keeps_position_light_and_material() {
++        let atlas = TerrainAtlasLayout {
++            width: 7 * 18,
++            height: 5 * 18,
++            sprite_size: 16,
++            layers: 35,
++            cell_size: 18,
++            columns: 7,
++        };
++        let front =
++            TerrainVertex::packed_uv([1.25, -0.0, 2.0], [0, u16::MAX], 34, 0x8dbca521, 0xcc20);
++        let mut back = front;
++        back.layer |= 0x8000;
++        let mut writer = atlas.atlas_cell_layout().unwrap().writer();
++        let mut out = [MaybeUninit::uninit(); 4];
++        assert!(writer.write_vertices(&[front; 3], &mut out, false).is_err());
++        for (translucent, expected) in [(false, [255, 0]), (true, [0x8d; 2])] {
++            writer
++                .write_vertices(&[front, back, front, back], &mut out, translucent)
++                .unwrap();
++            for (index, vertex) in out
++                .map(|item| unsafe { item.assume_init() })
++                .into_iter()
++                .enumerate()
++            {
++                assert_eq!(
++                    vertex.position.map(f32::to_bits),
++                    [1.25, -0.0, 2.0, 52256.0_f32].map(f32::to_bits)
++                );
++                assert_eq!(vertex.uv_cell, [i16::MIN, i16::MAX, 6, 4]);
++                assert_eq!(vertex.color_cutout, [0x21, 0xa5, 0xbc, expected[index % 2]]);
++            }
++        }
++        let absent = TerrainVertex { layer: 35, ..front };
++        assert_eq!(
++            writer.write_vertices(&[absent; 4], &mut out, false),
++            Err("terrain vertex references absent sprite layer")
++        );
++    }
++
+     #[test]
+     fn mapped_writes_handle_empty_quads_and_reject_invalid_input() {
+         let atlas = TerrainAtlas::from_layers(&[0; 4], 1, 1).unwrap().layout;
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index e708e61f5e75d7e7b9b36c6b09ee6cf6fd551768..4b078502f8247b08248bb9bcf352c93e50656ed4 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -23,6 +23,10 @@
+ _Static_assert(sizeof(HorizonTerrainVertex) == 28, "terrain vertex ABI changed");
+ _Static_assert(offsetof(HorizonTerrainVertex, uv) == 16, "terrain UV offset changed");
+ _Static_assert(offsetof(HorizonTerrainVertex, color_cutout) == 24, "terrain color offset changed");
++_Static_assert(sizeof(HorizonTerrainAtlasCellVertex) == sizeof(HorizonTerrainVertex), "atlas cell stride changed");
++_Static_assert(_Alignof(HorizonTerrainAtlasCellVertex) == _Alignof(HorizonTerrainVertex), "atlas cell alignment changed");
++_Static_assert(offsetof(HorizonTerrainAtlasCellVertex, uv_cell) == offsetof(HorizonTerrainVertex, uv), "atlas cell UV offset changed");
++_Static_assert(offsetof(HorizonTerrainAtlasCellVertex, color_cutout) == offsetof(HorizonTerrainVertex, color_cutout), "atlas cell color offset changed");
+ _Static_assert(sizeof(HorizonTerrainHalfVertex) == 24, "half terrain vertex ABI changed");
+ _Static_assert(offsetof(HorizonTerrainHalfVertex, light) == 8, "half terrain light offset changed");
+ _Static_assert(offsetof(HorizonTerrainHalfVertex, uv) == 12, "half terrain UV offset changed");
+@@ -37,7 +41,7 @@ struct HorizonGx2Terrain {
+    uint8_t *atlas_storage;
+    WHBGfxShaderGroup shader;
+    WHBGfxShaderGroup *half_shader;
+-   bool half_active, half_allowed;
++   bool half_active, half_allowed, atlas_cells, bound;
+    GX2Texture texture;
+    GX2Sampler sampler;
+    TerrainPixelShader pixel, opaque_pixel;
+@@ -95,7 +99,7 @@ static bool terrain_pixel_shader(TerrainPixelShader *out, GX2PixelShader *shader
+ 
+ bool horizon_gx2_terrain_load_opaque_shader(HorizonGx2Terrain *terrain, const void *gfd)
+ {
+-   if (!terrain || !gfd || terrain->half_shader) return false;
++   if (!terrain || !gfd || terrain->half_shader || terrain->atlas_cells) return false;
+    if (terrain->opaque_pixel.shader) return true;
+    const GX2VertexShader *stock = terrain->shader.vertexShader;
+    GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
+@@ -167,7 +171,7 @@ static bool near_fog_pixel_compatible(const TerrainPixelShader *original, GX2Pix
+ bool horizon_gx2_terrain_load_near_fog(HorizonGx2Terrain *t, const void *gfd)
+ {
+    if (!t || !gfd || !t->atlas_grid[0] || t->opaque_pixel.shader || t->half_shader ||
+-       t->legacy_attributes || t->legacy_uniforms || t->solid_back_culling) return false;
++       t->legacy_attributes || t->legacy_uniforms || t->solid_back_culling || t->atlas_cells) return false;
+    if (t->near_fog_pixel) return true;
+    const GX2VertexShader *stock = t->shader.vertexShader;
+    GX2VertexShader *vertex = WHBGfxLoadGFDVertexShader(0, gfd);
+@@ -311,9 +315,91 @@ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+ }
+ #endif
+ 
++static bool terrain_atlas_cell_inputs(const HorizonGx2Terrain *t, const GX2VertexShader *vs)
++{
++   const GX2VertexShader *stock = t->shader.vertexShader;
++   if (!vs || !vs->program || !vs->size || vs->mode != stock->mode ||
++       vs->regs.spi_vs_out_config != stock->regs.spi_vs_out_config ||
++       vs->regs.num_spi_vs_out_id != stock->regs.num_spi_vs_out_id ||
++       memcmp(vs->regs.spi_vs_out_id, stock->regs.spi_vs_out_id, sizeof(stock->regs.spi_vs_out_id)) ||
++       vs->regs.pa_cl_vs_out_cntl != stock->regs.pa_cl_vs_out_cntl ||
++       vs->uniformVarCount != 6 || !vs->uniformVars ||
++       vs->samplerVarCount != 1 || !vs->samplerVars ||
++       vs->attribVarCount != 3 || !vs->attribVars)
++      return false;
++
++   const GX2SamplerVar *lightmap = vs->samplerVars;
++   if (!lightmap->name || strcmp(lightmap->name, "uLightmap") ||
++       lightmap->type != GX2_SAMPLER_VAR_TYPE_SAMPLER_2D || lightmap->location != t->lightmap_slot)
++      return false;
++   static const char *uniforms[6] = {
++      "uClipX", "uClipY", "uClipZ", "uClipW", "uSectionOrigin", "uAtlasGrid",
++   };
++   const uint32_t expected[6] = {
++      t->clip_offsets[0], t->clip_offsets[1], t->clip_offsets[2], t->clip_offsets[3],
++      t->section_origin_offset, t->atlas_grid_offset,
++   };
++   for (unsigned i = 0; i < 6; ++i) if (!vs->uniformVars[i].name) return false;
++   for (unsigned i = 0; i < 6; ++i) {
++      uint32_t offset;
++      if (!uniform_offset(GX2GetVertexUniformVar(vs, uniforms[i]), &offset) ||
++          offset != expected[i]) return false;
++   }
++
++   static const char *attributes[3] = { "aPosition", "aColor", "aAtlasCellUv" };
++   unsigned seen = 0;
++   for (unsigned i = 0; i < 3; ++i) {
++      const GX2AttribVar *var = &vs->attribVars[i];
++      const unsigned slot = var->location;
++      if (!var->name || slot >= 3 || var->count != 0 || var->type != GX2_SHADER_VAR_TYPE_FLOAT4 ||
++          strcmp(var->name, attributes[slot]) || t->shader.attributes[slot].location != slot ||
++          t->shader.attributes[slot].buffer != 0) return false;
++      seen |= 1u << slot;
++   }
++   return seen == 7;
++}
++
++bool horizon_gx2_terrain_load_atlas_cells(HorizonGx2Terrain *t, const void *gfd)
++{
++   if (!t || !gfd || !t->shader_loaded || t->bound || t->atlas_cells ||
++       t->half_shader || t->opaque_pixel.shader || t->legacy_attributes || t->legacy_uniforms ||
++       !t->texture.surface.image || t->atlas_grid[3] != 1.0f ||
++       t->texture.surface.format != GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8 ||
++       t->shader.numAttributes != 3 || !t->shader.fetchShaderProgram) return false;
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (t->near_fog_pixel) return false;
++#endif
++
++   const uint32_t fetch_size = GX2CalcFetchShaderSizeEx(t->shader.numAttributes,
++      GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
++   if (!fetch_size || fetch_size != t->shader.fetchShader.size ||
++       t->shader.fetchShader.program != t->shader.fetchShaderProgram) return false;
++
++   GX2VertexShader *vs = WHBGfxLoadGFDVertexShader(0, gfd);
++   if (!terrain_atlas_cell_inputs(t, vs)) {
++      if (vs) WHBGfxFreeVertexShader(vs);
++      return false;
++   }
++
++   /* The original fetch allocation has the same stream count and has never
++    * been bound. Use it after all fallible validation and loading succeeded. */
++   GX2AttribStream *cell = &t->shader.attributes[2];
++   cell->format = GX2_ATTRIB_FLAG_SCALED | GX2_ATTRIB_FLAG_SIGNED | GX2_ATTRIB_TYPE_16_16_16_16;
++   cell->mask = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
++   cell->endianSwap = GX2_ENDIAN_SWAP_8_IN_16;
++   GX2InitFetchShaderEx(&t->shader.fetchShader, t->shader.fetchShaderProgram,
++                        t->shader.numAttributes, t->shader.attributes,
++                        GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
++   GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, t->shader.fetchShaderProgram, fetch_size);
++   WHBGfxFreeVertexShader(t->shader.vertexShader);
++   t->shader.vertexShader = vs;
++   t->atlas_cells = true;
++   return true;
++}
++
+ bool horizon_gx2_terrain_load_half_shader(HorizonGx2Terrain *t, const void *gfd)
+ {
+-   if (!t || !gfd || t->opaque_pixel.shader || t->legacy_attributes || t->legacy_uniforms) return false;
++   if (!t || !gfd || t->opaque_pixel.shader || t->legacy_attributes || t->legacy_uniforms || t->atlas_cells) return false;
+    if (t->half_shader) return true;
+ 
+    WHBGfxShaderGroup *group = calloc(1, sizeof(*group));
+@@ -554,7 +640,7 @@ int horizon_gx2_terrain_create(HorizonGx2Terrain **out, const void *gfd,
+ int horizon_gx2_terrain_set_sprite_grid(HorizonGx2Terrain *t,
+                                         uint32_t columns, uint32_t cell_size)
+ {
+-   if (!t || !columns || cell_size <= 2) return -1;
++   if (!t || t->atlas_cells || !columns || cell_size <= 2) return -1;
+    const GX2Surface *surface = &t->texture.surface;
+    if ((uint64_t)columns * cell_size != surface->width || surface->height % cell_size) return -1;
+    t->atlas_grid[0] = (float)columns;
+@@ -645,6 +731,7 @@ int horizon_gx2_terrain_bind_variant(HorizonGx2Terrain *t, uint32_t target_width
+    if (!t || !target_width || !target_height || !width || !height ||
+        x > target_width || y > target_height || width > target_width-x || height > target_height-y ||
+        !fog_color || !fog_ranges) return -1;
++   t->bound = true;
+    const float material[4] = { translucent ? 1.0f : 0.0f,
+       t->atlas_grid[0] ? t->atlas_grid[1] - 2.0f : 0.0f,
+       1.0f / (float)t->texture.surface.width, 1.0f / (float)t->texture.surface.height };
+@@ -694,12 +781,12 @@ int horizon_gx2_terrain_bind(HorizonGx2Terrain *t, uint32_t target_width, uint32
+ 
+ void horizon_gx2_terrain_set_legacy_attributes(HorizonGx2Terrain *terrain, bool enabled)
+ {
+-   terrain->legacy_attributes = enabled;
++   terrain->legacy_attributes = enabled && !terrain->atlas_cells;
+ }
+ 
+ void horizon_gx2_terrain_set_legacy_uniforms(HorizonGx2Terrain *terrain, bool enabled)
+ {
+-   terrain->legacy_uniforms = enabled;
++   terrain->legacy_uniforms = enabled && !terrain->atlas_cells;
+ }
+ 
+ void horizon_gx2_terrain_set_solid_back_culling(HorizonGx2Terrain *terrain, bool enabled)
+@@ -734,6 +821,7 @@ static void bind_section_uniforms(const HorizonGx2Terrain *t, const float clip_r
+ static bool bind_section(HorizonGx2Terrain *t, HorizonGx2TerrainSection *s,
+                           const float clip_rows[16], const float section_origin[4])
+ {
++   if (t->atlas_cells != s->atlas_cells) return false;
+    const bool half = s->buffer.elemSize == sizeof(HorizonTerrainHalfVertex);
+    if (half && (!t->half_allowed || GX2RBufferExists(&s->sorted_indices))) return false;
+    if (half != t->half_active) {
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index 084c4c40d0f832ad04d50d73c6520619d321f332..e31ea8c633caf92c11329f616f709dea1276c16f 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -16,6 +16,11 @@ typedef struct HorizonTerrainHalfVertex {
+    float uv[2];
+    uint8_t color_cutout[4];
+ } HorizonTerrainHalfVertex;
++typedef struct HorizonTerrainAtlasCellVertex {
++   float position[4];
++   int16_t uv_cell[4];
++   uint8_t color_cutout[4];
++} HorizonTerrainAtlasCellVertex;
+ typedef struct HorizonGx2Terrain HorizonGx2Terrain;
+ typedef struct HorizonGx2TerrainSection HorizonGx2TerrainSection;
+ /* The callback fills the mapped vertices synchronously and does not retain
+@@ -89,6 +94,8 @@ bool horizon_gx2_terrain_set_clear_fog(HorizonGx2Terrain *t, bool enabled,
+                                       const float fog_color[4], const float fog_ranges[4]);
+ #endif
+ bool horizon_gx2_terrain_load_half_shader(HorizonGx2Terrain *terrain, const void *gfd);
++/* Fresh owner only, after the sprite grid was validated. Retains the stock pixel shader. */
++bool horizon_gx2_terrain_load_atlas_cells(HorizonGx2Terrain *terrain, const void *gfd);
+ /* opaque_only promises that the solid buffer has cutout=0 at every vertex. */
+ int horizon_gx2_terrain_bind_variant(HorizonGx2Terrain *terrain, uint32_t target_width,
+                                     uint32_t target_height, uint32_t x, uint32_t y,
+@@ -108,6 +115,12 @@ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes);
+ typedef int (*HorizonTerrainFillHalfVertices)(void *context, HorizonTerrainHalfVertex *vertices,
+                                               uint32_t count);
+ int horizon_gx2_terrain_section_estimate_half(uint32_t count, uint32_t *bytes);
++typedef int (*HorizonTerrainFillAtlasCellVertices)(void *context,
++                                                 HorizonTerrainAtlasCellVertex *vertices,
++                                                 uint32_t count);
++/* A zero draw_quads creates a solid section. Other counts describe its sorted index lane. */
++int horizon_gx2_terrain_section_create_atlas_cells(HorizonGx2TerrainSection **out, uint32_t count,
++   uint32_t draw_quads, HorizonTerrainFillAtlasCellVertices fill, void *context, uint32_t *bytes);
+ int horizon_gx2_terrain_section_create_half(HorizonGx2TerrainSection **out, uint32_t count,
+                                             HorizonTerrainFillHalfVertices fill, void *context,
+                                             uint32_t *allocation_bytes);
+diff --git a/wiiu/gx2_terrain/terrain.vert b/wiiu/gx2_terrain/terrain.vert
+index 8e90c263af7e78c05ef86b9e727885dab76ce9e4..77668e3d999de0fcf2a4b5af03088fd2297a7d2a 100644
+--- a/wiiu/gx2_terrain/terrain.vert
++++ b/wiiu/gx2_terrain/terrain.vert
+@@ -1,7 +1,11 @@
+ #version 330
+ layout(location = 0) in vec4 aPosition;
+ layout(location = 1) in vec4 aColor;
++#ifdef HORIZON_TERRAIN_ATLAS_CELLS
++layout(location = 2) in vec4 aAtlasCellUv;
++#else
+ layout(location = 2) in vec2 aUv;
++#endif
+ uniform sampler2D uLightmap;
+ uniform vec4 uClipX;
+ uniform vec4 uClipY;
+@@ -25,6 +29,12 @@ void main() {
+     vec2 levels = min(vec2(floor(packedLight / 256.0), mod(packedLight, 256.0)), vec2(240.0));
+     vec2 lightUv = levels / 256.0 + vec2(0.5 / 16.0);
+     vColor = aColor.rgb * textureLod(uLightmap, lightUv, 0.0).rgb;
++#ifdef HORIZON_TERRAIN_ATLAS_CELLS
++    vec2 local_uv = aAtlasCellUv.xy * (1.0 / 32768.0) + vec2(1.0);
++    local_uv += step(vec2(32767.0), aAtlasCellUv.xy) * (1.0 / 32768.0);
++    vec2 tile = aAtlasCellUv.zw * uAtlasGrid.y + vec2(1.0);
++    vUv = vec4(local_uv, tile);
++#else
+     vec2 high = floor(aUv * (1.0 / 65536.0));
+     vec2 local_uv = (aUv - high * 65536.0) * (1.0 / 32768.0);
+     float layer = high.x + high.y * 256.0;
+@@ -34,6 +44,7 @@ void main() {
+     float correction = step(uAtlasGrid.x, column) + step(0.0, column) - 1.0;
+     vec2 tile = vec2(column - correction * uAtlasGrid.x, row + correction) * uAtlasGrid.y + vec2(1.0);
+     vUv = vec4(mix(aUv, local_uv, uAtlasGrid.w), tile);
++#endif
+ #ifdef HORIZON_TERRAIN_CLEAR_VERTEX
+     // Keep the stock export IDs. CafeGLSL numbers the vertex outputs separately.
+     vCutout = 0.0;
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index 963fcb4a3b8b09b11c417d2f0fc2db84a2a35245..d8d83537814adae9f8874a7d2656ee95f40585f2 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -7,7 +7,7 @@ struct HorizonGx2TerrainSection {
+    GX2RBuffer buffer;
+    GX2RBuffer sorted_indices;
+    uint32_t vertex_count;
+-   bool sorted_indices_ready;
++   bool sorted_indices_ready, atlas_cells;
+ };
+ 
+ static void terrain_buffer_release(GX2RBuffer *buffer)
+@@ -61,12 +61,13 @@ static int terrain_index_buffer_create(GX2RBuffer *buffer, uint32_t *allocation_
+ static int terrain_section_create(HorizonGx2TerrainSection **out,
+                                    uint32_t count, HorizonTerrainFillVertices fill,
+                                    HorizonTerrainFillHalfVertices fill_half,
++                                   HorizonTerrainFillAtlasCellVertices fill_cells,
+                                    void *context, uint32_t *allocation_bytes)
+ {
+    if (!out || !allocation_bytes) return -1;
+    *out = NULL;
+    *allocation_bytes = 0;
+-   if (count % 4 || (count && !fill && !fill_half)) return -1;
++   if (count % 4 || (count && !fill && !fill_half && !fill_cells)) return -1;
+    const uint32_t stride = fill_half ? sizeof(HorizonTerrainHalfVertex) : sizeof(HorizonTerrainVertex);
+    /* The fill callback also borrows the mapped bytes as a Rust slice. */
+ #if PTRDIFF_MAX < UINT32_MAX
+@@ -76,6 +77,7 @@ static int terrain_section_create(HorizonGx2TerrainSection **out,
+    HorizonGx2TerrainSection *section = calloc(1, sizeof(*section));
+    if (!section) return -2;
+    section->vertex_count = count;
++   section->atlas_cells = fill_cells != NULL;
+    uint32_t bytes = 0;
+    int result = 0;
+    if (count) {
+@@ -84,7 +86,9 @@ static int terrain_section_create(HorizonGx2TerrainSection **out,
+       if (result) goto fail;
+       void *vertices = GX2RLockBufferEx(&section->buffer, 0);
+       if (!vertices) { result = -3; goto fail; }
+-      result = fill_half ? fill_half(context, vertices, count) : fill(context, vertices, count);
++      if (fill_half) result = fill_half(context, vertices, count);
++      else if (fill_cells) result = fill_cells(context, vertices, count);
++      else result = fill(context, vertices, count);
+       GX2RUnlockBufferEx(&section->buffer, 0);
+       if (result) { result = -4; goto fail; }
+    }
+@@ -102,7 +106,7 @@ int horizon_gx2_terrain_section_create(HorizonGx2TerrainSection **out,
+                                       uint32_t count, HorizonTerrainFillVertices fill,
+                                       void *context, uint32_t *allocation_bytes)
+ {
+-   return terrain_section_create(out, count, fill, NULL, context, allocation_bytes);
++   return terrain_section_create(out, count, fill, NULL, NULL, context, allocation_bytes);
+ }
+ 
+ int horizon_gx2_terrain_section_create_half(HorizonGx2TerrainSection **out, uint32_t count,
+@@ -115,7 +119,7 @@ int horizon_gx2_terrain_section_create_half(HorizonGx2TerrainSection **out, uint
+       *allocation_bytes = 0;
+       return -1;
+    }
+-   return terrain_section_create(out, count, NULL, fill, context, allocation_bytes);
++   return terrain_section_create(out, count, NULL, fill, NULL, context, allocation_bytes);
+ }
+ 
+ static int terrain_section_estimate(uint32_t stride, uint32_t count, uint32_t *bytes)
+@@ -160,10 +164,9 @@ int horizon_gx2_terrain_section_estimate_sorted_quads(uint32_t count, uint32_t d
+    return 0;
+ }
+ 
+-int horizon_gx2_terrain_section_create_sorted_quads(HorizonGx2TerrainSection **out,
+-                                                    uint32_t count, uint32_t draw_quads,
+-                                                    HorizonTerrainFillVertices fill, void *context,
+-                                                    uint32_t *allocation_bytes)
++static int terrain_section_create_sorted_quads(HorizonGx2TerrainSection **out,
++   uint32_t count, uint32_t draw_quads, HorizonTerrainFillVertices fill,
++   HorizonTerrainFillAtlasCellVertices fill_cells, void *context, uint32_t *allocation_bytes)
+ {
+    if (!out || !allocation_bytes) return -1;
+    *out = NULL;
+@@ -172,7 +175,7 @@ int horizon_gx2_terrain_section_create_sorted_quads(HorizonGx2TerrainSection **o
+    if (!count || horizon_gx2_terrain_section_estimate_sorted_quads(count, draw_quads, &expected) != 0) return -1;
+    HorizonGx2TerrainSection *section = NULL;
+    uint32_t vertex_bytes, index_bytes;
+-   int result = horizon_gx2_terrain_section_create(&section, count, fill, context, &vertex_bytes);
++   int result = terrain_section_create(&section, count, fill, NULL, fill_cells, context, &vertex_bytes);
+    if (result) return result;
+    result = terrain_buffer_create(&section->sorted_indices, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+                                   terrain_sorted_index_width(count), draw_quads * 6, &index_bytes);
+@@ -185,6 +188,28 @@ int horizon_gx2_terrain_section_create_sorted_quads(HorizonGx2TerrainSection **o
+    return 0;
+ }
+ 
++int horizon_gx2_terrain_section_create_sorted_quads(HorizonGx2TerrainSection **out,
++                                                    uint32_t count, uint32_t draw_quads,
++                                                    HorizonTerrainFillVertices fill, void *context,
++                                                    uint32_t *allocation_bytes)
++{
++   return terrain_section_create_sorted_quads(out, count, draw_quads, fill, NULL, context, allocation_bytes);
++}
++
++int horizon_gx2_terrain_section_create_atlas_cells(HorizonGx2TerrainSection **out, uint32_t count,
++   uint32_t draw_quads, HorizonTerrainFillAtlasCellVertices fill, void *context, uint32_t *bytes)
++{
++   if (!out || !bytes) return -1;
++   if (!count || !fill) {
++      *out = NULL;
++      *bytes = 0;
++      return -1;
++   }
++   if (draw_quads)
++      return terrain_section_create_sorted_quads(out, count, draw_quads, NULL, fill, context, bytes);
++   return terrain_section_create(out, count, NULL, NULL, fill, context, bytes);
++}
++
+ int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
+ {
+    return horizon_gx2_terrain_section_estimate_sorted_quads(count, count / 4, bytes);
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index de2ea03f96473e63402d8d17ed861e0838aac29d..d040213f4cc9160e0735b3cbf392658be19d57d2 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -362,6 +362,58 @@ static void check_reverse_quads(void)
+    assert(!sections && !buffers && !mapped);
+ }
+ 
++static int fill_cells(void *context, HorizonTerrainAtlasCellVertex *vertices, uint32_t count)
++{
++   assert(!context && mapped && count == 4);
++   for (unsigned i = 0; i < count; ++i)
++      vertices[i] = (HorizonTerrainAtlasCellVertex){
++         .position = { -2.5f, i, 0, 2048 },
++         .uv_cell = { INT16_MIN, INT16_MAX, 6, 4 },
++         .color_cutout = { 55, 66, 77, 128 },
++      };
++   return reject_fill ? -1 : 0;
++}
++
++static void check_atlas_cell_storage(void)
++{
++   HorizonGx2TerrainSection *section;
++   uint32_t bytes, expected;
++   const unsigned baseline_waits = waits;
++   assert(horizon_gx2_terrain_section_estimate(4, &expected) == 0);
++   assert(horizon_gx2_terrain_section_create_atlas_cells(
++      &section, 4, 0, fill_cells, NULL, &bytes) == 0);
++   assert(section->atlas_cells && section->buffer.elemSize == 28 && bytes == expected);
++   assert(!GX2RBufferExists(&section->sorted_indices) && !mapped);
++   const HorizonTerrainAtlasCellVertex *vertices = section->buffer.buffer;
++   assert(vertices[3].position[1] == 3);
++   assert(vertices[3].uv_cell[0] == INT16_MIN && vertices[3].uv_cell[1] == INT16_MAX);
++   assert(vertices[3].uv_cell[2] == 6 && vertices[3].uv_cell[3] == 4);
++   assert(vertices[3].color_cutout[3] == 128);
++   horizon_gx2_terrain_section_destroy_after_wait(section);
++
++   assert(horizon_gx2_terrain_section_estimate_sorted_quads(4, 2, &expected) == 0);
++   assert(horizon_gx2_terrain_section_create_atlas_cells(
++      &section, 4, 2, fill_cells, NULL, &bytes) == 0 && bytes == expected);
++   assert(section->atlas_cells && section->sorted_indices.elemCount == 12);
++   const uint32_t reverse_first[] = { 3, 2, 1, 3, 1, 0, 0, 1, 2, 0, 2, 3 };
++   assert(horizon_gx2_terrain_section_update_indices(section, reverse_first, 12) == 0);
++   const uint16_t *indices = section->sorted_indices.buffer;
++   for (unsigned i = 0; i < 12; ++i) assert(indices[i] == reverse_first[i]);
++   horizon_gx2_terrain_section_destroy_after_wait(section);
++
++   reject_fill = true;
++   assert(horizon_gx2_terrain_section_create_atlas_cells(
++      &section, 4, 2, fill_cells, NULL, &bytes) == -4);
++   assert(!section && !bytes && !mapped);
++   reject_fill = false;
++   fail_indices = true;
++   assert(horizon_gx2_terrain_section_create_atlas_cells(
++      &section, 4, 2, fill_cells, NULL, &bytes) == -2);
++   assert(!section && !bytes && !mapped);
++   fail_indices = false;
++   assert(!sections && !buffers && waits == baseline_waits);
++}
++
+ int main(void)
+ {
+    check_index_groups();
+@@ -370,6 +422,7 @@ int main(void)
+    check_index_width_boundary();
+    check_half_storage();
+    check_reverse_quads();
++   check_atlas_cell_storage();
+    puts("Indexed terrain buffer tests passed");
+    return 0;
+ }
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index 7e50d5c4699ac983ea5640f4e9303af6a0349d9d..a763e85695e07bf5650c00a96545c204ecf678c7 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -389,6 +389,10 @@ fn run(
+             return FAILED;
+         }
+     };
++    // Unprofiled benchmarks also stay on their existing vertex format.
++    if launch.benchmark.is_none() {
++        presenter.enable_atlas_cell_trial();
++    }
+     let mut host = LoadingHost::new(&mut presenter);
+     #[cfg(feature = "stock-hud-seed")]
+     { host.stock_hud = stock_hud; }
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 19793ec271fc948e79f5341479d73534e1f3c3d4..06bd7fdbac77e0bbbf8395ae7d90056cc600338a 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -53,9 +53,24 @@ add_custom_command(OUTPUT "${TERRAIN_OPAQUE_GFD_OBJECT}"
+    VERBATIM)
+ set_source_files_properties("${TERRAIN_OPAQUE_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+-# Keep the stock fragment program and move packed light to its own float input.
+ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TERRAIN_VERTEX_SOURCE}")
+-file(READ "${TERRAIN_VERTEX_SOURCE}" terrain_half_source)
++file(READ "${TERRAIN_VERTEX_SOURCE}" terrain_vertex_source)
++string(REPLACE "#version 330\n" "#version 330\n#define HORIZON_TERRAIN_ATLAS_CELLS 1\n"
++   terrain_atlas_cells_source "${terrain_vertex_source}")
++file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/terrain_atlas_cells.vert" CONTENT "${terrain_atlas_cells_source}")
++set(TERRAIN_ATLAS_CELLS_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/terrain_atlas_cells_gfd.o")
++add_custom_command(OUTPUT "${TERRAIN_ATLAS_CELLS_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs terrain_atlas_cells.vert
++           -ps "${TERRAIN_OPAQUE_SOURCE}" -o terrain_atlas_cells.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common terrain_atlas_cells.gsh terrain_atlas_cells_gfd.o
++   DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/terrain_atlas_cells.vert" "${TERRAIN_OPAQUE_SOURCE}"
++           "${CAFEGLSL_COMPILER_EXECUTABLE}"
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" VERBATIM)
++set_source_files_properties("${TERRAIN_ATLAS_CELLS_GFD_OBJECT}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
++
++# Keep the stock fragment program and move packed light to its own float input.
++set(terrain_half_source "${terrain_vertex_source}")
+ string(REPLACE "layout(location = 0) in vec4 aPosition;" "layout(location = 0) in vec3 aPosition;" terrain_half_source "${terrain_half_source}")
+ string(REPLACE "layout(location = 2) in vec2 aUv;" "layout(location = 2) in vec2 aUv;\nlayout(location = 3) in float aLight;" terrain_half_source "${terrain_half_source}")
+ string(REPLACE "float packedLight = aPosition.w;" "float packedLight = aLight;" terrain_half_source "${terrain_half_source}")
+@@ -238,7 +253,7 @@ add_library(horizon_wiiu_loading_host STATIC
+    loading_host.c gx2_profile.c worker_schedule.c swkbd_bridge.cpp outline.c world_scale.c crumbling.c hand.c
+    stock_sky.c precipitation.c sky_bodies.c stars.c end_sky.c lightning.c world_border.c
+    "${HUD_GFD_OBJECT}" "${PANORAMA_GFD_OBJECT}" "${TERRAIN_GFD_OBJECT}" "${TERRAIN_OPAQUE_GFD_OBJECT}"
+-   "${TERRAIN_HALF_GFD_OBJECT}"
++   "${TERRAIN_HALF_GFD_OBJECT}" "${TERRAIN_ATLAS_CELLS_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}" "${MODEL_OVERLAY_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+    "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}")
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 7122f1859db457f31c7329c83dad68694edcb42c..c7b1ae9f790015dd3d50b1193477bdf0cf4e6f93 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -200,7 +200,7 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
+    return tv_terrain_wait_mode;
+ }
+ 
+-static bool reverse_translucent_quads;
++static bool reverse_translucent_quads, atlas_cell_vertices;
+ 
+ static void init_mem1_tv_depth(void)
+ {
+@@ -287,6 +287,9 @@ void horizon_gx2_profile_init(void)
+          near_fog_requested = !mem1_tv_depth && !tv_terrain_wait_mode && !reverse_translucent_quads;
+       }
+ #endif
++      FILE *cells = fopen(ROOT "gx2-atlas-cells.enable", "rb");
++      atlas_cell_vertices = cells != NULL;
++      if (cells) fclose(cells);
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+@@ -554,6 +557,14 @@ bool horizon_gx2_profile_solid_axis_ranges(void)
+    return solid_axis_ranges;
+ }
+ 
++bool horizon_gx2_profile_atlas_cells(void)
++{
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (near_fog_requested) return false;
++#endif
++   return atlas_cell_vertices && history == &process_history;
++}
++
+ bool horizon_gx2_profile_reverse_translucent_quads(void)
+ {
+    return reverse_translucent_quads;
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 0fb4cc51b13708c1cd70be12d295e4e1231c2a8f..6b77039fbaef8c2f52149716f00484f43b62e7ae 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -72,6 +72,7 @@ bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_solid_draw_plan(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_reverse_translucent_quads(void);
++bool horizon_gx2_profile_atlas_cells(void);
+ bool horizon_gx2_profile_gpu_begin(void);
+ void horizon_gx2_profile_gpu_marker(uint32_t target, bool end);
+ bool horizon_gx2_profile_gpu_pass_active(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index d5c7c9cbbe37394f26ccbf1c11b4a1353b2c6209..6c94027a26942c3dec904cc713957c485a22fa25 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -53,7 +53,8 @@ use horizon_client::{
+ use horizon_client_platform::cafe_profile::{self, Counter, Span, Stage};
+ use horizon_optifine::cit::Factor;
+ use horizon_wiiu_gx2_terrain::{
+-    HalfTerrainVertex, IndexedTerrainVertex, TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
++    AtlasCellLayout, AtlasCellTerrainVertex, HalfTerrainVertex, IndexedTerrainVertex,
++    TerrainAtlasLayout, TerrainClipRows, terrain_view_rows,
+ };
+ use horizon_wiiu_platform::hud::{
+     CitSlot,
+@@ -223,6 +224,7 @@ extern "C" {
+     fn horizon_loading_host_terrain_gfd(length: *mut usize) -> *const u8;
+     fn horizon_loading_host_opaque_terrain_gfd() -> *const u8;
+     fn horizon_loading_host_half_terrain_gfd() -> *const u8;
++    fn horizon_loading_host_atlas_cell_terrain_gfd() -> *const u8;
+     fn horizon_loading_host_present(
+         draw: unsafe extern "C" fn(*mut c_void, u32, u32, u32) -> i32,
+         context: *mut c_void,
+@@ -272,6 +274,7 @@ extern "C" {
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
++    fn horizon_gx2_profile_atlas_cells() -> bool;
+     fn horizon_gx2_profile_reverse_translucent_quads() -> bool;
+     fn horizon_gx2_panorama_create_mapped(
+         out: *mut *mut c_void,
+@@ -351,6 +354,15 @@ extern "C" {
+     fn horizon_wiiu_memory_can_upload_terrain(bytes: u32) -> i32;
+     fn horizon_gx2_terrain_load_opaque_shader(terrain: *mut c_void, gfd: *const c_void) -> bool;
+     fn horizon_gx2_terrain_load_half_shader(terrain: *mut c_void, gfd: *const c_void) -> bool;
++    fn horizon_gx2_terrain_load_atlas_cells(terrain: *mut c_void, gfd: *const c_void) -> bool;
++    fn horizon_gx2_terrain_section_create_atlas_cells(
++        out: *mut *mut c_void,
++        count: u32,
++        draw_quads: u32,
++        fill: unsafe extern "C" fn(*mut c_void, *mut MaybeUninit<AtlasCellTerrainVertex>, u32) -> i32,
++        context: *mut c_void,
++        allocation_bytes: *mut u32,
++    ) -> i32;
+     fn horizon_gx2_terrain_section_estimate_half(count: u32, bytes: *mut u32) -> i32;
+     fn horizon_gx2_terrain_section_create_half(
+         out: *mut *mut c_void,
+@@ -647,6 +659,7 @@ use terrain_translucency::{TerrainSection, TranslucentTerrain};
+ 
+ struct TerrainUpload<'a> {
+     atlas: &'a TerrainAtlasLayout,
++    atlas_cells: Option<AtlasCellLayout>,
+     source: &'a [TerrainVertex],
+     resident_vertices: usize,
+     reuse: Option<&'a terrain_translucent_reuse::ReuseMap>,
+@@ -674,7 +687,9 @@ unsafe extern "C" fn fill_terrain_vertices(
+     // They are uninitialized, exclusively CPU-owned, and not yet GPU-visible.
+     let output = unsafe { std::slice::from_raw_parts_mut(vertices, count) };
+     let result = if let Some(reuse) = upload.reuse {
+-        reuse.write_vertices(upload.atlas, upload.source, output)
++        reuse.write_vertices(upload.source, output, |quad, dst| {
++            upload.atlas.write_translucent_vertices(quad, dst)
++        })
+     } else if upload.translucent {
+         upload.atlas.write_translucent_vertices(upload.source, output)
+     } else {
+@@ -689,6 +704,45 @@ unsafe extern "C" fn fill_terrain_vertices(
+     }
+ }
+ 
++unsafe extern "C" fn fill_terrain_atlas_cell_vertices(
++    context: *mut c_void,
++    vertices: *mut MaybeUninit<AtlasCellTerrainVertex>,
++    count: u32,
++) -> i32 {
++    // C owns the mapping and borrows both it and this upload synchronously.
++    let upload = unsafe { &mut *context.cast::<TerrainUpload<'_>>() };
++    let count = count as usize;
++    let Some(layout) = upload.atlas_cells else {
++        upload.error = Some("GX2 signed atlas cell layout is missing");
++        return -1;
++    };
++    if vertices.is_null()
++        || !vertices.is_aligned()
++        || count != upload.resident_vertices
++        || count > isize::MAX as usize / std::mem::size_of::<AtlasCellTerrainVertex>()
++    {
++        upload.error = Some("GX2 signed terrain mapping is invalid");
++        return -1;
++    }
++    // SAFETY: the typed callback matches the native vertex stride and mapping.
++    let output = unsafe { std::slice::from_raw_parts_mut(vertices, count) };
++    let mut writer = layout.writer();
++    let result = if let Some(reuse) = upload.reuse {
++        reuse.write_vertices(upload.source, output, |quad, dst| {
++            writer.write_vertices(quad, dst, true)
++        })
++    } else {
++        writer.write_vertices(upload.source, output, upload.translucent)
++    };
++    match result {
++        Ok(()) => 0,
++        Err(error) => {
++            upload.error = Some(error);
++            -1
++        }
++    }
++}
++
+ unsafe extern "C" fn fill_terrain_half_vertices(
+     context: *mut c_void,
+     vertices: *mut MaybeUninit<HalfTerrainVertex>,
+@@ -751,6 +805,7 @@ unsafe extern "C" fn fill_terrain_atlas(context: *mut c_void, pixels: *mut u8, p
+ 
+ struct Terrain<'shader> {
+     native: NonNull<c_void>,
++    atlas_cells: Option<AtlasCellLayout>,
+     opaque_shader: bool,
+     #[cfg(feature = "gx2-clear-fog")]
+     clear_fog_shader: bool,
+@@ -819,6 +874,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_views: [Option<TerrainProjection>; 2],
+     solid_draw_plan_enabled: bool,
+     half_position_requested: bool,
++    atlas_cells_requested: bool,
+     reverse_translucent_quads: bool,
+     solid_draw_plans: [solid_draw_plan::SolidDrawPlan; 2],
+     frame_work: CafeFrameWork,
+@@ -905,6 +961,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_camera: (0, 0, 0),
+             terrain_views: [None, None],
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
++            atlas_cells_requested: false,
+             half_position_requested: std::path::Path::new(
+                 "/vol/external01/wiiu/apps/HorizonWiiU/gx2-half-position.enable",
+             )
+@@ -980,6 +1037,11 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         unsafe { Gx2LoadingPresenter::new(hud, panorama, terrain, capacity) }
+     }
+ 
++    /// Only the ordinary hosted entry admits the marker before terrain preparation.
++    pub fn enable_atlas_cell_trial(&mut self) {
++        self.atlas_cells_requested = unsafe { horizon_gx2_profile_atlas_cells() };
++    }
++
+     /// A new foreground can recreate render targets at the same dimensions.
+     pub fn invalidate_tv_terrain_wait_ticket(&mut self) {
+         if self.retired_pair != 0 && unsafe { horizon_gx2_profile_tv_terrain_wait(false) } != 0 {
+@@ -1889,6 +1951,7 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+             let mut terrain = Terrain {
+                 native,
+                 opaque_shader,
++                atlas_cells: None,
+                 #[cfg(feature = "gx2-clear-fog")]
+                 clear_fog_shader: false,
+                 #[cfg(feature = "gx2-clear-fog")]
+@@ -1939,9 +2002,31 @@ impl CafeGameBackend for Gx2LoadingPresenter<'_> {
+                 }
+             }
+             #[cfg(feature = "gx2-clear-fog")]
+-            if !opaque_shader_requested && !self.half_position_requested {
++            if !opaque_shader_requested
++                && !self.half_position_requested
++                && !self.atlas_cells_requested
++            {
+                 terrain.near_fog_shader = unsafe { clear_fog::load_near(native) };
+             }
++            if self.atlas_cells_requested
++                && !self.half_position_requested
++                && !opaque_shader_requested
++            {
++                terrain.atlas_cells = layout.atlas_cell_layout().filter(|_| unsafe {
++                    horizon_gx2_terrain_load_atlas_cells(
++                        native.as_ptr(),
++                        horizon_loading_host_atlas_cell_terrain_gfd().cast(),
++                    )
++                });
++                unsafe {
++                    OSReport(if terrain.atlas_cells.is_some() {
++                        c"Horizon GX2 signed atlas cell terrain shader ready\n".as_ptr()
++                    } else {
++                        c"Horizon GX2 signed atlas cell terrain unavailable, using the ordinary shader\n"
++                            .as_ptr()
++                    });
++                }
++            }
+             self.terrain = Some(terrain);
+             self.resident_animations =
+                 terrain_animation::ResidentAnimations::new(&layout, artwork.terrain_animations);
+@@ -2217,8 +2302,16 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+             .as_ref()
+             .ok_or("GX2 terrain atlas is not prepared")?;
+         let _upload = Span::new(Stage::TerrainUpload);
+-        let opaque_shader = self.terrain.as_ref().is_some_and(|terrain| terrain.opaque_shader);
+-        let mut section = match TerrainSection::upload(atlas, mesh, info, bounds, opaque_shader, layouts) {
++        let terrain = self.terrain.as_ref().ok_or("GX2 terrain is not prepared")?;
++        let mut section = match TerrainSection::upload(
++            atlas,
++            mesh,
++            info,
++            bounds,
++            terrain.opaque_shader,
++            terrain.atlas_cells,
++            layouts,
++        ) {
+             Ok(section) => section,
+             Err(error)
+                 if error
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 21a9124b556272879781cbe292f3a455e115cf28..e0bf2f9ecc64769510d85b23285c17fe68f1eaf7 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -48,6 +48,12 @@ const uint8_t *horizon_loading_host_clear_fog_vertex_gfd(void)
+ }
+ #endif
+ extern const uint8_t _binary_terrain_half_gsh_start[];
++extern const uint8_t _binary_terrain_atlas_cells_gsh_start[];
++
++const uint8_t *horizon_loading_host_atlas_cell_terrain_gfd(void)
++{
++   return _binary_terrain_atlas_cells_gsh_start;
++}
+ 
+ const uint8_t *horizon_loading_host_hud_gfd(size_t *length)
+ {
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 8bac18360f872ad1b7c3c4b22fe5cf15786605e5..6c67227d72791384132574ff8bb0c94788d8c833 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -50,6 +50,7 @@ impl TerrainBuffer {
+         source: &[TerrainVertex],
+         bounds: Option<TerrainBounds>,
+         layout: VertexLayout<'_>,
++        atlas_cells: Option<AtlasCellLayout>,
+     ) -> horizon_client::Result<Option<Self>> {
+         if source.is_empty() {
+             return Ok(None);
+@@ -72,6 +73,7 @@ impl TerrainBuffer {
+         .ok_or("GX2 vertex allocation estimate overflow")?;
+         let mut upload = TerrainUpload {
+             atlas,
++            atlas_cells,
+             source,
+             resident_vertices: vertex_count as usize,
+             reuse: reuse.map(|(_, map)| map),
+@@ -97,6 +99,20 @@ impl TerrainBuffer {
+                     context,
+                     &mut gpu_bytes,
+                 )
++            } else if atlas_cells.is_some() {
++                let draw_quads = if translucent {
++                    reuse.map_or(vertex_count / 4, |(plan, _)| plan.logical_quads)
++                } else {
++                    0
++                };
++                horizon_gx2_terrain_section_create_atlas_cells(
++                    &mut native,
++                    vertex_count,
++                    draw_quads,
++                    fill_terrain_atlas_cell_vertices,
++                    context,
++                    &mut gpu_bytes,
++                )
+             } else if let Some((plan, _)) = reuse {
+                 horizon_gx2_terrain_section_create_sorted_quads(
+                     &mut native,
+@@ -275,6 +291,7 @@ impl TerrainSection {
+         info: DeferredTerrain,
+         [solid_bounds, translucent_bounds]: [Option<TerrainBounds>; 2],
+         opaque_shader: bool,
++        atlas_cells: Option<AtlasCellLayout>,
+         layouts: SectionLayouts,
+     ) -> horizon_client::Result<Self> {
+         // Plan and source both come from the same immutable borrowed mesh.
+@@ -307,17 +324,18 @@ impl TerrainSection {
+         } else {
+             VertexLayout::Solid
+         };
+-        let solid = TerrainBuffer::upload(atlas, &mesh.solid, solid_bounds, solid_layout)?
+-            .map(|mut buffer| {
+-                // Match the native solid conversion. Inspect every vertex
+-                // because the fragment shader interpolates the cutout value.
+-                buffer.opaque_only = opaque_shader
+-                    && mesh
+-                        .solid
+-                        .iter()
+-                        .all(|vertex| vertex.layer & OPAQUE_LAYER != 0);
+-                buffer
+-            });
++        let solid =
++            TerrainBuffer::upload(atlas, &mesh.solid, solid_bounds, solid_layout, atlas_cells)?
++                .map(|mut buffer| {
++                    // Match the native solid conversion. Inspect every vertex
++                    // because the fragment shader interpolates the cutout value.
++                    buffer.opaque_only = opaque_shader
++                        && mesh
++                            .solid
++                            .iter()
++                            .all(|vertex| vertex.layer & OPAQUE_LAYER != 0);
++                    buffer
++                });
+         let translucent_layout = layouts
+             .reverse_translucent
+             .zip(mapping.as_ref())
+@@ -329,6 +347,7 @@ impl TerrainSection {
+             &mesh.translucent,
+             translucent_bounds,
+             translucent_layout,
++            atlas_cells,
+         ) {
+             Ok(buffer) => buffer.map(|buffer| SortedSection {
+                 buffer,
+diff --git a/wiiu/loading_host/terrain_translucent_reuse.rs b/wiiu/loading_host/terrain_translucent_reuse.rs
+index 019953a22f4285242b9385d3c1d2641ffaf75844..f5934358efe7514421dd303612981ffc67eb5d02 100644
+--- a/wiiu/loading_host/terrain_translucent_reuse.rs
++++ b/wiiu/loading_host/terrain_translucent_reuse.rs
+@@ -1,6 +1,5 @@
+ use core::mem::MaybeUninit;
+ use horizon_client::{gfx::translucency::quad_indices, mesher::TerrainVertex};
+-use horizon_wiiu_gx2_terrain::{IndexedTerrainVertex, TerrainAtlasLayout};
+ 
+ #[derive(Clone, Copy)]
+ pub(super) struct ReusePlan {
+@@ -72,11 +71,11 @@ impl ReuseMap {
+         quad_indices(entry & !1, entry & 1 != 0)
+     }
+ 
+-    pub(super) fn write_vertices(
++    pub(super) fn write_vertices<V>(
+         &self,
+-        atlas: &TerrainAtlasLayout,
+         source: &[TerrainVertex],
+-        output: &mut [MaybeUninit<IndexedTerrainVertex>],
++        output: &mut [MaybeUninit<V>],
++        mut write_quad: impl FnMut(&[TerrainVertex], &mut [MaybeUninit<V>]) -> Result<(), &'static str>,
+     ) -> Result<(), &'static str> {
+         let (quads, tail) = source.as_chunks::<4>();
+         if !tail.is_empty() || quads.len() != self.logical_quads() {
+@@ -92,7 +91,7 @@ impl ReuseMap {
+                 let dst = mapped
+                     .next()
+                     .ok_or("GX2 reverse-quad mapping is too short")?;
+-                atlas.write_translucent_vertices(quad, dst)?;
++                write_quad(quad, dst)?;
+             }
+         }
+         Ok(())

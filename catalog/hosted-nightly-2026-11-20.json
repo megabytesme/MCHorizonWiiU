@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
-  "output_tree": "89af6abc06928903379aef057fd692fa1ec945ed",
+  "output_tree": "e32599a80ec189af3c67e8ac3a342dc7c655dd1c",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1400,12 +1400,18 @@
       "sha256": "ecbe791604f345faa41e3e6754ea1f3937ce7146ae0698c1cd0da9994b901c95",
       "input_tree": "a603e1568541fbed693429dacbdb164939b126ab",
       "output_tree": "89af6abc06928903379aef057fd692fa1ec945ed"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0232-trial-stock-quantized-signed-atlas-cells.patch",
+      "sha256": "c185e89f59ad935f3a92a3fc502987289698a25addad7286ea28d4934c4e30fe",
+      "input_tree": "89af6abc06928903379aef057fd692fa1ec945ed",
+      "output_tree": "e32599a80ec189af3c67e8ac3a342dc7c655dd1c"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.61",
-    "patch": "0.5.0-rc.61"
+    "client": "0.8.0-rc.62",
+    "patch": "0.5.0-rc.62"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
