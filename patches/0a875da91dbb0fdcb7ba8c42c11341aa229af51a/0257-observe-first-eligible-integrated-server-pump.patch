@@ -1,0 +1,79 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile/server_pump.rs b/crates/horizon-client-platform/src/cafe_profile/server_pump.rs
+index 4cc6a79..836583f 100644
+--- a/crates/horizon-client-platform/src/cafe_profile/server_pump.rs
++++ b/crates/horizon-client-platform/src/cafe_profile/server_pump.rs
+@@ -49,20 +49,24 @@ impl ServerPumpProfile {
+             return None;
+         }
+         if active != self.generation {
++            // A one-sample pilot distinguishes an admitted sparse pump from
++            // one that never completes a measured iteration. Keep the usual
++            // sampling points at iteration 8, 16, and so on.
+             *self = Self {
+                 generation: active,
+-                until_sample: SAMPLE_EVERY,
++                until_sample: SAMPLE_EVERY - 1,
+                 ..Self::default()
+             };
++        } else {
++            if self.windows == MAX_WINDOWS {
++                return None;
++            }
++            self.until_sample -= 1;
++            if self.until_sample != 0 {
++                return None;
++            }
++            self.until_sample = SAMPLE_EVERY;
+         }
+-        if self.windows == MAX_WINDOWS {
+-            return None;
+-        }
+-        self.until_sample -= 1;
+-        if self.until_sample != 0 {
+-            return None;
+-        }
+-        self.until_sample = SAMPLE_EVERY;
+         Some(PumpSample {
+             generation: active,
+             start: clock(),
+@@ -93,7 +97,8 @@ impl ServerPumpProfile {
+         window.update_sum = window.update_sum.saturating_add(update);
+         window.wait_max = window.wait_max.max(wait);
+         window.update_max = window.update_max.max(update);
+-        if window.samples == WINDOW_SAMPLES {
++        let limit = if self.windows == 0 { 1 } else { WINDOW_SAMPLES };
++        if window.samples == limit {
+             let ticks = [
+                 window.first,
+                 end,
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index d3299d1..42c3209 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -496,7 +496,10 @@ void horizon_gx2_profile_init(void)
+       if (frustum) fclose(frustum);
+       FILE *pump = fopen(ROOT "gx2-server-pump-profile.enable", "rb");
+       server_pump_requested = pump != NULL;
+-      if (pump) fclose(pump);
++      if (pump) {
++         fclose(pump);
++         OSReport("Horizon Cafe server pump capture requested\n");
++      }
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+@@ -976,8 +979,12 @@ static void server_pump_set_active(bool active)
+    const uint32_t previous = atomic_load_explicit(&server_pump_generation, memory_order_relaxed);
+    if (!active && previous)
+       atomic_store_explicit(&server_pump_generation, 0, memory_order_release);
+-   else if (active && !previous && server_pump_next_generation != UINT32_MAX)
+-      atomic_store_explicit(&server_pump_generation, ++server_pump_next_generation, memory_order_release);
++   else if (active && !previous && server_pump_next_generation != UINT32_MAX) {
++      const uint32_t generation = ++server_pump_next_generation;
++      if (generation == 1)
++         OSReport("Horizon Cafe server pump admitted generation=1\n");
++      atomic_store_explicit(&server_pump_generation, generation, memory_order_release);
++   }
+ }
+ 
+ void horizon_gx2_profile_server_pump_scope(bool ordinary_focused)
