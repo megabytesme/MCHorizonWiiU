@@ -1,0 +1,377 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index 2fee6e3..098e7a6 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -3,7 +3,7 @@
+ use std::marker::PhantomData;
+ 
+ mod client_tick;
+-pub use client_tick::{ClientTickLaps, ClientTickStage};
++pub use client_tick::{ClientTickGameStage, ClientTickLaps, ClientTickStage};
+ 
+ mod server_pump;
+ pub use server_pump::ServerPumpProfile;
+diff --git a/crates/horizon-client-platform/src/cafe_profile/client_tick.rs b/crates/horizon-client-platform/src/cafe_profile/client_tick.rs
+index 763237c..75fc0b9 100644
+--- a/crates/horizon-client-platform/src/cafe_profile/client_tick.rs
++++ b/crates/horizon-client-platform/src/cafe_profile/client_tick.rs
+@@ -1,10 +1,16 @@
+ //! Fixed-size wall laps for a sampled ordinary local client's tick loop.
+ 
+ const STAGES: usize = 6;
++const GAME_STAGES: usize = 4;
+ 
+ unsafe extern "C" {
+     fn horizon_gx2_profile_client_tick_begin(steps: u32) -> bool;
+-    fn horizon_gx2_profile_client_tick_complete(steps: u32, ticks: *const u64);
++    fn horizon_gx2_profile_client_tick_complete(
++        steps: u32,
++        ticks: *const u64,
++        game_ticks: *const u64,
++        unlit_player_steps: u32,
++    );
+ }
+ 
+ #[repr(usize)]
+@@ -18,10 +24,23 @@ pub enum ClientTickStage {
+     Post,
+ }
+ 
++#[repr(usize)]
++#[derive(Clone, Copy)]
++pub enum ClientTickGameStage {
++    Lead,
++    Level,
++    RemoteTail,
++    Residency,
++}
++
+ pub struct ClientTickLaps {
+     last: u64,
+     stages: [u64; STAGES],
++    game_stages: [u64; GAME_STAGES],
++    game_last: Option<u64>,
+     edges: usize,
++    game_edges: usize,
++    unlit_player_steps: u32,
+     steps: u32,
+ }
+ 
+@@ -34,7 +53,11 @@ impl ClientTickLaps {
+         (last != 0).then_some(Self {
+             last,
+             stages: [0; STAGES],
++            game_stages: [0; GAME_STAGES],
++            game_last: Some(last),
+             edges: 0,
++            game_edges: 0,
++            unlit_player_steps: 0,
+             steps,
+         })
+     }
+@@ -53,14 +76,53 @@ impl ClientTickLaps {
+         };
+         // Each interval is disjoint on the monotonic wall clock.
+         laps.stages[stage] += ticks;
++        if stage == ClientTickStage::Pre as usize && laps.game_last.is_some() {
++            laps.game_last = Some(now);
++        }
+         laps.last = now;
+         laps.edges += 1;
+     }
+ 
++    pub fn mark_game(&mut self, stage: ClientTickGameStage) {
++        let Some(last) = self.game_last else { return };
++        let stage = stage as usize;
++        if self.edges % STAGES != ClientTickStage::Game as usize
++            || self.game_edges != self.edges / STAGES * GAME_STAGES + stage
++        {
++            self.game_last = None;
++            return;
++        }
++        let now = unsafe { super::horizon_gx2_profile_stamp() };
++        let Some(ticks) = now.checked_sub(last) else {
++            self.game_last = None;
++            return;
++        };
++        self.game_stages[stage] += ticks;
++        self.game_last = Some(now);
++        self.game_edges += 1;
++    }
++
++    pub fn count_unlit_player_step(&mut self, unlit: bool) {
++        self.unlit_player_steps += u32::from(unlit);
++    }
++
+     pub fn complete(self) {
+         if self.edges % STAGES == 0 && self.edges / STAGES == self.steps as usize {
+-            // C copies this bounded array before returning on the same thread.
+-            unsafe { horizon_gx2_profile_client_tick_complete(self.steps, self.stages.as_ptr()) };
++            let game_ticks =
++                if self.game_last.is_some() && self.game_edges == self.steps as usize * GAME_STAGES {
++                    self.game_stages.as_ptr()
++                } else {
++                    std::ptr::null()
++                };
++            // C copies both bounded arrays before returning on the same thread.
++            unsafe {
++                horizon_gx2_profile_client_tick_complete(
++                    self.steps,
++                    self.stages.as_ptr(),
++                    game_ticks,
++                    self.unlit_player_steps,
++                )
++            };
+         }
+     }
+ }
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index 8730620..2a368bf 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -4412,6 +4412,16 @@ impl Game<'_> {
+         cancel
+     }
+     fn tick(&mut self) -> Result<()> {
++        self.tick_with_laps(
++            #[cfg(target_os = "cafe")]
++            None,
++        )
++    }
++
++    fn tick_with_laps(
++        &mut self,
++        #[cfg(target_os = "cafe")] laps: Option<&mut horizon_client_platform::cafe_profile::ClientTickLaps>,
++    ) -> Result<()> {
+         self.expire_client_cracks();
+         if self.agent.hold_server {
+             return Ok(());
+@@ -4422,6 +4432,23 @@ impl Game<'_> {
+         if !self.is_logical_server() {
+             self.tick_client_lead()?;
+             if self.remote.is_some() {
++                #[cfg(target_os = "cafe")]
++                if let Some(laps) = laps {
++                    use horizon_client_platform::cafe_profile::ClientTickGameStage as Stage;
++                    laps.mark_game(Stage::Lead);
++                    let result = self.with_residency_tick(|game| {
++                        let unlit = game.tick_remote_level_readiness()?;
++                        laps.mark_game(Stage::Level);
++                        laps.count_unlit_player_step(unlit);
++                        game.tick_remote_tail()?;
++                        laps.mark_game(Stage::RemoteTail);
++                        Ok(())
++                    });
++                    if result.is_ok() {
++                        laps.mark_game(Stage::Residency);
++                    }
++                    return result;
++                }
+                 return self.with_residency_tick(Self::tick_remote);
+             }
+         }
+diff --git a/crates/horizon-client/src/game/network/remote/client_level_tick.rs b/crates/horizon-client/src/game/network/remote/client_level_tick.rs
+index 6b77ed3..0c2ddbf 100644
+--- a/crates/horizon-client/src/game/network/remote/client_level_tick.rs
++++ b/crates/horizon-client/src/game/network/remote/client_level_tick.rs
+@@ -18,7 +18,18 @@ pub(in crate::game) fn advance_clock(clock: &mut play::ClockState, delta: i64) -
+ /// No level means no event; failed ticks never emit the post event.
+ impl Game<'_> {
+     pub(in crate::game) fn tick_remote_level(&mut self) -> Result<()> {
+-        self.tick_remote_level_with(Self::tick_remote_level_body)
++        self.tick_remote_level_with(|game| game.tick_remote_level_body().map(|_| ()))
++    }
++
++    /// Whether the nonblocking player chunk-readiness check skipped this tick.
++    #[cfg(target_os = "cafe")]
++    pub(in crate::game) fn tick_remote_level_readiness(&mut self) -> Result<bool> {
++        let mut unlit = false;
++        self.tick_remote_level_with(|game| {
++            unlit = game.tick_remote_level_body()?;
++            Ok(())
++        })?;
++        Ok(unlit)
+     }
+ 
+     pub(in crate::game) fn tick_remote_level_with(
+@@ -44,7 +55,7 @@ impl Game<'_> {
+         result
+     }
+ 
+-    fn tick_remote_level_body(&mut self) -> Result<()> {
++    fn tick_remote_level_body(&mut self) -> Result<bool> {
+         self.fire_pending_block_entity_loads();
+         self.ticks += 1;
+         self.repro_tick();
+diff --git a/crates/horizon-client/src/game/network/remote/mod.rs b/crates/horizon-client/src/game/network/remote/mod.rs
+index 293744d..93c0df9 100644
+--- a/crates/horizon-client/src/game/network/remote/mod.rs
++++ b/crates/horizon-client/src/game/network/remote/mod.rs
+@@ -6166,6 +6166,10 @@ impl Game<'_> {
+     /// One client tick while connected (Minecraft.tick with a ClientLevel).
+     pub(super) fn tick_remote(&mut self) -> Result<()> {
+         self.tick_remote_level()?;
++        self.tick_remote_tail()
++    }
++
++    pub(in crate::game) fn tick_remote_tail(&mut self) -> Result<()> {
+         // Its rockets tick after the player (even waiting for chunks), then ParticleEngine.tick.
+         self.tick_own_rockets();
+         self.tick_remote_particle_engine();
+@@ -6183,7 +6187,7 @@ impl Game<'_> {
+         Ok(())
+     }
+ 
+-    fn tick_remote_player(&mut self, running: bool, hold: bool) -> Result<()> {
++    fn tick_remote_player(&mut self, running: bool, hold: bool) -> Result<bool> {
+         // Inventory.tick's ItemStack.inventoryTick: the pop time runs down.
+         if !hold {
+             for pop in &mut self.hotbar_pop {
+@@ -6252,7 +6256,7 @@ impl Game<'_> {
+         let pushed = pushed_after.add_vector(self.remote_pushes(true));
+         let sprint_window = self.settings.sprint_window;
+         let Some(player) = self.player.as_mut() else {
+-            return Ok(());
++            return Ok(false);
+         };
+         let (cx, cz) = (
+             (player.position.x.floor() as i32) >> 4,
+@@ -6268,7 +6272,7 @@ impl Game<'_> {
+                 let input = r.last_input;
+                 self.remote_send_state(input);
+             }
+-            return Ok(());
++            return Ok(true);
+         }
+         // LocalPlayer.tick reaches Player.tick only once the client has loaded
+         // and the player's chunk is there; its endpoints bracket that work
+@@ -6295,7 +6299,7 @@ impl Game<'_> {
+         if let Some(player) = player {
+             self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
+         }
+-        result
++        result.map(|_| false)
+     }
+ 
+     /// `LocalPlayer.tick`'s `Player.tick` work: input, riding, motion, sleep
+diff --git a/crates/horizon-client/src/game/runtime/client_tick_steps.rs b/crates/horizon-client/src/game/runtime/client_tick_steps.rs
+index e642236..5758a30 100644
+--- a/crates/horizon-client/src/game/runtime/client_tick_steps.rs
++++ b/crates/horizon-client/src/game/runtime/client_tick_steps.rs
+@@ -38,6 +38,9 @@ impl Game<'_> {
+                 }
+                 #[cfg(target_os = "cafe")]
+                 ClientTickLaps::mark(&mut laps, ClientTickStage::Pre);
++                #[cfg(target_os = "cafe")]
++                horizon_client::spans::time("tick", || self.tick_with_laps(laps.as_mut()))?;
++                #[cfg(not(target_os = "cafe"))]
+                 horizon_client::spans::time("tick", || self.tick())?;
+                 #[cfg(target_os = "cafe")]
+                 ClientTickLaps::mark(&mut laps, ClientTickStage::Game);
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 24d612d..9d81845 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -29,6 +29,7 @@
+ #define WORLD_COUNTERS 8
+ #define SCREENSHOT_STAGE 16
+ #define CLIENT_TICK_STAGE 4
++#define CLIENT_TICK_GAME_LAP 1
+ #define PLAYING_PHASE 5
+ #define CLOSING_PHASE 7
+ 
+@@ -105,15 +106,16 @@ static DeadlineSample deadlines[DEADLINE_CAPACITY], *deadline_current, *deadline
+ _Static_assert(sizeof(deadlines) <= 16 * 1024, "bounded present deadline storage");
+ 
+ enum { CLIENT_TICK_PERIOD = 120, CLIENT_TICK_CAPACITY = 32, CLIENT_TICK_STAGES = 6,
+-       CLIENT_TICK_MAX_STEPS = 10 };
++       CLIENT_TICK_GAME_STAGES = 4, CLIENT_TICK_MAX_STEPS = 10 };
+ typedef struct {
+-   uint64_t start, ticks[CLIENT_TICK_STAGES];
+-   uint32_t sequence, steps;
++   uint64_t start, ticks[CLIENT_TICK_STAGES], game_ticks[CLIENT_TICK_GAME_STAGES];
++   uint32_t sequence, steps, unlit_player_steps;
++   bool game_complete;
+ } ClientTickSample;
+ static ClientTickSample client_tick_pending, client_tick_rows[CLIENT_TICK_CAPACITY];
+ static uint32_t client_tick_bucket = UINT32_MAX, client_tick_count, client_tick_next;
+ static bool client_tick_marker, client_tick_ready;
+-_Static_assert(sizeof(client_tick_rows) <= 2 * 1024, "bounded client tick storage");
++_Static_assert(sizeof(client_tick_rows) <= 4 * 1024, "bounded client tick storage");
+ 
+ _Static_assert(sizeof(HorizonGx2GpuSample) == 72, "CafeGpuSample FFI size");
+ 
+@@ -450,13 +452,26 @@ bool horizon_gx2_profile_client_tick_begin(uint32_t steps)
+    return true;
+ }
+ 
+-void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[CLIENT_TICK_STAGES])
++void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[CLIENT_TICK_STAGES],
++                                               const uint64_t game_ticks[CLIENT_TICK_GAME_STAGES],
++                                               uint32_t unlit_player_steps)
+ {
+    if (!client_tick_playing() || !client_tick_pending.steps ||
+        steps != client_tick_pending.steps || history->total != client_tick_pending.sequence ||
+        started - history->epoch != client_tick_pending.start) return;
+    memcpy(client_tick_pending.ticks, ticks, sizeof(client_tick_pending.ticks));
+    client_tick_ready = true;
++   client_tick_pending.game_complete = false;
++   if (!game_ticks || unlit_player_steps > steps) return;
++   uint64_t remaining = ticks[CLIENT_TICK_GAME_LAP];
++   for (unsigned i = 0; i < CLIENT_TICK_GAME_STAGES; ++i) {
++      if (game_ticks[i] > remaining) return;
++      remaining -= game_ticks[i];
++   }
++   if (remaining == ticks[CLIENT_TICK_GAME_LAP]) return;
++   memcpy(client_tick_pending.game_ticks, game_ticks, sizeof(client_tick_pending.game_ticks));
++   client_tick_pending.unlit_player_steps = unlit_player_steps;
++   client_tick_pending.game_complete = true;
+ }
+ 
+ static void client_tick_finish(void)
+@@ -466,7 +481,7 @@ static void client_tick_finish(void)
+    client_tick_pending.steps = 0;
+    if (!client_tick_ready || !client_tick_playing() || sample.sequence != history->total ||
+        sample.start != started - history->epoch || current.stages[SCREENSHOT_STAGE] ||
+-       current.counters[GX2_PROFILE_PRESENTED] != 1) return;
++       current.counters[GX2_PROFILE_PRESENTED] != 1 || current.counters[GX2_PROFILE_PARTIAL]) return;
+    const uint32_t *extra = current.extra_counters;
+    if (extra[TV_SUBMISSIONS] != 1 || extra[DRC_SUBMISSIONS] != 1 ||
+        !extra[TV_SECTIONS_DRAWN] || !extra[DRC_SECTIONS_DRAWN]) return;
+@@ -501,6 +516,14 @@ static void report_client_tick_laps(void)
+                (unsigned long long)sample->start, OSTimerClockSpeed, sample->steps,
+                (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2],
+                (unsigned long long)v[3], (unsigned long long)v[4], (unsigned long long)v[5]);
++      if (sample->game_complete) {
++         v = sample->game_ticks;
++         OSReport("Horizon Cafe client tick game wall seq=%u start_ticks=%llu clock_hz=%u steps=%u "
++                  "unlit_player_steps=%u stages=%llu/%llu/%llu/%llu\n", sample->sequence,
++                  (unsigned long long)sample->start, OSTimerClockSpeed, sample->steps,
++                  sample->unlit_player_steps, (unsigned long long)v[0], (unsigned long long)v[1],
++                  (unsigned long long)v[2], (unsigned long long)v[3]);
++      }
+    }
+    client_tick_count = 0;
+ }
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 3ae6ac9..93bf7aa 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -14,6 +14,7 @@ enum {
+    GX2_PROFILE_SCAN_COPY_TV,
+    GX2_PROFILE_SCAN_COPY_DRC,
+    GX2_PROFILE_PRESENTED = 0,
++   GX2_PROFILE_PARTIAL = 1,
+    GX2_PROFILE_HUD_VERTICES = 5
+ };
+ 
+@@ -103,7 +104,8 @@ bool horizon_gx2_profile_begin(uint32_t phase);
+ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
+ bool horizon_gx2_profile_frame_laps_mode(void);
+ bool horizon_gx2_profile_client_tick_begin(uint32_t steps);
+-void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[6]);
++void horizon_gx2_profile_client_tick_complete(uint32_t steps, const uint64_t ticks[6],
++                                               const uint64_t game_ticks[4], uint32_t unlit_player_steps);
+ bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_ticks);
+ void horizon_gx2_profile_phase(uint32_t phase);
+ void horizon_gx2_profile_server_pump_scope(bool ordinary_focused);

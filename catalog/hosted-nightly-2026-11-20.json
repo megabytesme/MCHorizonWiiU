@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
-  "output_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503",
+  "output_tree": "0353bfedeaef76cab2482b7e1309cb204c1f750f",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1604,12 +1604,18 @@
       "sha256": "96198f4ba57b68657b1230ef879efc92d3ac7955e40affea69b43cfc583cc3df",
       "input_tree": "25131b7bf770123f128755782427aa05ef4f8a30",
       "output_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0266-attribute-inner-game-tick-work-in-complete-pairs.patch",
+      "sha256": "632d4303fa0c764f832ab2adc5328cd3b9a75674d7f635c5f910325f4b6c884f",
+      "input_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503",
+      "output_tree": "0353bfedeaef76cab2482b7e1309cb204c1f750f"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.69",
-    "patch": "0.5.0-rc.69"
+    "client": "0.8.0-rc.70",
+    "patch": "0.5.0-rc.70"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",
