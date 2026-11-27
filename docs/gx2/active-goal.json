@@ -208,6 +208,25 @@
     ],
     "ppc_patched_cemu_original_rc59_grouped": "save_heap_audio_and_exit_passed"
   },
+  "gamepad_entry_overlap_and_stock_fog": {
+    "candidate": "0.8.0-rc.61",
+    "engine_tree": "89af6abc06928903379aef057fd692fa1ec945ed",
+    "rpx_sha256": "e448a21739306d7070a4f0adf7889a97663cc4f10c92eb14f279dcbd37e9102d",
+    "wuhb_sha256": "35799ea2e51768b89eb9efc9dc0a6d34ea086d430506046cdcb55b0e7fc25c65",
+    "native_build": "passed",
+    "cemu_gamepad_omission_and_full_grouped_lifecycle": "passed",
+    "cemu_stock_fog_and_full_lifecycle": "passed",
+    "cemu_settled_stock_fog_admission_indices_per_output": [
+      5262,
+      262128
+    ],
+    "saved_generator_settings_host_queries_before_after": [
+      7,
+      1
+    ],
+    "physical": "supervised_comparisons_staged",
+    "receipt": "rc61-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

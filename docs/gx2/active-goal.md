@@ -129,6 +129,13 @@ before expanding that architecture.
   probe, and the unchanged RC 59 grouped game completed on the patched
   emulator. [Stock fog fixture](../../wiiu/diagnostics/gx2-near-fog/README.md) ·
   [Cemu recompiler evidence](../../wiiu/cemu/RECOMPILER.md#condition-register-liveness)
+- RC 61 exercised the GamePad entry-drain skip in ordinary grouped
+  Cemu play and reached clean saves with both outputs. Its near-fog
+  branch submitted a small share of the settled workload. The package
+  also removes repeated generator-settings reads. [RC 61 evidence](rc61-qualification.md)
+- The solid display-list fixture matched both outputs with 174 draws
+  and 32,736 bytes per view. Exact live reuse and native timing remain
+  open. [Display-list fixture](../../wiiu/diagnostics/gx2-solid-display-list/README.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

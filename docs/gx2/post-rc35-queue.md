@@ -48,6 +48,12 @@ comparison of plain rendering and the opaque no-kill shader. Stock
 Overworld fog excludes the clear-fog diagnostic from the reference.
 [RC 60 package](rc60-qualification.md) · [RC 59 package](rc59-qualification.md)
 
+RC 61 confirmed the guarded GamePad entry-drain omission in Cemu. Its
+same-build grouped control and trial take priority among the queued
+renderer comparisons. The separate stock near-fog arm exercises the
+shader on both native targets. Its Cemu run admitted about 2% of the
+settled solid indices per display. [RC 61 package](rc61-qualification.md)
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
