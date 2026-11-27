@@ -50,6 +50,7 @@
     "cemu_single_core": "one_dual_output_gameplay_pass_lifecycle_incomplete",
     "cemu_recompiler_repeat": "both_modes_observed_zero_length_farmland_base",
     "cemu_matched_multicore_restart": "rc50_rc51_rc52_failed_before_game_handoff",
+    "cemu_compact_geometry_interpreter": "both_markers_dual_output_offline_save_pass",
     "physical": "queued",
     "receipt": "rc52-qualification.md"
   },

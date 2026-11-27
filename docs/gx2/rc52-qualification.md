@@ -87,6 +87,23 @@ diagnostic compares key lengths before insertion and at the failed borrow
 while retaining the original lookup. Reliable repeated starts, single-core
 save and same-process reopening remain open.
 
+## Offline compact terrain replay
+
+A fresh interpreter run enabled both geometry markers on the exact RPX.
+The host logged the reverse-winding request and initialized the half-position
+solid shader. Gameplay returned at 502.140 s and the first paired terrain at
+526.831 s. Distinct TV and GamePad images bracketed a 60 s dwell. Backward
+input moved 4.096 blocks and the save persisted the new position. Audio
+drained all 110,078 items. The GX2 bulk heap returned to 234,880,920 bytes
+free with a largest block of 234,880,896 bytes.
+
+The session HZP3 SHA-256 is
+`6277fbdf137a119694f4b2fb359dd2a0428f0671828213ed3b7e5121c7b97a52`.
+It records 41 paired gameplay rows and up to five visible sections per
+output. The live replay confirms gameplay and save with both trial options.
+Stock saved-view residency, eligible geometry savings, pass coverage and
+pacing still require the physical comparison.
+
 ## Supervised native comparison
 
 Use the [fixed-75% reference](benchmarks.md#physical-fixed-75-saved-view)
