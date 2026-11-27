@@ -1,0 +1,422 @@
+diff --git a/wiiu/loading_host/CMakeLists.txt b/wiiu/loading_host/CMakeLists.txt
+index 06bd7fd..1ee382b 100644
+--- a/wiiu/loading_host/CMakeLists.txt
++++ b/wiiu/loading_host/CMakeLists.txt
+@@ -234,6 +234,16 @@ add_custom_command(
+    DEPENDS lightning.vert lightning.frag
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
++set(WATER_MASK_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/water_mask_gfd.o")
++add_custom_command(
++   OUTPUT "${WATER_MASK_GFD_OBJECT}"
++   COMMAND "${CAFEGLSL_COMPILER_EXECUTABLE}" -vs "${CMAKE_CURRENT_SOURCE_DIR}/water_mask.vert"
++      -ps "${CMAKE_CURRENT_SOURCE_DIR}/water_mask.frag" -o water_mask.gsh
++   COMMAND "${POWERPC_OBJCOPY_EXECUTABLE}"
++      -I binary -O elf32-powerpc -B powerpc:common water_mask.gsh water_mask_gfd.o
++   DEPENDS water_mask.vert water_mask.frag
++   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
++   VERBATIM)
+ set(WORLD_BORDER_GFD_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/world_border_gfd.o")
+ add_custom_command(
+    OUTPUT "${WORLD_BORDER_GFD_OBJECT}"
+@@ -246,7 +256,7 @@ add_custom_command(
+    VERBATIM)
+ set_source_files_properties("${WORLD_SCALE_GFD_OBJECT}" "${STOCK_SKY_GFD_OBJECT}"
+    "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}" "${END_SKY_GFD_OBJECT}"
+-   "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}"
++   "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}" "${WATER_MASK_GFD_OBJECT}"
+    PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+ 
+ add_library(horizon_wiiu_loading_host STATIC
+@@ -256,7 +266,7 @@ add_library(horizon_wiiu_loading_host STATIC
+    "${TERRAIN_HALF_GFD_OBJECT}" "${TERRAIN_ATLAS_CELLS_GFD_OBJECT}"
+    "${OUTLINE_GFD_OBJECT}" "${WORLD_SCALE_GFD_OBJECT}" "${CRUMBLING_GFD_OBJECT}" "${HAND_GFD_OBJECT}" "${MODEL_OVERLAY_GFD_OBJECT}"
+    "${STOCK_SKY_GFD_OBJECT}" "${PRECIPITATION_GFD_OBJECT}" "${SKY_BODIES_GFD_OBJECT}" "${STARS_GFD_OBJECT}"
+-   "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}")
++   "${END_SKY_GFD_OBJECT}" "${LIGHTNING_GFD_OBJECT}" "${WORLD_BORDER_GFD_OBJECT}" "${WATER_MASK_GFD_OBJECT}")
+ set_target_properties(horizon_wiiu_loading_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+ target_include_directories(horizon_wiiu_loading_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+ target_compile_options(horizon_wiiu_loading_host PRIVATE -Wall -Wextra -Werror)
+diff --git a/wiiu/loading_host/hand.c b/wiiu/loading_host/hand.c
+index 211fa93..b12baab 100644
+--- a/wiiu/loading_host/hand.c
++++ b/wiiu/loading_host/hand.c
+@@ -18,6 +18,7 @@
+ 
+ extern const uint8_t _binary_hand_gsh_start[];
+ extern const uint8_t _binary_model_overlay_gsh_start[];
++extern const uint8_t _binary_water_mask_gsh_start[];
+ 
+ typedef struct HandVertex {
+    float position_light[4], uv[2];
+@@ -38,7 +39,8 @@ enum {
+    WORLD_PASS = 0,
+    HAND_PASS = 1,
+    PARTICLE_PASS = 2,
+-   PASS_COUNT = PARTICLE_PASS + 1,
++   WATER_MASK_PASS = 3,
++   PASS_COUNT = WATER_MASK_PASS + 1,
+    BUFFER_COUNT = 2 * PASS_COUNT,
+ };
+ 
+@@ -52,6 +54,8 @@ typedef struct ModelShader {
+ 
+ typedef struct HorizonGx2Hand {
+    ModelShader base, overlays;
++   WHBGfxShaderGroup water_mask;
++   uint32_t water_mask_clip[4];
+    /* Each pass retains its backing until WHB retires both outputs. */
+    GX2RBuffer vertices[BUFFER_COUNT];
+    bool share_uploads;
+@@ -138,6 +142,7 @@ void horizon_gx2_hand_destroy(HorizonGx2Hand *hand)
+       if (GX2RBufferExists(buffer)) GX2RDestroyBufferEx(buffer, 0);
+    }
+    if (hand->overlays.group.vertexShader) WHBGfxFreeShaderGroup(&hand->overlays.group);
++   if (hand->water_mask.vertexShader) WHBGfxFreeShaderGroup(&hand->water_mask);
+    WHBGfxFreeShaderGroup(&hand->base.group);
+    free(hand);
+ }
+@@ -200,6 +205,66 @@ static int prepare_vertices(HorizonGx2Hand *hand, uint32_t target, uint32_t pass
+    return 0;
+ }
+ 
++static bool prepare_water_mask(HorizonGx2Hand *hand)
++{
++   WHBGfxShaderGroup *shader = &hand->water_mask;
++   if (!WHBGfxLoadGFDShaderGroup(shader, 0, _binary_water_mask_gsh_start)) return false;
++   GX2VertexShader *vs = shader->vertexShader;
++   GX2PixelShader *ps = shader->pixelShader;
++   if (!vs || !ps || vs->mode != GX2_SHADER_MODE_UNIFORM_REGISTER ||
++       ps->mode != GX2_SHADER_MODE_UNIFORM_REGISTER) goto fail;
++
++   const char *names[] = {"uClipX", "uClipY", "uClipZ", "uClipW"};
++   for (unsigned row = 0; row < 4; ++row)
++      if (!uniform_offset(GX2GetVertexUniformVar(vs, names[row]), &hand->water_mask_clip[row]))
++         goto fail;
++   if (!WHBGfxInitShaderAttribute(shader, "aPosition", 0, offsetof(HandVertex, position_light),
++                                   GX2_ATTRIB_FORMAT_FLOAT_32_32_32) ||
++       !WHBGfxInitFetchShader(shader)) goto fail;
++   return true;
++
++fail:
++   WHBGfxFreeShaderGroup(shader);
++   memset(shader, 0, sizeof(*shader));
++   return false;
++}
++
++int horizon_gx2_draw_water_mask(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
++                               HorizonGx2Terrain *terrain, const HandVertex *vertices,
++                               uint32_t count, const float clip_rows[16])
++{
++   if (!hand || target > 1 || !rect || !rect[2] || !rect[3] || !terrain ||
++       !vertices || !count || count % 4 || count > WORLD_MAX_VERTICES || !clip_rows) return -1;
++   if (!hand->water_mask.vertexShader && !prepare_water_mask(hand)) return -3;
++   GX2RBuffer *buffer;
++   const int result = prepare_vertices(hand, target, WATER_MASK_PASS, vertices, count, 0,
++                                       WORLD_MAX_VERTICES, &buffer);
++   if (result) return result;
++
++   WHBGfxShaderGroup *shader = &hand->water_mask;
++   GX2SetViewport(rect[0], rect[1], rect[2], rect[3], 0, 1);
++   GX2SetScissor(rect[0], rect[1], rect[2], rect[3]);
++   GX2SetShaderMode(shader->vertexShader->mode);
++   GX2SetFetchShader(&shader->fetchShader);
++   GX2SetVertexShader(shader->vertexShader);
++   GX2SetPixelShader(shader->pixelShader);
++   for (unsigned row = 0; row < 4; ++row)
++      GX2SetVertexUniformReg(hand->water_mask_clip[row], 4, clip_rows + 4 * row);
++   GX2RSetAttributeBuffer(buffer, 0, sizeof(HandVertex), 0);
++   GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
++   GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
++   GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
++   GX2SetDepthOnlyControl(TRUE, TRUE, GX2_COMPARE_FUNC_LEQUAL);
++   GX2SetTargetChannelMasks((GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0);
++   horizon_gx2_terrain_draw_quads(terrain, count);
++   GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
++                            (GX2ChannelMask)0, (GX2ChannelMask)0);
++   return 0;
++}
++
+ static int draw_models(HorizonGx2Hand *hand, uint32_t target, const uint32_t rect[4],
+                        const GX2Texture *atlas, HorizonGx2Terrain *terrain,
+                        const HandVertex *vertices, uint32_t count, const float clip_rows[16],
+diff --git a/wiiu/loading_host/hand.rs b/wiiu/loading_host/hand.rs
+index 5aadb51..146901c 100644
+--- a/wiiu/loading_host/hand.rs
++++ b/wiiu/loading_host/hand.rs
+@@ -3,13 +3,13 @@
+ use horizon_client::{
+     camera,
+     gfx::{
+-        Frame, OIT_ENTITY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
+-        TRANSLUCENT_PARTICLE_OVERLAY, fog_uniform,
++        fog_uniform, Frame, OIT_ENTITY, TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY,
++        TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY,
+     },
+     mesher::Vertex as SharedVertex,
+     overlay,
+ };
+-use horizon_wiiu_gx2_terrain::{TerrainClipRows, terrain_view_rows};
++use horizon_wiiu_gx2_terrain::{terrain_view_rows, TerrainClipRows};
+ use horizon_wiiu_platform::hud::horizon::HorizonPresenter;
+ use std::{ffi::c_void, ptr::NonNull};
+ 
+@@ -61,6 +61,15 @@ unsafe extern "C" {
+     fn horizon_gx2_hand_create(out: *mut *mut c_void) -> i32;
+     fn horizon_gx2_hand_destroy(hand: *mut c_void);
+     fn horizon_gx2_hand_begin_frame(hand: *mut c_void, share_uploads: bool);
++    fn horizon_gx2_draw_water_mask(
++        hand: *mut c_void,
++        target: u32,
++        rect: *const u32,
++        terrain: *const c_void,
++        vertices: *const Vertex,
++        vertex_count: u32,
++        clip_rows: *const f32,
++    ) -> i32;
+     fn horizon_gx2_draw_models(
+         hand: *mut c_void,
+         target: u32,
+@@ -113,6 +122,7 @@ pub(crate) struct Models {
+     world: Vec<Vertex>,
+     world_overlays: bool,
+     particles: Vec<Vertex>,
++    water_mask: Vec<Vertex>,
+ }
+ 
+ impl Models {
+@@ -126,7 +136,10 @@ impl Models {
+     }
+ 
+     pub(crate) fn is_empty(&self) -> bool {
+-        self.hand.is_empty() && self.world.is_empty() && self.particles.is_empty()
++        self.hand.is_empty()
++            && self.world.is_empty()
++            && self.particles.is_empty()
++            && self.water_mask.is_empty()
+     }
+ 
+     /// Return true if active material effects or geometry exceeded this path.
+@@ -164,6 +177,7 @@ impl Models {
+         self.world.clear();
+         self.world_overlays = false;
+         self.particles.clear();
++        self.water_mask.clear();
+         let mut coverage = Coverage {
+             world_partial: !entities.len().is_multiple_of(4),
+             ..Coverage::default()
+@@ -182,6 +196,14 @@ impl Models {
+                 continue;
+             }
+             let material = layer & 0xffff;
++            if material == WATER_MASK_OVERLAY {
++                if self.water_mask.len() == MAX_WORLD_QUADS * 4 {
++                    coverage.world_partial = true;
++                } else {
++                    self.water_mask.extend(quad.map(Vertex::from));
++                }
++                continue;
++            }
+             coverage.world_partial |= match material {
+                 0 | 1 | 5 | 16..=31 => layer & OIT_ENTITY != 0,
+                 7 | 8 => glint_alpha > 0.0 || layer & OIT_ENTITY != 0,
+@@ -268,6 +290,35 @@ impl Models {
+         )
+     }
+ 
++    pub(crate) fn draw_water_mask(
++        &mut self,
++        target: u32,
++        rect: [u32; 4],
++        projection: &TerrainClipRows,
++        terrain: NonNull<c_void>,
++    ) -> Result<(), &'static str> {
++        if self.water_mask.is_empty() {
++            return Ok(());
++        }
++        let native = self.native()?;
++        let result = unsafe {
++            horizon_gx2_draw_water_mask(
++                native.as_ptr(),
++                target,
++                rect.as_ptr(),
++                terrain.as_ptr(),
++                self.water_mask.as_ptr(),
++                self.water_mask.len() as u32,
++                projection.rows.as_ptr().cast(),
++            )
++        };
++        if result == 0 {
++            Ok(())
++        } else {
++            Err("GX2 boat water mask draw failed")
++        }
++    }
++
+     pub(crate) fn draw_translucent_particles(
+         &mut self,
+         frame: &Frame<'_>,
+@@ -299,29 +350,11 @@ impl Models {
+         terrain: NonNull<c_void>,
+         pass: DrawPass,
+     ) -> Result<(), &'static str> {
+-        let vertices = match pass {
+-            DrawPass::World => &self.world,
+-            DrawPass::FirstPerson => &self.hand,
+-            DrawPass::TranslucentParticles => &self.particles,
+-        };
+-        if vertices.is_empty() {
++        if self.vertices(pass).is_empty() {
+             return Ok(());
+         }
+-        let native = match self.native {
+-            Some(native) => native,
+-            None => {
+-                let mut resource = std::ptr::null_mut();
+-                if unsafe { horizon_gx2_hand_create(&mut resource) } != 0 {
+-                    return Err("could not create the GX2 model pipeline");
+-                }
+-                let native = NonNull::new(resource).ok_or("missing GX2 model pipeline")?;
+-                if self.share_uploads {
+-                    unsafe { horizon_gx2_hand_begin_frame(native.as_ptr(), true) };
+-                }
+-                self.native = Some(native);
+-                native
+-            }
+-        };
++        let native = self.native()?;
++        let vertices = self.vertices(pass);
+         let (fog_color, fog_ranges) = fog_uniform(frame);
+         let result = hud.with_native_atlas(|atlas| {
+             if matches!(pass, DrawPass::World) && self.world_overlays {
+@@ -374,6 +407,29 @@ impl Models {
+             Err("GX2 model draw failed")
+         }
+     }
++    fn vertices(&self, pass: DrawPass) -> &[Vertex] {
++        match pass {
++            DrawPass::World => &self.world,
++            DrawPass::FirstPerson => &self.hand,
++            DrawPass::TranslucentParticles => &self.particles,
++        }
++    }
++
++    fn native(&mut self) -> Result<NonNull<c_void>, &'static str> {
++        if let Some(native) = self.native {
++            return Ok(native);
++        }
++        let mut resource = std::ptr::null_mut();
++        if unsafe { horizon_gx2_hand_create(&mut resource) } != 0 {
++            return Err("could not create the GX2 model pipeline");
++        }
++        let native = NonNull::new(resource).ok_or("missing GX2 model pipeline")?;
++        if self.share_uploads {
++            unsafe { horizon_gx2_hand_begin_frame(native.as_ptr(), true) };
++        }
++        self.native = Some(native);
++        Ok(native)
++    }
+ }
+ 
+ impl Drop for Models {
+@@ -388,6 +444,45 @@ impl Drop for Models {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn water_mask_keeps_order_and_emits_no_colored_geometry() {
++        let mut models = Models::default();
++        let mut geometry = Vec::new();
++        geometry.extend(quad(WATER_MASK_OVERLAY, 2.0));
++        geometry.extend(quad(0, 3.0));
++        geometry.extend(quad(WATER_MASK_OVERLAY, 5.0));
++        let coverage = models.prepare_world_geometry(&geometry, 0.0);
++        assert!(!coverage.world_partial);
++        assert_eq!(models.world.len(), 4);
++        assert_eq!(models.water_mask.len(), 8);
++        assert_eq!(models.water_mask[0].position_light[0], 2.0);
++        assert_eq!(models.water_mask[4].position_light[0], 5.0);
++        assert!(!models.is_empty());
++        assert!(
++            !models
++                .prepare_world_geometry(&quad(WATER_MASK_OVERLAY, 7.0), 0.0)
++                .world_partial
++        );
++        assert!(models.world.is_empty());
++        assert!(!models.is_empty());
++        assert!(!models.prepare_world_geometry(&[], 0.0).world_partial);
++        assert!(models.is_empty());
++    }
++
++    #[test]
++    fn water_mask_capacity_reports_omissions_and_preserves_later_models() {
++        let mut geometry = quad(WATER_MASK_OVERLAY, 0.0).repeat(MAX_WORLD_QUADS + 1);
++        geometry.extend(quad(0, 1.0));
++        geometry.extend(quad(TRANSLUCENT_PARTICLE_OVERLAY, 2.0));
++        let mut models = Models::default();
++        let coverage = models.prepare_world_geometry(&geometry, 0.0);
++        assert!(coverage.world_partial);
++        assert!(!coverage.particles_partial);
++        assert_eq!(models.water_mask.len(), MAX_WORLD_QUADS * 4);
++        assert_eq!(models.world.len(), 4);
++        assert_eq!(models.particles.len(), 4);
++    }
++
+     fn quad(layer: u32, x: f32) -> [SharedVertex; 4] {
+         [SharedVertex {
+             pos: [x, 0.0, 0.0],
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index ceec5e2..d9136c4 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -3347,6 +3347,17 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.presenter
+                         .crumbling
+                         .draw(draw.frame, projection, target, world_rect, hud, false)?;
++                    // Mask setup can fail before issuing a draw. Keep both
++                    // outputs and count missing entity depth in the frame.
++                    if draw.presenter.models.draw_water_mask(
++                        target, world_rect, &projection.clip, terrain,
++                    ).is_err() {
++                        draw.presenter.frame_work.omitted_pass_mask |= 1 << 4;
++                        static REPORTED: std::sync::Once = std::sync::Once::new();
++                        REPORTED.call_once(|| unsafe {
++                            OSReport(c"Horizon GX2: boat water mask could not be prepared\n".as_ptr());
++                        });
++                    }
+                     {
+                         let _span = Span::new([Stage::WorldEntitiesTv, Stage::WorldEntitiesDrc][index]);
+                         draw.presenter.lightning.draw(terrain, world_rect, &projection.clip)?;
+diff --git a/wiiu/loading_host/water_mask.frag b/wiiu/loading_host/water_mask.frag
+new file mode 100644
+index 0000000..4a3517d
+--- /dev/null
++++ b/wiiu/loading_host/water_mask.frag
+@@ -0,0 +1,6 @@
++#version 330
++layout(location = 0) out vec4 outColor;
++
++void main() {
++    outColor = vec4(0.0);
++}
+diff --git a/wiiu/loading_host/water_mask.vert b/wiiu/loading_host/water_mask.vert
+new file mode 100644
+index 0000000..fdf43f2
+--- /dev/null
++++ b/wiiu/loading_host/water_mask.vert
+@@ -0,0 +1,12 @@
++#version 330
++layout(location = 0) in vec3 aPosition;
++uniform vec4 uClipX;
++uniform vec4 uClipY;
++uniform vec4 uClipZ;
++uniform vec4 uClipW;
++
++void main() {
++    vec4 pos = vec4(aPosition, 1.0);
++    gl_Position = vec4(dot(uClipX, pos), dot(uClipY, pos),
++                       dot(uClipZ, pos), dot(uClipW, pos));
++}
