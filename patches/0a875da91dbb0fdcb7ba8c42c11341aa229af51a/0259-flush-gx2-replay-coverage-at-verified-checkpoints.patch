@@ -1,0 +1,109 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 5ec831d..d953a7b 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -465,6 +465,58 @@ bool horizon_gx2_profile_solid_list_replay(void)
+           history == &process_history;
+ }
+ 
++enum { SOLID_REPLAY_PAIRS = 120, SOLID_REPLAY_WINDOWS = 64 };
++typedef struct {
++   uint32_t first, last, cold[2], warm[2], warm_both, min_sections[2], max_sections[2];
++} SolidReplayReport;
++typedef struct {
++   uint64_t start, end;
++   SolidReplayReport report;
++} SolidReplaySample;
++static uint32_t solid_replay_count;
++static SolidReplaySample solid_replays[SOLID_REPLAY_WINDOWS];
++_Static_assert(sizeof(SolidReplayReport) == 44, "Rust solid replay report FFI size");
++_Static_assert(sizeof(solid_replays) <= 4 * 1024, "bounded solid replay storage");
++
++static uint64_t solid_replay_row_start(const ProfileFrame *frame)
++{
++   return ((uint64_t)frame->start_hi << 32) | frame->start_lo;
++}
++
++void horizon_gx2_profile_record_solid_replay(const SolidReplayReport *report)
++{
++   if (!report || !horizon_gx2_profile_solid_list_replay() || !recording ||
++       current.phase != PLAYING_PHASE || solid_replay_count >= SOLID_REPLAY_WINDOWS ||
++       report->last != history->total || report->first > report->last ||
++       report->last - report->first != SOLID_REPLAY_PAIRS - 1) return;
++   const ProfileFrame *first = &history->ring[report->first % CAPACITY];
++   if (first->sequence != report->first || first->phase != PLAYING_PHASE) return;
++   solid_replays[solid_replay_count++] = (SolidReplaySample){
++      .start = solid_replay_row_start(first),
++      .end = started - history->epoch,
++      .report = *report,
++   };
++}
++
++static void report_solid_replay(void)
++{
++   for (uint32_t i = 0; i < solid_replay_count; ++i) {
++      const SolidReplaySample *sample = &solid_replays[i];
++      const SolidReplayReport *row = &sample->report;
++      if (row->last >= history->total || history->total - row->first > CAPACITY) continue;
++      const ProfileFrame *last = &history->ring[row->last % CAPACITY];
++      if (last->sequence != row->last || last->phase != PLAYING_PHASE ||
++          solid_replay_row_start(last) != sample->end) continue;
++      OSReport("Horizon GX2 solid list replay first=%u last=%u start=%llx end=%llx "
++               "tv_cold=%u drc_cold=%u tv_warm=%u drc_warm=%u warm_both=%u "
++               "tv_min=%u drc_min=%u tv_max=%u drc_max=%u\n", row->first, row->last,
++               (unsigned long long)sample->start, (unsigned long long)sample->end,
++               row->cold[0], row->cold[1], row->warm[0], row->warm[1], row->warm_both,
++               row->min_sections[0], row->min_sections[1], row->max_sections[0], row->max_sections[1]);
++   }
++   solid_replay_count = 0;
++}
++
+ bool horizon_gx2_profile_solid_list_census(void)
+ {
+ #ifdef HORIZON_GX2_CLEAR_FOG
+@@ -1439,6 +1491,7 @@ void horizon_gx2_profile_checkpoint_session(void)
+    if (grouped_retirement_count != 0) report_grouped_retirement();
+    if (history == &process_history && deadline_count != 0) report_deadlines();
+    if (history == &process_history && client_tick_count != 0) report_client_tick_laps();
++   if (history == &process_history && solid_replay_count != 0) report_solid_replay();
+    if (presents == history->session_presents) return;
+    history->session_presents = presents;
+    flush_to(ROOT "gx2-profile-session.hzp", ROOT "gx2-profile-session.tmp");
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index c1748c5..9ce7cef 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -284,6 +284,7 @@ extern "C" {
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
+     fn horizon_gx2_profile_solid_list_census() -> bool;
+     fn horizon_gx2_profile_solid_list_replay() -> bool;
++    fn horizon_gx2_profile_record_solid_replay(report: *const solid_lists::Report);
+     fn horizon_gx2_profile_prepared_solid_frustum() -> bool;
+     fn horizon_gx2_profile_process_history() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+@@ -4173,12 +4174,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                 !self.last_frame_partial && outputs == 3,
+                 self.frame_work.terrain_sections.map(|count| count as u32),
+             ) {
+-                unsafe {
+-                    OSReport(c"Horizon GX2 solid list replay first=%u last=%u tv_cold=%u drc_cold=%u tv_warm=%u drc_warm=%u warm_both=%u tv_min=%u drc_min=%u tv_max=%u drc_max=%u\n".as_ptr(),
+-                             row.first, row.last, row.cold[0], row.cold[1], row.warm[0], row.warm[1],
+-                             row.warm_both, row.min_sections[0], row.min_sections[1],
+-                             row.max_sections[0], row.max_sections[1]);
+-                }
++                unsafe { horizon_gx2_profile_record_solid_replay(&row) };
+             }
+         }
+         if self.last_frame_partial {
+diff --git a/wiiu/loading_host/solid_lists.rs b/wiiu/loading_host/solid_lists.rs
+index abb593c..a6a5563 100644
+--- a/wiiu/loading_host/solid_lists.rs
++++ b/wiiu/loading_host/solid_lists.rs
+@@ -112,6 +112,7 @@ impl Slot {
+ const PAIRS_PER_WINDOW: u32 = 120;
+ const MAX_WINDOWS: u32 = 64;
+ 
++#[repr(C)]
+ #[derive(Clone, Copy)]
+ pub(super) struct Report {
+     pub(super) first: u32,
