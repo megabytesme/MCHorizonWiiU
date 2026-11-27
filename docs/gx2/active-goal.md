@@ -107,7 +107,8 @@ before expanding that architecture.
 - RC 57 cuts intermediate block-grid traffic and trials earlier GX2
   submission while the previous flip is pending. The host grid fixture
   matched all 4,056 sections and cut its measured grid-fill span by
-  13.5%. The native package is staged for a same-build grouped comparison.
+  13.5%. Both grouped Cemu arms kept the saved movement and stopped at
+  HUD lane teardown. The staged grouped physical arms await resolution.
   [RC 57 qualification](rc57-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the

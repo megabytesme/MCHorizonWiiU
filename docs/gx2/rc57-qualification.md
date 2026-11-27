@@ -61,3 +61,34 @@ saved-view A/B. Record the paired cadence, combined flips, native passes
 and heap recovery. Run the queue observer separately and repeat the
 same stationary window and foreground recovery. See the
 [fixed saved-view procedure](benchmarks.md#physical-fixed-75-saved-view).
+
+## Grouped Cemu lifecycle check
+
+The exact RPX ran two multicore recompiler sessions with the same
+disposable world, prepared archive and stock fixed-75% settings. Both
+sessions used the grouped HUD lanes. One added the early submission
+marker. Both captured independently rendered TV and GamePad images
+before and after a 30-second dwell.
+
+| Observation | Grouped control | Early submission requested |
+| --- | ---: | ---: |
+| First returned Game frame | 73.627 s | 76.020 s |
+| First paired terrain gate | 76.602 s | 78.917 s |
+| Sections per output at the gate | 2 | 2 |
+| Durable backward movement | 8.623 blocks | 8.623 blocks |
+| Confirmed early flush | — | Unobserved |
+| HUD lane destruction | Assertion | Assertion |
+
+The disposable saves contain the same moved position in both runs.
+After the Game and world-cache release, both sessions stopped at the
+native HUD arena destruction assertion. Each reported a lane-token
+fallback before exit. The grouped control reproduces the failure with
+the early-flush marker absent. The trace does not establish which
+arena state prevented destruction or whether the emulator misreported
+the return. The grouped hardware arms are staged and on hold until
+retirement and teardown qualify. The stock direct path and its separate
+terrain worker validation remain eligible for testing.
+
+Acceptance receipt SHA-256, grouped control then early request:
+`31c956c9886897f69156b629e31ad94a6e0dd33342b6ea442e20cfa16235816d` and
+`a955d0c54799d780c42a8cdedd6d353e054d8f712c4d3432579182e5a96b212f`.

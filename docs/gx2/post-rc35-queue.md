@@ -39,6 +39,11 @@ the grouped early-submission trial on one verified binary. Record
 the marker files for each arm. [RC 55 package](rc55-qualification.md) ·
 [RC 57 package](rc57-qualification.md)
 
+The grouped HUD comparisons are on hold after matched Cemu arms
+reproduced a HUD arena destruction assertion. Use the stocked direct path
+for independent verification while this is resolved. The clear-fog arm
+also needs the corrected shader loader and an observed activation.
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
