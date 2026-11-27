@@ -74,6 +74,11 @@ before expanding that architecture.
   area. In the host traversal fixture, one chunk of camera motion admitted
   20 newly visible sections from a full queue. The exact native build passed.
   Village coverage still needs measurement. [RC 50 qualification](rc50-qualification.md)
+- The grouped HUD trial reached a verified retired pair in offline Cemu and
+  recovered its GX2 bulk heap after saving. The first replay duplicated the
+  GamePad capture because the Cemu test profile selected it as primary. The
+  harness now opens the TV in the main window. The three matched physical
+  arms are staged. [Grouped HUD trial](grouped-hud-trial.md)
 - The warm HUD seed completed a paired cold and warm interpreter replay.
   It saved and returned twice with the same restored GX2 bulk heap.
   The cold run exposed two full digests of the same archive.
