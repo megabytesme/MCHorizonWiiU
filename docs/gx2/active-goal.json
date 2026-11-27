@@ -363,5 +363,23 @@
     "wuhb_sha256": "0ad9f8282a31f2b11eef68ce1708210fd0615e9f5c6aae9121cddd8d8d4b5159",
     "estimated_aroma_headroom_bytes": 12657984,
     "exact_package_runtime": "pending"
+  },
+  "benchmark_ownership_and_post_qualification": {
+    "candidate": "0.8.0-rc.48",
+    "build_port_commit": "fc80a02180e06f4898bff1024d923a81885ad53f",
+    "engine_tree": "aa48e239eae36c73252b345468e4fbff7bed9520",
+    "stock_mcp_tools": 63,
+    "owned_benchmark_host_regression": "passed",
+    "revocation_host_regression": "passed",
+    "native_build": "passed",
+    "rpx_sha256": "8fd529f0b6aa2b078c1441c0df9b98234f88084909a3224adce06086b79c3f54",
+    "wuhb_sha256": "331fa3bdaccca30eed031aa151610f9004dda79ed3aec8f8593171cdcad31ce8",
+    "estimated_aroma_headroom_bytes": 12655872,
+    "owner_cemu_trial": {
+      "engine_tree": "3495345948987e46c52bd912f0e840336a253d7b",
+      "successful_same_client_cancellations": 2,
+      "previous_run_id_rejected": true
+    },
+    "exact_package_runtime": "pending"
   }
 }

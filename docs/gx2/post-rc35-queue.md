@@ -32,10 +32,10 @@ failed with error 160-2203 before entry and is retired. [Build and hardware proc
 
 ## Next supervised application run
 
-Use the verified RC 47 package for the authenticated lifecycle and save
+Use the verified RC 48 package for the authenticated lifecycle and save
 checks. Keep the RC 38 saved-camera reference for the fixed 75% workload.
-The RC 47 build record gives the RPX, WUHB and pinned source identities.
-[RC 47 qualification](rc47-qualification.md)
+The RC 48 build record gives the RPX, WUHB and pinned source identities.
+[RC 48 qualification](rc48-qualification.md)
 
 - Record at least two separate 60-second-or-longer settled HZP3 windows
   from the same 174-section pose at fixed 75%, DRS off, render 6 and

@@ -146,6 +146,12 @@ regression rejects a revoked grant after restart and verifies isolation
 of a newly paired read-only grant. The native build and package hashes
 passed. [RC 47 qualification](rc47-qualification.md)
 
+RC 48 binds MCP benchmark cancellation to its run and registered client.
+The same ownership logic passed two live Cemu cancellations and rejected
+the preceding run's ID. RC 48 also resolves the pack-defined default
+post chain during asset installation. Both authorization host fixtures
+and the verified native build passed. [RC 48 qualification](rc48-qualification.md)
+
 ## Physical queue
 
 The last deployment receipt records RC 38, profile marker `4`, the controlled

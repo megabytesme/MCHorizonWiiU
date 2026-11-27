@@ -180,7 +180,7 @@ disposable identity and the same HTTPS endpoint. Add `--game` to repeat
 the hosted launch and save using the persisted scopes and Night settings.
 The resumed run leaves local permission controls alone and requires a new
 save barrier and return to Night for each recorded round.
-# GX2 completion ABI fixture
+## GX2 completion ABI fixture
 
 The emulator's guarded renderer path now has a separate return-value
 probe for `GX2DrawDone`. The old Cemu leaves both injected `r3` values
