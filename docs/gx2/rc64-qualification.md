@@ -72,3 +72,17 @@ generator and collision preparation. Use `gx2-server-pump-profile.enable`
 for a separate measurement of integrated-server work between fixed
 simulation ticks. Keep the load and pump markers out of the timed primary
 saved-view run.
+
+The fresh generator probe `r64-b053b8d4` reached Game in 54.451 s and
+the first small paired terrain gate in 57.191 s in multicore Cemu. The
+marker recorded 13.428 s for generator data, including overlapping
+collision, support and property stages at 2.948, 7.139 and 7.294 s.
+The core motion stage took 3.030 s and ended 2.695 s after the light
+stage. The item model stage ended 2.454 s before block facts, which
+bounds the potential overlap available to a motion preparation trial.
+These stages overlap and their times should be read on one timeline.
+
+The separate pump run `r64-d62abce7` saved successfully after the initial
+15-second gameplay dwell. It yielded no complete pump sample window.
+Use a longer settled saved-view run and keep the new measurements
+separate from the primary timing comparison.
