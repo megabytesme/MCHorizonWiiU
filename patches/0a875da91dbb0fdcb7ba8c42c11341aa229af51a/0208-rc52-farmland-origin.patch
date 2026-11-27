@@ -1,0 +1,119 @@
+diff --git a/crates/horizon-client/src/landing.rs b/crates/horizon-client/src/landing.rs
+index f552d1b9e6e5258069596a82f38ec50f7f5c479b..3221202aad23f58e48fdf084c9a74dc7fe230787 100644
+--- a/crates/horizon-client/src/landing.rs
++++ b/crates/horizon-client/src/landing.rs
+@@ -57,6 +57,10 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+     let raw: BTreeMap<String, serde_json::Value> =
+         serde_json::from_slice(&fs::read(root.join("landing-definitions.json"))?)?;
+     let mut definitions = BTreeMap::new();
++    #[cfg(target_os = "cafe")]
++    let trace = crate::spans::startup::on();
++    #[cfg(target_os = "cafe")]
++    let mut farmland_origin = None;
+     for (name, d) in raw {
+         let float = |key: &str| -> Result<f32> {
+             Ok(f32::from_bits(u32::from_str_radix(
+@@ -74,9 +78,22 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+             "SlimeBlock" => FallDefinition::Slime,
+             "PowderSnowBlock" => FallDefinition::PowderSnow,
+             "PointedDripstoneBlock" => FallDefinition::PointedDripstone,
+-            "FarmlandBlock" => FallDefinition::Farmland {
+-                base_block: d["base"].as_str().ok_or("missing farmland base")?.into(),
+-            },
++            "FarmlandBlock" => {
++                let decoded = d["base"].as_str().ok_or("missing farmland base")?;
++                let base_block = String::from(decoded);
++                #[cfg(target_os = "cafe")]
++                if trace && name == "minecraft:farmland" {
++                    const DIRT: &str = "minecraft:dirt";
++                    let owned = std::hint::black_box(&base_block);
++                    farmland_origin = Some((
++                        decoded.len(),
++                        owned.len(),
++                        decoded == DIRT,
++                        owned.as_str() == DIRT,
++                    ));
++                }
++                FallDefinition::Farmland { base_block }
++            }
+             "TurtleEggBlock" => FallDefinition::TurtleEgg,
+             _ => return Err("unsupported landing family".into()),
+         };
+@@ -88,7 +105,22 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+             },
+         );
+     }
+-    Ok(BlockLandingRegistry::new(properties, &definitions)?)
++    let loaded = BlockLandingRegistry::new(properties, &definitions);
++    #[cfg(target_os = "cafe")]
++    if trace
++        && loaded
++            .as_ref()
++            .is_err_and(|err| err.to_string() == "unknown farmland base block")
++    {
++        if let Some((decoded_len, owned_len, decoded_dirt, owned_dirt)) = farmland_origin {
++            log::error!(
++                "Horizon Cafe farmland origin decoded_len={decoded_len} owned_len={owned_len} decoded_dirt={decoded_dirt} owned_dirt={owned_dirt}"
++            );
++        } else {
++            log::error!("Horizon Cafe farmland origin stock_row=false");
++        }
++    }
++    Ok(loaded?)
+ }
+ #[derive(Clone, Copy, Debug)]
+ pub enum SceneSound {
+diff --git a/crates/horizon-world/src/block_landing.rs b/crates/horizon-world/src/block_landing.rs
+index cb1081115ed6071618bb629ccdc15d8d0a10810b..3f70915afba235b336aa11a11ffda4ee869cc8ca 100644
+--- a/crates/horizon-world/src/block_landing.rs
++++ b/crates/horizon-world/src/block_landing.rs
+@@ -167,6 +167,32 @@ impl<E: fmt::Display> fmt::Display for LandingError<E> {
+     }
+ }
+ impl<E: std::error::Error + 'static> std::error::Error for LandingError<E> {}
++#[cfg(target_os = "cafe")]
++#[cold]
++#[inline(never)]
++#[allow(clippy::ptr_arg, reason = "measure the owned String before coercing to str")]
++fn trace_farmland_join_miss(
++    definitions: &BTreeMap<String, LandingDefinition>,
++    definition: &LandingDefinition,
++    state_name: &str,
++    owned: &String,
++) {
++    const FARMLAND: &str = "minecraft:farmland";
++    // Locate the actual value returned by the original join without a key search.
++    let selected = definitions
++        .iter()
++        .take(4096)
++        .find(|(_, candidate)| std::ptr::eq(*candidate, definition));
++    let owned_len = owned.len();
++    let view_len = std::hint::black_box(owned).as_str().len();
++    log::error!(
++        "Horizon Cafe farmland join state_stock={} definition_found={} definition_stock={} owned_len={owned_len} view_len={view_len}",
++        state_name == FARMLAND,
++        selected.is_some(),
++        selected.is_some_and(|(name, _)| name == FARMLAND),
++    );
++}
++
+ pub struct BlockLandingRegistry {
+     states: Vec<State>,
+ }
+@@ -221,7 +247,15 @@ impl BlockLandingRegistry {
+                 FallDefinition::Farmland { base_block } => Rule::Farmland {
+                     base: registry.default_state(base_block).ok_or_else(|| {
+                         #[cfg(target_os = "cafe")]
+-                        registry.trace_farmland_lookup_miss(base_block, id);
++                        {
++                            registry.trace_farmland_lookup_miss(base_block, id);
++                            trace_farmland_join_miss(
++                                definitions,
++                                definition,
++                                &state.name,
++                                base_block,
++                            );
++                        }
+                         invalid("unknown farmland base block")
+                     })?,
+                 },
