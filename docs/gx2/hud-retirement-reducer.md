@@ -74,3 +74,18 @@ unchanged CPU fixture in both JIT modes and the unchanged RC 59 grouped
 lifecycle in multicore mode.
 [CPU wrapper fixture](../../wiiu/diagnostics/ppc-hud-wrapper/README.md) ·
 [Cemu optimizer](../../wiiu/cemu/RECOMPILER.md#condition-register-liveness)
+
+## Check whether the final wait advances the queue
+
+Join the grouped observer serial rows to the same run's HZP3 file
+with `tools/gx2_grouped_retirement.py`. The strict count requires an
+accepted, paired playing frame with a fresh flush token that was
+already retired. The flush and post-`GX2DrawDone` submitted and retired
+tokens must all match. A later advancing submit is excluded from that
+count even when the first flush had already retired.
+
+The reducer compares the whole finish-stage time between these frames
+and frames still pending just after flush, at matching world scales,
+TV and GamePad dimensions and section counts, indices and partial
+status. That interval also includes the swap, flush and display enable.
+Timing the call alone requires its own sampled clock interval.

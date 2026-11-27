@@ -2,11 +2,12 @@
 """Join sampled GX2 queue retirement records to their HZP3 frame starts."""
 
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
+from statistics import fmean
 
 import gx2_profile as profile
 
@@ -32,6 +33,42 @@ def classification(before, submitted, retired, submitted_after, retired_after, d
     if not accepted:
         return "invalid-pair-rejected"
     return "pending-after-flush" if retired < submitted else "retired-after-flush"
+
+
+def finish_workload(frame):
+    scale = frame["world_effective_scale"]
+    if scale <= 0 or scale != frame["world_requested_scale"]:
+        return None
+    sections = (frame["tv_sections_drawn"], frame["drc_sections_drawn"])
+    outputs = tuple(frame[f"{target}_{axis}"]
+                    for target in ("tv", "drc") for axis in ("width", "height"))
+    worlds = tuple(frame[f"{target}_world_{axis}"]
+                   for target in ("tv", "drc") for axis in ("width", "height"))
+    if min(*sections, *outputs, *worlds) <= 0:
+        return None
+    return scale, sections, outputs, worlds, frame["indices"], bool(frame["partial"])
+
+
+def matched_finish_comparisons(cohorts):
+    # The HZP3 stage includes swap, flush, wait and display enable. It does
+    # not isolate GX2DrawDone or measure an alternative implementation.
+    comparisons = []
+    for key, (ready, pending) in sorted(cohorts.items()):
+        if not ready or not pending:
+            continue
+        scale, sections, outputs, worlds, indices, partial = key
+        ready_ms, pending_ms = fmean(ready), fmean(pending)
+        comparisons.append({
+            "world_scale": scale, "sections_tv_gamepad": list(sections),
+            "output_dimensions_tv_gamepad": [list(outputs[:2]), list(outputs[2:])],
+            "world_dimensions_tv_gamepad": [list(worlds[:2]), list(worlds[2:])],
+            "indices": indices, "partial": partial,
+            "retired_unchanged_samples": len(ready), "pending_samples": len(pending),
+            "retired_unchanged_finish_mean_ms": ready_ms,
+            "pending_finish_mean_ms": pending_ms,
+            "pending_minus_retired_finish_mean_ms": pending_ms - ready_ms,
+        })
+    return comparisons
 
 
 def analyze(data, serial):
@@ -60,6 +97,8 @@ def analyze(data, serial):
                 raise ValueError(f"conflicting retirement records at sequence {seq}")
 
     pairs, excluded, counts = [], [], Counter()
+    unchanged_count = 0
+    finish_cohorts = defaultdict(lambda: ([], []))
     for seq, (kind, values) in sorted(records.items()):
         frame = by_sequence[seq]
         paired = (frame["phase"] == "playing" and not frame["screenshot_ms"]
@@ -69,14 +108,28 @@ def analyze(data, serial):
             excluded.append(seq)
             continue
         counts[kind] += 1
+        # Classification already requires a fresh, accepted flush token.
+        # Compare all four endpoints to detect an advance during DrawDone.
+        unchanged = (paired and kind == "retired-after-flush"
+                     and values[1] == values[2] == values[3] == values[4])
+        unchanged_count += unchanged
+        finish_ms = frame["finish_present_ms"]
+        if paired and (unchanged or kind == "pending-after-flush"):
+            workload = finish_workload(frame)
+            if workload is not None:
+                ready, pending = finish_cohorts[workload]
+                (ready if unchanged else pending).append(finish_ms)
         pairs.append({
             "sequence": seq, "start_ticks": raw_ticks[seq], "class": kind,
             "tokens": dict(zip(TOKEN_NAMES, values[:5])),
             "draw_done": bool(values[5]), "accepted": bool(values[6]), "hzp_paired": paired,
             "partial": bool(frame["partial"]), "world_scale": frame["world_effective_scale"],
             "sections_tv_gamepad": [frame["tv_sections_drawn"], frame["drc_sections_drawn"]],
+            "retired_unchanged_during_draw_done": unchanged, "finish_present_ms": finish_ms,
         })
     return {"capture_sha256": sha256(data).hexdigest(), "records": pairs, "counts": dict(counts),
+            "retired_unchanged_during_draw_done": unchanged_count,
+            "matched_finish_comparisons": matched_finish_comparisons(finish_cohorts),
             "outside_retained": len(outside), "tick_mismatch": sorted({seq for seq, _ in mismatched}),
             "excluded_unpaired_sequences": excluded}
 
