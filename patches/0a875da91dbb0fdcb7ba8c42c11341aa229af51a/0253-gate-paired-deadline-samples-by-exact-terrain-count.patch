@@ -1,0 +1,100 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 57985c2..d3299d1 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -85,7 +85,7 @@ typedef struct {
+ } DeadlineSample;
+ 
+ static bool deadline_enabled;
+-static uint32_t deadline_count;
++static uint32_t deadline_count, deadline_sections;
+ static DeadlineSample deadlines[DEADLINE_CAPACITY], *deadline_current, *deadline_follow;
+ _Static_assert(sizeof(deadlines) <= 16 * 1024, "bounded present deadline storage");
+ 
+@@ -204,6 +204,16 @@ void horizon_gx2_profile_deadline_ready(bool grouped)
+    horizon_gx2_profile_deadline_sample(GX2_DEADLINE_READY);
+ }
+ 
++static bool deadline_matches_frame(const ProfileFrame *frame)
++{
++   if (frame->phase != PLAYING_PHASE || frame->counters[GX2_PROFILE_PRESENTED] != 1 ||
++       frame->stages[SCREENSHOT_STAGE]) return false;
++   if (!deadline_sections) return true;
++   const uint32_t *extra = frame->extra_counters;
++   return extra[TV_SUBMISSIONS] == 1 && extra[DRC_SUBMISSIONS] == 1 &&
++      extra[TV_SECTIONS_DRAWN] == deadline_sections && extra[DRC_SECTIONS_DRAWN] == deadline_sections;
++}
++
+ static void deadline_begin(void)
+ {
+    // The hosted loop starts each row as Loading before the game selects
+@@ -214,6 +224,12 @@ static void deadline_begin(void)
+    deadline_follow = NULL;
+    if (!after_playing || history->total % DEADLINE_PERIOD != 0 ||
+        deadline_count == DEADLINE_CAPACITY) return;
++   if (deadline_sections) {
++      if (!history->total) return;
++      const uint32_t previous = history->total - 1;
++      const ProfileFrame *frame = &history->ring[previous % CAPACITY];
++      if (frame->sequence != previous || !deadline_matches_frame(frame)) return;
++   }
+    deadline_current = &deadlines[deadline_count];
+    *deadline_current = (DeadlineSample){.start = started - process_history.epoch,
+                                         .sequence = history->total};
+@@ -225,8 +241,7 @@ static void deadline_finish(void)
+    if (!deadline_current) return;
+    const uint32_t required = (1u << GX2_DEADLINE_START) | (1u << GX2_DEADLINE_AFTER_FLIP_WAIT) |
+                              (1u << GX2_DEADLINE_READY) | (1u << GX2_DEADLINE_FINISHED);
+-   if (current.phase == PLAYING_PHASE && current.counters[GX2_PROFILE_PRESENTED] == 1 &&
+-       !current.stages[SCREENSHOT_STAGE] && (deadline_current->mask & required) == required) {
++   if ((deadline_current->mask & required) == required && deadline_matches_frame(&current)) {
+       ++deadline_count;
+       deadline_follow = deadline_current;
+    }
+@@ -298,6 +313,29 @@ static bool marker_end(FILE *file, int next)
+    return ended && !ferror(file);
+ }
+ 
++static bool read_deadline_sections(FILE *file, uint32_t *sections)
++{
++   uint32_t value = 0;
++   bool digits = false, trailing = false;
++   for (unsigned length = 0;; ++length) {
++      const int ch = fgetc(file);
++      if (ch == EOF) break;
++      if (length == 32) return false;
++      if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
++         trailing = digits;
++         continue;
++      }
++      if (trailing || ch < '0' || ch > '9') return false;
++      const uint32_t digit = (uint32_t)(ch - '0');
++      if (value > (UINT32_MAX - digit) / 10) return false;
++      value = value * 10 + digit;
++      digits = true;
++   }
++   if (ferror(file)) return false;
++   *sections = value;
++   return true;
++}
++
+ static void init_tv_terrain_wait_trial(void)
+ {
+    FILE *marker = fopen(ROOT "gx2-tv-terrain-wait.enable", "rb");
+@@ -425,8 +463,14 @@ void horizon_gx2_profile_init(void)
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) {
+       FILE *deadline_marker = fopen(ROOT "gx2-present-deadlines.enable", "rb");
+-      deadline_enabled = deadline_marker != NULL;
+-      if (deadline_marker) fclose(deadline_marker);
++      deadline_enabled = deadline_marker && read_deadline_sections(deadline_marker, &deadline_sections);
++      if (deadline_marker) {
++         fclose(deadline_marker);
++         if (!deadline_enabled)
++            OSReport("Horizon GX2 present deadlines ignored: expected an optional decimal section count\n");
++         else if (deadline_sections)
++            OSReport("Horizon GX2 present deadlines require %u sections on each output\n", deadline_sections);
++      }
+       FILE *census = fopen(ROOT "gx2-solid-list-census.enable", "rb");
+       solid_list_census = census != NULL;
+       if (census) fclose(census);
