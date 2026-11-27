@@ -414,39 +414,40 @@ static bool render(View views[2], List lists[2], const Tail *tail, Stage *stage,
       else WHBGfxFinishRenderDRC();
    }
 
-   // Both independent views and their scan copies are queued before the
-   // first read. Its fence must retire every list in the pair.
+   // Both lists belong to this pair until the ordinary presentation tail
+   // proves retirement. The later readback fences must not supply that proof.
    const unsigned held_mask = (lists[0].unsubmitted ? 1u : 0u) |
                               (lists[1].unsubmitted ? 2u : 0u);
    ok &= held_mask == queued_mask;
+   const OSTime before_finish = queued_mask ? GX2GetLastSubmittedTimeStamp() : 0;
+   WHBGfxFinishRender();
+   if (queued_mask) {
+      const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+      const OSTime retired = GX2GetRetiredTimeStamp();
+      unsigned verified_mask = 0;
+      for (unsigned i = 0; i < 2; ++i) {
+         List *list = &lists[i];
+         if (!(queued_mask & (1u << i))) continue;
+         const bool verified = submitted > before_finish && retire_use(list,submitted,retired);
+         const bool no_early_write = verified &&
+            !can_record(list,list->last_use-1) && can_record(list,retired);
+         if (no_early_write) verified_mask |= 1u << i;
+         OSReport("GX2 solid list fixture retirement output=%u submitted=%lld retired=%lld result=%s\n",
+                  i,(long long)submitted,(long long)retired,no_early_write?"PASS":"FAIL");
+      }
+      const bool paired = held_mask == 3 && queued_mask == 3 && verified_mask == 3;
+      ok &= paired;
+      OSReport("GX2 solid list pair retirement scaled=%u arm=%u held=%u retired=%u result=%s\n",
+               (unsigned)(scale != NULL),arm,held_mask,verified_mask,paired?"PASS":"FAIL");
+   }
    for (unsigned i = 0; i < 2; ++i) {
-      OSTime receipt;
-      const enum ReadStatus status = stage_read_with_receipt(stage,colors[i],rgba,RGBA_CAP,&receipt);
+      const enum ReadStatus status = stage_read(stage,colors[i],rgba,RGBA_CAP);
       if (status != READ_OK) {
          OSReport("GX2 solid list fixture output=%u arm=%u readback=%u\n",i,arm,status);
          return false;
       }
-      if (i == 0 && queued_mask) {
-         const OSTime retired = GX2GetRetiredTimeStamp();
-         unsigned verified_mask = 0;
-         for (unsigned j = 0; j < 2; ++j) {
-            List *list = &lists[j];
-            if (!(queued_mask & (1u << j))) continue;
-            const bool verified = retire_use(list,receipt,retired);
-            const bool no_early_write = verified &&
-               !can_record(list,list->last_use-1) && can_record(list,retired);
-            if (no_early_write) verified_mask |= 1u << j;
-            OSReport("GX2 solid list fixture retirement output=%u submitted=%lld retired=%lld result=%s\n",
-                     j,(long long)receipt,(long long)retired,no_early_write?"PASS":"FAIL");
-         }
-         const bool paired = held_mask == 3 && queued_mask == 3 && verified_mask == 3;
-         ok &= paired;
-         OSReport("GX2 solid list pair retirement scaled=%u arm=%u held=%u retired=%u result=%s\n",
-                  (unsigned)(scale != NULL),arm,held_mask,verified_mask,paired?"PASS":"FAIL");
-      }
       ok &= pixels(rgba,&views[i],arm,&stock[i]);
    }
-   WHBGfxFinishRender();
    return ok;
 }
 

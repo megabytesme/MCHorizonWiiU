@@ -5,9 +5,10 @@ section buffers on each display. TV and GamePad use different projections,
 disjoint geometry and separate 64 KiB command buffers. Each solid block
 is followed by two depth-tested, alpha-blended draws before the first
 fence or readback. The near quad must blend and the far quad must stay
-occluded. The fixture queues both outputs and both scan copies before
-the [first readback fence](../gx2-explicit-readback). That fence must
-positively retire both command lists with one submission timestamp.
+occluded. The fixture queues both outputs and both scan copies, then
+uses the ordinary `WHBGfxFinishRender` call. Its submission timestamp
+must advance and positively cover both command lists before the
+[first readback fence](../gx2-explicit-readback).
 
 The full sequence runs at the native scan sizes and again with the
 gameplay scaler and its separate 1440×809 TV and 641×360 GamePad
@@ -37,9 +38,9 @@ invalidations, all 36 image and trailing-state results, and the final
 The RC64-source run recorded 32,736 bytes per list and 192 bytes for the
 largest single draw. All 24 ordinary comparisons were byte-identical.
 The scaled attachments used 11,378,688 bytes. Each fault changed pixels
-on both displays and each pair retired under the first readback ticket.
+on both displays and each pair retired under the ordinary finish ticket.
 The verified RPX SHA-256 is
-`027f6da97146591704ed60d3accbddce4b8ff239af87357d18ef04ca38ba410c`.
+`29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860`.
 
 | Injected fault | Native TV / GamePad pixels changed | Scaled TV / GamePad pixels changed |
 | --- | ---: | ---: |
