@@ -115,7 +115,10 @@
     "host_connectivity_only_projected_solid_cave": [246, 141],
     "host_connectivity_only_confirmed_clear_rays_per_display": [74, 85],
     "active_culling": "awaits_native_occluder_proof_and_optical_camera_gate",
-    "cemu_runtime": "queued",
+    "cemu_runtime": "one_matched_dual_output_save_in_each_recompiler_mode",
+    "cemu_recompiler_ready_ms_single_multi": [153335, 71051],
+    "cemu_recompiler_paired_rows_single_multi": [28, 63],
+    "cemu_recompiler_intermittent_farmland_failure": "open",
     "physical": "queued",
     "receipt": "rc56-qualification.md"
   },

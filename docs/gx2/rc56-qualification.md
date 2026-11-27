@@ -59,4 +59,27 @@ The fixed-field Cemu probes track the stock farmland base through enum
 and struct construction, immediate insertion, the completed map, the
 constructor and the borrowed lookup. A valid stock value and a deliberate
 empty value produced the expected first-difference position in the
-reduced host control. The exact package's Cemu replay is queued.
+reduced host control.
+
+The exact RC 56 package passed one matched disposable world replay in
+each Cemu recompiler mode. Both runs drew TV and GamePad independently,
+saved movement, drained queued audio and returned to Night with
+234,880,920 GX2 bulk bytes free and a largest free block of 234,880,896 bytes.
+
+| Observation | Single-core compiler | Multicore compiler |
+| --- | ---: | ---: |
+| Game returned | 153.335 s | 71.051 s |
+| First paired terrain gate | 167.229 s | 73.797 s |
+| Gameplay pairs in the session profile | 28 | 63 |
+| Pairs without a partial flag | 0 | 1 |
+| Maximum sections per output | 7 | 9 |
+| Durable backward movement | 8.623 blocks | 8.784 blocks |
+| Audio buffers written and read | 31,541 | 14,328 |
+
+The failure-only trace did not fire in either run. The earlier intermittent
+zero-length lookup remains open. These sessions used a small terrain gate
+and serve as startup and lifecycle checks.
+
+Session HZP3 SHA-256, single then multicore:
+`f7115b8a2bd142d9a5aa14ead5337d622a9235f7df7f2430fd32522bc4b604a0` and
+`e7790aa32074ad63803ede356b7dff2c5eb5f4a2719677a678a60716946cb004`.
