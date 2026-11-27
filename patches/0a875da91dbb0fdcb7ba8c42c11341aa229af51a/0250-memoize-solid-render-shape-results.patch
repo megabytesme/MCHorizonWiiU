@@ -1,0 +1,74 @@
+diff --git a/crates/horizon-world/src/block_properties.rs b/crates/horizon-world/src/block_properties.rs
+index 15d59ea..1e30a7a 100644
+--- a/crates/horizon-world/src/block_properties.rs
++++ b/crates/horizon-world/src/block_properties.rs
+@@ -163,7 +163,9 @@ impl<'r> BlockPropertiesRegistry<'r> {
+         )?;
+         let mut result = Vec::with_capacity(registry.len());
+         let mut faces = Vec::with_capacity(registry.len());
+-        let mut face_cache = HashMap::new();
++        // Both occlusion queries depend on the immutable shape once
++        // can_occlude is true. Keep one result per table shape identity.
++        let mut occlusion_cache = HashMap::new();
+         for id in 0..registry.len() {
+             let id = BlockStateId(id as u32);
+             let state = registry.state(id).unwrap();
+@@ -173,34 +175,37 @@ impl<'r> BlockPropertiesRegistry<'r> {
+             let shape = occlusion
+                 .cached_shape(id)?
+                 .ok_or_else(|| invalid("missing block occlusion shape"))?;
+-            let mask = if properties.can_occlude {
+-                let key = std::ptr::from_ref(shape);
+-                if let Some(mask) = face_cache.get(&key) {
+-                    *mask
+-                } else {
+-                    let mask = properties
+-                        .calculate_full_occlusion_faces(shape)
++            let key = std::ptr::from_ref(shape);
++            let cached = if properties.can_occlude {
++                occlusion_cache.get(&key).copied()
++            } else {
++                None
++            };
++            let mask = match cached {
++                Some((mask, _)) => mask,
++                None if properties.can_occlude => properties
++                    .calculate_full_occlusion_faces(shape)
++                    .map_err(|e| invalid(e.to_string()))?,
++                None => 0,
++            };
++            let solid = properties.calculate_solid(collisions.cached_shape(id)?);
++            let solid_render = match cached {
++                Some((_, solid_render)) => solid_render,
++                None if properties.can_occlude => {
++                    let solid_render = properties
++                        .calculate_solid_render(shape)
+                         .map_err(|e| invalid(e.to_string()))?;
+-                    face_cache.insert(key, mask);
+-                    mask
++                    occlusion_cache.insert(key, (mask, solid_render));
++                    solid_render
+                 }
+-            } else {
+-                0
++                None => false,
+             };
+             faces.push(mask);
+             result.push(
+-                u8::from(properties.calculate_solid(collisions.cached_shape(id)?))
++                u8::from(solid)
+                     | (u8::from(properties.replaceable) << 1)
+                     | (u8::from(properties.liquid) << 2)
+-                    | (u8::from(
+-                        properties
+-                            .calculate_solid_render(
+-                                occlusion
+-                                    .cached_shape(id)?
+-                                    .ok_or_else(|| invalid("missing block occlusion shape"))?,
+-                            )
+-                            .map_err(|error| invalid(error.to_string()))?,
+-                    ) << 3)
++                    | (u8::from(solid_render) << 3)
+                     | if properties.can_occlude {
+                         CAN_OCCLUDE
+                     } else {
