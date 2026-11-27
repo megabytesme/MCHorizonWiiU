@@ -55,6 +55,16 @@ qualification. Each arm paints an explicit background on the bound
 attachments to isolate a repeated GamePad clear artifact reproduced in
 Cemu.
 
+The baseline multicore Cemu build failed the native-size re-record
+retirement in three runs. The interpreter and three matched multicore
+runs with the condition-register liveness fix completed both suites.
+Use the interpreter or that patched build for a replay control.
+[Recompiler evidence](../../cemu/RECOMPILER.md#paired-display-list-retirement)
+
+A standalone WUHB is queued for supervised correctness testing after
+the primary gameplay comparisons. It embeds the RPX above. WUHB SHA-256
+`dd377c5683285dc81f5b6442a11d45f2ac74807c6febebf975eef46fb77a255e`.
+
 The earlier RC60 fixture used repeated handles and passed 12 image
 comparisons. Its RPX SHA-256 remains
 `96000669ad40005c77617e11000d16ea1fdf841dd8408d8d9ae6113c13347a00`.

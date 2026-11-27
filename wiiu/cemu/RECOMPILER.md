@@ -240,3 +240,19 @@ restored 234,880,920 free GX2 bulk bytes, drained all 24,595 audio queue
 entries and exited with `coreinit.exit(0)`. The two runs used the same
 RPX `d613296a83fa3e3b99a3974603d8e40948836dd941ba69cd916d27efa611276e`
 and stock Full Performance settings.
+
+### Paired display-list retirement
+
+The exact [solid-list fixture](../diagnostics/gx2-solid-display-list/README.md)
+RPX `29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860`
+exercised separate command buffers at native size and with independent
+fixed-75% targets. The baseline multicore build failed the native-size
+re-record retirement check in three runs. Two runs reported only TV
+retired. One reported both checks failed. All 12 ordinary image
+comparisons reached in each run matched byte-for-byte.
+
+The same RPX completed all 36 image, ordering and depth comparisons and
+all six ordinary-finish pair retirements in the interpreter. Each of
+three matched multicore runs with the existing CR liveness patch also
+passed. The positive result covers this command-list fixture, including
+the fixed-75% path. Hosted gameplay and physical timing remain pending.
