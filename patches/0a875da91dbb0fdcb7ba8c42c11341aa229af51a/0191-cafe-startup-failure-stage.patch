@@ -1,0 +1,38 @@
+diff --git a/crates/horizon-client/src/platform/cafe.rs b/crates/horizon-client/src/platform/cafe.rs
+index 66d6cd3f31474d28c508a7d5b5d5e394f0c159ad..73db0608b826eaaf0db9c15b5ca9e94694788ac1 100644
+--- a/crates/horizon-client/src/platform/cafe.rs
++++ b/crates/horizon-client/src/platform/cafe.rs
+@@ -269,11 +269,32 @@ impl<'resources> CafeLoadingSession<'resources> {
+ 
+     pub fn poll(&mut self, event_loop: &dyn horizon_client_platform::EventLoopCtl) -> bool {
+         if let Err(error) = self.loading.poll_menu_resources() {
++            #[cfg(target_os = "cafe")]
++            log::error!("Horizon Cafe startup failure stage=resource-poll");
+             self.loading.error = Some(error);
+             return false;
+         }
+         self.loading.poll_menu_realms(&Loop(event_loop));
+-        self.failure_message().is_none()
++        let alive = self.failure_message().is_none();
++        #[cfg(target_os = "cafe")]
++        if !alive {
++            if let Some(Err(error)) = &self.loading.loaded {
++                // Only fixed labels leave the startup session. A formatted
++                // loader error can contain local paths or resource data.
++                let reason = match error.as_str() {
++                    "unknown farmland base block" => "farmland-default-missing",
++                    "missing farmland base" => "farmland-definition-base-missing",
++                    "unknown landing definition" | "missing landing definition" => {
++                        "landing-registry-mismatch"
++                    }
++                    _ => "other",
++                };
++                log::error!("Horizon Cafe startup failure stage=resource-result reason={reason}");
++            } else {
++                log::error!("Horizon Cafe startup failure stage=menu-poll");
++            }
++        }
++        alive
+     }
+ 
+     pub fn dispatch_event(

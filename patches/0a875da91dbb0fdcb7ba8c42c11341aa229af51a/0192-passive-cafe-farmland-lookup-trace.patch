@@ -1,0 +1,80 @@
+diff --git a/crates/horizon-world/src/block_landing.rs b/crates/horizon-world/src/block_landing.rs
+index c30b46292a17f03aac67aa46a82e327ccb2463b4..cb1081115ed6071618bb629ccdc15d8d0a10810b 100644
+--- a/crates/horizon-world/src/block_landing.rs
++++ b/crates/horizon-world/src/block_landing.rs
+@@ -219,9 +219,11 @@ impl BlockLandingRegistry {
+                     }
+                 }
+                 FallDefinition::Farmland { base_block } => Rule::Farmland {
+-                    base: registry
+-                        .default_state(base_block)
+-                        .ok_or_else(|| invalid("unknown farmland base block"))?,
++                    base: registry.default_state(base_block).ok_or_else(|| {
++                        #[cfg(target_os = "cafe")]
++                        registry.trace_farmland_lookup_miss(base_block, id);
++                        invalid("unknown farmland base block")
++                    })?,
+                 },
+                 FallDefinition::TurtleEgg => {
+                     let eggs = state
+diff --git a/crates/horizon-world/src/registry.rs b/crates/horizon-world/src/registry.rs
+index e05c68119f5197e9df1125c097b032f51c2af028..666a27b21529ed88c0cee020f0ee93bdf5c2d333 100644
+--- a/crates/horizon-world/src/registry.rs
++++ b/crates/horizon-world/src/registry.rs
+@@ -275,6 +275,56 @@ impl BlockRegistry {
+         self.data.defaults.get(name).copied()
+     }
+ 
++    // Diagnostic only. The failed primary lookup is still authoritative.
++    #[cfg(target_os = "cafe")]
++    #[cold]
++    #[inline(never)]
++    pub(crate) fn trace_farmland_lookup_miss(&self, base: &str, state: BlockStateId) {
++        const EXPECTED: &str = "minecraft:dirt";
++
++        #[inline(never)]
++        fn byte_eq(left: &str, right: &str) -> bool {
++            let (a, b) = (left.as_bytes(), right.as_bytes());
++            a.len() == b.len()
++                && (0..b.len()).all(|i| {
++                    // Compare live inputs through separate PPC byte loads rather
++                    // than the lexicographic comparison in the B-tree search.
++                    std::hint::black_box(a[i]) == std::hint::black_box(b[i])
++                })
++        }
++
++        let encode = |id: Option<BlockStateId>| id.map_or(u32::MAX, |id| id.0);
++        let linear = |key| {
++            self.data
++                .defaults
++                .iter()
++                .take(4096)
++                .find_map(|(name, id)| byte_eq(name.as_str(), key).then_some(*id))
++        };
++        // Record the original miss before retrying a potentially faulty
++        // search, and record the lookup results before traversing the tree.
++        log::error!(
++            "Horizon Cafe farmland miss state={} key_len={} key_dirt={} defaults={}",
++            state.0,
++            base.len(),
++            byte_eq(base, EXPECTED),
++            self.data.defaults.len(),
++        );
++        let borrowed_retry = encode(self.default_state(std::hint::black_box(base)));
++        let literal_lookup = encode(self.default_state(std::hint::black_box(EXPECTED)));
++        log::error!(
++            "Horizon Cafe farmland retry borrowed={borrowed_retry} literal={literal_lookup}"
++        );
++        let linear_borrowed = encode(linear(base));
++        let linear_literal = encode(linear(EXPECTED));
++        let dirt_state = self
++            .state(BlockStateId(10))
++            .is_some_and(|state| byte_eq(&state.name, EXPECTED));
++        log::error!(
++            "Horizon Cafe farmland scan borrowed={linear_borrowed} literal={linear_literal} dirt_state10={dirt_state}"
++        );
++    }
++
+     /// The values `property` takes on `block`, in `Property.getPossibleValues`
+     /// order. The state list is in `StateDefinition` order (properties sorted
+     /// by name, values in their own order), so a value's first appearance is
