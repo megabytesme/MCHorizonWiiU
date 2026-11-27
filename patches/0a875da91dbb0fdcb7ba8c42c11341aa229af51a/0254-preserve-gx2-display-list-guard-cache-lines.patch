@@ -1,0 +1,35 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index daf11a3..a15d623 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -866,7 +866,8 @@ enum {
+    SOLID_LIST_LINE = 32,
+    SOLID_LIST_GUARD = 0x6b,
+ };
+-_Static_assert(SOLID_LIST_MAX_DRAWS * SOLID_LIST_MAX_DRAW_BYTES <= SOLID_LIST_CAP,
++_Static_assert(SOLID_LIST_MAX_DRAWS * SOLID_LIST_MAX_DRAW_BYTES + SOLID_LIST_LINE - 1 <=
++               SOLID_LIST_CAP,
+                "solid list draw budget exceeds its arena");
+ 
+ struct HorizonGx2SolidList {
+@@ -892,7 +893,7 @@ bool horizon_gx2_solid_list_eligible(HorizonGx2Terrain *t)
+ {
+    return t && t->bound && t->shader.vertexShader &&
+           t->shader.vertexShader->mode == GX2_SHADER_MODE_UNIFORM_REGISTER &&
+-          t->section_uniform_words >= 16 && !t->legacy_attributes && !t->legacy_uniforms &&
++          t->section_uniform_words == 20 && !t->legacy_attributes && !t->legacy_uniforms &&
+           !t->half_active && !t->half_allowed && !t->atlas_cells && !t->solid_back_culling &&
+           !t->opaque_pixel.shader &&
+ #ifdef HORIZON_GX2_CLEAR_FOG
+@@ -959,8 +960,9 @@ bool horizon_gx2_solid_list_record(HorizonGx2SolidList *list, HorizonGx2Terrain
+    }
+    const uint32_t bytes = GX2EndDisplayList(list->commands);
+    require_solid_recorder_closed();
+-   DCInvalidateRange(head, SOLID_LIST_LINE);
+-   DCInvalidateRange(tail, SOLID_LIST_LINE);
++   // Preserve any cached recorder writes before checking the guard lines.
++   DCFlushRange(head, SOLID_LIST_LINE);
++   DCFlushRange(tail, SOLID_LIST_LINE);
+    if (bytes > SOLID_LIST_CAP || !solid_list_guard_ok(head) || !solid_list_guard_ok(tail))
+       hold_solid_recorder("recording exceeded the arena");
+    if (!ok || !bytes || bytes % SOLID_LIST_LINE || bytes > count * SOLID_LIST_MAX_DRAW_BYTES)
