@@ -74,7 +74,9 @@ before expanding that architecture.
   replay verified actual stride and shader use on each output. The
   same-run solid replay reducer
   joined 1,680 paired frames, including 1,545 with warm lists on both
-  displays. Physical throughput is still pending.
+  displays. The exact RC 69 recipe includes all five verified source
+  deltas. Physical throughput is still pending.
+  [RC 69 qualification](rc69-qualification.md)
 - The Windows CafeGLSL compiler reproduced RC 69's exact stock terrain
   GFD. The gutter trial cut dependent issue groups before the texture
   sample from eight to five and matched both first saved-view captures
