@@ -150,7 +150,11 @@ target dimensions. It keeps the individual results alongside the two arm
 summaries. Verify the camera, settings and independent rendering path in
 the run receipts.
 
-    python tools/gx2_saved_view_compare.py --control STOCK1 FIRST LAST --control STOCK2 FIRST LAST --trial TRIAL1 FIRST LAST --trial TRIAL2 FIRST LAST
+    python tools/gx2_saved_view_compare.py --flip-refresh-hz 59.94 --control STOCK1 FIRST LAST --control STOCK2 FIRST LAST --trial TRIAL1 FIRST LAST --trial TRIAL2 FIRST LAST
+
+Use the measured refresh rate for each matched run set. The optional flip
+summary bins consecutive combined driver flips in the same retained
+sequences and standard-scale terrain cohort as each reported window.
 
 When the test package emits a solid-terrain completion marker, the GPU
 serial join adds `solid_boundary` to its report. It matches both original

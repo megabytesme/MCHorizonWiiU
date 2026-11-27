@@ -55,7 +55,7 @@ def gpu_capture():
     return profile.read(header + b"".join(rows))[1]
 
 
-def stock_view_capture(frames, clock_hz=1000):
+def stock_view_capture(frames, clock_hz=1000, flip_ticks=0):
     rows = []
     for sequence, (start, phase, paired, scale, sections, screenshot, partial) in enumerate(frames):
         original = list(profile.ROW.unpack(row(
@@ -63,7 +63,7 @@ def stock_view_capture(frames, clock_hz=1000):
         )))
         original[6 + len(profile.STAGES) + 1] = partial
         outputs = [0] * len(profile.V2_STAGES) + [
-            1, paired, paired, paired, paired, 0, 1335, 1335, sections, sections, 1920, 1080, 854, 480,
+            1, paired, paired, paired, paired, flip_ticks, 1335, 1335, sections, sections, 1920, 1080, 854, 480,
         ]
         worlds = [0] * len(profile.V3_STAGES) + [scale, scale, 1440, 809, 641, 360, 0, 0]
         rows.append(profile.V3_ROW.pack(*original, *outputs, *worlds))
@@ -136,6 +136,24 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(window["reference_complete_pair_intervals_ms"]["p99"], 60_000)
         self.assertEqual(window["reference_dimensions"][0]["world_tv_gamepad"], [[1440, 809], [641, 360]])
         self.assertFalse(profile.summarize_stock_saved_view(frames, 0, 61)["at_least_60_seconds_retained"])
+
+    def test_repeated_windows_only_bin_combined_flips_at_the_matched_stock_scale(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mixed.hzp"
+            path.write_bytes(stock_view_capture(
+                [(i * 1000, 5, 1, 50 if i == 100 else 75, 174, 0, 0) for i in range(3605)],
+                clock_hz=60_000, flip_ticks=1000,
+            ))
+            window = saved_view_compare.retained_window(path, 2, 3602, refresh_hz=60)
+            flip, = window["reference_combined_flip_quantization"]["cohorts"]
+            self.assertEqual(flip["world_dimensions_tv_gamepad"], [[1440, 809], [641, 360]])
+            self.assertEqual(flip["paired_submissions"], 3600)
+            self.assertEqual(flip["flips_by_refresh_count"], {1: 3598})
+            self.assertEqual(flip["missed_combined_refresh_intervals"], 0)
+            self.assertEqual(window["reference_paired_submissions"], 3600)
+            self.assertEqual(window["paired_submissions_outside_reference"], 1)
+            with self.assertRaisesRegex(ValueError, "needs a refresh rate"):
+                saved_view_compare.retained_window(path, 2, 3602, refresh_hz=float("nan"))
 
     def test_saved_view_counts_single_output_loops_and_complete_pair_boundary_gaps(self):
         _, frames = profile.read(stock_view_capture([
