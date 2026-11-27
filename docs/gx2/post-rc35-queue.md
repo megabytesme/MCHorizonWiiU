@@ -165,6 +165,14 @@ The earlier RC 48 lifecycle receipt remains part of the separate review.
   720p TV setups when practical. Record viewport and depth markers and
   the fault masks. Use the fixed-75% saved world for gameplay timing.
   [Standalone viewport fixture](../../wiiu/diagnostics/gx2-independent-views/README.md)
+- After the primary fixed-75% A/B, run the two atlas diagnostics staged in
+  `standalone/atlas-sampler/`. The paired shader comparison requires all
+  40 records, both independent clears, exact stock repeats, wrong-sprite
+  controls, and a normal guest exit. For the address probe, require three
+  anchors and all 1,944 replay and wrong-address controls per output.
+  Preserve the raw X/Y and logical-size mismatch counts. Controlled
+  mismatches are valid sampler evidence.
+  [Paired atlas fixture](../../wiiu/diagnostics/gx2-atlas-parity/README.md)
 - Keep the original Village and heavy stationary runs separate. Use the
   hosted DRS decision report alongside the 30/60 physical timing probes.
   [Benchmark definitions](benchmarks.md#stationary-render-diagnostic)
