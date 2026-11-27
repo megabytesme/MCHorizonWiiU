@@ -169,7 +169,9 @@ def start(lab, cpu_mode="interpreter", title_id=None):
     profiles.mkdir(exist_ok=True)
     profile = profiles / f"{title_id}.ini"
     with profile.open("x", encoding="ascii") as output:
-        output.write(f"[General]\nstartWithPadView = true\n[CPU]\ncpuMode = {CPU_MODES[cpu_mode]}\n")
+        # Cemu already opens the separate GamePad window for the fixture.
+        # Selecting the Pad as primary would show its texture in both windows.
+        output.write(f"[General]\nstartWithPadView = false\n[CPU]\ncpuMode = {CPU_MODES[cpu_mode]}\n")
     launch = {
         "requested_cpu_mode": cpu_mode,
         "title_id": title_id,
