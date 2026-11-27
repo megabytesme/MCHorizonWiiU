@@ -57,10 +57,12 @@ def parse(serial):
     return samples
 
 
-def reduce(samples, frames, *, stride, minimum_sections=100):
+def reduce(samples, frames, *, stride, minimum_sections=100, exact_sections=None):
     """Require positive compact draws and indices on both independently rendered outputs."""
     if stride not in (20, 24) or minimum_sections < 1:
         raise ValueError('expected stride must be 20 or 24 and the terrain floor positive')
+    if exact_sections is not None and exact_sections < minimum_sections:
+        raise ValueError('exact section count must meet the terrain floor')
     if not samples:
         raise ValueError('no compact terrain draw records')
     retained = []
@@ -72,11 +74,17 @@ def reduce(samples, frames, *, stride, minimum_sections=100):
         if frame is None:
             discarded['missing_capture_row'] += 1
             continue
-        if not paired_frame(frame):
+        if (not paired_frame(frame) or frame['game_frames_built'] != 1
+            or (frame['tv_width'], frame['tv_height'], frame['drc_width'], frame['drc_height'])
+                != (1920, 1080, 854, 480)):
             discarded['ineligible_capture_row'] += 1
             continue
-        if min(frame['tv_sections_drawn'], frame['drc_sections_drawn']) < minimum_sections:
+        sections = frame['tv_sections_drawn'], frame['drc_sections_drawn']
+        if min(sections) < minimum_sections:
             discarded['below_terrain_floor'] += 1
+            continue
+        if exact_sections is not None and sections != (exact_sections, exact_sections):
+            discarded['outside_exact_terrain_cohort'] += 1
             continue
         draws = [sample.tv_draws, sample.drc_draws]
         indices = [sample.tv_indices, sample.drc_indices]
@@ -93,15 +101,17 @@ def reduce(samples, frames, *, stride, minimum_sections=100):
         })
     if not retained:
         raise ValueError(f'no eligible paired compact terrain draws ({dict(discarded)})')
-    return {'stride': stride, 'work_fields': WORK_FIELDS, 'samples': retained, 'discarded': discarded}
+    return {'stride': stride, 'work_fields': WORK_FIELDS, 'samples': retained, 'discarded': discarded,
+            'join_key': 'sequence_from_same_run_inputs'}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('capture', type=Path)
-    parser.add_argument('serial', type=Path)
+    parser.add_argument('serial', type=Path, help='verified serial log from the same run as the capture')
     parser.add_argument('--stride', type=int, choices=(20, 24), required=True)
     parser.add_argument('--minimum-sections', type=int, default=100)
+    parser.add_argument('--exact-sections', type=int, help='require this section count on each output')
     args = parser.parse_args()
     try:
         header, frames = read(args.capture.read_bytes())
@@ -109,7 +119,7 @@ def main():
             raise ValueError('a HZP3 capture is required')
         samples = parse(args.serial.read_text(encoding='utf-8', errors='replace'))
         result = reduce(samples, {row['sequence']: row for row in frames}, stride=args.stride,
-                        minimum_sections=args.minimum_sections)
+                        minimum_sections=args.minimum_sections, exact_sections=args.exact_sections)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(json.dumps(result, indent=2))
