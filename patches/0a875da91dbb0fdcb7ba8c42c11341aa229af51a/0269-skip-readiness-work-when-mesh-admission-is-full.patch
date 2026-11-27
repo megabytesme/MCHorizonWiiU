@@ -1,0 +1,33 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 3316c7c..829a904 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -2479,6 +2479,10 @@ impl Streaming {
+             });
+         }
+         hz_laps.lap("st_waiting");
++        let room = (self.workers * 32)
++            .saturating_sub(self.meshing.len() + self.upload_backlog + uploads.len());
++        // A full section-job queue still parks or drops out-of-view work.
++        // Only check lighting and rank when another mesh can be admitted.
+         // Column by column: the checks below hold for all of a column's
+         // sections, and columns waiting for light cost one look per frame.
+         columns.extend(world.dirty_sections.columns());
+@@ -2500,7 +2504,7 @@ impl Streaming {
+             // in `dirty_light` here can't be lit yet (a neighbour of theirs is
+             // missing): waiting for them could last until the player comes
+             // back.
+-            if !self.mesh_neighborhood_lit(x, z) {
++            if room == 0 || !self.mesh_neighborhood_lit(x, z) {
+                 continue;
+             }
+             candidates.push((self.distance(x, z), x, z, sections));
+@@ -2516,8 +2520,6 @@ impl Streaming {
+         // Meshes waiting for upload count too: when uploads fall behind (a
+         // low frame rate at a wide distance), meshing on held gigabytes of
+         // them until the system swapped.
+-        let room = (self.workers * 32)
+-            .saturating_sub(self.meshing.len() + self.upload_backlog + uploads.len());
+         #[cfg(target_os = "cafe")]
+         let room = if self.shared.upload_budget.used() >= cafe_upload_budget::LIMIT {
+             0
