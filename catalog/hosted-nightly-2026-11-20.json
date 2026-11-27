@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "7062177a4208a4a4129a8ccc974d1979773b2a05539b1ee6cc01cae0bf68bd35",
-  "output_tree": "aa48e239eae36c73252b345468e4fbff7bed9520",
+  "output_tree": "525181edcc48d623e3dc21d9f0793044648b3556",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1046,12 +1046,24 @@
       "sha256": "3549c2b007254c7b292964b14d82ac6d84af55082762610b89368ad0b0fdbce6",
       "input_tree": "2d25556f525e17ecec1c26abb84a279776cfa22d",
       "output_tree": "aa48e239eae36c73252b345468e4fbff7bed9520"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0173-use-compact-native-translucent-index-buffers.patch",
+      "sha256": "88e07e1a1d8cfc487e68747d1a594db22e8331f637eb9a8d333d928268453582",
+      "input_tree": "aa48e239eae36c73252b345468e4fbff7bed9520",
+      "output_tree": "b517a37e0175efca91ed3b2c6be2be4daefb8ae5"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0174-share-the-decoded-block-entity-model-document.patch",
+      "sha256": "72ca2e899421b48f31d7c78565c81e16856eeea05f45fdc5b3a0156de9e45b08",
+      "input_tree": "b517a37e0175efca91ed3b2c6be2be4daefb8ae5",
+      "output_tree": "525181edcc48d623e3dc21d9f0793044648b3556"
     }
   ],
   "candidate": {
     "builder": "0.7.0-rc.5",
-    "client": "0.8.0-rc.48",
-    "patch": "0.5.0-rc.48"
+    "client": "0.8.0-rc.49",
+    "patch": "0.5.0-rc.49"
   },
   "resource_pin": {
     "client_sha256": "4508d006323f24fa02876310c192d739af56516eb259000ac50f0909a68c9a2d",

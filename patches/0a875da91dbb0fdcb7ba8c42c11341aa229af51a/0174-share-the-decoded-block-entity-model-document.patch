@@ -1,0 +1,17 @@
+diff --git a/crates/horizon-client/src/game/world/world_rest.rs b/crates/horizon-client/src/game/world/world_rest.rs
+index 87e6b1f862edc466fd2bd18c75fbfa3a17ea4c07..b13eb4ed4941f7a591f9e3ebef3ac1dc7da37909 100644
+--- a/crates/horizon-client/src/game/world/world_rest.rs
++++ b/crates/horizon-client/src/game/world/world_rest.rs
+@@ -81,10 +81,11 @@ pub(super) fn load_world_rest(
+         if !draws {
+             return Ok(Default::default());
+         }
+-        let mut renderer = BlockEntityRenderer::load_with_visibility(
++        let mut renderer = BlockEntityRenderer::load_with_visibility_models_and_defaults(
+             resource_root,
+             registry,
+             visibility,
++            entity_models.map(horizon_client::mobs::EntityModelDocument::value),
+             resources.item_defaults(),
+         )?;
+         renderer.add_mod_signs(facts, registry);

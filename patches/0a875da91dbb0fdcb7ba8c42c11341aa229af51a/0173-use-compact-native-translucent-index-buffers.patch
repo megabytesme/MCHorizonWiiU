@@ -1,0 +1,221 @@
+diff --git a/wiiu/gx2_terrain/terrain.c b/wiiu/gx2_terrain/terrain.c
+index ab9d92eb0fc6dd0a057fdeba2f20555f0719bcb5..1a903e1eb49c9b9e9700926b9814a2f204856368 100644
+--- a/wiiu/gx2_terrain/terrain.c
++++ b/wiiu/gx2_terrain/terrain.c
+@@ -444,8 +444,7 @@ int horizon_gx2_terrain_draw_bound(HorizonGx2Terrain *t, HorizonGx2TerrainSectio
+    if (translucent && !s->sorted_indices_ready) return -1;
+    bind_section(t, s, clip_rows, section_origin);
+    if (translucent)
+-      GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, &s->sorted_indices, GX2_INDEX_TYPE_U32,
+-                      s->sorted_indices.elemCount, 0, 0, 1);
++      terrain_draw_sorted(s);
+    else
+       horizon_gx2_terrain_draw_quads(t, s->vertex_count);
+    return 0;
+diff --git a/wiiu/gx2_terrain/terrain.h b/wiiu/gx2_terrain/terrain.h
+index d0b044fc4791a6953e14082abd8e6c06b728d274..e2b48786ed1bcce9ab2541014de218dbb2cb3d1f 100644
+--- a/wiiu/gx2_terrain/terrain.h
++++ b/wiiu/gx2_terrain/terrain.h
+@@ -34,8 +34,8 @@ uint32_t horizon_gx2_terrain_index_allocation_bytes(const HorizonGx2Terrain *ter
+ int horizon_gx2_terrain_section_create(HorizonGx2TerrainSection **out,
+                                       uint32_t count, HorizonTerrainFillVertices fill,
+                                       void *context, uint32_t *allocation_bytes);
+-/* Translucent sections allocate their own U32 index backing. Its size is
+- * included in the returned allocation bytes and the estimate below. */
++/* Translucent sections allocate U16 indices through 65,536 vertices, or U32
++ * beyond that. The estimate and returned allocation bytes include the indices. */
+ int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
+                                              uint32_t count, HorizonTerrainFillVertices fill,
+                                              void *context, uint32_t *allocation_bytes);
+diff --git a/wiiu/gx2_terrain/terrain_buffers.h b/wiiu/gx2_terrain/terrain_buffers.h
+index 2354e88abc70a0ea10f0b87a9bc74a4fa39590b8..550ab10aedd5b366e4f08a74c19f28716f18406a 100644
+--- a/wiiu/gx2_terrain/terrain_buffers.h
++++ b/wiiu/gx2_terrain/terrain_buffers.h
+@@ -106,6 +106,11 @@ int horizon_gx2_terrain_section_estimate(uint32_t count, uint32_t *bytes)
+                                 sizeof(HorizonTerrainVertex), count, bytes);
+ }
+ 
++static uint32_t terrain_sorted_index_width(uint32_t vertices)
++{
++   return vertices <= UINT16_MAX + 1u ? sizeof(uint16_t) : sizeof(uint32_t);
++}
++
+ int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
+ {
+    if (horizon_gx2_terrain_section_estimate(count, bytes) != 0) return -1;
+@@ -114,7 +119,7 @@ int horizon_gx2_terrain_section_estimate_sorted(uint32_t count, uint32_t *bytes)
+    uint32_t index_bytes;
+    GX2RBuffer layout;
+    int result = terrain_buffer_layout(&layout, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+-                                      sizeof(uint32_t), count / 4 * 6, &index_bytes);
++                                      terrain_sorted_index_width(count), count / 4 * 6, &index_bytes);
+    if (result || index_bytes > UINT32_MAX - *bytes) return -1;
+    *bytes += index_bytes;
+    return 0;
+@@ -134,7 +139,7 @@ int horizon_gx2_terrain_section_create_sorted(HorizonGx2TerrainSection **out,
+    int result = horizon_gx2_terrain_section_create(&section, count, fill, context, &vertex_bytes);
+    if (result) return result;
+    result = terrain_buffer_create(&section->sorted_indices, GX2R_RESOURCE_BIND_INDEX_BUFFER,
+-                                  sizeof(uint32_t), count / 4 * 6, &index_bytes);
++                                  terrain_sorted_index_width(count), count / 4 * 6, &index_bytes);
+    if (result || vertex_bytes > expected || index_bytes != expected - vertex_bytes) {
+       horizon_gx2_terrain_section_destroy_after_wait(section);
+       return result ? result : -1;
+@@ -149,10 +154,18 @@ int horizon_gx2_terrain_section_update_indices(HorizonGx2TerrainSection *section
+ {
+    if (!section || !indices || !GX2RBufferExists(&section->sorted_indices) ||
+        count != section->sorted_indices.elemCount) return -1;
+-   uint32_t *dest = GX2RLockBufferEx(&section->sorted_indices, 0);
++   /* Validate before mapping so an invalid update preserves the last order. */
++   for (uint32_t i = 0; i < count; ++i)
++      if (indices[i] >= section->vertex_count) return -1;
++   void *dest = GX2RLockBufferEx(&section->sorted_indices, 0);
+    if (!dest) return -3;
+-   /* The shared sorter publishes native big-endian U32 values on Cafe. */
+-   memcpy(dest, indices, (size_t)count * sizeof(*indices));
++   /* Cafe is big-endian. Keep the sorter's order in the bound index type. */
++   if (section->sorted_indices.elemSize == sizeof(uint16_t)) {
++      uint16_t *compact = dest;
++      for (uint32_t i = 0; i < count; ++i) compact[i] = (uint16_t)indices[i];
++   } else {
++      memcpy(dest, indices, (size_t)count * sizeof(*indices));
++   }
+    GX2RUnlockBufferEx(&section->sorted_indices, 0);
+    section->sorted_indices_ready = true;
+    return 0;
+@@ -190,3 +203,11 @@ static void terrain_draw_indexed(GX2RBuffer *quad_indices, uint32_t vertex_count
+ {
+    terrain_draw_indexed_range(quad_indices, 0, vertex_count / 4);
+ }
++
++static void terrain_draw_sorted(HorizonGx2TerrainSection *section)
++{
++   GX2RBuffer *indices = &section->sorted_indices;
++   GX2RDrawIndexed(GX2_PRIMITIVE_MODE_TRIANGLES, indices,
++                   indices->elemSize == sizeof(uint16_t) ? GX2_INDEX_TYPE_U16 : GX2_INDEX_TYPE_U32,
++                   indices->elemCount, 0, 0, 1);
++}
+diff --git a/wiiu/gx2_terrain/tests/buffers.c b/wiiu/gx2_terrain/tests/buffers.c
+index d6f20138794b1db3790b9ffdd0352aa469ad3210..af03ba1580f087cd299a9df491dfe8667b1cb271 100644
+--- a/wiiu/gx2_terrain/tests/buffers.c
++++ b/wiiu/gx2_terrain/tests/buffers.c
+@@ -21,12 +21,13 @@ enum {
+    GX2R_RESOURCE_BIND_INDEX_BUFFER = 8,
+    GX2_PRIMITIVE_MODE_TRIANGLES = 4,
+    GX2_INDEX_TYPE_U16 = 4,
++   GX2_INDEX_TYPE_U32 = 9,
+ };
+ 
+ static bool fail_calloc, fail_create, fail_map, reject_fill, fail_indices;
+ static unsigned sections, buffers, mapped, waits, fills;
+ static unsigned draw_count;
+-static struct { uint32_t index_count, base_vertex; } draws[3];
++static struct { uint32_t index_count, base_vertex, index_type; } draws[3];
+ 
+ static void *section_calloc(size_t count, size_t bytes)
+ {
+@@ -97,12 +98,15 @@ static void GX2DrawDone(void) { ++waits; }
+ static void GX2RDrawIndexed(unsigned mode, GX2RBuffer *buffer, unsigned type,
+                            uint32_t count, uint32_t offset, uint32_t base, unsigned instances)
+ {
+-   assert(mode == GX2_PRIMITIVE_MODE_TRIANGLES && type == GX2_INDEX_TYPE_U16);
++   assert(mode == GX2_PRIMITIVE_MODE_TRIANGLES);
++   assert(type == GX2_INDEX_TYPE_U16 || type == GX2_INDEX_TYPE_U32);
++   assert(buffer->elemSize == (type == GX2_INDEX_TYPE_U16 ? 2u : 4u));
+    assert(buffer->flags & GX2R_RESOURCE_BIND_INDEX_BUFFER);
+    assert(!mapped && instances == 1 && offset == 0);
+    assert(count <= buffer->elemCount && draw_count < 3);
+    draws[draw_count].index_count = count;
+-   draws[draw_count++].base_vertex = base;
++   draws[draw_count].base_vertex = base;
++   draws[draw_count++].index_type = type;
+ }
+ 
+ #define calloc section_calloc
+@@ -223,17 +227,66 @@ static void check_sorted_section(void)
+    fail_map = false;
+    assert(!section->sorted_indices_ready);
+    assert(horizon_gx2_terrain_section_update_indices(section, sorted, 6) == 0);
+-   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, sorted, sizeof(sorted)));
++   const uint16_t compact[] = {2, 3, 0, 0, 1, 2};
++   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, compact, sizeof(compact)));
++   const uint32_t invalid[] = {2, 3, 4, 0, 1, 2};
++   assert(horizon_gx2_terrain_section_update_indices(section, invalid, 6) == -1);
++   assert(section->sorted_indices_ready && !memcmp(section->sorted_indices.buffer, compact, sizeof(compact)));
++   draw_count = 0;
++   terrain_draw_sorted(section);
++   assert(draw_count == 1 && draws[0].index_type == GX2_INDEX_TYPE_U16 && draws[0].index_count == 6);
+    assert(((HorizonTerrainVertex *)section->buffer.buffer)[0].position[0] == x);
+    horizon_gx2_terrain_section_destroy_after_wait(section);
+    assert(!sections && !buffers && waits == baseline_waits);
+ }
+ 
++static int fill_large(void *context, HorizonTerrainVertex *dest, uint32_t count)
++{
++   (void)context;
++   assert(mapped);
++   memset(dest, 0, (size_t)count * sizeof(*dest));
++   return 0;
++}
++
++static void check_index_width_boundary(void)
++{
++   const uint32_t vertex_counts[] = {65536, 65540};
++   for (unsigned mode = 0; mode < 2; ++mode) {
++      const uint32_t vertices = vertex_counts[mode];
++      const uint32_t count = vertices / 4 * 6;
++      const uint32_t width = mode == 0 ? 2 : 4;
++      HorizonGx2TerrainSection *section;
++      uint32_t estimated, actual, vertex_bytes;
++      assert(horizon_gx2_terrain_section_estimate(vertices, &vertex_bytes) == 0);
++      assert(horizon_gx2_terrain_section_estimate_sorted(vertices, &estimated) == 0);
++      assert(estimated - vertex_bytes == ((count * width + 63) & ~63u));
++      assert(horizon_gx2_terrain_section_create_sorted(
++         &section, vertices, fill_large, NULL, &actual) == 0);
++      assert(actual == estimated && section->sorted_indices.elemSize == width);
++      uint32_t *indices = malloc(count * sizeof(*indices));
++      assert(indices);
++      for (uint32_t i = 0; i < count; ++i) indices[i] = vertices - 1 - i % vertices;
++      assert(horizon_gx2_terrain_section_update_indices(section, indices, count) == 0);
++      for (uint32_t i = 0; i < count; ++i) {
++         const uint32_t read = mode == 0 ? ((uint16_t *)section->sorted_indices.buffer)[i]
++                                        : ((uint32_t *)section->sorted_indices.buffer)[i];
++         assert(read == indices[i]);
++      }
++      free(indices);
++      draw_count = 0;
++      terrain_draw_sorted(section);
++      assert(draw_count == 1 && draws[0].index_type == (mode == 0 ? GX2_INDEX_TYPE_U16 : GX2_INDEX_TYPE_U32));
++      horizon_gx2_terrain_section_destroy_after_wait(section);
++      assert(!sections && !buffers && !mapped);
++   }
++}
++
+ int main(void)
+ {
+    check_index_groups();
+    check_upload_lifetimes();
+    check_sorted_section();
++   check_index_width_boundary();
+    puts("Indexed terrain buffer tests passed");
+    return 0;
+ }
+diff --git a/wiiu/loading_host/terrain_translucency.rs b/wiiu/loading_host/terrain_translucency.rs
+index 9b1741ec1208fe43e68cc0f3b46b67c308c65830..297592c5ffd2450196e7db145a4b5ab95f15189a 100644
+--- a/wiiu/loading_host/terrain_translucency.rs
++++ b/wiiu/loading_host/terrain_translucency.rs
+@@ -333,7 +333,13 @@ impl TranslucentTerrain {
+                     section.sort.retry_upload();
+                     return Err("GX2 translucent terrain index upload failed");
+                 }
+-                index_upload_bytes += std::mem::size_of_val(indices);
++                // Match the native section width. The sorter still holds a U32 scratch list.
++                let index_width = if section.buffer.vertex_count <= u32::from(u16::MAX) + 1 {
++                    std::mem::size_of::<u16>()
++                } else {
++                    std::mem::size_of::<u32>()
++                };
++                index_upload_bytes += indices.len() * index_width;
+             }
+             let origin = projection.section_origin(key);
+             let rows = projection.clip_rows(origin);

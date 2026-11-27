@@ -2,6 +2,25 @@
   "schema": 1,
   "status": "active",
   "verified_on": "2026-11-26",
+  "overnight_focus": {
+    "independent_game_development": true,
+    "authentication_and_security_changes": "pending_separate_review",
+    "physical_qualification": "queued"
+  },
+  "compact_indices_and_model_reuse": {
+    "candidate": "0.8.0-rc.49",
+    "engine_tree": "525181edcc48d623e3dc21d9f0793044648b3556",
+    "rpx_sha256": "bbb33c5bfcf85f27da9b3d75122e22a66d5e5d63a8d4a3e7478ff352e8df739b",
+    "native_build": "passed",
+    "runtime": "pending",
+    "receipt": "rc49-qualification.md"
+  },
+  "warm_hud_replay": {
+    "validation": "cemu_interpreter",
+    "first_ready_game_ms": [696436, 529072],
+    "bulk_heap_free_after_each_round_bytes": 234880920,
+    "receipt": "warm-hud-replay.md"
+  },
   "baseline": {
     "branch": "main",
     "programme_start_commit": "deb2e4dcb73976abcc432ab6986ebceb647c2619",

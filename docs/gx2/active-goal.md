@@ -40,6 +40,17 @@ Continue toward sustained 60 and measure useful throughput above it.
 
 ## Current work
 
+- Keep tonight's changes in independent rendering, resource retirement,
+  terrain, loading, DRS and Cemu correctness. Authentication, permissions
+  and security controls are on hold for separate review.
+- RC 49 halves the native index payload for eligible sorted sections and
+  reuses the decoded block entity model document. Exact native packaging
+  and host checks passed. [RC 49 qualification](rc49-qualification.md)
+- The warm HUD seed completed a paired cold and warm interpreter replay.
+  It saved and returned twice with the same restored GX2 bulk heap.
+  The cold run exposed two full digests of the same archive.
+  [Cemu warm replay](warm-hud-replay.md)
+
 - Prioritise bounded CPU/GPU pipelining, verified retirement, independent
   viewport submission, geometry and visibility work, shaders and memory
   access. The RC 38 capture clusters at three combined refresh periods
