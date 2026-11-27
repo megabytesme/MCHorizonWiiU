@@ -154,6 +154,10 @@ before expanding that architecture.
   physical queue. The build also recovers automatic DRS from an
   elevated surface allocation failure and measures discrete model
   preparation phases. [RC 63 evidence](rc63-qualification.md)
+- RC 64 draws the stock boat water mask on each view. Matched Cemu runs
+  verified the rendered interior, surrounding water, boat persistence
+  and full GX2 bulk recovery. The exact package is staged for supervised
+  parity, Village and loading checks. [RC 64 evidence](rc64-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

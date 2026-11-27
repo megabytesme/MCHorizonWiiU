@@ -25,7 +25,7 @@ evidence for each pass. [Hosted coverage](coverage.md) ·
 | 14 | Block-entity extraction and static cache | Retained section metadata supplies bounded ordinary block-entity extraction. Desktop static caches and specialized passes remain partial. |
 | 15 | Block entities, mobs, players, items and opaque particles | Shared ordinary entity and item quads use the GX2 atlas and lightmap. Hurt, TNT and creeper overlays passed the separate dual-output fixture. Skinned geometry and specialized materials remain partial. |
 | 16 | Entity blob shadows | Entity shadow geometry has no GX2 pass. |
-| 17 | Boat water mask | The depth-only entity mask has no GX2 pass. |
+| 17 | Boat water mask | RC 64 draws the depth-only mask before translucent terrain for each output. The matched Cemu fixture cleared water inside the hull on both displays and retained adjacent water and the saved boat. Physical parity is queued. [Matched boat replay](rc64-qualification.md#boat-depth-mask) |
 | 18 | Breaking overlays | Solid and translucent cracks use separate multiply passes with shared sprite stage and UV data. The isolated dual-output fixture passed stage, wrap, alpha and blend checks. |
 | 19 | Energy swirls | The entity energy-swirl slice is omitted. |
 | 20 | Lightning and additive entity effects | Seeded lightning geometry uses the native additive, depth-tested path. General additive entity effects remain partial. |

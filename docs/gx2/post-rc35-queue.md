@@ -64,6 +64,22 @@ presentation and geometry comparisons. Its two startup sampling phases
 and automatic DRS recovery checks use separate runs.
 [RC 63 package](rc63-qualification.md)
 
+RC 64 stages boat-mask parity and the existing Village route with
+native admission records. Run its generator and server-pump markers in
+separate attribution sessions. [RC 64 package](rc64-qualification.md)
+
+| Order | Comparison | Evidence |
+| --- | --- | --- |
+| 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
+| 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
+| 3 | Same RC 60 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
+| 4 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
+| 5 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
+
+Keep screenshots outside the timing windows. Preserve stock view distances,
+materials and per-output world rendering in the reference. The viewport and
+blend diagnostics remain available as separate correctness checks.
+
 ### Paired publication timing
 
 The physical RC 38 long window averaged 50.064 ms per loop, with
@@ -86,18 +102,6 @@ observations describe the combined queue. Use each world's independent
 draw counts and timings alongside them. Cemu's aliased refresh and flip
 clocks can confirm record handling. A physical capture is needed to
 attribute elapsed refreshes.
-
-| Order | Comparison | Evidence |
-| --- | --- | --- |
-| 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
-| 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
-| 3 | Same RC 60 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
-| 4 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
-| 5 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
-
-Keep screenshots outside the timing windows. Preserve stock view distances,
-materials and per-output world rendering in the reference. The viewport and
-blend diagnostics remain available as separate correctness checks.
 
 ## Additional supervised checks
 

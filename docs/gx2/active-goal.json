@@ -291,6 +291,16 @@
     "physical": "prepared_frustum_deferred_after_presentation_priorities",
     "receipt": "rc63-qualification.md"
   },
+  "boat_depth_mask_and_stage_attribution": {
+    "candidate": "0.8.0-rc.64",
+    "engine_tree": "a22797fa38ddd43b1cd23f5435a43d718ae5f8f5",
+    "rpx_sha256": "08d257cad32c824b8f83bb98967937d51e72582d3b8221d723037121bfd4bdaf",
+    "wuhb_sha256": "b18c28fdd8b1324c309b54a46a09b2f595b44adf8a3f1b96f593eff0a414551e",
+    "native_build": "passed",
+    "cemu_boat_and_no_boat": "two_independent_outputs_save_audio_and_full_bulk_recovery",
+    "physical": "queued_supervised",
+    "receipt": "rc64-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
