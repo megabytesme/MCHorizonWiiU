@@ -94,6 +94,12 @@ before expanding that architecture.
   captures on both displays. Its fresh Cemu cache proves the exact
   native no-kill shader reached the TV draw path with culling disabled.
   GamePad shader activation and physical cost remain pending.
+- The original RC 69 Village flight reached both stock readiness gates
+  and completed in offline Cemu. It had paired terrain for 36.69% of
+  the timed route. At the first loss both outputs still tested 651
+  resident sections and the sampled queues had no ready forward mesh
+  work. Only one of the four forward points had a ready region. The
+  physical Village baseline remains RC 33. [Village trace](host-stage-profile.md#rc-69-stock-village-replay)
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)

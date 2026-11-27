@@ -131,6 +131,29 @@ class BenchmarkReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timing does not match"):
             audit.village_streaming_samples(rows, [first, loss.replace("elapsed_ms=162", "elapsed_ms=100")])
 
+    def test_mesh_readiness_joins_to_the_same_route_sample(self):
+        rows = [village_frame(100, 0)]
+        stream = (
+            "Cafe Village streaming seq=100 elapsed_ms=12 reason=lost camera=-960.00,151.44"
+            " sections=0/0 columns=108 client_pending=0 uploads=0 remote_pending=0"
+            " forward_resident=3 forward_lit=3"
+        )
+        mesh = (
+            "Cafe Village mesh seq=100 reason=lost scheduler_center=(-60, 9)"
+            " points=[[-60, 9], [-60, 10], [-60, 11], [-60, 13]] view=f region=1 stable_light=1"
+            " dirty=[0, 24, 0, 0] ready_unserved=[0, 0, 0, 0] active=[0, 0, 0, 0]"
+        )
+        row, = audit.village_streaming_samples(rows, [mesh, stream, mesh])
+        self.assertEqual(row['mesh_readiness']['region_mask'], 1)
+        self.assertEqual(row['mesh_readiness']['points_xz'][-1], [-60, 13])
+        self.assertEqual(row['mesh_readiness']['dirty'], [0, 24, 0, 0])
+        with self.assertRaisesRegex(ValueError, 'no matching streaming sample'):
+            audit.village_streaming_samples(rows, [stream, mesh.replace('reason=lost', 'reason=progress')])
+        with self.assertRaisesRegex(ValueError, 'conflicting Village mesh readiness'):
+            audit.village_streaming_samples(rows, [stream, mesh, mesh.replace('region=1', 'region=3')])
+        with self.assertRaisesRegex(ValueError, 'invalid Village mesh readiness'):
+            audit.village_streaming_samples(rows, [stream, mesh.replace('dirty=[0, 24, 0, 0]', 'dirty=[0, 24]')])
+
     def test_village_profile_rejects_ambiguous_or_mismatched_retained_frames(self):
         result = audit.summarize(benchmark(
             host_frames=3, paired_frames=3, terrain_paired_frames=3,

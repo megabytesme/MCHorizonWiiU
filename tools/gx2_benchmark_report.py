@@ -45,6 +45,12 @@ VILLAGE_TRACE = re.compile(
     r" columns=(\d+) client_pending=(\d+) uploads=(\d+) remote_pending=(\d+)"
     r" forward_resident=([0-9a-f]) forward_lit=([0-9a-f])\b"
 )
+VILLAGE_MESH_TAG = "Cafe Village mesh seq="
+VILLAGE_MESH_TRACE = re.compile(re.escape(VILLAGE_MESH_TAG) + (
+    r"(\d+) reason=(progress|lost|recovered) scheduler_center=\((-?\d+), (-?\d+)\)"
+    r" points=(\[\[.+?\]\]) view=([0-9a-f]) region=([0-9a-f]) stable_light=([0-9a-f])"
+    r" dirty=(\[[0-9, ]+\]) ready_unserved=(\[[0-9, ]+\]) active=(\[[0-9, ]+\])$"
+))
 
 
 def number(value, *, signed=False):
@@ -291,9 +297,36 @@ def village_window(frames, coverage, first_sequence=None):
 def village_streaming_samples(rows, lines):
     frames = {row["sequence"]: row for row in rows}
     samples = {}
+    meshes = {}
     earliest_flight_start = -float_info.max
     latest_flight_start = float_info.max
     for line in lines:
+        if VILLAGE_MESH_TAG in line:
+            match = VILLAGE_MESH_TRACE.search(line.rstrip())
+            if match is None:
+                raise ValueError("malformed Village mesh readiness record")
+            seq, reason, center_x, center_z, points, view, region, light, dirty, ready, active = match.groups()
+            sequence = int(seq)
+            if sequence not in frames:
+                continue
+            points, dirty, ready, active = map(json.loads, (points, dirty, ready, active))
+            if (len(points) != 4 or any(type(point) is not list or len(point) != 2
+                                       or any(type(value) is not int for value in point) for point in points)
+                or any(len(values) != 4 for values in (dirty, ready, active))):
+                raise ValueError(f"invalid Village mesh readiness values at frame {sequence}")
+            detail = {
+                "scheduler_center_xz": [int(center_x), int(center_z)],
+                "points_xz": points,
+                "view_mask": int(view, 16),
+                "region_mask": int(region, 16),
+                "stable_light_mask": int(light, 16),
+                "dirty": dirty,
+                "ready_unserved": ready,
+                "active": active,
+            }
+            if meshes.setdefault(sequence, (reason, detail)) != (reason, detail):
+                raise ValueError(f"conflicting Village mesh readiness records at frame {sequence}")
+            continue
         match = VILLAGE_TRACE.search(line)
         if not match:
             continue
@@ -330,6 +363,11 @@ def village_streaming_samples(rows, lines):
             raise ValueError(f"conflicting Village serial reports for frame {sequence}")
     if earliest_flight_start > latest_flight_start + 0.001:
         raise ValueError("Village serial timing does not match the HZP3 frame clock")
+    for sequence, (reason, detail) in meshes.items():
+        sample = samples.get(sequence)
+        if sample is None or sample["reason"] != reason:
+            raise ValueError(f"Village mesh readiness has no matching streaming sample at frame {sequence}")
+        sample["mesh_readiness"] = detail
     return [samples[seq] for seq in sorted(samples)]
 
 
@@ -369,14 +407,17 @@ def main():
                         help="correlate a stock Village report with its native capture")
     parser.add_argument("--profile-first-frame", type=int,
                         help="identify the first Village frame when coverage alone is ambiguous")
-    parser.add_argument("--serial-capture", type=Path, help="join Village streaming samples from UWP serial")
+    serial_source = parser.add_mutually_exclusive_group()
+    serial_source.add_argument("--serial-capture", type=Path, help="join Village streaming samples from UWP serial")
+    serial_source.add_argument("--serial-log", type=Path, help="join Village streaming samples from a plain same-run log")
     parser.add_argument("--serial-first-seq", type=int)
     parser.add_argument("--serial-last-seq", type=int)
     args = parser.parse_args()
     first, last = args.serial_first_seq, args.serial_last_seq
     if args.profile is not None and args.against is not None:
         parser.error("--profile and --against are mutually exclusive")
-    if args.profile is None and (args.profile_first_frame is not None or args.serial_capture is not None):
+    if args.profile is None and any(value is not None for value in
+                                    (args.profile_first_frame, args.serial_capture, args.serial_log)):
         parser.error("--profile is required for frame selection or serial correlation")
     if args.serial_capture is not None or first is not None or last is not None:
         if args.serial_capture is None or first is None or last is None or not 1 <= first <= last:
@@ -391,9 +432,13 @@ def main():
                 metadata, frames = gx2_profile.read(args.profile.read_bytes())
                 if metadata["version"] != 3:
                     raise ValueError("Village profile correlation requires HZP3")
-                lines = () if args.serial_capture is None else gx2_profile.uwp_serial_lines(
-                    args.serial_capture, first, last,
-                )
+                lines = ()
+                if args.serial_capture is not None:
+                    lines = gx2_profile.uwp_serial_lines(args.serial_capture, first, last)
+                elif args.serial_log is not None:
+                    lines = gx2_profile.plain_serial_lines(
+                        args.serial_log.read_text(encoding="utf-8", errors="replace").splitlines(),
+                    )
                 result["village_profile"] = village_profile(result, frames, args.profile_first_frame, lines)
         print(json.dumps(result, indent=2, allow_nan=False))
     except (OSError, ValueError) as error:

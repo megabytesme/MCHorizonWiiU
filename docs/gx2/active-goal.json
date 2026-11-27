@@ -63,6 +63,19 @@
     "native_fragment_shader_sha256": "99b44c68716a6dd209cfdb3cd7096afd7bf540baf961259a9052a47ef37f6605",
     "cache_report_sha256": "22c5c3eb19addb5de8f36307218ac25e2117adc934daa1e96968b8a5beb5180e"
   },
+  "stock_village_cemu_replay": {
+    "candidate": "0.8.0-rc.69",
+    "original_stock_ready_times_ms": [221093, 182265],
+    "ready_terrain_each_display_at_destination": 269,
+    "elapsed_flight_ms": 12015.155,
+    "eligible_terrain_fraction": 0.3668989705084953,
+    "paired_and_terrain_paired_frames": [379, 94],
+    "first_terrain_loss_elapsed_ms": 4479,
+    "first_loss_view_region_light_masks": [15, 1, 1],
+    "forward_ready_unserved_at_first_loss": [0, 0, 0, 0],
+    "verified_report_sha256": "21c748702c6969b781772fefc76722309fbed4b1c71cad0b5b27931025239703",
+    "physical": "pending"
+  },
   "paired_solid_list_retirement": {
     "validation": "cemu_interpreter_native_and_separate_fixed_75_targets",
     "rpx_sha256": "29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860",

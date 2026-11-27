@@ -56,6 +56,39 @@ and incomplete output. Its interval statistics use adjacent retained gameplay
 rows within each group. Worker spans use their completion interval and can
 overlap each other and the host loop. Unobserved counters appear as `null`.
 
+## RC 69 stock Village replay
+
+The exact RC 69 title ran the original local Village benchmark in Cemu
+with profile `4`, stock Full Performance, fixed 75% and independent world
+targets. The spawn gate passed at 221.093 s, with 213 resident columns and
+232 rendered sections per display. The separate Village destination gate
+passed at 182.265 s, with 130 columns, 269 sections per display and no
+pending work in its gate. Both used the ordinary 90-column requirement.
+
+The authored flight presented 379 independent pairs in 12.015 s. Both
+displays drew terrain in 94 pairs, covering 36.69% of flight wall time.
+The first loss was sequence 15,912 at 4.479 s, near `(-960, 151.44)`.
+Both outputs still tested 651 sections and drew zero. The four sampled
+forward points were in view. One reported a ready region and stable
+lighting. The observer found no ready-but-unserved or active mesh work
+at those points. Later forward samples had no ready regions, while mesh
+uploads elsewhere in the window continued and transferred 6,115,088
+vertex bytes in the 285-frame gap. These observations distinguish
+unavailable forward mesh inputs from starvation of ready mesh work in
+the sampled columns. They leave server generation, dispatch and client
+arrival as separate upstream stages to measure.
+
+The completed report returned to Night, the bulk heap recovered to
+234,880,920 bytes free, and the title exited normally. The physical
+Village target and original route remain unchanged.
+
+```sh
+python3 -B tools/gx2_benchmark_report.py VILLAGE.json --profile SESSION.hzp --serial-log CEMU_LOG
+```
+
+Joined report SHA-256
+`21c748702c6969b781772fefc76722309fbed4b1c71cad0b5b27931025239703`.
+
 ## GPU pass boundaries
 
 On a build with the sparse GPU pass sampler, use `gx2-gpu-pass-profile.enable`
