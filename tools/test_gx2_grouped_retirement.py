@@ -13,7 +13,56 @@ def record(sequence, kind, *, retired=130, offset=0, drawn=1, accepted=1, after=
             f"paired_accept={accepted}")
 
 
+def console(message, *, timestamp="08:46:40.732", channel="OSConsole"):
+    return f"[{timestamp}] [{channel}] {message}\r\n"
+
+
+def fragmented(sequence, *, digits=13, retired_offset=0):
+    submitted = 10 ** (digits - 1) + 200
+    message = (
+        f"Horizon GX2 grouped queue retirement seq={sequence} start_ticks={ticks(sequence)} "
+        f"class=pending-after-flush before_flush={submitted - 100} submitted={submitted} "
+        f"retired_at_flush={submitted - 50 + retired_offset} submitted_after_draw_done={submitted} "
+        f"retired_after_draw_done={submitted} draw_done=1 paired_accept=1"
+    )
+    return message[:270], message[270:]
+
+
 class GroupedRetirementTests(unittest.TestCase):
+    def test_joins_adjacent_same_timestamp_osconsole_fragments(self):
+        for digits in (11, 13, 16):
+            with self.subTest(digits=digits):
+                head, tail = fragmented(120, digits=digits)
+                self.assertTrue(head and tail)
+                serial = [console(head), console(tail), record(240, "retired-after-flush", retired=140)]
+                result = retirement.analyze(capture(), serial)
+                self.assertEqual([item["sequence"] for item in result["records"]], [120, 240])
+                self.assertEqual(result["counts"], {"pending-after-flush": 1, "retired-after-flush": 1})
+
+    def test_discards_ambiguous_or_interrupted_console_fragments(self):
+        head, tail = fragmented(120)
+        other_head, other_tail = fragmented(360)
+        for parts in (
+            [head, tail],
+            [console(head), console(other_head), console(tail), console(other_tail)],
+            [console(head[:-1]), console(head[-1:] + tail)],
+            [console(head), console(tail, timestamp="08:46:40.733")],
+            [console(head), console(tail, channel="Other")],
+            [console(head), console("unrelated"), console(tail)],
+            [console(head), console(tail + " unrelated")],
+            [console(head), console(tail[:-1])],
+        ):
+            with self.subTest(parts=parts):
+                result = retirement.analyze(capture(), [*parts, record(240, "pending-after-flush")])
+                self.assertEqual([item["sequence"] for item in result["records"]], [240])
+
+    def test_validates_conflicts_after_fragment_recovery(self):
+        head, tail = fragmented(120)
+        wrong_head, wrong_tail = fragmented(120, retired_offset=1)
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            retirement.analyze(capture(), [console(head), console(tail),
+                                           console(wrong_head), console(wrong_tail)])
+
     def test_matches_queue_records_to_original_paired_frames(self):
         data = capture()
         offset = profile.HEADER.size + (360 - 119) * profile.V3_ROW.size

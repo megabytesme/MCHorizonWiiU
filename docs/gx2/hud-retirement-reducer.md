@@ -89,3 +89,17 @@ and frames still pending just after flush, at matching world scales,
 TV and GamePad dimensions and section counts, indices and partial
 status. That interval also includes the swap, flush and display enable.
 Timing the call alone requires its own sampled clock interval.
+
+In the RC61 grouped Cemu capture `r61-87a7d201`, all 17 retained
+samples were still pending after flush. Every sample advanced its
+submitted token during `GX2DrawDone`. The strict eligible count was
+zero. The run completed a 60-second dual-output dwell after reaching
+100 sections per display, then saved and restored the GX2 bulk heap.
+This uses Cemu's queue behavior. The corresponding physical capture
+remains staged.
+
+Cemu split the observer lines at 270 ASCII payload bytes. The reducer
+recovers a complete record only from adjacent OSConsole chunks with
+the same timestamp. All 17 rows then matched their exact HZP3 frame
+starts, with capture SHA-256
+`2ed9eb5452a5475a3568439b492e1034052f24ed8e241cf1457205b2236e192e`.

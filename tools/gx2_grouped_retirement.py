@@ -12,8 +12,11 @@ from statistics import fmean
 import gx2_profile as profile
 
 
+RETIREMENT_PREFIX = "Horizon GX2 grouped queue retirement "
+OSCONSOLE = re.compile(r"\[([0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3})\] \[OSConsole\] (.*)")
+OSCONSOLE_CHUNK = 270
 RETIREMENT = re.compile(
-    r"Horizon GX2 grouped queue retirement seq=(\d{1,10}) start_ticks=(\d{1,20}) class=([a-z-]+) "
+    RETIREMENT_PREFIX + r"seq=(\d{1,10}) start_ticks=(\d{1,20}) class=([a-z-]+) "
     r"before_flush=(-?\d{1,19}) submitted=(-?\d{1,19}) retired_at_flush=(-?\d{1,19}) "
     r"submitted_after_draw_done=(-?\d{1,19}) retired_after_draw_done=(-?\d{1,19}) "
     r"draw_done=([01]) paired_accept=([01])\b"
@@ -21,6 +24,30 @@ RETIREMENT = re.compile(
 TOKEN_NAMES = (
     "before_flush", "submitted", "retired_at_flush", "submitted_after_draw_done", "retired_after_draw_done",
 )
+
+
+def retirement_matches(serial):
+    pending = None
+    for line in serial:
+        message = OSCONSOLE.fullmatch(line.rstrip("\r\n"))
+        may_start = pending is None
+        if pending is not None:
+            timestamp, head = pending
+            pending = None
+            if message and message[1] == timestamp and len(message[2]) <= OSCONSOLE_CHUNK:
+                match = RETIREMENT.fullmatch(head + message[2])
+                if match:
+                    yield match
+                    continue
+        yield from RETIREMENT.finditer(line)
+        # Cemu splits these ASCII OSConsole payloads at 270 bytes in the
+        # retained log. Only the immediately following chunk can finish one.
+        # Overlapping incomplete headers leave no reliable continuation.
+        if may_start and message:
+            timestamp, body = message.groups()
+            if (len(body) == OSCONSOLE_CHUNK and body.isascii()
+                    and body.startswith(RETIREMENT_PREFIX) and not RETIREMENT.fullmatch(body)):
+                pending = (timestamp, body)
 
 
 def classification(before, submitted, retired, submitted_after, retired_after, drawn, accepted):
@@ -78,23 +105,22 @@ def analyze(data, serial):
     raw_ticks = profile.hzp3_sequence_ticks(data, frames)
     by_sequence = {frame["sequence"]: frame for frame in frames}
     records, outside, mismatched = {}, set(), set()
-    for line in serial:
-        for match in RETIREMENT.finditer(line):
-            seq, start = map(int, match.groups()[:2])
-            if seq not in raw_ticks:
-                outside.add((seq, start))
-                continue
-            if start != raw_ticks[seq]:
-                mismatched.add((seq, start))
-                continue
-            values = tuple(map(int, match.groups()[3:]))
-            if seq % 120 or any(not -(1 << 63) <= value < (1 << 63) for value in values):
-                raise ValueError(f"invalid retirement record at sequence {seq}")
-            kind = classification(*values)
-            if kind != match[3]:
-                raise ValueError(f"retirement classification disagrees with tokens at sequence {seq}")
-            if records.setdefault(seq, (kind, values)) != (kind, values):
-                raise ValueError(f"conflicting retirement records at sequence {seq}")
+    for match in retirement_matches(serial):
+        seq, start = map(int, match.groups()[:2])
+        if seq not in raw_ticks:
+            outside.add((seq, start))
+            continue
+        if start != raw_ticks[seq]:
+            mismatched.add((seq, start))
+            continue
+        values = tuple(map(int, match.groups()[3:]))
+        if seq % 120 or any(not -(1 << 63) <= value < (1 << 63) for value in values):
+            raise ValueError(f"invalid retirement record at sequence {seq}")
+        kind = classification(*values)
+        if kind != match[3]:
+            raise ValueError(f"retirement classification disagrees with tokens at sequence {seq}")
+        if records.setdefault(seq, (kind, values)) != (kind, values):
+            raise ValueError(f"conflicting retirement records at sequence {seq}")
 
     pairs, excluded, counts = [], [], Counter()
     unchanged_count = 0
