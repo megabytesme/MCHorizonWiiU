@@ -1,0 +1,127 @@
+diff --git a/crates/horizon-items/src/blocks/decode.rs b/crates/horizon-items/src/blocks/decode.rs
+index 3c8dcbc..868b675 100644
+--- a/crates/horizon-items/src/blocks/decode.rs
++++ b/crates/horizon-items/src/blocks/decode.rs
+@@ -3,10 +3,14 @@
+ //! borrowed until it is interned, rather than allocating a JSON tree for every state.
+ use serde::{
+     Deserialize, Deserializer,
+-    de::{MapAccess, SeqAccess, Visitor},
++    de::{
++        MapAccess, SeqAccess, Visitor,
++        value::{MapAccessDeserializer, SeqAccessDeserializer},
++    },
+ };
+ use serde_json::{Value, value::RawValue};
+ use std::{
++    borrow::Cow,
+     collections::{HashMap, hash_map::Entry as MapEntry},
+     fmt,
+     hash::{Hash, Hasher},
+@@ -26,6 +30,15 @@ impl<'de> Deserialize<'de> for Validate {
+ }
+ 
+ trait Container<'de>: Default {
++    fn borrowed_text(_: &'de str) -> Self {
++        Self::default()
++    }
++    fn text(_: &str) -> Self {
++        Self::default()
++    }
++    fn owned_text(text: String) -> Self {
++        Self::text(&text)
++    }
+     fn map<A: MapAccess<'de>>(mut map: A) -> Result<Self, A::Error> {
+         while map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+             map.next_value::<Validate>()?;
+@@ -64,14 +77,23 @@ impl<'de, T: Container<'de>> Visitor<'de> for ContainerVisitor<T> {
+     fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
+         Ok(T::default())
+     }
+-    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<T, E> {
+-        Ok(T::default())
++    fn visit_borrowed_str<E: serde::de::Error>(self, text: &'de str) -> Result<T, E> {
++        Ok(T::borrowed_text(text))
++    }
++    fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<T, E> {
++        Ok(T::text(text))
++    }
++    fn visit_string<E: serde::de::Error>(self, text: String) -> Result<T, E> {
++        Ok(T::owned_text(text))
+     }
+ }
+ fn container<'de, D: Deserializer<'de>, T: Container<'de>>(d: D) -> Result<T, D::Error> {
+     d.deserialize_any(ContainerVisitor(PhantomData))
+ }
+ macro_rules! read_field {
++    ($map:ident, text) => {
++        $map.next_value::<Text<'_>>()?.0
++    };
+     ($map:ident, typed) => {
+         $map.next_value()?
+     };
+@@ -118,11 +140,31 @@ fn flag(v: Value) -> bool {
+ fn unsigned(v: Value) -> Option<u64> {
+     v.as_u64()
+ }
+-fn text(v: Value) -> Option<String> {
+-    if let Value::String(s) = v {
+-        Some(s)
+-    } else {
+-        None
++/// Borrow unescaped strings directly from the prepared document. The old
++/// Value path remains for unexpected containers, which still validate before
++/// yielding the field's default.
++#[derive(Default)]
++struct Text<'a>(Option<Cow<'a, str>>);
++impl<'de> Container<'de> for Text<'de> {
++    fn borrowed_text(text: &'de str) -> Self {
++        Self(Some(Cow::Borrowed(text)))
++    }
++    fn text(text: &str) -> Self {
++        Self(Some(Cow::Owned(text.to_owned())))
++    }
++    fn owned_text(text: String) -> Self {
++        Self(Some(Cow::Owned(text)))
++    }
++    fn map<A: MapAccess<'de>>(map: A) -> Result<Self, A::Error> {
++        Value::deserialize(MapAccessDeserializer::new(map)).map(|_| Self::default())
++    }
++    fn seq<A: SeqAccess<'de>>(seq: A) -> Result<Self, A::Error> {
++        Value::deserialize(SeqAccessDeserializer::new(seq)).map(|_| Self::default())
++    }
++}
++impl<'de> Deserialize<'de> for Text<'de> {
++    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
++        container(d)
+     }
+ }
+ 
+@@ -143,7 +185,7 @@ impl<'de> Deserialize<'de> for Entries<'de> {
+     }
+ }
+ object!(Gameplay<'a> { states: Entries<'a> = Entries::default() => typed });
+-object!(SoundId<'a> { id: Option<String> = None => value(text) });
++object!(SoundId<'a> { id: Option<Cow<'a, str>> = None => text });
+ object!(Sound<'a> {
+     volume: f64 = 1.0 => value(|v: Value| v.as_f64().unwrap_or(1.0)),
+     pitch: f64 = 1.0 => value(|v: Value| v.as_f64().unwrap_or(1.0)),
+@@ -169,14 +211,14 @@ object!(Entry<'a> {
+     block_entity: bool = false => value(flag),
+     liquid: bool = false => value(flag),
+     ignited_by_lava: bool = false => value(flag),
+-    push: Option<String> = None => value(text),
+-    render_shape: Option<String> = None => value(text),
++    push: Option<Cow<'a, str>> = None => text,
++    render_shape: Option<Cow<'a, str>> = None => text,
+     no_destroy_overlay: bool = false => value(flag),
+     full_collision: bool = false => value(flag),
+     friction: f64 = 0.0 => value(number),
+     explosion_resistance: f64 = 0.0 => value(number),
+-    item: Option<String> = None => value(text),
+-    pick_item: Option<String> = None => value(text),
++    item: Option<Cow<'a, str>> = None => text,
++    pick_item: Option<Cow<'a, str>> = None => text,
+     sound: Sound<'a> = Sound::default() => typed,
+     offset: bool = false => value(flag),
+     outline_offset: Option<bool> = None => value(|v: Value| v.as_bool()),
