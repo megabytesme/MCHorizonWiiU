@@ -1,0 +1,156 @@
+diff --git a/crates/horizon-client/src/landing.rs b/crates/horizon-client/src/landing.rs
+index 3221202aad23f58e48fdf084c9a74dc7fe230787..77a9034dab41ef73fb62b1c7c56f7c8fa55b217d 100644
+--- a/crates/horizon-client/src/landing.rs
++++ b/crates/horizon-client/src/landing.rs
+@@ -54,6 +54,9 @@ pub fn native_living_fall(
+ }
+ 
+ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLandingRegistry> {
++    #[cfg(target_os = "cafe")]
++    use horizon_world::block_landing::cafe_farmland_checkpoint;
++
+     let raw: BTreeMap<String, serde_json::Value> =
+         serde_json::from_slice(&fs::read(root.join("landing-definitions.json"))?)?;
+     let mut definitions = BTreeMap::new();
+@@ -61,6 +64,8 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+     let trace = crate::spans::startup::on();
+     #[cfg(target_os = "cafe")]
+     let mut farmland_origin = None;
++    #[cfg(target_os = "cafe")]
++    let (mut formed_arm, mut inserted) = (None, None);
+     for (name, d) in raw {
+         let float = |key: &str| -> Result<f32> {
+             Ok(f32::from_bits(u32::from_str_radix(
+@@ -97,6 +102,12 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+             "TurtleEggBlock" => FallDefinition::TurtleEgg,
+             _ => return Err("unsupported landing family".into()),
+         };
++        #[cfg(target_os = "cafe")]
++        let inspect = farmland_origin.is_some() && inserted.is_none();
++        #[cfg(target_os = "cafe")]
++        if inspect {
++            formed_arm = Some(cafe_farmland_checkpoint(Some(&fall)));
++        }
+         definitions.insert(
+             name,
+             LandingDefinition {
+@@ -104,7 +115,17 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+                 shelf_mushroom_bounce: d["bounce"].as_bool().ok_or("missing bounce flag")?,
+             },
+         );
++        #[cfg(target_os = "cafe")]
++        if inspect {
++            inserted = Some(cafe_farmland_checkpoint(
++                definitions.get("minecraft:farmland").map(|entry| &entry.fall),
++            ));
++        }
+     }
++    #[cfg(target_os = "cafe")]
++    let finalized = trace.then(|| {
++        cafe_farmland_checkpoint(definitions.get("minecraft:farmland").map(|entry| &entry.fall))
++    });
+     let loaded = BlockLandingRegistry::new(properties, &definitions);
+     #[cfg(target_os = "cafe")]
+     if trace
+@@ -119,6 +140,9 @@ pub fn load(root: &Path, properties: &MovementProperties<'_>) -> Result<BlockLan
+         } else {
+             log::error!("Horizon Cafe farmland origin stock_row=false");
+         }
++        log::error!(
++            "Horizon Cafe farmland map formed_arm={formed_arm:?} inserted={inserted:?} finalized={finalized:?}"
++        );
+     }
+     Ok(loaded?)
+ }
+diff --git a/crates/horizon-world/src/block_landing.rs b/crates/horizon-world/src/block_landing.rs
+index 3f70915afba235b336aa11a11ffda4ee869cc8ca..8978239b96e3fd22981549a22be2e22ccf7d3f63 100644
+--- a/crates/horizon-world/src/block_landing.rs
++++ b/crates/horizon-world/src/block_landing.rs
+@@ -167,6 +167,34 @@ impl<E: fmt::Display> fmt::Display for LandingError<E> {
+     }
+ }
+ impl<E: std::error::Error + 'static> std::error::Error for LandingError<E> {}
++/// Fixed fields for the Cafe startup failure trace.
++#[cfg(target_os = "cafe")]
++#[doc(hidden)]
++#[derive(Clone, Copy, Debug)]
++pub enum CafeFarmlandCheckpoint {
++    Missing,
++    DifferentFamily,
++    Farmland { owned_len: usize, view_len: usize },
++}
++
++/// Inspect the existing value without taking its string allocation.
++#[cfg(target_os = "cafe")]
++#[doc(hidden)]
++#[inline(never)]
++pub fn cafe_farmland_checkpoint(fall: Option<&FallDefinition>) -> CafeFarmlandCheckpoint {
++    match fall {
++        None => CafeFarmlandCheckpoint::Missing,
++        Some(FallDefinition::Farmland { base_block }) => {
++            let view = std::hint::black_box(base_block).as_str();
++            CafeFarmlandCheckpoint::Farmland {
++                owned_len: base_block.len(),
++                view_len: view.len(),
++            }
++        }
++        Some(_) => CafeFarmlandCheckpoint::DifferentFamily,
++    }
++}
++
+ #[cfg(target_os = "cafe")]
+ #[cold]
+ #[inline(never)]
+@@ -201,6 +229,9 @@ impl BlockLandingRegistry {
+         properties: &MovementProperties<'_>,
+         definitions: &BTreeMap<String, LandingDefinition>,
+     ) -> io::Result<Self> {
++        #[cfg(target_os = "cafe")]
++        let constructor_entry =
++            cafe_farmland_checkpoint(definitions.get("minecraft:farmland").map(|entry| &entry.fall));
+         let registry = properties.registry();
+         if definitions
+             .keys()
+@@ -244,20 +275,28 @@ impl BlockLandingRegistry {
+                         Rule::Default
+                     }
+                 }
+-                FallDefinition::Farmland { base_block } => Rule::Farmland {
+-                    base: registry.default_state(base_block).ok_or_else(|| {
+-                        #[cfg(target_os = "cafe")]
+-                        {
+-                            registry.trace_farmland_lookup_miss(base_block, id);
+-                            trace_farmland_join_miss(
+-                                definitions,
+-                                definition,
+-                                &state.name,
+-                                base_block,
+-                            );
+-                        }
+-                        invalid("unknown farmland base block")
+-                    })?,
++                FallDefinition::Farmland { base_block } => {
++                    #[cfg(target_os = "cafe")]
++                    let before_lookup = (state.name == "minecraft:farmland")
++                        .then(|| cafe_farmland_checkpoint(Some(&definition.fall)));
++                    Rule::Farmland {
++                        base: registry.default_state(base_block).ok_or_else(|| {
++                            #[cfg(target_os = "cafe")]
++                            {
++                                registry.trace_farmland_lookup_miss(base_block, id);
++                                trace_farmland_join_miss(
++                                    definitions,
++                                    definition,
++                                    &state.name,
++                                    base_block,
++                                );
++                                log::error!(
++                                    "Horizon Cafe farmland consumer constructor_entry={constructor_entry:?} before_lookup={before_lookup:?}"
++                                );
++                            }
++                            invalid("unknown farmland base block")
++                        })?,
++                    }
+                 },
+                 FallDefinition::TurtleEgg => {
+                     let eggs = state
