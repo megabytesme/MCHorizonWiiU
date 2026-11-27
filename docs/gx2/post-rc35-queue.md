@@ -82,14 +82,39 @@ display. Read the marker and package identities from
 | 3 | RC 61 grouped HUD control | Add grouped presentation and record paired sequencing, combined flips and terminal retirement. Exercise Home and foreground return in a separate lifecycle check. |
 | 4 | RC 61 grouped GamePad overlap | Add the GamePad entry-wait marker. Verify its admission, both displays and the retirement receipts. Run the separate observer outside the timing windows. |
 
-Follow with the queued RC 60 early submission, verified first-TV
-retirement, compact terrain, signed atlas and depth experiments. Record
-cold and warm loading, the original Village route and 30/60 DRS on their
-own runs.
+### Consolidated follow-up deployment
 
-The RC 69 physical comparison uses the same package for stock and
-guarded solid terrain replay. Compare plain `4` with `4` plus
-`gx2-solid-list-replay.enable` to check the recorded path. Both culling
+Keep RC 38 as the historical reference and complete the RC 61 four-arm
+comparison above. For the next renderer deployment, use one qualified
+package with the RC 70 source line and a fresh stock control. The exact
+RC 70 source has the following switches. Record actual admission on both
+outputs for each selected timing arm.
+
+| Comparison | Configuration |
+| --- | --- |
+| Grouped presentation on the newer renderer | Repeat the winning RC 61 presentation arm using its existing markers. Compare with direct stock in the new package. |
+| Compact terrain | Start from direct profile `4`. Compare `gx2-half-position.enable` with that marker plus `gx2-half20-light.enable`. Verify actual strides on both views. |
+| Recorded solid submission | Start from direct profile `4` and add `gx2-solid-list-replay.enable`. Keep grouped presentation, HUD lanes and half-position off so replay can admit. |
+| Terrain shader | Measure `gx2-centered-light.enable` and profile `4o` in separate direct arms against stock. Verify the actual shader and its coverage on both views. |
+
+Use successful same-package arms for these comparisons before deploying
+separate intermediate releases. Keep the older packages and receipts for
+rollback and reused measurements. Automatic quads join the same-package
+matrix once the opt-in gameplay path has a verified build and the
+standalone primitive check passes on Wii U. The gutter, compact atlas
+remap and existing culling variants remain held for visual parity.
+Measure eligible combinations after both component arms have shown
+correctness and a useful effect. Capture cold and warm loading, Village
+traversal, automatic DRS and foreground recovery in their own runs.
+
+Retain the queued RC 60 early submission and first-TV retirement packages,
+and the separate signed atlas and depth experiments. Use their specific
+packages when the consolidated build lacks the trial or changes its
+measurement conditions.
+
+The retained RC 69 package can compare stock and guarded solid terrain
+replay if the newer package needs a rollback. Compare plain `4` with `4`
+plus `gx2-solid-list-replay.enable` to check the recorded path. Both culling
 variants are held from physical timing pending corrected output parity.
 In the same-package Cemu test, `4b` removed visible terrain from both
 displays, and `4r` reproduced every changed pixel from `4b`. The
