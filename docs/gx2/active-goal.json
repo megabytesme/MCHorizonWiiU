@@ -7,6 +7,22 @@
     "authentication_and_security_changes": "pending_separate_review",
     "physical_qualification": "queued"
   },
+  "compact_terrain_and_replay_cemu": {
+    "candidate": "0.8.0-rc.69",
+    "engine_tree": "a569b1d884bbc6e68c4e8bb9eb4472eba88a6503",
+    "rpx_sha256": "b330fe80f86c1b12fa79084ff66be7f8a2cf895bb092f1710e52121ed6250d78",
+    "resident_receipt_sha256": "2d1761fbd3b99f76b147a8eebb26194f2b7e53b7cac1220d866453184163d7ff",
+    "dwell_entry_independent_sections_per_display": 100,
+    "dwell_seconds_per_arm": 60,
+    "byte_identical_scanouts_by_display": true,
+    "resident_sections": 651,
+    "resident_compact_vertices_per_arm": 318508,
+    "half20_saving_over_half24_bytes": 1274032,
+    "compact_draw_coverage": "pending_corrected_instrumentation",
+    "replay_joined_pairs": 1680,
+    "replay_warm_both_pairs": 1545,
+    "physical_throughput": "pending"
+  },
   "paired_solid_list_retirement": {
     "validation": "cemu_interpreter_native_and_separate_fixed_75_targets",
     "rpx_sha256": "29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860",

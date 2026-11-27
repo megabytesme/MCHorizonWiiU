@@ -63,6 +63,17 @@ before expanding that architecture.
 - Keep tonight's changes in independent rendering, resource retirement,
   terrain, loading, DRS and Cemu correctness. Authentication, permissions
   and security controls are on hold for separate review.
+- RC 69 passed four offline Cemu saved-world runs with stock terrain,
+  24-byte vertices, 20-byte vertices and recorded solid draws. Each run
+  reached 100 sections per display before a 60-second dwell and completed
+  movement, save, audio, heap recovery and normal exit. Each
+  stationary display capture matched its stock counterpart byte for byte.
+  The compact layouts each held 318,508 eligible vertices in the matched
+  651-section resident set. The 20-byte layout saved 1,274,032 payload
+  bytes relative to the 24-byte layout. Per-output compact draw proof
+  awaits the corrected instrumentation. The same-run replay reducer
+  joined 1,680 paired frames, including 1,545 with warm lists on both
+  displays. Physical throughput is still pending.
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)
