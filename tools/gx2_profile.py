@@ -276,8 +276,8 @@ def summarize_flip_quantization(frames, start, end, refresh_hz, terrain_sections
     }
 
 
-def summarize_stock_saved_view(frames, start, end):
-    """Measure the 174-section fixed-75% reference across its full retained wall interval."""
+def summarize_stock_saved_view(frames, start, end, *, scale=75):
+    """Measure a 174-section saved-view run across its full retained wall interval."""
     rows = [row for row in frames if start <= row["start_ms"] / 1000 < end]
     if len(rows) < 2 or rows[0]["start_ms"] == rows[-1]["start_ms"]:
         raise ValueError("the saved-view window needs two distinct retained times")
@@ -291,7 +291,7 @@ def summarize_stock_saved_view(frames, start, end):
     reference = [
         row for row in gameplay_pairs
         if not row["screenshot_ms"]
-        and row["world_requested_scale"] == row["world_effective_scale"] == 75
+        and row["world_requested_scale"] == row["world_effective_scale"] == scale
         and row["tv_sections_drawn"] == row["drc_sections_drawn"] == 174
         and min(row[key] for key in ("tv_width", "tv_height", "drc_width", "drc_height",
                                     "tv_world_width", "tv_world_height",

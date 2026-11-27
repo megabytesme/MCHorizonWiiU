@@ -11,7 +11,7 @@ from statistics import median
 from gx2_profile import read, summarize_flip_quantization, summarize_stock_saved_view
 
 
-def retained_window(path, first, last, refresh_hz=None):
+def retained_window(path, first, last, refresh_hz=None, *, scale=75, fixed_scale=False):
     data = path.read_bytes()
     metadata, frames = read(data)
     if metadata["version"] != 3 or not frames:
@@ -20,7 +20,11 @@ def retained_window(path, first, last, refresh_hz=None):
         raise ValueError(f"{path} does not retain both requested sequence bounds")
     origin = frames[0]["sequence"]
     rows = frames[first - origin:last - origin + 1]
-    report = summarize_stock_saved_view(rows, -math.inf, math.inf)
+    if fixed_scale and any(row["phase"] == "playing" and row["presented"]
+                           and (row["world_requested_scale"], row["world_effective_scale"]) != (scale, scale)
+                           for row in rows):
+        raise ValueError(f"{path} contains a presented gameplay frame outside fixed scale {scale}")
+    report = summarize_stock_saved_view(rows, -math.inf, math.inf, scale=scale)
     if not report["at_least_60_seconds_retained"]:
         raise ValueError(f"{path} must retain at least 60 seconds between the requested bounds")
     if len(report["reference_dimensions"]) != 1:
@@ -32,7 +36,7 @@ def retained_window(path, first, last, refresh_hz=None):
         dimensions = report["reference_dimensions"][0]["world_tv_gamepad"]
         flips["cohorts"] = [
             cohort for cohort in flips["cohorts"]
-            if cohort["requested_and_effective_scale"] == 75
+            if cohort["requested_and_effective_scale"] == scale
             and cohort["world_dimensions_tv_gamepad"] == dimensions
         ]
         report["reference_combined_flip_quantization"] = flips
