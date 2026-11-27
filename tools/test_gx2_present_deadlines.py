@@ -1,7 +1,7 @@
 from dataclasses import replace
 import unittest
 
-from gx2_present_deadlines import Point, parse, reduce
+from gx2_present_deadlines import Point, parse, reduce, render_tail
 
 
 def row():
@@ -116,6 +116,43 @@ class DeadlineTests(unittest.TestCase):
             parse(captured + "\n" + captured)
         with self.assertRaisesRegex(ValueError, "malformed"):
             parse(captured[:captured.find(" q=")])
+
+
+class RenderTailTests(unittest.TestCase):
+    def setUp(self):
+        points = grouped_trace()
+        points["start"] = replace(points["start"], flips=19)
+        points["waited"] = replace(points["waited"], submitted=110)
+        self.serial = logs(points)
+        self.deadlines = parse(self.serial)
+        self.report = analyze(self.serial)
+        self.frames = {100: {**row(), "partial": 0}}
+        self.tail = ("Horizon GX2 render tail seq=100 start=3e8 state=lower-bound hz=1000 "
+                     "prior=6d q=6e r=6d final=78 t0=1900 lower=10")
+
+    def report_tail(self, receipt):
+        return render_tail(receipt, self.deadlines, self.report, self.frames, 1000)
+
+    def test_accepts_pending_render_only_queue_until_verified_grouped_finish(self):
+        tail = self.report_tail(self.tail)
+        self.assertEqual(tail["bounds"], [{"sequence": 100, "queue_residence_lower_bound_ms": 16}])
+        self.assertEqual(tail["dispositions"], {"lower-bound": 1})
+
+    def test_rejects_stale_or_partial_gameplay_observations(self):
+        for invalid in (self.tail.replace("start=3e8", "start=3e7"), self.tail.replace("hz=1000", "hz=2000")):
+            with self.subTest(receipt=invalid):
+                self.assertEqual(self.report_tail(invalid)["discarded"], {"unmatched_or_ineligible_hzp3": 1})
+        self.frames[100]["partial"] = 1
+        self.assertEqual(self.report_tail(self.tail)["discarded"], {"unmatched_or_ineligible_hzp3": 1})
+
+    def test_missing_bound_is_preserved_with_reason_and_completed_token_checked(self):
+        pending = self.tail.replace("final=78", "final=79")
+        self.assertEqual(self.report_tail(pending)["discarded"], {"invalid_render_tail_order": 1})
+        retired = self.tail.replace("state=lower-bound", "state=already-retired").replace("lower=10", "lower=0")
+        self.assertEqual(self.report_tail(retired)["dispositions"], {"already-retired": 1})
+        self.assertEqual(self.report_tail(retired)["bounds"], [])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.report_tail(self.tail + "\n" + self.tail)
 
 
 if __name__ == "__main__":

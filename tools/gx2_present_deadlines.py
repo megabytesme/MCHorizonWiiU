@@ -19,6 +19,17 @@ RECORD = re.compile(
     r"l=([0-9a-f]{1,16}) q=([0-9a-f]{1,16}) r=([0-9a-f]{1,16})$"
 )
 
+TAIL_RECORD = re.compile(
+    r"Horizon GX2 render tail seq=(\d+) start=([0-9a-f]{1,16}) state=([a-z-]+) hz=(\d+) "
+    r"prior=([0-9a-f]{1,16}) q=([0-9a-f]{1,16}) r=([0-9a-f]{1,16}) "
+    r"final=([0-9a-f]{1,16}) t0=([0-9a-f]{1,16}) lower=([0-9a-f]{1,16})$"
+)
+TAIL_STATES = frozenset((
+    "no-early-flush", "unclean-prior", "incomplete", "no-render-token", "no-pre-scan-poll",
+    "foreground-or-keyboard", "queue-changed", "bad-clock", "already-retired", "zero-interval",
+    "finish-unverified", "lower-bound",
+))
+
 
 @dataclass(frozen=True)
 class Point:
@@ -151,6 +162,49 @@ def reduce(records, frames, starts, hz, *, scale, sections, first=None, last=Non
             "refresh_observations": dict(counts), "discarded": dict(discarded), "frames": list(data.values())}
 
 
+def render_tail(serial, deadlines, report, frames, hz):
+    """Join render-only queue observations to accepted grouped deadline frames."""
+    accepted = {row["sequence"] for row in report["frames"] if row["mode"] == "grouped"}
+    states = Counter()
+    discarded = Counter()
+    bounds = []
+    seen = set()
+    for line in serial.splitlines():
+        if "Horizon GX2 render tail seq=" not in line:
+            continue
+        match = TAIL_RECORD.search(line)
+        if match is None:
+            raise ValueError("malformed render-tail record")
+        seq, start, state, clock, *numbers = match.groups()
+        seq, start, clock = int(seq), int(start, 16), int(clock)
+        prior, submitted, retired, final, began, lower = (int(value, 16) for value in numbers)
+        if state not in TAIL_STATES or (state == "lower-bound") != bool(lower):
+            raise ValueError("inconsistent render-tail disposition")
+        key = (seq, start, True)
+        if seq not in accepted or key not in deadlines or clock != hz or frames[seq]["partial"]:
+            discarded["unmatched_or_ineligible_hzp3"] += 1
+            continue
+        if seq in seen:
+            raise ValueError("duplicate exact render-tail record")
+        seen.add(seq)
+        if state == "lower-bound":
+            points = deadlines[key]
+            first, waited, ready, finished = (
+                points[edge] for edge in ("start", "waited", "ready", "finished")
+            )
+            if not (first.pending == 1 and 0 < prior == first.submitted == first.retired < submitted
+                    and waited.submitted == submitted and waited.retired <= retired < submitted
+                    and retired >= prior and submitted <= ready.submitted < final
+                    and retired <= ready.retired and finished.submitted == finished.retired == final
+                    and began > 0 and lower <= finished.cpu - first.cpu):
+                discarded["invalid_render_tail_order"] += 1
+                continue
+            bounds.append({"sequence": seq, "queue_residence_lower_bound_ms": lower * 1000 / hz})
+        states[state] += 1
+    return {"grouped_deadline_frames": len(accepted), "dispositions": dict(states),
+            "discarded": dict(discarded), "bounds": bounds}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
@@ -159,6 +213,7 @@ def main():
     parser.add_argument("--last-sequence", type=int)
     parser.add_argument("--scale", type=int, default=75)
     parser.add_argument("--sections", type=int, default=174)
+    parser.add_argument("--render-tail", action="store_true", help="join render-only queue receipts")
     args = parser.parse_args()
     if args.first_sequence is not None and args.last_sequence is not None:
         if args.first_sequence > args.last_sequence:
@@ -168,11 +223,15 @@ def main():
         meta, frames = read(raw)
         if meta["version"] != 3:
             raise ValueError("deadline records require HZP3")
+        serial = args.serial.read_text(encoding="utf-8", errors="replace")
+        deadlines = parse(serial)
+        by_sequence = {row["sequence"]: row for row in frames}
         report = reduce(
-            parse(args.serial.read_text(encoding="utf-8", errors="replace")),
-            {row["sequence"]: row for row in frames}, hzp3_sequence_ticks(raw, frames), meta["clock_hz"],
+            deadlines, by_sequence, hzp3_sequence_ticks(raw, frames), meta["clock_hz"],
             scale=args.scale, sections=args.sections, first=args.first_sequence, last=args.last_sequence,
         )
+        if args.render_tail:
+            report["render_tail"] = render_tail(serial, deadlines, report, by_sequence, meta["clock_hz"])
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(json.dumps(report, indent=2))
