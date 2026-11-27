@@ -53,6 +53,17 @@
     "physical": "queued",
     "receipt": "rc52-qualification.md"
   },
+  "forward_terrain_and_verified_reopen": {
+    "candidate": "0.8.0-rc.53",
+    "engine_tree": "ed2fcda5e47d2ef158a7d0e86df88d502674a253",
+    "wuhb_sha256": "092b31785a0d5593d4861dc0a8a5d7b7628f07fa57469a1589629f5cef31db23",
+    "native_build": "passed",
+    "host_forward_mesh_slots_admitted": 28,
+    "host_parked_rearmed": 28,
+    "runtime": "queued",
+    "physical": "queued",
+    "receipt": "rc53-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

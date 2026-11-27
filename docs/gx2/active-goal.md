@@ -85,6 +85,9 @@ before expanding that architecture.
   and packages exact compact terrain formats for physical A/B. Cemu's
   multicore recompiler reached gameplay, rendered both displays and saved
   the moved player. [RC 52 qualification](rc52-qualification.md)
+- RC 53 packages the forward upload fix and verified warm reopening.
+  The bounded host fixture admitted 28 forward sections from a full
+  queue and rearmed each parked request. [RC 53 qualification](rc53-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary
