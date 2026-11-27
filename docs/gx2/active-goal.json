@@ -49,6 +49,7 @@
     "cemu_multicore_max_sections_per_output": 163,
     "cemu_single_core": "one_dual_output_gameplay_pass_lifecycle_incomplete",
     "cemu_recompiler_repeat": "both_modes_observed_zero_length_farmland_base",
+    "cemu_matched_multicore_restart": "rc50_rc51_rc52_failed_before_game_handoff",
     "physical": "queued",
     "receipt": "rc52-qualification.md"
   },

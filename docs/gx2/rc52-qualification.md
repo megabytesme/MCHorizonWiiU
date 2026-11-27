@@ -78,11 +78,14 @@ check found the literal `minecraft:dirt` at state 10. The data identifies
 an invalid lookup input. The origin of the invalid input still needs a
 matched trace before and after loading the landing definitions.
 
-Prior RC 50 runs ended in resource preparation in both modes. Run existing
-RC 50, RC 51 and RC 52 packages from one hash-locked disposable fixture to
-separate differences in the inputs from a layout-sensitive recompiler
-failure. Reliable repeated starts, single-core save and same-process
-reopening remain open.
+One matched multicore launch each of RC 50, RC 51 and RC 52 ended before
+Game handoff. Each used the same Cemu binary, archive, initial `level.dat`,
+graphics, controller and options bytes. The RC 52 replay used plain `4`
+without either geometry marker and reproduced the same zero-length key.
+The successful RC 52 multicore save used these inputs too. The next
+diagnostic compares key lengths before insertion and at the failed borrow
+while retaining the original lookup. Reliable repeated starts, single-core
+save and same-process reopening remain open.
 
 ## Supervised native comparison
 
