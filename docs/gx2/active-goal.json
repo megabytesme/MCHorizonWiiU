@@ -255,6 +255,31 @@
     "physical": "same_build_signed_and_separate_census_staged",
     "receipt": "rc62-qualification.md"
   },
+  "prepared_frustum_and_startup_attribution": {
+    "candidate": "0.8.0-rc.63",
+    "engine_tree": "f788f3368a10025c5159a11450a48b63821e577c",
+    "rpx_sha256": "a43acf9fbe5a0dc196c7bc7227df26f5756d9c88bc6b57e39072f3537e2c52be",
+    "wuhb_sha256": "60f7244a00c396a4e71f249f440ed12bc34fcb7ce189573cec52cff980f866b2",
+    "native_build": "passed",
+    "prepared_frustum_default": "off",
+    "cemu_max_sections_per_output_both_arms": [163, 163],
+    "cemu_equal_section_count_median_solid_stages_ms": {
+      "stock_tv_gamepad": [2.821, 2.653],
+      "prepared_tv_gamepad": [3.837, 3.356],
+      "matching_test_draw_and_index_cohorts": 0
+    },
+    "cemu_stock_repeat_matched_comparison": {
+      "matching_test_draw_and_index_cohorts": 8,
+      "stock_and_prepared_rows": [1349, 1343],
+      "stock_tv_gamepad_solid_median_ms": [2.429, 2.432],
+      "prepared_tv_gamepad_solid_median_ms": [3.324, 3.104]
+    },
+    "model_bake_cemu_sampled_raw_geometry_ms": [31.888, 31.833],
+    "model_bake_cemu_sampled_sprite_and_face_binding_ms": [51.987, 51.702],
+    "automatic_drs_pressure_recovery_host_controls": 12,
+    "physical": "prepared_frustum_deferred_after_presentation_priorities",
+    "receipt": "rc63-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

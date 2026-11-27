@@ -59,6 +59,11 @@ solid draw-list census. Keep the census out of pacing measurements.
 Run it both at the saved pose and during a bounded traversal.
 [RC 62 package](rc62-qualification.md)
 
+The RC 63 prepared-frustum control remains available after the
+presentation and geometry comparisons. Its two startup sampling phases
+and automatic DRS recovery checks use separate runs.
+[RC 63 package](rc63-qualification.md)
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |

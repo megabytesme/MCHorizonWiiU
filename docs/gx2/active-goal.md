@@ -146,6 +146,12 @@ before expanding that architecture.
   across animation updates. A one-cell upload conversion is feasible.
   Physical sampling time and retirement of gameplay texture updates
   still need measurement. [Tiled atlas fixture](../../wiiu/diagnostics/gx2-tiled-terrain-atlas/README.md)
+- RC 63 qualified its prepared-frustum arm through the hosted Cemu
+  lifecycle. Its solid stages ran longer in Cemu, so the trial remains
+  default-off and follows the larger presentation tests in the
+  physical queue. The build also recovers automatic DRS from an
+  elevated surface allocation failure and measures discrete model
+  preparation phases. [RC 63 evidence](rc63-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary
