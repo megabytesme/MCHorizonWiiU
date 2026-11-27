@@ -1,0 +1,406 @@
+diff --git a/wiiu/loading_app/main.c b/wiiu/loading_app/main.c
+index e7a169c573fd755c6b6cdb17e861cdf351f64b62..68c9ca03e5a425a326929d384cda76dad3c8adf0 100644
+--- a/wiiu/loading_app/main.c
++++ b/wiiu/loading_app/main.c
+@@ -1,4 +1,5 @@
+ #include "../audio/audio.h"
++#include "../loading_host/world_scale.h"
+ 
+ #include <coreinit/debug.h>
+ #include <nn/ac.h>
+@@ -30,6 +31,7 @@ static uint32_t app_released(void *context)
+ {
+    (void)context;
+    sFocused = 0;
++   horizon_gx2_world_scale_foreground_released();
+    return 0;
+ }
+ 
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 04e7b1305a69169ccf46e103acf64aa2eaec8068..df861bdf8673553c0080a3b3a88091becffe6d7e 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -90,7 +90,7 @@ static bool worker_marker_enabled, worker_playing, worker_schedule_requested;
+ static _Atomic uint32_t workers[WORKERS][2];
+ static ProfileFrame current;
+ static uint64_t started;
+-static bool marker_enabled;
++static bool marker_enabled, mem1_tv_depth;
+ static int marker_mode = EOF, marker_variant = EOF;
+ static bool recording, legacy_pacing, legacy_terrain_bindings, legacy_terrain_attributes;
+ static bool legacy_terrain_uniforms, shared_hud_upload, profile_terrain_animation;
+@@ -201,6 +201,39 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
+ 
+ static bool reverse_translucent_quads;
+ 
++static void init_mem1_tv_depth(void)
++{
++   FILE *marker = fopen(ROOT "gx2-mem1-tv-depth.enable", "rb");
++   if (!marker) return;
++   fclose(marker);
++
++   const char *const incompatible[] = {
++      ROOT "gx2-grouped-present.enable",
++      ROOT "gx2-hud-view-lanes.enable",
++      ROOT "gx2-screen-overlays.enable",
++      ROOT "gx2-scaled-color-clear.enable",
++      ROOT "gx2-clear-fog.enable",
++      ROOT "gx2-clear-fog-vertex.enable",
++      ROOT "gx2-half-position.enable",
++   };
++   for (size_t i = 0; i < sizeof(incompatible) / sizeof(incompatible[0]); ++i) {
++      marker = fopen(incompatible[i], "rb");
++      if (marker) {
++         fclose(marker);
++         OSReport("Horizon GX2 MEM1 TV depth: separate renderer trial is enabled\n");
++         return;
++      }
++   }
++   mem1_tv_depth = tv_terrain_wait_mode == 0 && !reverse_translucent_quads;
++   OSReport("Horizon GX2 MEM1 TV depth: %s\n",
++            mem1_tv_depth ? "requested for fixed 75" : "separate renderer trial is enabled");
++}
++
++bool horizon_gx2_profile_mem1_tv_depth(void)
++{
++   return mem1_tv_depth && history == &process_history && recording && current.phase == PLAYING_PHASE;
++}
++
+ void horizon_gx2_profile_init(void)
+ {
+    FILE *reverse = fopen(ROOT "gx2-reverse-translucent.enable", "rb");
+@@ -236,6 +269,7 @@ void horizon_gx2_profile_init(void)
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) {
+       init_tv_terrain_wait_trial();
++      init_mem1_tv_depth();
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 2d308efcc4c24842bae71192002dbc6b44dcc0de..9df0fb80926dea96ca28dd9185cb9db7b359cf7e 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -35,6 +35,7 @@ typedef struct {
+ } HorizonGx2GpuSample;
+ 
+ void horizon_gx2_profile_init(void);
++bool horizon_gx2_profile_mem1_tv_depth(void);
+ bool horizon_gx2_profile_process_history(void);
+ bool horizon_gx2_profile_begin_trial(uint32_t mode);
+ bool horizon_gx2_profile_end_trial(const char *path);
+diff --git a/wiiu/loading_host/world_scale.c b/wiiu/loading_host/world_scale.c
+index e8325513ffc881060f8b8569448d8543202d45b2..a63363d5d4ea6eaed92022df9c62afed652faa22 100644
+--- a/wiiu/loading_host/world_scale.c
++++ b/wiiu/loading_host/world_scale.c
+@@ -36,14 +36,42 @@ typedef struct {
+    float uv[2];
+ } CompositeVertex;
+ 
++enum {
++   SURFACE_BUDGET = 24 * 1024 * 1024,
++   HEAP_RESERVE = 32 * 1024 * 1024,
++   MEM1_DEPTH_BUDGET = 5 * 1024 * 1024,
++   MEM1_DEPTH_RESERVE = 4 * 1024 * 1024,
++};
++
+ struct HorizonGx2WorldScale {
+    WorldTarget outputs[2];
+    WHBGfxShaderGroup shader;
+    GX2RBuffer geometry;
+    GX2Sampler sampler;
+    uint32_t texture_slot;
++   GX2DepthBuffer mem1_tv_depth;
++   uint32_t mem1_epoch;
++   uint32_t mem1_attempt_epoch;
+ };
+ 
++/* One lease per foreground. ProcUI and the presenter run on the same thread.
++ * WHB frees the whole arena on release, including any published lease. */
++static uint32_t foreground_epoch = 1;
++static struct {
++   uint32_t epoch;
++   GX2Surface layout;
++} tv_depth_lease;
++
++void horizon_gx2_world_scale_foreground_released(void)
++{
++   if (foreground_epoch != UINT32_MAX) ++foreground_epoch;
++}
++
++static bool mem1_epoch_valid(uint32_t epoch)
++{
++   return epoch && epoch == foreground_epoch && ProcUIInForeground();
++}
++
+ static const GX2RResourceFlags color_flags = GX2R_RESOURCE_BIND_COLOR_BUFFER |
+    GX2R_RESOURCE_BIND_TEXTURE | GX2R_RESOURCE_USAGE_GPU_WRITE |
+    GX2R_RESOURCE_USAGE_GPU_READ | GX2R_RESOURCE_USAGE_FORCE_MEM2;
+@@ -66,7 +94,6 @@ static GX2Surface world_surface(uint32_t width, uint32_t height, GX2SurfaceForma
+ 
+ static bool preflight_targets(WorldTarget targets[2], const uint32_t dimensions[4])
+ {
+-   enum { SURFACE_BUDGET = 24 * 1024 * 1024, HEAP_RESERVE = 32 * 1024 * 1024 };
+    GX2Surface *surfaces[] = {&targets[0].color.surface, &targets[0].depth.surface,
+                             &targets[1].color.surface, &targets[1].depth.surface};
+    uint64_t bytes = 0;
+@@ -139,23 +166,32 @@ static GX2TVRenderMode whb_tv_scan_mode(const GX2Surface *tv)
+    return GX2_TV_RENDER_MODE_DISABLED;
+ }
+ 
+-/* Called on the presenter thread after the ProcUI pump and a successful
+- * scaled allocation. WHB's unlocked foreground heaps are never cached. */
++/* Called after the ProcUI pump. WHB's unlocked foreground heaps are never cached. */
++static MEMHeapHandle display_mem1(const GX2Surface *const display[4])
++{
++   for (uint32_t i = 0; i < 4; ++i)
++      if (!display[i]->image) return NULL;
++
++   MEMHeapHandle heap = MEMFindContainHeap(display[0]->image);
++   if (!heap || heap->tag != MEM_EXPANDED_HEAP_TAG || MEMGetArena(heap) != MEM_BASE_HEAP_MEM1)
++      return NULL;
++   for (uint32_t i = 1; i < 4; ++i)
++      if (MEMFindContainHeap(display[i]->image) != heap) return NULL;
++   return heap;
++}
++
++#define DISPLAY_SURFACES \
++   {&WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetTVDepthBuffer()->surface, \
++    &WHBGfxGetDRCColourBuffer()->surface, &WHBGfxGetDRCDepthBuffer()->surface}
++
+ static void report_world_memory(const WorldTarget targets[2])
+ {
+    if (!world_memory_profile_enabled() || !ProcUIInForeground()) return;
+-   const GX2Surface *display[] = {
+-      &WHBGfxGetTVColourBuffer()->surface, &WHBGfxGetTVDepthBuffer()->surface,
+-      &WHBGfxGetDRCColourBuffer()->surface, &WHBGfxGetDRCDepthBuffer()->surface,
+-   };
++   const GX2Surface *const display[] = DISPLAY_SURFACES;
+    for (uint32_t i = 0; i < 4; ++i)
+       if (!display[i]->image) return;
+ 
+-   MEMHeapHandle mem1 = MEMFindContainHeap(display[0]->image);
+-   if (mem1 && (mem1->tag != MEM_EXPANDED_HEAP_TAG || MEMGetArena(mem1) != MEM_BASE_HEAP_MEM1))
+-      mem1 = NULL;
+-   for (uint32_t i = 1; mem1 && i < 4; ++i)
+-      if (MEMFindContainHeap(display[i]->image) != mem1) mem1 = NULL;
++   MEMHeapHandle mem1 = display_mem1(display);
+    OSReport("Horizon GX2 MEM1: verified=%u span=%u free=%u whb_tv_color=%u whb_tv_depth=%u whb_drc_color=%u whb_drc_depth=%u\n",
+             mem1 != NULL, mem1 ? heap_span(mem1) : 0, mem1 ? MEMGetTotalFreeSizeForExpHeap(mem1) : 0,
+             display[0]->imageSize, display[1]->imageSize, display[2]->imageSize, display[3]->imageSize);
+@@ -209,6 +245,94 @@ static bool create_target(WorldTarget *target)
+    return true;
+ }
+ 
++static bool same_depth_layout(const GX2Surface *a, const GX2Surface *b)
++{
++   return a->width == b->width && a->height == b->height &&
++          a->imageSize == b->imageSize && a->alignment == b->alignment &&
++          a->pitch == b->pitch && a->swizzle == b->swizzle && a->tileMode == b->tileMode &&
++          memcmp(a->mipLevelOffset, b->mipLevelOffset, sizeof(a->mipLevelOffset)) == 0;
++}
++
++/* Keeping the stock depth makes a skipped or stale trial use the same scaled
++ * output without replacing any in-flight stock allocation. */
++static const char *use_mem1_tv_depth(HorizonGx2WorldScale *scale)
++{
++   const GX2DepthBuffer *stock = &scale->outputs[0].depth;
++   GX2DepthBuffer candidate = *stock;
++   GX2Surface *image = &candidate.surface;
++   if (image->dim != GX2_SURFACE_DIM_TEXTURE_2D || image->format != GX2_SURFACE_FORMAT_FLOAT_R32 ||
++       image->aa != GX2_AA_MODE1X || image->depth != 1 || image->mipLevels != 1 ||
++       image->mipmapSize || image->mipmaps || candidate.hiZPtr || candidate.hiZSize ||
++       candidate.viewMip || candidate.viewFirstSlice || candidate.viewNumSlices != 1 ||
++       !image->imageSize || image->imageSize > MEM1_DEPTH_BUDGET ||
++       !image->alignment || image->alignment > INT32_MAX ||
++       (image->alignment & (image->alignment - 1)))
++      return "unsupported depth layout";
++
++   const GX2Surface *const display[] = DISPLAY_SURFACES;
++   MEMHeapHandle heap = display_mem1(display);
++   if (!heap) return "unverified arena";
++
++   uint64_t bytes = (uint64_t)image->imageSize + image->alignment;
++   for (uint32_t i = 0; i < 2; ++i) {
++      const WorldTarget *target = &scale->outputs[i];
++      bytes += (uint64_t)target->color.surface.imageSize + target->color.surface.alignment;
++      bytes += (uint64_t)target->depth.surface.imageSize + target->depth.surface.alignment;
++   }
++   if (bytes > SURFACE_BUDGET) return "surface budget";
++
++   const bool reuse = tv_depth_lease.epoch == foreground_epoch;
++   if (reuse) {
++      if (!same_depth_layout(&tv_depth_lease.layout, image) ||
++          MEMFindContainHeap(tv_depth_lease.layout.image) != heap)
++         return "lease layout or arena changed";
++      image->image = tv_depth_lease.layout.image;
++   } else {
++      if (MEMGetTotalFreeSizeForExpHeap(heap) < image->imageSize + MEM1_DEPTH_RESERVE ||
++          MEMGetAllocatableSizeForExpHeapEx(heap, (int32_t)image->alignment) < image->imageSize)
++         return "capacity or reserve";
++      image->image = MEMAllocFromExpHeapEx(heap, image->imageSize, (int32_t)image->alignment);
++      if (!image->image) return "allocation failed";
++      if (((uintptr_t)image->image & (image->alignment - 1)) != 0 ||
++          MEMFindContainHeap(image->image) != heap) {
++         MEMFreeToExpHeap(heap, image->image);
++         return "allocation identity";
++      }
++      if (MEMGetTotalFreeSizeForExpHeap(heap) < MEM1_DEPTH_RESERVE) {
++         MEMFreeToExpHeap(heap, image->image);
++         return "reserve after allocation";
++      }
++   }
++
++   image->use = GX2_SURFACE_USE_DEPTH_BUFFER;
++   GX2InitDepthBufferRegs(&candidate);
++   if (memcmp(candidate.regs, stock->regs, sizeof(candidate.regs)) != 0) {
++      if (!reuse) MEMFreeToExpHeap(heap, image->image);
++      return "register layout";
++   }
++   if (!reuse) {
++      GX2Invalidate(GX2_INVALIDATE_MODE_CPU, image->image, image->imageSize);
++      tv_depth_lease.epoch = foreground_epoch;
++      tv_depth_lease.layout = *image;
++   }
++
++   scale->mem1_tv_depth = candidate;
++   scale->mem1_epoch = foreground_epoch;
++   return reuse ? "reused" : "active";
++}
++
++void horizon_gx2_world_scale_try_mem1_tv_depth(HorizonGx2WorldScale *scale)
++{
++   if (foreground_epoch == UINT32_MAX || scale->mem1_attempt_epoch == foreground_epoch ||
++       !mem1_epoch_valid(foreground_epoch))
++      return;
++   scale->mem1_attempt_epoch = foreground_epoch;
++   const char *result = use_mem1_tv_depth(scale);
++   const GX2Surface *image = &scale->outputs[0].depth.surface;
++   OSReport("Horizon GX2 MEM1 TV depth: %s foreground=%u size=%ux%u bytes=%u align=%u\n",
++            result, foreground_epoch, image->width, image->height, image->imageSize, image->alignment);
++}
++
+ void horizon_gx2_world_scale_destroy(HorizonGx2WorldScale *scale)
+ {
+    if (!scale) return;
+@@ -275,15 +399,18 @@ failure:
+ }
+ 
+ void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
+-                                   const float clear[4])
++                                   const float clear[4], bool try_mem1)
+ {
+    WorldTarget *output = &scale->outputs[target];
+-   GX2ClearBuffersEx(&output->color, &output->depth, clear[0], clear[1], clear[2],
++   GX2DepthBuffer *depth = &output->depth;
++   if (try_mem1 && target == 0 && mem1_epoch_valid(scale->mem1_epoch))
++      depth = &scale->mem1_tv_depth;
++   GX2ClearBuffersEx(&output->color, depth, clear[0], clear[1], clear[2],
+                      clear[3], 1.0f, 0, GX2_CLEAR_FLAGS_DEPTH);
+    // Recover draw state changed by the clear before rebinding offscreen attachments.
+    GX2SetContextState(target == 0 ? WHBGfxGetTVContextState() : WHBGfxGetDRCContextState());
+    GX2SetColorBuffer(&output->color, GX2_RENDER_TARGET_0);
+-   GX2SetDepthBuffer(&output->depth);
++   GX2SetDepthBuffer(depth);
+    const uint32_t width = output->color.surface.width, height = output->color.surface.height;
+    GX2SetViewport(0, 0, width, height, 0.0f, 1.0f);
+    GX2SetScissor(0, 0, width, height);
+diff --git a/wiiu/loading_host/world_scale.h b/wiiu/loading_host/world_scale.h
+index b4c469573a4a4778c17c10e9cc4e05b04609ec8e..ba4fa9bc11185340c022704c721a3bc45dc8dd5a 100644
+--- a/wiiu/loading_host/world_scale.h
++++ b/wiiu/loading_host/world_scale.h
+@@ -11,9 +11,14 @@ HorizonGx2WorldScale *horizon_gx2_world_scale_create(const uint32_t dimensions[4
+                                                     uint32_t *surface_bytes);
+ void horizon_gx2_world_scale_destroy(HorizonGx2WorldScale *scale);
+ 
++/* ProcUI release callback. The WHB release callback owns heap teardown. */
++void horizon_gx2_world_scale_foreground_released(void);
++/* Prepare the optional TV depth between frames. Stock attachments remain live. */
++void horizon_gx2_world_scale_try_mem1_tv_depth(HorizonGx2WorldScale *scale);
++
+ /* With the selected WHB output active, clear and bind its offscreen target. */
+ void horizon_gx2_world_scale_begin(HorizonGx2WorldScale *scale, uint32_t target,
+-                                   const float clear[4]);
++                                   const float clear[4], bool try_mem1);
+ 
+ /* Restore the WHB output. Upscale the world to the viewport on success. */
+ void horizon_gx2_world_scale_end(HorizonGx2WorldScale *scale, uint32_t target,
+diff --git a/wiiu/loading_host/world_scale.rs b/wiiu/loading_host/world_scale.rs
+index 302b317f0dc5049e86012eaefb8ef73f8e81aa69..a7f1179d69b9eca4f48d133853e46eed0111ddb8 100644
+--- a/wiiu/loading_host/world_scale.rs
++++ b/wiiu/loading_host/world_scale.rs
+@@ -12,8 +12,15 @@ unsafe extern "C" {
+         dimensions: *const u32,
+         surface_bytes: *mut u32,
+     ) -> *mut c_void;
++    fn horizon_gx2_profile_mem1_tv_depth() -> bool;
++    fn horizon_gx2_world_scale_try_mem1_tv_depth(scale: *mut c_void);
+     fn horizon_gx2_world_scale_destroy(scale: *mut c_void);
+-    fn horizon_gx2_world_scale_begin(scale: *mut c_void, target: u32, clear: *const f32);
++    fn horizon_gx2_world_scale_begin(
++        scale: *mut c_void,
++        target: u32,
++        clear: *const f32,
++        try_mem1: bool,
++    );
+     fn horizon_gx2_world_scale_end(
+         scale: *mut c_void,
+         target: u32,
+@@ -28,6 +35,7 @@ unsafe extern "C" {
+ pub(super) struct WorldScale {
+     native: Option<NonNull<c_void>>,
+     request: Option<(u32, [[u32; 2]; 2])>,
++    try_mem1: bool,
+     resolution: Option<WorldResolution>,
+     retry_not_before: Option<Instant>,
+ }
+@@ -44,6 +52,9 @@ impl WorldScale {
+         retry_at: Option<Instant>,
+     ) {
+         let base = viewports.map(|[_, _, w, h]| [w, h]);
++        self.try_mem1 = requested_scale == 75
++            && retry_at.is_none()
++            && unsafe { horizon_gx2_profile_mem1_tv_depth() };
+         let request = Some((requested_scale, base));
+         let percent = requested_scale.clamp(50, 100);
+         if self.request == request {
+@@ -55,6 +66,7 @@ impl WorldScale {
+                     self.retry_not_before.is_none_or(|deadline| now >= deadline)
+                 });
+             if !retry {
++                self.prepare_mem1_tv_depth();
+                 return;
+             }
+         }
+@@ -88,6 +100,7 @@ impl WorldScale {
+             }
+         }
+         self.resolution = Some(resolution);
++        self.prepare_mem1_tv_depth();
+         let [[tv_w, tv_h], [drc_w, drc_h]] = resolution.dimensions;
+         unsafe {
+             OSReport(
+@@ -101,6 +114,12 @@ impl WorldScale {
+         }
+     }
+ 
++    fn prepare_mem1_tv_depth(&self) {
++        if let Some(native) = self.native.filter(|_| self.try_mem1) {
++            unsafe { horizon_gx2_world_scale_try_mem1_tv_depth(native.as_ptr()) };
++        }
++    }
++
+     pub(super) fn release(&mut self) {
+         if let Some(native) = self.native.take() {
+             unsafe { horizon_gx2_world_scale_destroy(native.as_ptr()) };
+@@ -118,7 +137,9 @@ impl WorldScale {
+     ) -> Option<WorldTarget<'_>> {
+         let native = self.native?;
+         let size = self.resolution?.dimensions[target as usize];
+-        unsafe { horizon_gx2_world_scale_begin(native.as_ptr(), target, clear.as_ptr()) };
++        unsafe {
++            horizon_gx2_world_scale_begin(native.as_ptr(), target, clear.as_ptr(), self.try_mem1);
++        }
+         Some(WorldTarget {
+             native,
+             target,

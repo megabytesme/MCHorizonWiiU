@@ -13,7 +13,7 @@
     "sha256": "72ee75b21b158e90333afd070d4a4add4c6059a695fb0eb32ac832e3a6818221"
   },
   "cargo_lock_sha256": "32bd569c2a502b64d95f1139281615634784628b0f58c7f38027fc2885a24264",
-  "output_tree": "ea48074052cecdd38720528980056e64097df618",
+  "output_tree": "a3635a8f561846bb82ed6891ab301c8b9f66bc97",
   "series": [
     {
       "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0001-cafe-core.patch",
@@ -1376,6 +1376,12 @@
       "sha256": "d325bc21f53b0a6d5b437b921c4180c5329ddfb93936ac7466670e630dbdeb86",
       "input_tree": "f5224f3d354acfdf9daccf2273249daa544580a0",
       "output_tree": "ea48074052cecdd38720528980056e64097df618"
+    },
+    {
+      "file": "patches/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/0228-trial-scaled-tv-depth-in-foreground-mem1.patch",
+      "sha256": "0879e79e7350f24568f4bf1430deb27217230615d963ce30b7ca8ab7e45a6800",
+      "input_tree": "ea48074052cecdd38720528980056e64097df618",
+      "output_tree": "a3635a8f561846bb82ed6891ab301c8b9f66bc97"
     }
   ],
   "candidate": {
