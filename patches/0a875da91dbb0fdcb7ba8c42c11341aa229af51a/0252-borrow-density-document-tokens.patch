@@ -1,0 +1,166 @@
+diff --git a/crates/horizon-world/src/worldgen/density.rs b/crates/horizon-world/src/worldgen/density.rs
+index 01b40f2..3e78ac0 100644
+--- a/crates/horizon-world/src/worldgen/density.rs
++++ b/crates/horizon-world/src/worldgen/density.rs
+@@ -14,6 +14,21 @@ use horizon_core::{
+ };
+ use std::{collections::BTreeSet, sync::Arc};
+ 
++// Keep the original numeric and JSON tokens in the caller's input. Only
++// the graph survives decoding.
++type DensityObject<'a> = BTreeMap<String, &'a RawValue>;
++
++fn optional<'a>(object: &DensityObject<'a>, name: &str) -> Option<&'a RawValue> {
++    object.get(name).copied().filter(|raw| raw.get() != "null")
++}
++
++fn required<'a>(
++    object: &DensityObject<'a>,
++    name: &'static str,
++) -> Result<&'a RawValue, DecodeError> {
++    optional(object, name).ok_or(DecodeError::Field(name))
++}
++
+ pub(super) fn identifier(name: &str) -> Result<String, DecodeError> {
+     let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", name));
+     let namespace = if namespace.is_empty() {
+@@ -109,7 +124,7 @@ impl DensityRegistry {
+         }
+         for (name, json) in densities {
+             let name = identifier(name)?;
+-            let raw: Box<RawValue> = serde_json::from_str(json)?;
++            let raw: &RawValue = serde_json::from_str(json)?;
+             if loader.definitions.insert(name.clone(), raw).is_some() {
+                 return Err(DecodeError::Registry(format!(
+                     "duplicate density identifier: {name}"
+@@ -157,23 +172,23 @@ impl DensityRegistry {
+         let roots = json
+             .iter()
+             .map(|json| {
+-                let raw: Box<RawValue> = serde_json::from_str(json)?;
+-                loader.decode(&raw, 0)
++                let raw: &RawValue = serde_json::from_str(json)?;
++                loader.decode(raw, 0)
+             })
+             .collect::<Result<_, _>>()?;
+         self.graph = loader.graph;
+         Ok(roots)
+     }
+ }
+-struct Loader {
++struct Loader<'a> {
+     types: ModTypes,
+     graph: DensityGraph,
+     noises: BTreeMap<String, NoiseId>,
+-    definitions: BTreeMap<String, Box<RawValue>>,
++    definitions: BTreeMap<String, &'a RawValue>,
+     values: BTreeMap<String, FunctionId>,
+     active: BTreeSet<String>,
+ }
+-impl Loader {
++impl Loader<'_> {
+     fn resolve(&mut self, name: &str, depth: usize) -> Result<FunctionId, DecodeError> {
+         if let Some(id) = self.graph.function(name) {
+             return Ok(id);
+@@ -186,12 +201,11 @@ impl Loader {
+                 "cyclic density reference: {name}"
+             )));
+         }
+-        let raw = self
+-            .definitions
+-            .get(name)
+-            .ok_or_else(|| DecodeError::Registry(format!("unknown density reference: {name}")))?
+-            .clone();
+-        let value = self.decode(&raw, depth + 1)?;
++        let raw =
++            self.definitions.get(name).copied().ok_or_else(|| {
++                DecodeError::Registry(format!("unknown density reference: {name}"))
++            })?;
++        let value = self.decode(raw, depth + 1)?;
+         let reference = self.graph.register_function(name.to_owned(), value)?;
+         self.values.insert(name.to_owned(), value);
+         self.active.remove(name);
+@@ -199,7 +213,7 @@ impl Loader {
+     }
+     fn input(
+         &mut self,
+-        object: &Object,
++        object: &DensityObject<'_>,
+         name: &'static str,
+         depth: usize,
+     ) -> Result<FunctionId, DecodeError> {
+@@ -207,7 +221,7 @@ impl Loader {
+     }
+     fn optional_input(
+         &mut self,
+-        object: &Object,
++        object: &DensityObject<'_>,
+         name: &'static str,
+         fallback: f32,
+         depth: usize,
+@@ -217,7 +231,7 @@ impl Loader {
+             None => Ok(self.graph.insert(GraphNode::Constant(fallback))?),
+         }
+     }
+-    fn noise(&self, object: &Object) -> Result<NoiseId, DecodeError> {
++    fn noise(&self, object: &DensityObject<'_>) -> Result<NoiseId, DecodeError> {
+         let raw = required(object, "noise")?;
+         if !raw.get().starts_with('"') {
+             return Err(DecodeError::Field("inline noise holder unsupported"));
+@@ -238,7 +252,7 @@ impl Loader {
+         if !raw.get().starts_with('{') {
+             return Ok(self.graph.insert(GraphNode::Constant(noise_value(raw)?))?);
+         }
+-        let object: Object = serde_json::from_str(raw.get())?;
++        let object: DensityObject<'_> = serde_json::from_str(raw.get())?;
+         let kind = identifier(&string(required(&object, "type")?)?)?;
+         let unary = match kind.as_str() {
+             "minecraft:abs" => Some(GraphUnary::Abs),
+@@ -434,13 +448,13 @@ impl Loader {
+                     second: self.input(&object, "second", depth)?,
+                 },
+                 "minecraft:interval_select" => {
+-                    let thresholds: Vec<Box<RawValue>> =
++                    let thresholds: Vec<&RawValue> =
+                         serde_json::from_str(required(&object, "thresholds")?.get())?;
+                     let thresholds: Vec<f32> = thresholds
+                         .iter()
+                         .map(|raw| noise_value(raw))
+                         .collect::<Result<_, _>>()?;
+-                    let functions: Vec<Box<RawValue>> =
++                    let functions: Vec<&RawValue> =
+                         serde_json::from_str(required(&object, "functions")?.get())?;
+                     if functions.len() < 2
+                         || functions.len() > 256
+@@ -463,12 +477,12 @@ impl Loader {
+                     }
+                 }
+                 "minecraft:distance_to_point" => {
+-                    let raw: Vec<Box<RawValue>> =
++                    let raw: Vec<&RawValue> =
+                         serde_json::from_str(required(&object, "point")?.get())?;
+                     if raw.len() != 3 {
+                         return Err(DecodeError::Field("point"));
+                     }
+-                    let point = [integer(&raw[0])?, integer(&raw[1])?, integer(&raw[2])?];
++                    let point = [integer(raw[0])?, integer(raw[1])?, integer(raw[2])?];
+                     let metric = match string(required(&object, "metric")?)?.as_str() {
+                         "euclidean" => DistanceMetric::Euclidean,
+                         "euclidean_squared" => DistanceMetric::EuclideanSquared,
+@@ -531,13 +545,13 @@ impl Loader {
+         if !raw.get().starts_with('{') {
+             return Ok(CubicSpline::Constant(float(raw)?));
+         }
+-        let object: Object = serde_json::from_str(raw.get())?;
++        let object: DensityObject<'_> = serde_json::from_str(raw.get())?;
+         let coordinate = self.input(&object, "coordinate", depth)?;
+-        let points: Vec<Box<RawValue>> = serde_json::from_str(required(&object, "points")?.get())?;
++        let points: Vec<&RawValue> = serde_json::from_str(required(&object, "points")?.get())?;
+         let points = points
+             .iter()
+             .map(|raw| {
+-                let point: Object = serde_json::from_str(raw.get())?;
++                let point: DensityObject<'_> = serde_json::from_str(raw.get())?;
+                 Ok(SplinePoint {
+                     location: float(required(&point, "location")?)?,
+                     derivative: float(required(&point, "derivative")?)?,
