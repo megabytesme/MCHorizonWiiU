@@ -1,0 +1,269 @@
+diff --git a/crates/horizon-client-render/src/spans.rs b/crates/horizon-client-render/src/spans.rs
+index d3e8f1f..7c15cd4 100644
+--- a/crates/horizon-client-render/src/spans.rs
++++ b/crates/horizon-client-render/src/spans.rs
+@@ -475,7 +475,7 @@ pub mod startup {
+             Mutex, OnceLock,
+             atomic::{AtomicBool, AtomicU32, Ordering},
+         },
+-        time::Instant,
++        time::{Duration, Instant},
+     };
+ 
+     static ON: AtomicBool = AtomicBool::new(false);
+@@ -578,6 +578,15 @@ pub mod startup {
+         let _ = writeln!(file, r#"{{"pid":1,"tid":{tid},{event}}}"#);
+     }
+ 
++    /// Write a completed substage timed in a lower crate on this thread.
++    pub fn record_span(name: &'static str, started: Instant, elapsed: Duration) {
++        write(format_args!(
++            r#""ph":"X","name":"{name}","ts":{},"dur":{}"#,
++            micros(started),
++            elapsed.as_micros()
++        ));
++    }
++
+     /// A step running until it is dropped.
+     #[must_use = "the step ends when this is dropped"]
+     pub struct Step {
+@@ -592,13 +601,7 @@ pub mod startup {
+             if !self.traced {
+                 return;
+             }
+-            let end = Instant::now();
+-            write(format_args!(
+-                r#""ph":"X","name":"{}","ts":{},"dur":{}"#,
+-                self.name,
+-                micros(self.started),
+-                end.saturating_duration_since(self.started).as_micros()
+-            ));
++            record_span(self.name, self.started, self.started.elapsed());
+         }
+     }
+ 
+diff --git a/crates/horizon-client/src/game/world/world_loading.rs b/crates/horizon-client/src/game/world/world_loading.rs
+index 2283217..2aa48c1 100644
+--- a/crates/horizon-client/src/game/world/world_loading.rs
++++ b/crates/horizon-client/src/game/world/world_loading.rs
+@@ -597,10 +597,20 @@ pub(super) fn preload_launch_world(
+                         &data_source,
+                     )
+                 };
+-                match behaviour_inputs {
++                let load = || match behaviour_inputs {
+                     Some(inputs) => inputs.with_worldgen(&resources, registry, load),
+                     None => load(),
++                };
++                #[cfg(target_os = "cafe")]
++                if startup::on()
++                    && std::fs::metadata(
++                        "/vol/external01/wiiu/apps/HorizonWiiU/worldgen-load-profile.enable",
++                    )
++                    .is_ok_and(|marker| marker.is_file())
++                {
++                    return horizon_world::worldgen::load_profile::with(startup::record_span, load);
+                 }
++                load()
+             });
+             if let Ok(data) = generator {
+                 let preset = horizon_client::save::WorldGen::preset(&world_root);
+diff --git a/crates/horizon-world/src/worldgen.rs b/crates/horizon-world/src/worldgen.rs
+index 2e52a0f..57db129 100644
+--- a/crates/horizon-world/src/worldgen.rs
++++ b/crates/horizon-world/src/worldgen.rs
+@@ -48,6 +48,7 @@ pub(crate) use generator_structures::tag_json;
+ pub mod height_provider;
+ pub mod iceberg;
+ pub mod live;
++pub mod load_profile;
+ mod long_set;
+ pub mod material_condition;
+ pub mod material_extensions;
+diff --git a/crates/horizon-world/src/worldgen/generator/data.rs b/crates/horizon-world/src/worldgen/generator/data.rs
+index 9025039..d9b5530 100644
+--- a/crates/horizon-world/src/worldgen/generator/data.rs
++++ b/crates/horizon-world/src/worldgen/generator/data.rs
+@@ -1,6 +1,8 @@
+ //! Seed-independent registry resources and their load boundary.
+ use super::*;
+-use crate::worldgen::{biome::MultiNoiseBiomeSource, biome_source::BiomeSourceError};
++use crate::worldgen::{
++    biome::MultiNoiseBiomeSource, biome_source::BiomeSourceError, load_profile::Profile,
++};
+ /// Feature resources for the FEATURES status, keyed by resource identifier.
+ pub(in crate::worldgen) struct FeatureResources {
+     pub(in crate::worldgen) features: BTreeMap<String, String>,
+@@ -194,6 +196,8 @@ impl GeneratorData {
+         registry: &'static BlockRegistry,
+         ov: &WorldgenOverrides,
+     ) -> Result<Arc<Self>, GeneratorError> {
++        let profile = Profile::current();
++        let _step = profile.step("world.preload.generator.data");
+         let mut warnings = Vec::new();
+         let flags: Vec<(bool, bool)> =
+             serde_json::from_str(&fs::read_to_string(dir.join("block_flags.json"))?)?;
+@@ -227,12 +231,15 @@ impl GeneratorData {
+         let blocks = loading({
+             let (dir, tags, fluids) = (dir.join("blocks"), block_tags.clone(), fluid_tags.clone());
+             move || {
+-                super::super::generator_blocks::BlockBehavior::load(&dir, registry, &tags, &fluids)
++                super::super::generator_blocks::BlockBehavior::load(
++                    &dir, registry, &tags, &fluids, profile,
++                )
+             }
+         })?;
+         let structures = loading({
+             let (dir, tags, ov) = (dir.to_owned(), block_tags.clone(), ov.clone());
+             move || -> Result<_, GeneratorError> {
++                let _step = profile.step("world.preload.generator.data.structures");
+                 let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
+                     return Ok(None);
+                 };
+@@ -254,6 +261,7 @@ impl GeneratorData {
+                 .as_deref()
+                 .and_then(|root| crate::level::behaviour_inputs::for_worldgen(root, registry));
+             move || {
++                let _step = profile.step("world.preload.generator.data.behaviours");
+                 let root = root.filter(|root| root.join("block-behaviours.json").exists())?;
+                 let behaviours = match inputs {
+                     Some(inputs) => {
+@@ -363,7 +371,10 @@ impl GeneratorData {
+                 features,
+                 placed,
+                 feature_tags: read_optional_bundle(dir, ov, "feature_tags")?.unwrap_or_default(),
+-                blocks: joined(blocks)?,
++                blocks: {
++                    let _step = profile.step("world.preload.generator.data.join_blocks");
++                    joined(blocks)?
++                },
+                 fluid_tags,
+                 state_providers: read_optional_bundle(dir, ov, "state_providers")?
+                     .unwrap_or_default(),
+diff --git a/crates/horizon-world/src/worldgen/generator_blocks.rs b/crates/horizon-world/src/worldgen/generator_blocks.rs
+index 7498b9e..dd92fcb 100644
+--- a/crates/horizon-world/src/worldgen/generator_blocks.rs
++++ b/crates/horizon-world/src/worldgen/generator_blocks.rs
+@@ -1,7 +1,7 @@
+ //! Optional block-behavior registries used by feature placement: physical
+ //! properties, face support, collision and survival rules. Loaded from the
+ //! bundle's `blocks/` directory (Java-exported, see crates/horizon-prepare).
+-use super::generator::GeneratorError;
++use super::{generator::GeneratorError, load_profile::Profile};
+ use crate::{
+     block_collision::BlockCollisionRegistry,
+     block_properties::BlockPropertiesRegistry,
+@@ -97,7 +97,9 @@ impl BlockBehavior {
+         registry: &'static BlockRegistry,
+         tags: &BTreeMap<String, Vec<String>>,
+         fluid_tags: &BTreeMap<String, Vec<String>>,
++        profile: Profile,
+     ) -> Result<Option<Self>, GeneratorError> {
++        let _step = profile.step("world.preload.generator.data.blocks");
+         if !dir.join("block-properties.nbt").exists() {
+             return Ok(None);
+         }
+@@ -112,23 +114,33 @@ impl BlockBehavior {
+         // property tables (which need the collisions) read on this one.
+         let (collisions, properties, support) = std::thread::scope(|scope| {
+             let support = scope.spawn(|| -> Result<_, GeneratorError> {
++                let _step = profile.step("world.preload.generator.data.blocks.support");
+                 Ok(BlockSupportRegistry::from_table(
+                     read("cached-support.nbt")?.table("support")?,
+                 )?)
+             });
+-            let collisions = CachedCollisionRegistry::from_table(
+-                read("cached-collision.nbt")?.table("collision")?,
+-            )?;
+-            let properties = BlockPropertiesRegistry::from_table(
+-                read("block-properties.nbt")?.table("block property")?,
+-                &collisions,
+-            )?;
++            let collisions = {
++                let _step = profile.step("world.preload.generator.data.blocks.collision");
++                CachedCollisionRegistry::from_table(
++                    read("cached-collision.nbt")?.table("collision")?,
++                )?
++            };
++            let properties = {
++                let _step = profile.step("world.preload.generator.data.blocks.properties");
++                BlockPropertiesRegistry::from_table(
++                    read("block-properties.nbt")?.table("block property")?,
++                    &collisions,
++                )?
++            };
+             let support = support
+                 .join()
+                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+             Ok::<_, GeneratorError>((collisions, properties, Arc::new(support)))
+         })?;
+-        let collision = Arc::new(BlockCollisionRegistry::new(Arc::new(collisions))?);
++        let collision = {
++            let _step = profile.step("world.preload.generator.data.blocks.collision_context");
++            Arc::new(BlockCollisionRegistry::new(Arc::new(collisions))?)
++        };
+         let rules = json("survival-rules.json")?
+             .as_object()
+             .ok_or_else(|| resource("survival rules"))?
+diff --git a/crates/horizon-world/src/worldgen/load_profile.rs b/crates/horizon-world/src/worldgen/load_profile.rs
+new file mode 100644
+index 0000000..191c5e1
+--- /dev/null
++++ b/crates/horizon-world/src/worldgen/load_profile.rs
+@@ -0,0 +1,56 @@
++//! Optional timing for one generator-resource load and its worker branches.
++use std::{
++    cell::Cell,
++    time::{Duration, Instant},
++};
++
++type Record = fn(&'static str, Instant, Duration);
++
++thread_local! {
++    static CURRENT: Cell<Option<Record>> = const { Cell::new(None) };
++}
++
++/// Time the generator-resource load initiated by this thread's operation.
++/// Its loader takes a snapshot before spawning its worker branches.
++pub fn with<T>(record: Record, operation: impl FnOnce() -> T) -> T {
++    struct Restore(Option<Record>);
++    impl Drop for Restore {
++        fn drop(&mut self) {
++            CURRENT.set(self.0);
++        }
++    }
++
++    let _scope = Restore(CURRENT.replace(Some(record)));
++    operation()
++}
++
++#[derive(Clone, Copy)]
++pub(super) struct Profile(Option<Record>);
++
++impl Profile {
++    pub(super) fn current() -> Self {
++        Self(CURRENT.get())
++    }
++
++    #[inline]
++    pub(super) fn step(self, name: &'static str) -> Option<Step> {
++        self.0.map(|record| Step {
++            record,
++            name,
++            start: Instant::now(),
++        })
++    }
++}
++
++#[must_use = "the step ends when this is dropped"]
++pub(super) struct Step {
++    record: Record,
++    name: &'static str,
++    start: Instant,
++}
++
++impl Drop for Step {
++    fn drop(&mut self) {
++        (self.record)(self.name, self.start, self.start.elapsed());
++    }
++}
