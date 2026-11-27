@@ -1,0 +1,296 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index e48eb21..24d612d 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -1,4 +1,5 @@
+ #include "gx2_profile.h"
++#include "loading_host.h"
+ #include "worker_schedule.h"
+ #include "../gx2_hud/hud.h"
+ #include <coreinit/cache.h>
+@@ -72,7 +73,19 @@ static bool grouped_drc_no_entry_drain_enabled;
+ static uint32_t grouped_retirement_count;
+ static HorizonGx2GroupedRetirement grouped_retirement[GROUPED_RETIREMENT_CAPACITY];
+ 
+-enum { DEADLINE_PERIOD = 60, DEADLINE_CAPACITY = 32 };
++enum { DEADLINE_PERIOD = 60, DEADLINE_CAPACITY = 32, RENDER_TAIL_SECTIONS = 174 };
++typedef enum {
++   TAIL_NO_EARLY_FLUSH, TAIL_UNCLEAN_PRIOR, TAIL_ARMED, TAIL_NO_RENDER_TOKEN,
++   TAIL_FLUSHED, TAIL_FOREGROUND_LOST, TAIL_QUEUE_CHANGED, TAIL_BAD_CLOCK,
++   TAIL_ALREADY_RETIRED, TAIL_ZERO_INTERVAL, TAIL_PENDING, TAIL_FINISH_UNVERIFIED,
++   TAIL_LOWER_BOUND,
++} RenderTailState;
++
++typedef struct {
++   int64_t prior, token, retired_at_poll, start_ticks, final;
++   uint64_t lower_ticks;
++   RenderTailState state;
++} RenderTail;
+ typedef struct {
+    uint64_t cpu, vblank, flip_time, submitted, retired;
+    uint32_t swaps, flips;
+@@ -83,9 +96,10 @@ typedef struct {
+    uint64_t start;
+    uint32_t sequence, mask;
+    bool grouped;
++   RenderTail tail;
+ } DeadlineSample;
+ 
+-static bool deadline_enabled;
++static bool deadline_enabled, render_tail_enabled;
+ static uint32_t deadline_count, deadline_sections;
+ static DeadlineSample deadlines[DEADLINE_CAPACITY], *deadline_current, *deadline_follow;
+ _Static_assert(sizeof(deadlines) <= 16 * 1024, "bounded present deadline storage");
+@@ -216,6 +230,117 @@ void horizon_gx2_profile_deadline_ready(bool grouped)
+    horizon_gx2_profile_deadline_sample(GX2_DEADLINE_READY);
+ }
+ 
++static RenderTail *render_tail_current(void)
++{
++   if (!render_tail_enabled || !deadline_current || history != &process_history ||
++       !recording || current.phase != PLAYING_PHASE) return NULL;
++   return &deadline_current->tail;
++}
++
++bool horizon_gx2_profile_render_tail_arm(int64_t prior, int64_t submitted, int64_t retired)
++{
++   RenderTail *tail = render_tail_current();
++   if (!tail) return false;
++   if (tail->state != TAIL_NO_EARLY_FLUSH) {
++      tail->state = TAIL_QUEUE_CHANGED;
++      return false;
++   }
++
++   const DeadlinePoint *start = &deadline_current->points[GX2_DEADLINE_START];
++   if (!(deadline_current->mask & (1u << GX2_DEADLINE_START)) || prior <= 0 ||
++       start->submitted != (uint64_t)prior || start->retired != (uint64_t)prior ||
++       submitted != prior || retired != prior || GX2GetLastSubmittedTimeStamp() != prior) {
++      tail->state = TAIL_UNCLEAN_PRIOR;
++      return false;
++   }
++   tail->prior = prior;
++   tail->state = TAIL_ARMED;
++   return true;
++}
++
++void horizon_gx2_profile_render_tail_flushed(void)
++{
++   RenderTail *tail = render_tail_current();
++   if (!tail || tail->state != TAIL_ARMED) return;
++   tail->token = GX2GetLastSubmittedTimeStamp();
++   tail->start_ticks = OSGetSystemTime();
++   tail->state = tail->token > tail->prior && tail->start_ticks > 0
++      ? TAIL_FLUSHED : TAIL_NO_RENDER_TOKEN;
++}
++
++void horizon_gx2_profile_render_tail_before_scan(void)
++{
++   RenderTail *tail = render_tail_current();
++   if (!tail || tail->state != TAIL_FLUSHED) return;
++   if (!horizon_loading_host_guarded_hud_available()) {
++      tail->state = TAIL_FOREGROUND_LOST;
++      return;
++   }
++
++   const DeadlinePoint *waited = &deadline_current->points[GX2_DEADLINE_AFTER_FLIP_WAIT];
++   if (!(deadline_current->mask & (1u << GX2_DEADLINE_AFTER_FLIP_WAIT)) ||
++       waited->submitted != (uint64_t)tail->token || waited->retired < (uint64_t)tail->prior ||
++       waited->retired > (uint64_t)tail->token) {
++      tail->state = TAIL_QUEUE_CHANGED;
++      return;
++   }
++
++   // Stamp before the retired query. A preemption after that read may
++   // increase a trailing timestamp without extending proven GPU residence.
++   const OSTime poll_begin = OSGetSystemTime();
++   const OSTime submitted = GX2GetLastSubmittedTimeStamp();
++   tail->retired_at_poll = GX2GetRetiredTimeStamp();
++   const OSTime confirmed = GX2GetLastSubmittedTimeStamp();
++   if (!horizon_loading_host_guarded_hud_available()) {
++      tail->state = TAIL_FOREGROUND_LOST;
++   } else if (submitted != tail->token || confirmed != tail->token ||
++              tail->retired_at_poll < tail->prior || tail->retired_at_poll > tail->token ||
++              (uint64_t)tail->retired_at_poll < waited->retired) {
++      tail->state = TAIL_QUEUE_CHANGED;
++   } else if (poll_begin < tail->start_ticks) {
++      tail->state = TAIL_BAD_CLOCK;
++   } else if (tail->retired_at_poll == tail->token) {
++      tail->state = TAIL_ALREADY_RETIRED;
++   } else if (poll_begin == tail->start_ticks) {
++      tail->state = TAIL_ZERO_INTERVAL;
++   } else {
++      tail->lower_ticks = (uint64_t)(poll_begin - tail->start_ticks);
++      tail->state = TAIL_PENDING;
++   }
++}
++
++void horizon_gx2_profile_render_tail_accepted(int64_t before_finish, int64_t submitted)
++{
++   RenderTail *tail = render_tail_current();
++   if (!tail || tail->state != TAIL_PENDING) return;
++   const DeadlinePoint *ready = &deadline_current->points[GX2_DEADLINE_READY];
++   if (!horizon_loading_host_guarded_hud_available()) {
++      tail->state = TAIL_FOREGROUND_LOST;
++   } else if (before_finish < tail->token || submitted <= before_finish ||
++              !(deadline_current->mask & (1u << GX2_DEADLINE_READY)) ||
++              ready->submitted < (uint64_t)tail->token || ready->submitted > (uint64_t)before_finish ||
++              ready->retired < (uint64_t)tail->retired_at_poll || ready->retired > ready->submitted) {
++      tail->state = TAIL_FINISH_UNVERIFIED;
++   } else {
++      tail->final = submitted;
++   }
++}
++
++static void render_tail_commit(DeadlineSample *sample)
++{
++   RenderTail *tail = &sample->tail;
++   if (tail->state != TAIL_PENDING) return;
++   const DeadlinePoint *finish = &sample->points[GX2_DEADLINE_FINISHED];
++   if (!sample->grouped || !tail->final || finish->submitted != (uint64_t)tail->final ||
++       finish->retired != (uint64_t)tail->final) {
++      tail->state = TAIL_FINISH_UNVERIFIED;
++   } else if (!horizon_loading_host_guarded_hud_available()) {
++      tail->state = TAIL_FOREGROUND_LOST;
++   } else {
++      tail->state = TAIL_LOWER_BOUND;
++   }
++}
++
+ static bool deadline_matches_frame(const ProfileFrame *frame)
+ {
+    if (frame->phase != PLAYING_PHASE || frame->counters[GX2_PROFILE_PRESENTED] != 1 ||
+@@ -254,12 +379,34 @@ static void deadline_finish(void)
+    const uint32_t required = (1u << GX2_DEADLINE_START) | (1u << GX2_DEADLINE_AFTER_FLIP_WAIT) |
+                              (1u << GX2_DEADLINE_READY) | (1u << GX2_DEADLINE_FINISHED);
+    if ((deadline_current->mask & required) == required && deadline_matches_frame(&current)) {
++      render_tail_commit(deadline_current);
+       ++deadline_count;
+       deadline_follow = deadline_current;
+    }
+    deadline_current = NULL;
+ }
+ 
++static void report_render_tail(const DeadlineSample *sample)
++{
++   static const char *const states[] = {
++      [TAIL_NO_EARLY_FLUSH] = "no-early-flush", [TAIL_UNCLEAN_PRIOR] = "unclean-prior",
++      [TAIL_ARMED] = "incomplete", [TAIL_NO_RENDER_TOKEN] = "no-render-token",
++      [TAIL_FLUSHED] = "no-pre-scan-poll", [TAIL_FOREGROUND_LOST] = "foreground-or-keyboard",
++      [TAIL_QUEUE_CHANGED] = "queue-changed", [TAIL_BAD_CLOCK] = "bad-clock",
++      [TAIL_ALREADY_RETIRED] = "already-retired", [TAIL_ZERO_INTERVAL] = "zero-interval",
++      [TAIL_PENDING] = "finish-unverified", [TAIL_FINISH_UNVERIFIED] = "finish-unverified",
++      [TAIL_LOWER_BOUND] = "lower-bound",
++   };
++   const RenderTail *tail = &sample->tail;
++   OSReport("Horizon GX2 render tail seq=%u start=%llx state=%s hz=%u "
++            "prior=%llx q=%llx r=%llx final=%llx t0=%llx lower=%llx\n",
++            sample->sequence, (unsigned long long)sample->start, states[tail->state],
++            OSTimerClockSpeed, (unsigned long long)tail->prior, (unsigned long long)tail->token,
++            (unsigned long long)tail->retired_at_poll, (unsigned long long)tail->final,
++            (unsigned long long)tail->start_ticks,
++            (unsigned long long)(tail->state == TAIL_LOWER_BOUND ? tail->lower_ticks : 0));
++}
++
+ static void report_deadlines(void)
+ {
+    static const char *const names[GX2_DEADLINE_EDGES] = {
+@@ -267,6 +414,7 @@ static void report_deadlines(void)
+    };
+    for (uint32_t i = 0; i < deadline_count; ++i) {
+       const DeadlineSample *sample = &deadlines[i];
++      if (render_tail_enabled && sample->grouped) report_render_tail(sample);
+       for (uint32_t edge = 0; edge < GX2_DEADLINE_EDGES; ++edge) {
+          if (!(sample->mask & (1u << edge))) continue;
+          const DeadlinePoint *point = &sample->points[edge];
+@@ -697,6 +845,13 @@ void horizon_gx2_profile_init(void)
+          else if (deadline_sections)
+             OSReport("Horizon GX2 present deadlines require %u sections on each output\n", deadline_sections);
+       }
++      if (deadline_enabled && deadline_sections == RENDER_TAIL_SECTIONS) {
++         FILE *render_tail = fopen(ROOT "gx2-render-tail-lower-bound.enable", "rb");
++         if (render_tail) {
++            fclose(render_tail);
++            render_tail_enabled = true;
++         }
++      }
+       FILE *client_tick = fopen(ROOT "gx2-client-tick-profile.enable", "rb");
+       client_tick_marker = client_tick != NULL;
+       if (client_tick) {
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 2402d26..3ae6ac9 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -75,6 +75,10 @@ enum {
+ };
+ void horizon_gx2_profile_deadline_sample(uint32_t edge);
+ void horizon_gx2_profile_deadline_ready(bool grouped);
++bool horizon_gx2_profile_render_tail_arm(int64_t prior, int64_t submitted, int64_t retired);
++void horizon_gx2_profile_render_tail_flushed(void);
++void horizon_gx2_profile_render_tail_before_scan(void);
++void horizon_gx2_profile_render_tail_accepted(int64_t before_finish, int64_t submitted);
+ bool horizon_gx2_profile_skip_terrain_waits(void);
+ /* 0 is off, 1 forces both waits, 2 permits the verified TV-only skip. */
+ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+diff --git a/wiiu/loading_host/loading_host.c b/wiiu/loading_host/loading_host.c
+index 6fb99c9..e98353c 100644
+--- a/wiiu/loading_host/loading_host.c
++++ b/wiiu/loading_host/loading_host.c
+@@ -338,7 +338,8 @@ static bool grouped_scan_owned(uint32_t ticket, uint32_t pending_at_start, bool
+ 
+ /* Submit without touching scan buffers. The TV-only arm can still overlap
+  * CPU work after the prior flip has completed. */
+-static OSTime flush_grouped_render(uint32_t ticket, uint32_t pending_at_start, OSTime prior, bool tv_only)
++static OSTime flush_grouped_render(uint32_t ticket, uint32_t pending_at_start, OSTime prior,
++                                    bool tv_only, bool clean_entry)
+ {
+    if (!horizon_loading_host_guarded_hud_available() ||
+        !grouped_scan_owned(ticket, pending_at_start, tv_only)) return 0;
+@@ -348,7 +349,10 @@ static OSTime flush_grouped_render(uint32_t ticket, uint32_t pending_at_start, O
+    if (prior <= 0 || submitted < prior || retired < prior || retired > submitted) return 0;
+ 
+    const uint64_t stamp = horizon_gx2_profile_stamp();
++   const bool observe = !tv_only &&
++      horizon_gx2_profile_render_tail_arm(clean_entry ? prior : 0, submitted, retired);
+    GX2Flush();
++   if (observe) horizon_gx2_profile_render_tail_flushed();
+    horizon_gx2_profile_end(tv_only ? GX2_PROFILE_SUBMIT_TV : GX2_PROFILE_SUBMIT_DRC, stamp);
+    return submitted;
+ }
+@@ -473,7 +477,7 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+       horizon_gx2_profile_end(output == 0 ? GX2_PROFILE_SUBMIT_TV : GX2_PROFILE_SUBMIT_DRC, stamp);
+ 
+       if (output == 0 && result == 0 && may_prepare_drc) {
+-         const OSTime before = flush_grouped_render(ticket, pending_at_start, prior, true);
++         const OSTime before = flush_grouped_render(ticket, pending_at_start, prior, true, false);
+          if (before > 0) {
+             tv_submitted = before;
+             const OSTime submitted = GX2GetLastSubmittedTimeStamp();
+@@ -497,7 +501,7 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    }
+ 
+    const bool flushed_early = may_flush_early &&
+-      flush_grouped_render(ticket, pending_at_start, prior, false) > 0;
++      flush_grouped_render(ticket, pending_at_start, prior, false, prior_retired == prior) > 0;
+    const OSTime flip_wait = wait_for_previous_flip();
+    if (overlap_authorized && !horizon_loading_host_guarded_hud_available()) {
+       report_grouped(GROUPED_BACKGROUND, "overlapped pair lost foreground or keyboard ownership");
+@@ -509,6 +513,7 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+       return reject_grouped(flip_wait, tv_submitted, gpu_sample, dimensions, HORIZON_LOADING_RETRY_FLIP, verified_finish);
+    }
+ 
++   if (flushed_early) horizon_gx2_profile_render_tail_before_scan();
+    uint64_t stamp = horizon_gx2_profile_stamp();
+    WHBGfxFinishRenderTV();
+    horizon_gx2_profile_end(GX2_PROFILE_SCAN_COPY_TV, stamp);
+@@ -544,8 +549,10 @@ static int present_grouped(HorizonLoadingDrawTarget draw, void *context, const f
+    if (gpu_sample) horizon_gx2_profile_gpu_finish(last_outputs);
+    ++completed_presents;
+    horizon_gx2_profile_count(GX2_PROFILE_PRESENTED, 1);
+-   if (flushed_early)
++   if (flushed_early) {
++      horizon_gx2_profile_render_tail_accepted(before_finish, submitted);
+       report_grouped(GROUPED_EARLY_FLUSH, "submitted render commands before the prior scan wait");
++   }
+    if (prepared_drc)
+       report_grouped(GROUPED_DRC_PREPASS, "GamePad terrain visibility prepared before its GPU wait");
+    else if (tv_submitted > 0)
