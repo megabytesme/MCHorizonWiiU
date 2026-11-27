@@ -292,11 +292,18 @@ def summarize_stock_saved_view(frames, start, end):
     # Each interval is billed to its ending frame. The first retained row
     # supplies the clock boundary and cannot also count as an interval.
     timed_pairs = sum(row["sequence"] != rows[0]["sequence"] for row in reference)
+    complete = [row for row in reference if not row["partial"]]
+    timed_complete = sum(row["sequence"] != rows[0]["sequence"] for row in complete)
     intervals = [
         current["start_ms"] - prior["start_ms"]
         for prior, current in zip(reference, reference[1:])
     ]
-    partial = sum(row["partial"] for row in reference)
+    # Include interruptions before the first and after the last complete pair.
+    complete_boundaries = [rows[0], *complete, rows[-1]]
+    longest_complete_gap_ms = max(
+        current["start_ms"] - prior["start_ms"]
+        for prior, current in zip(complete_boundaries, complete_boundaries[1:])
+    )
     dimensions = sorted({
         (row["tv_width"], row["tv_height"], row["drc_width"], row["drc_height"],
          row["tv_world_width"], row["tv_world_height"],
@@ -310,13 +317,20 @@ def summarize_stock_saved_view(frames, start, end):
         "at_least_60_seconds_retained": wall_ms >= 60_000,
         "host_loops": len(rows),
         "non_playing_loops": sum(row["phase"] != "playing" for row in rows),
+        "tv_only_loops": sum(bool(row["tv_submissions"]) and not row["gamepad_submissions"] for row in rows),
+        "gamepad_only_loops": sum(bool(row["gamepad_submissions"]) and not row["tv_submissions"] for row in rows),
         "gameplay_paired_submissions": len(gameplay_pairs),
         "paired_submissions_outside_reference": len(gameplay_pairs) - len(reference),
         "reference_paired_submissions": len(reference),
-        "reference_complete_submissions": len(reference) - partial,
-        "reference_partial_submissions": partial,
+        "reference_complete_submissions": len(complete),
+        "reference_partial_submissions": len(reference) - len(complete),
         "reference_pairs_per_second": round(1000 * timed_pairs / wall_ms, 3),
         "reference_pair_intervals_ms": stats(intervals),
+        "reference_complete_pairs_per_second": round(1000 * timed_complete / wall_ms, 3),
+        "reference_complete_pair_intervals_ms": stats(
+            current["start_ms"] - prior["start_ms"] for prior, current in zip(complete, complete[1:])
+        ),
+        "reference_max_gap_between_complete_pairs_or_window_bounds_ms": round(longest_complete_gap_ms, 3),
         "reference_dimensions": [
             {"outputs_tv_gamepad": [list(size[0:2]), list(size[2:4])],
              "world_tv_gamepad": [list(size[4:6]), list(size[6:8])]} for size in dimensions

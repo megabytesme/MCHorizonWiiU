@@ -102,8 +102,25 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(window["non_playing_loops"], 1)
         self.assertEqual(window["reference_pairs_per_second"], .033)
         self.assertEqual(window["reference_pair_intervals_ms"]["p99"], 40_000)
+        self.assertEqual(window["reference_complete_pairs_per_second"], .017)
+        self.assertEqual(window["reference_complete_pair_intervals_ms"]["p99"], 60_000)
         self.assertEqual(window["reference_dimensions"][0]["world_tv_gamepad"], [[1440, 809], [641, 360]])
         self.assertFalse(profile.summarize_stock_saved_view(frames, 0, 61)["at_least_60_seconds_retained"])
+
+    def test_saved_view_counts_single_output_loops_and_complete_pair_boundary_gaps(self):
+        _, frames = profile.read(stock_view_capture([
+            (1000, 5, 0, 75, 174, 0, 0),
+            (10_000, 5, 1, 75, 174, 0, 0),
+            (20_000, 5, 1, 75, 174, 0, 1),
+            (61_000, 5, 0, 75, 174, 0, 0),
+        ]))
+        frames[0]["tv_submissions"] = 1
+        frames[-1]["gamepad_submissions"] = 1
+        window = profile.summarize_stock_saved_view(frames, 0, 62)
+        self.assertEqual((window["tv_only_loops"], window["gamepad_only_loops"]), (1, 1))
+        self.assertEqual(window["reference_complete_pairs_per_second"], .017)
+        self.assertIsNone(window["reference_complete_pair_intervals_ms"])
+        self.assertEqual(window["reference_max_gap_between_complete_pairs_or_window_bounds_ms"], 51_000)
 
     def test_saved_view_counts_intervals_without_counting_the_clock_origin(self):
         capture = stock_view_capture(
@@ -112,6 +129,7 @@ class ProfileTests(unittest.TestCase):
         _, frames = profile.read(capture)
         window = profile.summarize_stock_saved_view(frames, 0, 70)
         self.assertEqual(window["reference_pairs_per_second"], 60)
+        self.assertEqual(window["reference_complete_pairs_per_second"], 60)
         self.assertEqual(window["reference_paired_submissions"], 3601)
         self.assertEqual(window["reference_pair_intervals_ms"]["samples"], 3600)
         self.assertEqual(window["reference_pair_intervals_ms"]["p99"], 16.667)
