@@ -119,6 +119,16 @@ before expanding that architecture.
   after the old wrapper failed at arena teardown. The corrected full
   game build is in progress. [RC 59 qualification](rc59-qualification.md) ·
   [HUD reducer](hud-retirement-reducer.md)
+- RC 60 fixes the grouped HUD wrapper and adds a bounded TV depth
+  MEM1 trial. The grouped control, early-requested and MEM1 arms passed
+  independent output, save, audio, heap and exit checks in Cemu.
+  The physical comparisons are staged. The positive early submission
+  event remains unobserved. [RC 60 receipt](rc60-qualification.md)
+- Guarded stock-fog terrain passed 12 dual-output RGBA fixture cases.
+  The two recompiler modes passed the corrected PowerPC condition-register
+  probe, and the unchanged RC 59 grouped game completed on the patched
+  emulator. [Stock fog fixture](../../wiiu/diagnostics/gx2-near-fog/README.md) ·
+  [Cemu recompiler evidence](../../wiiu/cemu/RECOMPILER.md#condition-register-liveness)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

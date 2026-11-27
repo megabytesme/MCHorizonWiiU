@@ -39,18 +39,20 @@ the grouped early-submission trial on one verified binary. Record
 the marker files for each arm. [RC 55 package](rc55-qualification.md) ·
 [RC 57 package](rc57-qualification.md)
 
-The grouped HUD comparisons are on hold after matched Cemu arms
-reproduced a HUD arena destruction assertion. Use the stock direct path
-for independent verification while this is resolved. RC 59 stages a
-separate stock-fog comparison of plain rendering and the opaque no-kill
-arm. The clear-fog shader is a parity diagnostic. Stock Overworld fog
-prevents its admission on the reference. [RC 59 package](rc59-qualification.md)
+RC 60 supersedes the grouped HUD arms that failed arena destruction in
+Cemu. The corrected control and early-requested arms passed the full
+hosted lifecycle. Begin the physical comparison on the corrected package.
+Run the separate bounded TV depth arm after confirming actual MEM1
+allocation and foreground release. RC 59 retains its stock-fog
+comparison of plain rendering and the opaque no-kill shader. Stock
+Overworld fog excludes the clear-fog diagnostic from the reference.
+[RC 60 package](rc60-qualification.md) · [RC 59 package](rc59-qualification.md)
 
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
 | 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
-| 3 | Same RC 57 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
+| 3 | Same RC 60 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
 | 4 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
 | 5 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
 

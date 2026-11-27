@@ -168,10 +168,45 @@
       "original_interpreter": "passed",
       "original_recompilers": "active_arena_native_refusal",
       "corrected_recompilers": "both_passed_retirement_and_destruction",
-      "corrected_hosted_game": "queued"
+      "corrected_hosted_game": "passed_on_baseline_cemu_in_rc60"
     },
-    "physical": "stock_and_opaque_control_staged_grouped_on_hold",
+    "physical": "stock_and_opaque_control_staged_rc60_replaces_grouped_arms",
     "receipt": "rc59-qualification.md"
+  },
+  "grouped_retirement_and_tv_depth": {
+    "candidate": "0.8.0-rc.60",
+    "engine_tree": "a3635a8f561846bb82ed6891ab301c8b9f66bc97",
+    "rpx_sha256": "45d53ed9c92e31e3b41c56e647e75e34c756661c56d4ce57ecb50db71011513c",
+    "wuhb_sha256": "555a1f0bfb4dc61694fffd3e13c03f5baae470c0bc008307b975e1b081a193d9",
+    "native_build": "passed_after_rust_2021_correction",
+    "cemu_grouped_lifecycle": "control_and_early_requested_passed",
+    "cemu_early_flush_activation": "unobserved",
+    "cemu_mem1_tv_depth": "active_and_clean_save_exit",
+    "cemu_mem1_tv_depth_bytes": 4700160,
+    "cemu_structurally_readable_chunk_streams": [
+      371,
+      380,
+      371
+    ],
+    "cemu_gx2_bulk_free_each_arm_bytes": 234880920,
+    "physical": "supervised_comparisons_staged",
+    "receipt": "rc60-qualification.md"
+  },
+  "stock_near_fog_and_condition_register": {
+    "stock_fog_fixture": "interpreter_12_dual_output_passes",
+    "stock_pixel_shader_dwords_before_after": [
+      142,
+      124
+    ],
+    "ppc_original_exact_fixture_errors_single_multi": [
+      12224,
+      12160
+    ],
+    "ppc_patched_exact_fixture_errors_single_multi": [
+      0,
+      0
+    ],
+    "ppc_patched_cemu_original_rc59_grouped": "save_heap_audio_and_exit_passed"
   },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",

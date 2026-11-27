@@ -50,7 +50,9 @@ remaining callback, stale-token, keyboard and foreground controls.
 The final drain, native destruction receipt and clean process exit
 passed. Corrected RPX SHA-256 is
 `44184d749b28f0fca7120995436cb7cff86f490e9ceb738f83dbffb260b0d28d`.
-The full hosted workload and supervised qualification remain open.
+RC 60 passed the full hosted lifecycle with early submission both
+disabled and requested on the baseline emulator. Physical qualification
+is staged. [RC 60 receipt](rc60-qualification.md)
 
 A smaller PowerPC-only test covered four condition preservation
 sequences with 4,096 iterations each. All passed in the interpreter
@@ -67,6 +69,8 @@ wrapper after normalizing code and data relocations.
 All other cases passed. The first failure returned a successful
 presentation with both outputs and a positive ticket, then left the
 arena active with zero seal calls. Its scope is the compiler-emitted
-plain wrapper and CPU callees. The exact optimizer cause is still
-under investigation.
-[CPU wrapper fixture](../../wiiu/diagnostics/ppc-hud-wrapper/README.md)
+plain wrapper and CPU callees. The Cemu optimizer correction passed the
+unchanged CPU fixture in both JIT modes and the unchanged RC 59 grouped
+lifecycle in multicore mode.
+[CPU wrapper fixture](../../wiiu/diagnostics/ppc-hud-wrapper/README.md) ·
+[Cemu optimizer](../../wiiu/cemu/RECOMPILER.md#condition-register-liveness)
