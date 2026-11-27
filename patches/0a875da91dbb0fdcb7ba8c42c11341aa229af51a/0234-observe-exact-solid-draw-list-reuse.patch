@@ -1,0 +1,596 @@
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index c7b1ae9f790015dd3d50b1193477bdf0cf4e6f93..1a015ad9baa6069f0239d6d1916bd219e4605d80 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -200,7 +200,15 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only)
+    return tv_terrain_wait_mode;
+ }
+ 
+-static bool reverse_translucent_quads, atlas_cell_vertices;
++static bool reverse_translucent_quads, atlas_cell_vertices, solid_list_census;
++
++bool horizon_gx2_profile_solid_list_census(void)
++{
++#ifdef HORIZON_GX2_CLEAR_FOG
++   if (horizon_gx2_profile_near_fog_requested()) return false;
++#endif
++   return solid_list_census && !atlas_cell_vertices;
++}
+ 
+ static void init_mem1_tv_depth(void)
+ {
+@@ -278,6 +286,9 @@ void horizon_gx2_profile_init(void)
+ #endif
+    select_mode(marker_mode, marker_variant);
+    if (plain_profile) {
++      FILE *census = fopen(ROOT "gx2-solid-list-census.enable", "rb");
++      solid_list_census = census != NULL;
++      if (census) fclose(census);
+       init_tv_terrain_wait_trial();
+       init_mem1_tv_depth();
+ #ifdef HORIZON_GX2_CLEAR_FOG
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index 6b77039fbaef8c2f52149716f00484f43b62e7ae..74a2d9a71815d20db951ef0efba5fee7c58fb7e5 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -70,6 +70,7 @@ uint32_t horizon_gx2_profile_tv_terrain_wait(bool playing_only);
+ bool horizon_gx2_profile_solid_back_culling(void);
+ bool horizon_gx2_profile_solid_axis_ranges(void);
+ bool horizon_gx2_profile_solid_draw_plan(void);
++bool horizon_gx2_profile_solid_list_census(void);
+ bool horizon_gx2_profile_opaque_terrain_shader(void);
+ bool horizon_gx2_profile_reverse_translucent_quads(void);
+ bool horizon_gx2_profile_atlas_cells(void);
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 6c94027a26942c3dec904cc713957c485a22fa25..364855a5e34784730b5e3a97ba166295af20134a 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -9,6 +9,7 @@
+ 
+ mod cave_visibility;
+ mod opaque_tiles;
++mod solid_list_census;
+ #[cfg(feature = "gx2-clear-fog")]
+ mod clear_fog;
+ mod crumbling;
+@@ -273,6 +274,8 @@ extern "C" {
+     fn horizon_gx2_profile_solid_back_culling() -> bool;
+     fn horizon_gx2_profile_solid_axis_ranges() -> bool;
+     fn horizon_gx2_profile_solid_draw_plan() -> bool;
++    fn horizon_gx2_profile_solid_list_census() -> bool;
++    fn horizon_gx2_profile_process_history() -> bool;
+     fn horizon_gx2_profile_opaque_terrain_shader() -> bool;
+     fn horizon_gx2_profile_atlas_cells() -> bool;
+     fn horizon_gx2_profile_reverse_translucent_quads() -> bool;
+@@ -873,6 +876,7 @@ pub struct Gx2LoadingPresenter<'shader> {
+     terrain_camera: SectionKey,
+     terrain_views: [Option<TerrainProjection>; 2],
+     solid_draw_plan_enabled: bool,
++    solid_list_census: Option<solid_list_census::Census>,
+     half_position_requested: bool,
+     atlas_cells_requested: bool,
+     reverse_translucent_quads: bool,
+@@ -962,6 +966,8 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_views: [None, None],
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
+             atlas_cells_requested: false,
++            solid_list_census: unsafe { horizon_gx2_profile_solid_list_census() }
++                .then(solid_list_census::Census::default),
+             half_position_requested: std::path::Path::new(
+                 "/vol/external01/wiiu/apps/HorizonWiiU/gx2-half-position.enable",
+             )
+@@ -1044,6 +1050,9 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+ 
+     /// A new foreground can recreate render targets at the same dimensions.
+     pub fn invalidate_tv_terrain_wait_ticket(&mut self) {
++        if let Some(census) = &mut self.solid_list_census {
++            census.invalidate();
++        }
+         if self.retired_pair != 0 && unsafe { horizon_gx2_profile_tv_terrain_wait(false) } != 0 {
+             self.retired_pair = 0;
+         }
+@@ -2120,6 +2129,9 @@ impl Gx2LoadingPresenter<'_> {
+     fn remove_native_section(&mut self, key: SectionKey) -> Option<TerrainSection> {
+         Arc::make_mut(&mut self.block_entity_sections).remove(key);
+         let section = self.sections.remove(&key)?;
++        if let Some(census) = &mut self.solid_list_census {
++            census.resident_changed();
++        }
+         if let Some(probe) = &mut self.opaque_tiles {
+             probe.forget(key);
+         }
+@@ -2175,6 +2187,12 @@ impl Gx2LoadingPresenter<'_> {
+         if let Some(residents) = self.resident_animations.as_mut() {
+             residents.residency_changed();
+         }
++        if let Some(census) = &mut self.solid_list_census {
++            if !self.sections.is_empty() {
++                census.resident_changed();
++            }
++            census.invalidate();
++        }
+         self.retired_terrain
+             .extend(self.sections.drain().map(|(_, section)| section));
+         self.terrain_resident_bytes = 0;
+@@ -2352,6 +2370,9 @@ impl TerrainBackend for Gx2LoadingPresenter<'_> {
+         }
+         self.terrain_resident_bytes += budget_bytes;
+         self.sections.insert(key, section);
++        if let Some(census) = &mut self.solid_list_census {
++            census.resident_changed();
++        }
+         if let Some(probe) = self.opaque_tiles.as_mut().filter(|_| self.terrain_min_y == Some(-64)) {
+             probe.capture(key, self.terrain_generation, &mesh.solid);
+         }
+@@ -2510,6 +2531,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         self.cit_generation = None;
+     }
+     fn recreate_surface(&mut self) -> horizon_client::Result<()> {
++        if let Some(census) = &mut self.solid_list_census {
++            census.invalidate();
++        }
+         self.retired_pair = 0;
+         self.outputs = output_dimensions()?;
+         self.layout = self.outputs[1];
+@@ -2662,6 +2686,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Result<(), &'static str>,
+             profile: Gx2ProfileDelta,
+             cave_sample: Option<cave_visibility::Sample>,
++            solid_list_census: Option<solid_list_census::Pair>,
+             uploaded_hud: Option<UploadedBatch<'frame>>,
+             per_output_terrain_waits: bool,
+             #[cfg(feature = "gx2-screen-overlays")]
+@@ -3010,6 +3035,23 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         opaque_only,
+                     ) == 0
+                 };
++                let mut census_view = if draw.solid_list_census.is_some()
++                    && !legacy_bindings && !opaque_shader
++                {
++                    projection
++                        .filter(|view| view.axis_eye.is_none())
++                        .and_then(|view| solid_list_census::ViewKey::new(
++                            view.camera, view.clip.rows, view.min_y, [width, height], world_rect,
++                            world_target.is_some(),
++                        ))
++                        .map(|key| solid_list_census::View::new(key, terrain.as_ptr() as usize))
++                } else {
++                    None
++                };
++                #[cfg(feature = "gx2-clear-fog")]
++                if near_run.is_some() || clear_run.is_some() {
++                    census_view = None;
++                }
+                 let mut bound = None;
+                 let mut indices = 0usize;
+                 let mut sections_drawn = 0usize;
+@@ -3154,6 +3196,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                         draw.result = Err("GX2 terrain draw failed");
+                         return -1;
+                     }
++                    if let Some(view) = &mut census_view {
++                        view.draw(section.vertex_count);
++                    }
+                     if let Some(start) = submit_start {
+                         draw.profile.draw_submit_ns = draw
+                             .profile
+@@ -3194,6 +3239,9 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+                     draw.result = Err("GX2 stock fog terrain restore failed");
+                     return -1;
+                 }
++                if let Some(pair) = &mut draw.solid_list_census {
++                    pair.views[index] = census_view;
++                }
+                 cafe_profile::count(Counter::Indices, indices);
+                 cafe_profile::count(Counter::SectionDraws, sections_drawn);
+                 drop(terrain_span);
+@@ -3620,6 +3668,24 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         } else {
+             0
+         };
++        let solid_list_census = if let Some(census) = &mut self.solid_list_census {
++            let stock_pair = !frame.title && self.terrain.is_some() && !screenshot_pending
++                && !grouped_present && !view_hud_requested && !guarded_hud
++                && !scaled_color_only && !self.half_position_requested && tv_wait_mode == 0
++                && unsafe {
++                    horizon_gx2_profile_process_history()
++                        && horizon_loading_host_guarded_hud_available()
++                };
++            #[cfg(feature = "gx2-screen-overlays")]
++            let stock_pair = stock_pair && !screen_trial;
++            let sequence = stock_pair.then(cafe_profile::playing_frame_sequence).flatten();
++            if sequence.is_none() {
++                census.invalidate();
++            }
++            sequence.map(solid_list_census::Pair::new)
++        } else {
++            None
++        };
+         let terrain_min_y = self.terrain_min_y;
+         let prepare_drc = (grouped_present && per_output_terrain_waits && !skip_terrain_waits)
+             .then_some(prepare_drc as PrepareDrc);
+@@ -3657,6 +3723,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+             result: Ok(()),
+             profile: Gx2ProfileDelta::default(),
+             cave_sample,
++            solid_list_census,
+             uploaded_hud,
+             per_output_terrain_waits,
+             #[cfg(feature = "gx2-screen-overlays")]
+@@ -3728,6 +3795,7 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let profile = draw.profile;
+         let draw_result = draw.result;
+         let cave_sample = draw.cave_sample.take();
++        let solid_list_sample = draw.solid_list_census.take();
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_drawn = draw.screen_drawn;
+         #[cfg(feature = "gx2-clear-fog")]
+@@ -3740,6 +3808,24 @@ impl PresentationBackend for Gx2LoadingPresenter<'_> {
+         let outputs = unsafe { horizon_loading_host_last_outputs() };
+         if host == 0 && outputs == 3 && draw_result.is_ok() {
+             self.cave_visibility.paired(cave_sample);
++            if let (Some(census), Some(pair)) = (&mut self.solid_list_census, solid_list_sample) {
++                let sequence = pair.sequence();
++                if let Some(window) = census.paired(pair) {
++                    for (target, counts) in window.counts.iter().enumerate() {
++                        unsafe {
++                            OSReport(
++                                c"Horizon GX2 solid list census first=%u last=%u target=%u pairs=%u samples=%u eligible=%u hits=%u view_changes=%u mesh_changes=%u mesh_mutations=%u max_sections=%u max_commands=%u age=%u max_age=%u\n".as_ptr(),
++                                window.first, sequence, target as u32, window.pairs,
++                                counts.samples, counts.eligible, counts.hits, counts.view_changes,
++                                counts.mesh_changes, window.mesh_mutations, counts.max_sections,
++                                counts.max_commands, counts.age, counts.max_age,
++                            );
++                        }
++                    }
++                }
++            }
++        } else if let Some(census) = &mut self.solid_list_census {
++            census.invalidate();
+         }
+         #[cfg(feature = "gx2-screen-overlays")]
+         let screen_complete = screen_overlays::complete(host, outputs, screen_drawn);
+diff --git a/wiiu/loading_host/solid_list_census.rs b/wiiu/loading_host/solid_list_census.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..016dc25f2db91cacb6a1edde095aa785e875e6db
+--- /dev/null
++++ b/wiiu/loading_host/solid_list_census.rs
+@@ -0,0 +1,338 @@
++//! Passive upper bound on reuse of the fixture's stock per-section command span.
++
++const QUADS_PER_DRAW: u32 = 16_384;
++const FIXTURE_SECTIONS: u32 = 174;
++const PAIRS_PER_WINDOW: u32 = 120;
++
++#[derive(PartialEq, Eq)]
++pub(super) struct ViewKey {
++    camera: [u64; 3],
++    clip: [[u32; 4]; 4],
++    min_y: i32,
++    output_size: [u32; 2],
++    world_rect: [u32; 4],
++    scaled: bool,
++}
++
++impl ViewKey {
++    pub(super) fn new(
++        camera: [f64; 3],
++        clip: [[f32; 4]; 4],
++        min_y: i32,
++        output_size: [u32; 2],
++        world_rect: [u32; 4],
++        scaled: bool,
++    ) -> Option<Self> {
++        if !camera.iter().all(|value| value.is_finite())
++            || !clip.iter().flatten().all(|value| value.is_finite())
++        {
++            return None;
++        }
++        Some(Self {
++            camera: camera.map(f64::to_bits),
++            clip: clip.map(|row| row.map(f32::to_bits)),
++            min_y,
++            output_size,
++            world_rect,
++            scaled,
++        })
++    }
++}
++
++#[derive(Default, PartialEq, Eq)]
++struct DrawBudget {
++    sections: u32,
++    commands: u32,
++    non_unit: bool,
++}
++
++impl DrawBudget {
++    fn add(&mut self, vertex_count: u32) {
++        self.sections = self.sections.saturating_add(1);
++        let commands = (vertex_count / 4).div_ceil(QUADS_PER_DRAW);
++        self.commands = self.commands.saturating_add(commands);
++        self.non_unit |= commands != 1;
++    }
++
++    fn fits_fixture(&self) -> bool {
++        !self.non_unit && (1..=FIXTURE_SECTIONS).contains(&self.sections)
++    }
++}
++
++pub(super) struct View {
++    key: ViewKey,
++    native: usize,
++    budget: DrawBudget,
++}
++
++impl View {
++    pub(super) fn new(key: ViewKey, native: usize) -> Self {
++        Self {
++            key,
++            native,
++            budget: DrawBudget::default(),
++        }
++    }
++
++    pub(super) fn draw(&mut self, vertex_count: u32) {
++        self.budget.add(vertex_count);
++    }
++}
++
++pub(super) struct Pair {
++    sequence: u32,
++    pub(super) views: [Option<View>; 2],
++}
++
++impl Pair {
++    pub(super) fn sequence(&self) -> u32 {
++        self.sequence
++    }
++
++    pub(super) fn new(sequence: u32) -> Self {
++        Self {
++            sequence,
++            views: [None, None],
++        }
++    }
++}
++
++struct Previous {
++    sequence: u32,
++    view: View,
++    age: u32,
++}
++
++#[derive(Default)]
++pub(super) struct Counts {
++    pub(super) samples: u32,
++    pub(super) eligible: u32,
++    pub(super) hits: u32,
++    pub(super) view_changes: u32,
++    pub(super) mesh_changes: u32,
++    pub(super) max_sections: u32,
++    pub(super) max_commands: u32,
++    pub(super) age: u32,
++    pub(super) max_age: u32,
++}
++
++#[derive(Default)]
++pub(super) struct Window {
++    pub(super) first: u32,
++    pub(super) pairs: u32,
++    pub(super) mesh_mutations: u32,
++    pub(super) counts: [Counts; 2],
++}
++
++#[derive(Default)]
++pub(super) struct Census {
++    previous: [Option<Previous>; 2],
++    mutations: u32,
++    window: Window,
++}
++
++impl Census {
++    pub(super) fn invalidate(&mut self) {
++        self.previous = [None, None];
++    }
++
++    // Structural changes can reorder the HashMap even when outside the view.
++    // A dirty interval is sufficient and a saturated count stays dirty.
++    pub(super) fn resident_changed(&mut self) {
++        self.mutations = self.mutations.saturating_add(1);
++    }
++
++    pub(super) fn paired(&mut self, pair: Pair) -> Option<Window> {
++        let mutations = std::mem::take(&mut self.mutations);
++        let window = &mut self.window;
++        if window.pairs == 0 {
++            window.first = pair.sequence;
++        }
++        window.pairs += 1;
++        window.mesh_mutations = window.mesh_mutations.saturating_add(mutations);
++        for ((previous, counts), view) in self
++            .previous
++            .iter_mut()
++            .zip(&mut window.counts)
++            .zip(pair.views)
++        {
++            counts.age = 0;
++            let prior = previous
++                .take()
++                .filter(|prior| prior.sequence.checked_add(1) == Some(pair.sequence));
++            let Some(view) = view else { continue };
++            counts.samples += 1;
++            counts.max_sections = counts.max_sections.max(view.budget.sections);
++            counts.max_commands = counts.max_commands.max(view.budget.commands);
++            if view.budget.fits_fixture() {
++                counts.eligible += 1;
++                counts.age = 1;
++            }
++            if let Some(prior) = prior {
++                let view_changed = prior.view.key != view.key;
++                let mesh_changed = mutations != 0 || prior.view.native != view.native;
++                counts.view_changes += u32::from(view_changed);
++                counts.mesh_changes += u32::from(mesh_changed);
++                // Bit-identical projection and unchanged resident identities
++                // imply the same culls, order and per-section GPU bindings.
++                if counts.age != 0
++                    && prior.age != 0
++                    && !view_changed
++                    && !mesh_changed
++                    && prior.view.budget == view.budget
++                {
++                    counts.hits += 1;
++                    counts.age = prior.age.saturating_add(1);
++                }
++            }
++            counts.max_age = counts.max_age.max(counts.age);
++            *previous = Some(Previous {
++                sequence: pair.sequence,
++                view,
++                age: counts.age,
++            });
++        }
++        (window.pairs == PAIRS_PER_WINDOW).then(|| std::mem::take(window))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn view(camera_x: f64, clip_x: f32, size: [u32; 2], native: usize, vertices: u32) -> View {
++        let mut clip = [[1.0; 4]; 4];
++        clip[0][0] = clip_x;
++        let key = ViewKey::new(
++            [camera_x, 3.0, 4.0],
++            clip,
++            -64,
++            size,
++            [0, 0, 640, 360],
++            true,
++        )
++        .unwrap();
++        let mut view = View::new(key, native);
++        view.draw(vertices);
++        view
++    }
++
++    fn normal(sequence: u32) -> Pair {
++        let mut pair = Pair::new(sequence);
++        assert_eq!(pair.sequence(), sequence);
++        pair.views = [
++            Some(view(0.0, 0.0, [1920, 1080], 1, 16)),
++            Some(view(0.0, 1.0, [854, 480], 1, 24)),
++        ];
++        pair
++    }
++
++    #[test]
++    fn native_draw_boundaries_and_owner_change() {
++        let mut budget = DrawBudget::default();
++        budget.add(65_536);
++        assert!(budget.fits_fixture());
++        let mut budget = DrawBudget::default();
++        budget.add(0);
++        budget.add(65_540);
++        assert_eq!((budget.sections, budget.commands), (2, 2));
++        assert!(!budget.fits_fixture());
++
++        let mut census = Census::default();
++        census.paired(normal(20));
++        let mut next = normal(21);
++        next.views[0].as_mut().unwrap().native = 2;
++        census.paired(next);
++        assert_eq!(
++            census.window.counts.map(|c| (c.hits, c.mesh_changes)),
++            [(0, 1), (1, 0)]
++        );
++    }
++
++    #[test]
++    fn raw_projection_bits_and_dimensions_are_per_view() {
++        let mut census = Census::default();
++        census.paired(normal(11));
++        census.paired(normal(12));
++        let mut next = normal(13);
++        next.views[0] = Some(view(-0.0, 0.0, [1920, 1080], 1, 16));
++        census.paired(next);
++        let mut next = normal(14);
++        next.views[0] = Some(view(-0.0, -0.0, [1920, 1080], 1, 16));
++        next.views[1] = Some(view(0.0, 1.0, [856, 480], 1, 24));
++        census.paired(next);
++        assert_eq!(
++            census
++                .window
++                .counts
++                .map(|c| (c.hits, c.view_changes, c.age, c.max_age)),
++            [(1, 2, 1, 2), (2, 1, 1, 3)]
++        );
++        assert!(
++            ViewKey::new([f64::NAN; 3], [[1.0; 4]; 4], 0, [1, 1], [0, 0, 1, 1], false).is_none()
++        );
++    }
++
++    #[test]
++    fn resident_replacement_at_same_address_and_discontinuities_restart_age() {
++        let mut census = Census::default();
++        census.paired(normal(50));
++        census.resident_changed(); // Remove old native geometry.
++        census.resident_changed(); // Publish a replacement at the same address.
++        census.paired(normal(51));
++        census.paired(normal(52));
++        census.paired(normal(54)); // Previous row did not present a successful pair.
++        census.invalidate(); // Same-size surface returned after foreground loss.
++        census.paired(normal(55));
++        let mut next = normal(56);
++        next.views[1] = None;
++        census.paired(next);
++        census.paired(normal(57));
++        assert_eq!(census.window.mesh_mutations, 2);
++        assert_eq!(
++            census
++                .window
++                .counts
++                .map(|c| (c.samples, c.hits, c.mesh_changes, c.age)),
++            [(7, 3, 1, 3), (6, 1, 1, 1)]
++        );
++    }
++
++    #[test]
++    fn only_fixture_capacity_is_admitted_and_window_keeps_ongoing_age() {
++        let mut census = Census::default();
++        for sequence in 100..220 {
++            let mut pair = normal(sequence);
++            let tv = pair.views[0].as_mut().unwrap();
++            for _ in 1..FIXTURE_SECTIONS {
++                tv.draw(4);
++            }
++            if sequence == 100 {
++                tv.draw(4);
++            }
++            pair.views[1].as_mut().unwrap().draw(65_540); // Two native draws.
++            if let Some(window) = census.paired(pair) {
++                assert_eq!((sequence, window.first, window.pairs), (219, 100, 120));
++                assert_eq!(
++                    window.counts.map(|c| (
++                        c.eligible,
++                        c.hits,
++                        c.max_sections,
++                        c.max_commands,
++                        c.max_age
++                    )),
++                    [(119, 118, 175, 175, 119), (0, 0, 2, 3, 0)]
++                );
++            } else {
++                assert_ne!(sequence, 219);
++            }
++        }
++        let mut pair = normal(220);
++        for _ in 1..FIXTURE_SECTIONS {
++            pair.views[0].as_mut().unwrap().draw(4);
++        }
++        census.paired(pair);
++        assert_eq!(census.window.counts[0].age, 120);
++        assert!(std::mem::size_of::<Census>() <= 512);
++    }
++}
