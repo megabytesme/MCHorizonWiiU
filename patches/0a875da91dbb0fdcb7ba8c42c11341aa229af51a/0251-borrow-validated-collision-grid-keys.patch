@@ -1,0 +1,162 @@
+diff --git a/crates/horizon-world/src/collision.rs b/crates/horizon-world/src/collision.rs
+index 8661007..8823c94 100644
+--- a/crates/horizon-world/src/collision.rs
++++ b/crates/horizon-world/src/collision.rs
+@@ -49,9 +49,9 @@ pub fn pipe_shape(size: f64, sides: [bool; 6]) -> io::Result<VoxelShape> {
+ }
+ 
+ #[derive(PartialEq, Eq, Hash)]
+-struct GridKey {
+-    coords: [Vec<u64>; 3],
+-    occupied: Vec<u8>,
++struct GridKey<'a> {
++    coords: [&'a [i64]; 3],
++    occupied: &'a [u8],
+     cube: bool,
+     axes: u8,
+     min: [i32; 3],
+@@ -89,7 +89,7 @@ impl<'r> CachedCollisionRegistry<'r> {
+         let mut shapes = Vec::with_capacity(entries.len());
+         let mut canonical_identities = true;
+         let mut seen_canonical = [false; 3];
+-        let mut grids = HashMap::<GridKey, VoxelShape>::new();
++        let mut grids = HashMap::<GridKey<'_>, VoxelShape>::new();
+         for entry in entries {
+             let canonical = match entry.get("canonical") {
+                 None => {
+@@ -105,12 +105,14 @@ impl<'r> CachedCollisionRegistry<'r> {
+                 }
+                 seen_canonical[canonical] = true;
+             }
+-            let mut coords: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
++            // Hash the validated NBT grid as stored. Only a new geometry
++            // needs coordinates and occupancy converted for VoxelShape.
++            let mut coords: [&[i64]; 3] = [&[]; 3];
+             for (i, axis) in ["x", "y", "z"].into_iter().enumerate() {
+                 let Some(Tag::LongArray(bits)) = entry.get(axis) else {
+                     return Err(invalid("missing collision coordinates"));
+                 };
+-                coords[i] = bits.iter().map(|b| f64::from_bits(*b as u64)).collect();
++                coords[i] = bits;
+             }
+             let Some(Tag::ByteArray(bits)) = entry.get("occupied") else {
+                 return Err(invalid("missing collision occupancy"));
+@@ -118,7 +120,6 @@ impl<'r> CachedCollisionRegistry<'r> {
+             if bits.iter().any(|b| *b != 0 && *b != 1) {
+                 return Err(invalid("invalid collision occupancy"));
+             }
+-            let occupied = bits.iter().map(|b| *b != 0).collect::<Vec<_>>();
+             let Some(Tag::Byte(cube_axes)) = entry.get("cube_axes") else {
+                 return Err(invalid("missing cube-coordinate metadata"));
+             };
+@@ -143,44 +144,53 @@ impl<'r> CachedCollisionRegistry<'r> {
+                 _ => return Err(invalid("invalid collision cube flag")),
+             };
+             let key = GridKey {
+-                coords: std::array::from_fn(|i| coords[i].iter().map(|v| v.to_bits()).collect()),
+-                occupied: bits.clone(),
++                coords,
++                occupied: bits,
+                 cube,
+                 axes: *cube_axes as u8,
+                 min,
+                 max,
+             };
+-            let shape = if let Some(existing) = grids.get(&key) {
+-                existing.fresh_identity()
+-            } else {
+-                match entry.get("cube") {
+-                    Some(Tag::Byte(0)) => {
+-                        VoxelShape::from_mixed_grid(coords, &occupied, coordinate_cubes)
+-                    }
+-                    Some(Tag::Byte(1)) => {
+-                        if *cube_axes != 7 {
+-                            return Err(invalid("cube shape has array-coordinate metadata"));
++            use std::collections::hash_map::Entry;
++            let grid = grids.entry(key);
++            let shape = match &grid {
++                Entry::Occupied(existing) => existing.get().fresh_identity(),
++                Entry::Vacant(_) => {
++                    let coords = coords.map(|axis| {
++                        axis.iter()
++                            .map(|&b| f64::from_bits(b as u64))
++                            .collect::<Vec<_>>()
++                    });
++                    let occupied = bits.iter().map(|b| *b != 0).collect::<Vec<_>>();
++                    match entry.get("cube") {
++                        Some(Tag::Byte(0)) => {
++                            VoxelShape::from_mixed_grid(coords, &occupied, coordinate_cubes)
+                         }
+-                        let sizes = std::array::from_fn(|i| coords[i].len().saturating_sub(1));
+-                        let shape = VoxelShape::from_cube(sizes, &occupied)
+-                            .map_err(|e| invalid(e.to_string()))?;
+-                        for axis in Axis::ALL {
+-                            if shape
+-                                .coordinates(axis)
+-                                .iter()
+-                                .map(|v| v.to_bits())
+-                                .ne(coords[axis as usize].iter().map(|v| v.to_bits()))
+-                            {
+-                                return Err(invalid("cube collision coordinates differ"));
++                        Some(Tag::Byte(1)) => {
++                            if *cube_axes != 7 {
++                                return Err(invalid("cube shape has array-coordinate metadata"));
+                             }
++                            let sizes = std::array::from_fn(|i| coords[i].len().saturating_sub(1));
++                            let shape = VoxelShape::from_cube(sizes, &occupied)
++                                .map_err(|e| invalid(e.to_string()))?;
++                            for axis in Axis::ALL {
++                                if shape
++                                    .coordinates(axis)
++                                    .iter()
++                                    .map(|v| v.to_bits())
++                                    .ne(coords[axis as usize].iter().map(|v| v.to_bits()))
++                                {
++                                    return Err(invalid("cube collision coordinates differ"));
++                                }
++                            }
++                            Ok(shape)
+                         }
+-                        Ok(shape)
++                        _ => return Err(invalid("invalid collision cube flag")),
+                     }
+-                    _ => return Err(invalid("invalid collision cube flag")),
++                    .map_err(|e| invalid(e.to_string()))?
++                    .with_discrete_bounds(min, max)
++                    .map_err(|e| invalid(e.to_string()))?
+                 }
+-                .map_err(|e| invalid(e.to_string()))?
+-                .with_discrete_bounds(min, max)
+-                .map_err(|e| invalid(e.to_string()))?
+             };
+             let shape = if canonical == 0 {
+                 shape
+@@ -193,13 +203,14 @@ impl<'r> CachedCollisionRegistry<'r> {
+                 let expected_count = usize::from(canonical == 2);
+                 if cube != reference.is_cube()
+                     || coordinate_cubes != reference.cube_coordinate_axes()
+-                    || occupied != vec![true; expected_count]
++                    || bits.len() != expected_count
++                    || bits.iter().any(|&bit| bit != 1)
+                     || min != [0; 3]
+                     || max != [expected_count as i32; 3]
+                     || Axis::ALL.into_iter().any(|axis| {
+-                        key.coords[axis as usize]
++                        coords[axis as usize]
+                             .iter()
+-                            .copied()
++                            .map(|&b| b as u64)
+                             .ne(reference.coordinates(axis).iter().map(|v| v.to_bits()))
+                     })
+                 {
+@@ -209,7 +220,9 @@ impl<'r> CachedCollisionRegistry<'r> {
+                 }
+                 reference
+             };
+-            grids.entry(key).or_insert_with(|| shape.clone());
++            if let Entry::Vacant(slot) = grid {
++                slot.insert(shape.clone());
++            }
+             shapes.push(shape);
+         }
+         let Some(Tag::IntArray(state_shapes)) = tag.get("cached_shapes") else {
