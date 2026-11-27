@@ -78,6 +78,13 @@ before expanding that architecture.
   from 55.825 s to 50.990 s on reopen in Cemu. Both arms retained the
   starting player pose and terrain slots and recovered the full bulk
   heap after each save. [Matched warm reopen](warm-hud-replay.md#matched-rc-68-comparison)
+- The scaled RC 69 vignette trial cleared the early screen-effect
+  omission on both outputs. From 3 to 12 seconds after the first paired
+  frame, the stock run was partial on 209 of 209 terrain frames. The
+  overlay trial was complete on all 160 frames, and all 191 frames in
+  the control with vignette disabled were complete. The trial had one
+  opening retirement frame with no terrain, followed by a complete
+  pair. The scaled route awaits physical qualification.
 - RC 49 halves the native index payload for eligible sorted sections and
   reuses the decoded block entity model document. Exact native packaging
   and host checks passed. [RC 49 qualification](rc49-qualification.md)

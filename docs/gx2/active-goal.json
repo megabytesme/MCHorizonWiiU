@@ -33,6 +33,16 @@
     "replay_warm_both_pairs": 1545,
     "physical_throughput": "pending"
   },
+  "scaled_startup_vignette": {
+    "candidate": "0.8.0-rc.69",
+    "paired_terrain_window_from_opening_seconds": [3, 12],
+    "stock_partial_and_total_frames": [209, 209],
+    "overlay_trial_partial_and_total_frames": [0, 160],
+    "vignette_disabled_partial_and_total_frames": [0, 191],
+    "opening_trial_without_terrain_frames": 1,
+    "verified_report_sha256": "1d237ae721026ce2d576e300d0895ded77982afe3a0b76970d30a2f3de6fe076",
+    "physical": "pending"
+  },
   "paired_solid_list_retirement": {
     "validation": "cemu_interpreter_native_and_separate_fixed_75_targets",
     "rpx_sha256": "29ecb1227d382798352f50e1630e5bc1d80b2a72d18a6e8f07393649854c2860",

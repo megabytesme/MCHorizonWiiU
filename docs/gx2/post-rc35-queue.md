@@ -87,6 +87,16 @@ retirement, compact terrain, signed atlas and depth experiments. Record
 cold and warm loading, the original Village route and 30/60 DRS on their
 own runs.
 
+The RC 69 comparison uses the same package for stock, guarded recorded
+solid terrain, back-face culling and conservative axis-facing ranges.
+Compare plain `4` with `4` plus `gx2-solid-list-replay.enable` to check
+the recorded path. Compare plain `4` with `4b` for back-face parity,
+then `4b` with `4r` to isolate the facing ranges. The two culling arms
+require independent output parity and the normal save lifecycle before
+physical performance comparisons. Use paired HZP3 for all arms. Run
+the sparse GPU pass sampler separately when needed. The section-gated
+deadline observer is available only in plain `4`.
+
 Keep screenshots outside the timing windows. Preserve stock view distances,
 materials and per-output world rendering in the reference. The viewport and
 blend diagnostics remain available as separate correctness checks.
