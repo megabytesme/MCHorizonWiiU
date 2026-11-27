@@ -77,3 +77,31 @@ proxy, eligibility removed 13% of quads with an environmental fog start of
 A sparse source-only diagnostic now prepares bounds from uploaded sections
 and can report eligible opaque geometry for each output. Use the stock
 saved-view captures to measure coverage before selecting a merge format.
+
+## Clear opaque vertex program
+
+The first paired runtime fixture stopped in the previously introduced
+clear pixel loader. Both compiled stages carry a loop descriptor. The
+corrected guard matches its count and contents against the corresponding
+stock shader. The other reflection and depth checks still apply.
+
+The opt-in vertex program retains the exact pixel binary and the vertex
+export IDs. It removes the fog distance work and the section-origin
+uniform write inside the existing bounded clear-opaque run. The pinned
+compiler reduced the program from 178 to 146 dwords, six to five general
+purpose registers and two square roots to zero. The atlas and lightmap
+samples and clip rows remain. Directly deleting the unused declarations
+moves the atlas varying to another export ID and is rejected.
+
+A standalone native RPX ran in the Cemu interpreter and passed 12
+full-output checks across both displays, three shader arms and two lightmaps.
+This included 8,294,400 TV bytes and 1,639,680 GamePad bytes per case,
+known RGBA samples and the incompatible export control. Its SHA-256 is
+`367dddb2621d4b154a487a5146004bfce1c788a4dee9a03d37efd6a4b37d1d8e`.
+The [reproduction fixture](../../wiiu/diagnostics/gx2-clear-opaque-vertex/README.md)
+builds the same shader binaries.
+
+Stock Overworld atmospheric fog starts at zero. The clear path
+requires both starts above one block and admits no sections under
+that configuration. Its synthetic fixture exercises the shader and
+loader. The primary physical reference retains stock fog.

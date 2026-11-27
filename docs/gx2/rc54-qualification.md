@@ -120,3 +120,10 @@ The additional multicore clear-fog trial requested `4o` with
 farmland state and recorded the same origin and lookup lengths. The
 shader path was unreachable in that run. The receipt SHA-256 is
 `89de557b490b2f05836613f27b7b38e176ae0981f0fead082c8ee36120b8db8b`.
+
+A later runtime fixture reproduced a separate loader rejection. The
+pinned clear pixel shader carries the same loop descriptor as the stock
+opaque shader, while the RC 54 guard expected zero descriptors. Use a
+package with the corrected guard and verify its ready message and
+submitted-index counts before timing a clear-fog arm.
+[Clear opaque shader correction](terrain-format-trials.md#clear-opaque-vertex-program)
