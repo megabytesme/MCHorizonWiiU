@@ -1,0 +1,138 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index 9ae0a13..3316c7c 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -707,6 +707,18 @@ pub struct Streaming {
+     /// for (`set_band`).
+     band_ranked: Option<(i32, i32, i32)>,
+ }
++/// A bounded observation of one column after the current streaming update.
++#[cfg(target_os = "cafe")]
++pub struct CafeMeshColumnSample {
++    pub in_view: bool,
++    pub region_resident: bool,
++    pub stable_light: bool,
++    pub dirty: u16,
++    pub ready_unserved: u16,
++    /// The latest mesh revision is outstanding, regardless of worker claim.
++    pub active: u16,
++}
++
+ /// Snapshot only after a scan found no missing candidates. Public range fields
+ /// and `World::chunks` can change without going through Streaming, so compare
+ /// their values and structural membership token rather than a frame timeout.
+@@ -1797,6 +1809,44 @@ impl Streaming {
+         }
+         Some(Arc::new(region))
+     }
++    #[inline]
++    fn mesh_neighborhood_lit(&self, x: i32, z: i32) -> bool {
++        (-1..=1).all(|dz| {
++            (-1..=1).all(|dx| {
++                let n = (x + dx, z + dz);
++                self.lit.contains(&n) && !self.lighting.contains_key(&n)
++            })
++        })
++    }
++
++    #[cfg(target_os = "cafe")]
++    pub fn sample_cafe_mesh_column(&self, world: &World, x: i32, z: i32) -> CafeMeshColumnSample {
++        let in_view = self.mesh && !self.paused && self.ranges().in_view(x, z);
++        // This is equivalent to looking up the nine columns in Self::region,
++        // without cloning their Arcs for the diagnostic.
++        let region_resident = world.chunks.surrounded((x, z));
++        let stable_light = region_resident && self.mesh_neighborhood_lit(x, z);
++        let sections = world.layout().sections().min(SectionMask::CAPACITY);
++        let dirty = world.dirty_sections.column_mask((x, z)) & SectionMask::below(sections);
++        let mut active = 0;
++        let mut ready_unserved = 0;
++        for sy in 0..sections {
++            if self.is_meshing((x, sy as i32, z)) {
++                active += 1;
++            } else if in_view && stable_light && dirty.contains(sy) {
++                ready_unserved += 1;
++            }
++        }
++        CafeMeshColumnSample {
++            in_view,
++            region_resident,
++            stable_light,
++            dirty: dirty.len() as u16,
++            ready_unserved,
++            active,
++        }
++    }
++
+     pub fn is_lit(&self, x: i32, z: i32) -> bool {
+         self.lit.contains(&(x, z))
+     }
+@@ -2450,13 +2500,7 @@ impl Streaming {
+             // in `dirty_light` here can't be lit yet (a neighbour of theirs is
+             // missing): waiting for them could last until the player comes
+             // back.
+-            let ready = (-1..=1).all(|dz| {
+-                (-1..=1).all(|dx| {
+-                    let n = (x + dx, z + dz);
+-                    self.lit.contains(&n) && !self.lighting.contains_key(&n)
+-                })
+-            });
+-            if !ready {
++            if !self.mesh_neighborhood_lit(x, z) {
+                 continue;
+             }
+             candidates.push((self.distance(x, z), x, z, sections));
+diff --git a/crates/horizon-client-render/src/world.rs b/crates/horizon-client-render/src/world.rs
+index bc3deb3..29bba01 100644
+--- a/crates/horizon-client-render/src/world.rs
++++ b/crates/horizon-client-render/src/world.rs
+@@ -39,6 +39,10 @@ impl DirtySections {
+                 .get(&(x, z))
+                 .is_some_and(|m| m.contains(sy as usize))
+     }
++    #[cfg(target_os = "cafe")]
++    pub(crate) fn column_mask(&self, key: (i32, i32)) -> SectionMask {
++        self.columns.get(&key).copied().unwrap_or_default()
++    }
+     /// The dirty section indexes of column (x, z), removed.
+     pub fn take_column(&mut self, x: i32, z: i32) -> SectionMask {
+         self.columns.remove(&(x, z)).unwrap_or_default()
+diff --git a/crates/horizon-client/src/game/runtime/control.rs b/crates/horizon-client/src/game/runtime/control.rs
+index c942e29..358dff4 100644
+--- a/crates/horizon-client/src/game/runtime/control.rs
++++ b/crates/horizon-client/src/game/runtime/control.rs
+@@ -175,6 +175,9 @@ impl Game<'_> {
+         }
+         let mut resident = 0;
+         let mut lit = 0;
++        let mut points = [[0; 2]; 4];
++        let (mut view, mut region, mut stable_light) = (0, 0, 0);
++        let (mut dirty, mut ready_unserved, mut active) = ([0; 4], [0; 4], [0; 4]);
+         // One bit per position at the rendered camera and 1, 2 or 4 chunks
+         // ahead. This probes the route centreline without walking resident data.
+         for (bit, blocks) in [0.0, 16.0, 32.0, 64.0].into_iter().enumerate() {
+@@ -182,6 +185,14 @@ impl Game<'_> {
+             let cz = ((z + blocks * dz / distance).floor() as i32) >> 4;
+             resident |= u8::from(self.world.chunks.contains_key(&(cx, cz))) << bit;
+             lit |= u8::from(self.streaming.is_lit(cx, cz)) << bit;
++            points[bit] = [cx, cz];
++            let mesh = self.streaming.sample_cafe_mesh_column(&self.world, cx, cz);
++            view |= u8::from(mesh.in_view) << bit;
++            region |= u8::from(mesh.region_resident) << bit;
++            stable_light |= u8::from(mesh.stable_light) << bit;
++            dirty[bit] = mesh.dirty;
++            ready_unserved[bit] = mesh.ready_unserved;
++            active[bit] = mesh.active;
+         }
+         log::info!(
+             "Cafe Village streaming seq={} elapsed_ms={} reason={} camera={x:.2},{z:.2} sections={}/{} columns={} client_pending={} uploads={} remote_pending={} forward_resident={resident:x} forward_lit={lit:x}",
+@@ -195,6 +206,10 @@ impl Game<'_> {
+             self.pending_uploads.len(),
+             self.remote_backlog(),
+         );
++        log::info!(
++            "Cafe Village mesh seq={sequence} reason={reason} scheduler_center={:?} points={points:?} view={view:x} region={region:x} stable_light={stable_light:x} dirty={dirty:?} ready_unserved={ready_unserved:?} active={active:?}",
++            self.streaming.center,
++        );
+         if let Some(admission) = admission {
+             log::info!("Cafe Village admission seq={sequence} reason={reason} {admission}");
+         }
