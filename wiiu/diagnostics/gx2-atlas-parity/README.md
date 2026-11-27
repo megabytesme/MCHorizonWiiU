@@ -22,6 +22,9 @@ Build with the CafeGLSL and devkitPPC versions pinned by the project.
 bash wiiu/diagnostics/gx2-atlas-parity/build.sh ASSEMBLED_RC68_SOURCE NEW_BUILD_DIRECTORY
 ```
 
+Windows can build this title using the same assembled C backend and
+generated GLSL sources. [Windows diagnostics builder](../WINDOWS.md)
+
 Run `atlas-parity.rpx` in a disposable Cemu interpreter lab or in a
 supervised console session. Require 40 distinct `GX2 atlas parity arm=`
 records with `clear=1` and `result=PASS`, followed by
