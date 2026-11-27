@@ -91,6 +91,9 @@ before expanding that architecture.
 - RC 54 packages guarded scaled screen effects, a clear-fog opaque shader,
   and frame-stage timing. Both pinned shaders and the exact native package
   built. [RC 54 qualification](rc54-qualification.md)
+- RC 55 adds physical worker and GX2 queue observations and optional warm
+  mob data reuse. The exact native package is staged for supervised testing.
+  [RC 55 qualification](rc55-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

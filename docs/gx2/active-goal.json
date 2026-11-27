@@ -81,6 +81,16 @@
     "physical": "queued",
     "receipt": "rc54-qualification.md"
   },
+  "worker_and_grouped_retirement_observers": {
+    "candidate": "0.8.0-rc.55",
+    "engine_tree": "e79a57757c4520d5e1452e2528d4767d76b12cde",
+    "wuhb_sha256": "71d3527ebc089eb88bf8fb6d5c061c0b8686ec876721ac681378c8bb53537db8",
+    "native_build": "passed",
+    "warm_mob_host_retained_estimate_bytes": 703314,
+    "runtime": "queued",
+    "physical": "queued",
+    "receipt": "rc55-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
