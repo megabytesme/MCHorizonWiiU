@@ -15,8 +15,8 @@ path with each capture. Report mirrored final-world color separately.
 | --- | --- | --- |
 | 1. Independent single player | One player and two separately rendered views. | Repeat the stock physical reference at sustained 60 FPS-equivalent with matching quality, terrain, pacing, server ticks and memory. Keep wider workloads separate. |
 | 2. Two local views | One player on TV and a second on GamePad. Each joins one integrated world with its own camera, controls, inventory and HUD. | Move each player independently, exercise focused inputs and UI, save and reopen both player records, and measure nearby and distant sessions. |
-| 3. Two TV seats | Two separate rectangular TV viewports with distinct local players. Record the GamePad's role when it is active. | Check viewport bounds, camera aspect, independent HUD and depth, controller assignment and per-seat pacing. Compare the same scene in the native two-camera fixture. |
-| 4. Four TV seats | Four independent TV quadrants in one scanout image. | Test nearby and distant seats, joins and disconnects, separate view coverage and GPU memory high-water. Check isolation when one player opens a menu or crosses a chunk boundary. |
+| 3. Two TV seats | Two separate TV viewports with distinct local players. Use an independently rendered companion GamePad view in the three-view reference. | Check viewport bounds, camera aspect, independent HUD and depth, controller assignment and per-seat pacing. Compare the same scene in the native multi-camera fixture. |
+| 4. Four TV seats | Four independent TV quadrants and an independently rendered companion GamePad view. | Test nearby and distant seats, joins and disconnects, separate view coverage and GPU memory high-water. Check isolation when one player opens a menu or crosses a chunk boundary. |
 | 5. Four TV seats and one GamePad seat | Five independent local players in one world. | Exercise all five cameras, controls, inventories and HUDs simultaneously. Save and reopen players and terrain. Measure paired display cadence, per-view work, server TPS and memory recovery. |
 
 Thirty FPS is an intermediate engineering milestone. Continue toward 60
@@ -52,9 +52,37 @@ The current Cafe presenter accepts one shared-game frame and renders the
 two displays separately. A host terrain fixture compares up to five
 frustums and their translucent sorts with the existing Cafe decision
 paths. Nearby poses reuse a resident mesh, while distant poses require
-separate resident meshes. The saved player, input and viewport paths still need
-native integration. [Horizon and NX comparison](horizon-nx-comparison.md) ·
+separate resident meshes. Native viewport, input and player integration
+remain open. [Horizon and NX comparison](horizon-nx-comparison.md) ·
 [Independent-view terrain fixture](../../wiiu/diagnostics/gx2-split-terrain/README.md)
+
+## Horizon and NX source audit
+
+The pinned Horizon runtime owns a host `Game`, boxed guest clients,
+per-seat controller assignments and a shared presentation schedule. The
+layout admits sixteen logical seats. Guests have their own profiles,
+input edges, UI state and client world view. Their memory connections
+join the same integrated server, which owns the save barrier and player
+records. In the desktop implementation, each guest still creates a
+renderer and loads `UiResources`. Cafe needs an independent view packet
+per seat and shared immutable backing. [Pinned split runtime](https://github.com/arismoko/horizon/blob/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/crates/horizon-client/src/game/runtime/split/mod.rs) · [Pinned layout](https://github.com/arismoko/horizon/blob/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/crates/horizon-client-render/src/split_layout.rs) · [Pinned guest setup](https://github.com/arismoko/horizon/blob/0a875da91dbb0fdcb7ba8c42c11341aa229af51a/crates/horizon-client/src/game/runtime/split/players.rs#L450)
+
+The layout, player-join and pad-router files match the pinned Wii U
+upstream in KoHaku's NX revision and in the audited public Horizon fork
+head `de8b4e2526df9d7f611515b78123a26a3914176f`. The current official
+upstream was inaccessible during the comparison. NX adds a system
+controller dialog with four assignments and a split handheld GPU clock
+policy. Those platform choices establish neither seat capacity on Cafe
+nor Wii U frame rates. [Audited public head](https://github.com/arismoko/horizon/commit/de8b4e2526df9d7f611515b78123a26a3914176f) · [NX controller dialog](https://github.com/KoHaku743/horizon-nx/blob/de477953c3958551a60f011fa447a99229f9fc43/crates/horizon-nx/src/controllers.rs#L44) · [NX clock policy](https://github.com/KoHaku743/horizon-nx/blob/de477953c3958551a60f011fa447a99229f9fc43/crates/horizon-nx/src/clocks.rs#L75)
+
+RC 47 already encodes overlapping level columns once per server batch.
+The decoded-section sharing hint is coordinate-keyed and consumed by
+one client. The bulk-edit LOD hint also has one drain. A multi-seat path
+must check session, dimension and generation and deliver updates to each
+interested client before claiming duplicate decode or mesh work removed.
+Cafe currently reads one VPAD channel. The four TV seats need separate
+KPAD controller assignments, disconnect state and neutral rearming.
+[Native KPAD interface](https://github.com/devkitPro/wut/blob/v1.9.2/include/padscore/kpad.h)
 
 ## Native viewport fixture
 
@@ -66,6 +94,14 @@ equal to the full TV image. The GamePad adds 409,920 output pixels at
 854 × 480. Measure actual world-target dimensions after scaling, screen
 insets and pitch alignment. A quadrant preserves its own depth and
 visibility costs even when its output pixel count is one quarter.
+
+The RC 38 fixed-75% targets total 1,395,720 world pixels. Tiling the
+1440 × 809 TV lattice into 404- and 405-row quadrants preserves that
+total with the 641 × 360 GamePad target. In a calibrated fixture with
+255 section-pass draws per view, five views would submit 1,275 draws
+and 2,633,370 indices. The estimated workload uses the aggregate RC 38
+submission record. Record actual per-view work and pitch-aligned bytes
+when the fixture runs. [Physical reference](rc38-validation.md#physical-fixed-75-gameplay)
 
 - For nearby cameras, overlap streaming ticket regions and use distinct
   headings. Include shared terrain visible to several views and nearby
