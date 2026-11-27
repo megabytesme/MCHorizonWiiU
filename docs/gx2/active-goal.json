@@ -215,6 +215,9 @@
     "wuhb_sha256": "35799ea2e51768b89eb9efc9dc0a6d34ea086d430506046cdcb55b0e7fc25c65",
     "native_build": "passed",
     "cemu_gamepad_omission_and_full_grouped_lifecycle": "passed",
+    "cemu_same_build_grouped_matched_rows_control_trial": [573, 605],
+    "cemu_same_build_terrain_wait_median_ms_control_trial": [2.1569, 0.1671],
+    "cemu_same_build_final_retirement_median_ms_control_trial": [17.6032, 17.5642],
     "cemu_stock_fog_and_full_lifecycle": "passed",
     "cemu_settled_stock_fog_admission_indices_per_output": [
       5262,

@@ -36,6 +36,37 @@ the medians were 0.654 and 0.151 ms over 46 and 39 rows. This is a
 diagnostic comparison across Cemu package revisions, with a growing
 terrain workload. Native pair cadence is open.
 
+## Same-build GamePad overlap check
+
+A follow-up ran the same RC 61 RPX twice, with only the GamePad
+entry-wait marker changed. Both arms started their 60-second independent
+dwell after reaching 100 visible sections per display and later reached
+163. Both saved six readable region files and 376 readable chunk streams,
+drained their audio queues, recovered the GX2 heap and exited cleanly.
+The trial logged positive grouped retirement without the entry wait.
+
+The comparison keeps complete screenshot-free pairs at 100 or more
+sections per output and includes only matching section-count cohorts
+from both runs. It retains 18 common section counts.
+
+| Cemu diagnostic | Grouped control | GamePad overlap |
+| --- | ---: | ---: |
+| Matched complete pairs | 573 | 605 |
+| Median terrain-entry wait, ms | 2.1569 | 0.1671 |
+| Median final retirement, ms | 17.6032 | 17.5642 |
+| Median flip wait, ms | 0.0019 | 0.0015 |
+
+This isolates the wait change under the emulator. The physical queue
+includes a separate retirement observer with the grouped and GamePad
+markers. Use its HZP3 and same-run serial logs with
+`tools/gx2_grouped_retirement.py` to identify pending queue work and the
+native final-retirement cost. Keep it separate from normal pace windows.
+
+| Disposable run | Acceptance JSONL SHA-256 | Session HZP3 SHA-256 |
+| --- | --- | --- |
+| `r61-f743f64b` | `9157d9385f30f2134efd3512afd08833aecb206ae643ae48882122787b8fa122` | `dcea5f66c4acd7c7233c5a54f1c0367eb637b3bf90e59659ef7fe9fe9d058a07` |
+| `r61-cec2f65f` | `8f638d47f2aeaf5912536d2d86dd31db8db3bef7e878a360ef68e0c0dcbb863c` | `bd0a5439fbb142f1c0e6bf8ab56a72a9bdc7f0f1890804f90964062cfcc4c938` |
+
 ## Stock near fog
 
 The optional pixel program keeps atmospheric fog and standard alpha
