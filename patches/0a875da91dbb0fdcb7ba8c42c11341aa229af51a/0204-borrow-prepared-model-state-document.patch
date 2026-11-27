@@ -1,0 +1,289 @@
+diff --git a/crates/horizon-client-render/src/models.rs b/crates/horizon-client-render/src/models.rs
+index c2749b5cd5f2706d8c254ff3347d52709d593b35..fa22b2337215497e95232ee71155a3fb3a88577c 100644
+--- a/crates/horizon-client-render/src/models.rs
++++ b/crates/horizon-client-render/src/models.rs
+@@ -184,23 +184,23 @@ pub(crate) fn prepare_with_models(
+     sprites: &mut Sprites,
+     models: &crate::model_library::ParsedModels,
+ ) -> Result<PreparedModels> {
+-    let facts: std::collections::BTreeMap<String, Value> =
+-        horizon_world::json_file::read(&root.prepared().join("model-states.json"))?;
+-    let blocks: Vec<&str> = facts
+-        .keys()
+-        .filter(|name| registry.default_state(name).is_some())
+-        .map(|name| name.strip_prefix("minecraft:").unwrap_or(name))
+-        .collect();
+-    let mut catalog = {
++    let state_facts_span = crate::spans::startup::step("core.model_state_facts");
++    let state_path = root.prepared().join("model-states.json");
++    let bytes = horizon_world::json_file::read_bytes(&state_path)?;
++    let facts = catalog::ModelStateFacts::parse(&state_path, &bytes)?;
++    drop(state_facts_span);
++    let mut bind = |facts: &catalog::ModelStateFacts<'_>| {
++        let blocks = facts.blocks(registry);
+         let _step = crate::spans::startup::step("core.bake_states");
+-        StateModels::from_facts_with_models(
+-            root.source(),
+-            registry,
+-            &blocks,
+-            sprites,
+-            &facts,
+-            models,
+-        )?
++        StateModels::from_facts_with_models(root.source(), registry, &blocks, sprites, facts, models)
++    };
++    let mut catalog = match facts {
++        catalog::ModelStateFacts::Legacy(facts) => {
++            let facts = facts.into_owned();
++            drop(bytes);
++            bind(&catalog::ModelStateFacts::Legacy(std::borrow::Cow::Owned(facts)))?
++        }
++        borrowed => bind(&borrowed)?,
+     };
+     {
+         let _step = crate::spans::startup::step("core.bake_standalone");
+diff --git a/crates/horizon-client-render/src/models/catalog.rs b/crates/horizon-client-render/src/models/catalog.rs
+index d3a3cc272f3f39439e493235bcd3f2a4699404cc..71d789a8ea3a357f80bed02a1c726908b2428772 100644
+--- a/crates/horizon-client-render/src/models/catalog.rs
++++ b/crates/horizon-client-render/src/models/catalog.rs
+@@ -269,6 +269,161 @@ fn prepared_states_match(raw: &Value, native: &[(BlockStateId, &BlockProperties)
+     })
+ }
+ 
++/// The ordinary export contains only string properties. Borrow their bytes
++/// to avoid an owned JSON object and strings for every state. Anything the
++/// stricter reader cannot borrow takes the original permissive parser.
++#[derive(serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ModelStateFields<'a> {
++    schema: Value,
++    #[serde(borrow)]
++    states: Vec<BTreeMap<&'a str, &'a str>>,
++}
++
++pub(super) struct BorrowedModelStateBlock<'a>(ModelStateFields<'a>);
++
++impl<'de> serde::Deserialize<'de> for BorrowedModelStateBlock<'de> {
++    fn deserialize<D: serde::Deserializer<'de>>(
++        deserializer: D,
++    ) -> std::result::Result<Self, D::Error> {
++        struct Object;
++        impl<'de> serde::de::Visitor<'de> for Object {
++            type Value = BorrowedModelStateBlock<'de>;
++
++            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++                f.write_str("a prepared model-state object")
++            }
++
++            fn visit_map<M: serde::de::MapAccess<'de>>(
++                self,
++                map: M,
++            ) -> std::result::Result<Self::Value, M::Error> {
++                let object = serde::de::value::MapAccessDeserializer::new(map);
++                serde::Deserialize::deserialize(object).map(BorrowedModelStateBlock)
++            }
++        }
++        deserializer.deserialize_map(Object)
++    }
++}
++
++pub(super) enum ModelStateFacts<'a> {
++    Borrowed(BTreeMap<&'a str, BorrowedModelStateBlock<'a>>),
++    Legacy(std::borrow::Cow<'a, BTreeMap<String, Value>>),
++}
++
++impl<'a> ModelStateFacts<'a> {
++    pub(super) fn parse(path: &std::path::Path, bytes: &'a [u8]) -> Result<Self> {
++        if let Ok(facts) = serde_json::from_slice(bytes) {
++            return Ok(Self::Borrowed(facts));
++        }
++        Ok(Self::Legacy(std::borrow::Cow::Owned(
++            horizon_world::json_file::parse(path, bytes)?,
++        )))
++    }
++
++    pub(super) fn blocks(&self, registry: &BlockRegistry) -> Vec<&str> {
++        let keep = |name: &str| registry.default_state(name).is_some();
++        fn short(name: &str) -> &str {
++            name.strip_prefix("minecraft:").unwrap_or(name)
++        }
++        match self {
++            Self::Borrowed(facts) => facts
++                .keys()
++                .copied()
++                .filter(|name| keep(name))
++                .map(short)
++                .collect(),
++            Self::Legacy(facts) => facts
++                .keys()
++                .map(String::as_str)
++                .filter(|name| keep(name))
++                .map(short)
++                .collect(),
++        }
++    }
++
++    fn schema_and_states(
++        &self,
++        name: &str,
++        native: &[(BlockStateId, &BlockProperties)],
++    ) -> Result<(PropertySchema, Option<Vec<Properties>>)> {
++        match self {
++            Self::Borrowed(facts) => {
++                let block = &facts.get(name).ok_or("missing block model state schema")?.0;
++                let schema = model_state_schema(&block.schema)?;
++                let matches = block.states.len() == native.len()
++                    && block.states.iter().zip(native).all(|(row, (_, props))| {
++                        row.len() == props.len()
++                            && props.iter().all(|(key, value)| {
++                                row.get(key.as_str()).copied() == Some(value.as_str())
++                            })
++                    });
++                let possible = (!matches).then(|| {
++                    block
++                        .states
++                        .iter()
++                        .map(|row| {
++                            row.iter()
++                                .map(|(&k, &v)| (k.to_owned(), v.to_owned()))
++                                .collect()
++                        })
++                        .collect()
++                });
++                Ok((schema, possible))
++            }
++            Self::Legacy(facts) => {
++                let block = facts.get(name).ok_or("missing block model state schema")?;
++                let schema = model_state_schema(&block["schema"])?;
++                let states = &block["states"];
++                let possible = if prepared_states_match(states, native) {
++                    None
++                } else {
++                    Some(serde_json::from_value::<Vec<Properties>>(states.clone())?)
++                };
++                Ok((schema, possible))
++            }
++        }
++    }
++}
++
++fn model_state_schema(value: &Value) -> Result<PropertySchema> {
++    value
++        .as_object()
++        .ok_or("invalid model schema")?
++        .iter()
++        .map(|(key, value)| {
++            let values = if let Some(range) = value.get("integer") {
++                PropertyValues::Integer {
++                    minimum: i32::try_from(
++                        range[0]
++                            .as_i64()
++                            .ok_or("invalid integer property minimum")?,
++                    )?,
++                    maximum: i32::try_from(
++                        range[1]
++                            .as_i64()
++                            .ok_or("invalid integer property maximum")?,
++                    )?,
++                }
++            } else {
++                PropertyValues::Named(
++                    value["named"]
++                        .as_array()
++                        .ok_or("missing named property values")?
++                        .iter()
++                        .map(|v| {
++                            v.as_str()
++                                .map(str::to_owned)
++                                .ok_or("invalid named property value")
++                        })
++                        .collect::<std::result::Result<_, _>>()?,
++                )
++            };
++            Ok((key.clone(), values))
++        })
++        .collect()
++}
++
+ /// One layer of block `block`'s blockstate file, read and bound to its `possible` states:
+ /// vanilla's variants and multipart, or the picks of the definition type a mod registered.
+ fn bind_layer(
+@@ -345,16 +500,16 @@ impl StateModels {
+             registry,
+             blocks,
+             sprites,
+-            facts,
++            &ModelStateFacts::Legacy(std::borrow::Cow::Borrowed(facts)),
+             &crate::model_library::ParsedModels::default(),
+         )
+     }
+-    pub(crate) fn from_facts_with_models(
++    pub(super) fn from_facts_with_models(
+         root: &crate::resource_source::ResourceSource,
+         registry: &BlockRegistry,
+         blocks: &[&str],
+         sprites: &mut Sprites,
+-        facts: &BTreeMap<String, Value>,
++        facts: &ModelStateFacts<'_>,
+         models: &crate::model_library::ParsedModels,
+     ) -> Result<Self> {
+         let mut choices = Vec::new();
+@@ -372,42 +527,6 @@ impl StateModels {
+             // Vanilla blocks come bare; content mods' blocks with their namespace.
+             let (namespace, path) = block.split_once(':').unwrap_or(("minecraft", block));
+             let name = format!("{namespace}:{path}");
+-            let facts = facts.get(&name).ok_or("missing block model state schema")?;
+-            let schema: PropertySchema = facts["schema"]
+-                .as_object()
+-                .ok_or("invalid model schema")?
+-                .iter()
+-                .map(|(key, value)| {
+-                    let values = if let Some(range) = value.get("integer") {
+-                        PropertyValues::Integer {
+-                            minimum: i32::try_from(
+-                                range[0]
+-                                    .as_i64()
+-                                    .ok_or("invalid integer property minimum")?,
+-                            )?,
+-                            maximum: i32::try_from(
+-                                range[1]
+-                                    .as_i64()
+-                                    .ok_or("invalid integer property maximum")?,
+-                            )?,
+-                        }
+-                    } else {
+-                        PropertyValues::Named(
+-                            value["named"]
+-                                .as_array()
+-                                .ok_or("missing named property values")?
+-                                .iter()
+-                                .map(|v| {
+-                                    v.as_str()
+-                                        .map(str::to_owned)
+-                                        .ok_or("invalid named property value")
+-                                })
+-                                .collect::<std::result::Result<_, _>>()?,
+-                        )
+-                    };
+-                    Ok((key.clone(), values))
+-                })
+-                .collect::<Result<_>>()?;
+             let native_order: Vec<_> = by_name
+                 .get(name.as_str())
+                 .map(Vec::as_slice)
+@@ -415,14 +534,7 @@ impl StateModels {
+                 .iter()
+                 .map(|&id| (id, &registry.state(id).expect("indexed state").properties))
+                 .collect();
+-            let raw_states = &facts["states"];
+-            let mut possible = if prepared_states_match(raw_states, &native_order) {
+-                None
+-            } else {
+-                Some(serde_json::from_value::<Vec<Properties>>(
+-                    raw_states.clone(),
+-                )?)
+-            };
++            let (schema, mut possible) = facts.schema_and_states(&name, &native_order)?;
+             // Vanilla's BlockStateModelLoader: a definition that does not
+             // read or bind is logged and left out; with none left the block
+             // gets no model, and the other blocks still load. A file several
