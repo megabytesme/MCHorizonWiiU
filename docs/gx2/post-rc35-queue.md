@@ -54,6 +54,11 @@ renderer comparisons. The separate stock near-fog arm exercises the
 shader on both native targets. Its Cemu run admitted about 2% of the
 settled solid indices per display. [RC 61 package](rc61-qualification.md)
 
+RC 62 stages a same-build signed atlas comparison and a separate passive
+solid draw-list census. Keep the census out of pacing measurements.
+Run it both at the saved pose and during a bounded traversal.
+[RC 62 package](rc62-qualification.md)
+
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |

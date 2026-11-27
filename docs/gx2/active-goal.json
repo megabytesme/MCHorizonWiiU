@@ -240,6 +240,21 @@
     "physical": "supervised_comparisons_staged",
     "receipt": "rc61-qualification.md"
   },
+  "signed_atlas_and_solid_census": {
+    "candidate": "0.8.0-rc.62",
+    "engine_tree": "b9c6e27b28de76d72aa4e38f5e01e4c6cc51c938",
+    "rpx_sha256": "510db88bb5ad8bebdbab9511287576d62eeb5bb4f8eb976d1a8708d192267f94",
+    "wuhb_sha256": "c5aaba5bd5485474f08c22bfb85862bf5479206cb968c96fd36fe9667f3b543d",
+    "native_build": "passed",
+    "signed_atlas_vertex_program_dwords_stock_trial": [178, 146],
+    "signed_atlas_dual_output_fixture": "passed",
+    "hosted_cemu_signed_and_census_lifecycles": "passed",
+    "cemu_passive_hypothetical_hits_and_eligible_per_view": [1206, 1320],
+    "cemu_passive_qualifying_census_windows": 11,
+    "cemu_max_sections_per_output": [163, 163],
+    "physical": "same_build_signed_and_separate_census_staged",
+    "receipt": "rc62-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
