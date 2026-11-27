@@ -81,6 +81,10 @@ before expanding that architecture.
 - RC 51 consolidates the opt-in renderer arms, memory inventory and GPU/CPU
   profiling into one native package for matched comparison. Its native
   package and combined host checks passed. [RC 51 qualification](rc51-qualification.md)
+- RC 52 reduces prepared resource work, retries transient DRS allocation,
+  and packages exact compact terrain formats for physical A/B. Cemu's
+  multicore recompiler reached gameplay, rendered both displays and saved
+  the moved player. [RC 52 qualification](rc52-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

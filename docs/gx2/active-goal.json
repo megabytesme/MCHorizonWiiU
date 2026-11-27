@@ -37,6 +37,19 @@
     "physical": "queued",
     "receipt": "rc51-qualification.md"
   },
+  "prepared_cpu_and_compact_terrain": {
+    "candidate": "0.8.0-rc.52",
+    "engine_tree": "e4135f0f77fa6abf26d2bcbe86b135bda3f95fa5",
+    "rpx_sha256": "69c282f1e82df9d07139d25d712315856c88baf101fbdfdd444e757007efbbc5",
+    "wuhb_sha256": "3d2c54081d50c2fc5fe1b6dcc75721bd2cb7e5511ad76a04789462a9f408d796",
+    "native_build": "passed",
+    "cemu_multicore": "independent_displays_saved_world_pass",
+    "cemu_multicore_ready_ms": 50211,
+    "cemu_multicore_first_paired_terrain_ms": 52851,
+    "cemu_multicore_max_sections_per_output": 163,
+    "physical": "queued",
+    "receipt": "rc52-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
@@ -237,7 +250,7 @@
   ],
   "dependencies": {
     "physical": "Supervised console launch. Continue host and emulator work while pending.",
-    "recompiler": "Forced-interpreter fallback. Corrected carry probe passed, but full gameplay remains unqualified."
+    "recompiler": "Exact RC 52 passed one multicore Cemu world entry, dual-output gameplay and save. Repeat starts and same-process reopening remain open."
   },
   "diagnostics": {
     "winding": {
