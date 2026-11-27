@@ -119,6 +119,18 @@
     "physical": "queued",
     "receipt": "rc56-qualification.md"
   },
+  "direct_terrain_rows_and_grouped_early_submission": {
+    "candidate": "0.8.0-rc.57",
+    "engine_tree": "c52bd63b767ee1502cb6c447c6940bb1554b75f6",
+    "rpx_sha256": "21b4ae1736d9e76ad027071a0737dc09a8edc9b8c2b52adbd4b01b7877d7290c",
+    "wuhb_sha256": "56967e56212d0bc23d5e1f62f46e1321eed210b604066babf29412d6b15dbc8b",
+    "native_build": "passed",
+    "host_grid_parity_sections": 4056,
+    "host_grid_fill_median_ms_before_after": [12.942, 11.195],
+    "host_grouped_timeline_cases": 16,
+    "physical": "same_package_ab_staged",
+    "receipt": "rc57-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

@@ -33,16 +33,19 @@ failed with error 160-2203 before entry and is retired. [Build and hardware proc
 ## Physical qualification order
 
 Focus first on the independent fixed-75% single-player reference.
-Keep the current RC 38 saved pose and capture settings. Use RC 49 as the
-previous stock build comparison and RC 51 for the same-binary renderer
-controls. Record the marker files for each arm. [RC 51 package](rc51-qualification.md)
+Keep the current RC 38 saved pose and capture settings. The consolidated
+RC 55 package stages matched stock and renderer controls. RC 57 stages
+the grouped early-submission trial on one verified binary. Record
+the marker files for each arm. [RC 55 package](rc55-qualification.md) ·
+[RC 57 package](rc57-qualification.md)
 
 | Order | Comparison | Evidence |
 | --- | --- | --- |
 | 1 | RC 49 stock and the trial package with rendering switches absent | Same fixed-75% surfaces, 174 sections per output, native passes, save and heap recovery. Capture at least two settled windows of 60 seconds each. |
 | 2 | Same trial package with bounded HUD lanes, then with lanes plus grouped presentation | Record actual per-output lane and fallback counts, paired submissions, flip timing, waits, peak allocations and visible output. Exercise Home and foreground return. |
-| 3 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
-| 4 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
+| 3 | Same RC 57 grouped path with early submission marker absent and present | Match the two independent viewport sizes and saved view. Record paired cadence and combined flips and run the grouped queue observer separately. |
+| 4 | Same stock path with the verified first-TV retirement skip forced slow and enabled | Verify ticket validity, fallback counts, comparable draw/coverage and paired wall time. |
+| 5 | Cold and warm verified archive loading, original Village route, and 30/60 DRS probes | Record each result separately with the corresponding package and settings. |
 
 Keep screenshots outside the timing windows. Preserve stock view distances,
 materials and per-output world rendering in the reference. The viewport and

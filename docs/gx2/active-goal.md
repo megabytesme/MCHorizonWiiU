@@ -104,6 +104,11 @@ before expanding that architecture.
   cave heuristic can hide a visible corridor. A connectivity-only host
   variant kept the corridor and reduced projected proxy candidates.
   Active culling awaits proof of native depth coverage. [RC 56 qualification](rc56-qualification.md)
+- RC 57 cuts intermediate block-grid traffic and trials earlier GX2
+  submission while the previous flip is pending. The host grid fixture
+  matched all 4,056 sections and cut its measured grid-fill span by
+  13.5%. The native package is staged for a same-build grouped comparison.
+  [RC 57 qualification](rc57-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary
