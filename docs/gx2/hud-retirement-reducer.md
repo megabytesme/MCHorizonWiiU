@@ -54,5 +54,19 @@ The full hosted workload and supervised qualification remain open.
 
 A smaller PowerPC-only test covered four condition preservation
 sequences with 4,096 iterations each. All passed in the interpreter
-and both recompilers. The remaining investigation concerns the exact
-wrapper shape and the optimizer's cross-block liveness decisions.
+and both recompilers. A second CPU-only fixture retained the actual
+compiler-emitted wrapper and replaced its callees with bounded CPU
+stubs. The original matched all 104 instructions of the failing
+wrapper after normalizing code and data relocations.
+
+| Exact wrapper CPU fixture | Interpreter | Single-core recompiler | Multicore recompiler |
+| --- | ---: | ---: | ---: |
+| Original active plain errors out of 12,288 | 0 | 12,224 | 12,160 |
+| Repaired active plain errors out of 12,288 | 0 | 0 | 0 |
+
+All other cases passed. The first failure returned a successful
+presentation with both outputs and a positive ticket, then left the
+arena active with zero seal calls. Its scope is the compiler-emitted
+plain wrapper and CPU callees. The exact optimizer cause is still
+under investigation.
+[CPU wrapper fixture](../../wiiu/diagnostics/ppc-hud-wrapper/README.md)
