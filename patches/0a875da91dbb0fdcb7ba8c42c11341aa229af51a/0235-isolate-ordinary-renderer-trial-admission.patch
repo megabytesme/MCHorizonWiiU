@@ -1,0 +1,66 @@
+diff --git a/wiiu/loading_app/src/hosted.rs b/wiiu/loading_app/src/hosted.rs
+index a763e85695e07bf5650c00a96545c204ecf678c7..9ef9859a95606b028dbf0449a94371de21da19c5 100644
+--- a/wiiu/loading_app/src/hosted.rs
++++ b/wiiu/loading_app/src/hosted.rs
+@@ -389,9 +389,9 @@ fn run(
+             return FAILED;
+         }
+     };
+-    // Unprofiled benchmarks also stay on their existing vertex format.
++    // Unprofiled benchmarks also keep their existing format and capture.
+     if launch.benchmark.is_none() {
+-        presenter.enable_atlas_cell_trial();
++        presenter.enable_ordinary_renderer_trials();
+     }
+     let mut host = LoadingHost::new(&mut presenter);
+     #[cfg(feature = "stock-hud-seed")]
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index 1a015ad9baa6069f0239d6d1916bd219e4605d80..deb500894488157082c30f1b21eac46f05cc28c6 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -207,7 +207,7 @@ bool horizon_gx2_profile_solid_list_census(void)
+ #ifdef HORIZON_GX2_CLEAR_FOG
+    if (horizon_gx2_profile_near_fog_requested()) return false;
+ #endif
+-   return solid_list_census && !atlas_cell_vertices;
++   return solid_list_census && !atlas_cell_vertices && !mem1_tv_depth;
+ }
+ 
+ static void init_mem1_tv_depth(void)
+@@ -573,7 +573,7 @@ bool horizon_gx2_profile_atlas_cells(void)
+ #ifdef HORIZON_GX2_CLEAR_FOG
+    if (near_fog_requested) return false;
+ #endif
+-   return atlas_cell_vertices && history == &process_history;
++   return atlas_cell_vertices && !mem1_tv_depth && history == &process_history;
+ }
+ 
+ bool horizon_gx2_profile_reverse_translucent_quads(void)
+diff --git a/wiiu/loading_host/lib.rs b/wiiu/loading_host/lib.rs
+index 364855a5e34784730b5e3a97ba166295af20134a..acd4c1815b256f99c3de07d969eb53d9bedd2ce2 100644
+--- a/wiiu/loading_host/lib.rs
++++ b/wiiu/loading_host/lib.rs
+@@ -966,8 +966,7 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+             terrain_views: [None, None],
+             solid_draw_plan_enabled: unsafe { horizon_gx2_profile_solid_draw_plan() },
+             atlas_cells_requested: false,
+-            solid_list_census: unsafe { horizon_gx2_profile_solid_list_census() }
+-                .then(solid_list_census::Census::default),
++            solid_list_census: None,
+             half_position_requested: std::path::Path::new(
+                 "/vol/external01/wiiu/apps/HorizonWiiU/gx2-half-position.enable",
+             )
+@@ -1043,9 +1042,11 @@ impl<'shader> Gx2LoadingPresenter<'shader> {
+         unsafe { Gx2LoadingPresenter::new(hud, panorama, terrain, capacity) }
+     }
+ 
+-    /// Only the ordinary hosted entry admits the marker before terrain preparation.
+-    pub fn enable_atlas_cell_trial(&mut self) {
++    /// Admit standalone renderer diagnostics only on the ordinary hosted entry.
++    pub fn enable_ordinary_renderer_trials(&mut self) {
+         self.atlas_cells_requested = unsafe { horizon_gx2_profile_atlas_cells() };
++        self.solid_list_census = unsafe { horizon_gx2_profile_solid_list_census() }
++            .then(solid_list_census::Census::default);
+     }
+ 
+     /// A new foreground can recreate render targets at the same dimensions.
