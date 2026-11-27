@@ -7,6 +7,17 @@
     "authentication_and_security_changes": "pending_separate_review",
     "physical_qualification": "queued"
   },
+  "rc70_native_build": {
+    "engine_tree": "8fb25bfa7cf09cb45895fe56205e74a52b379312",
+    "recipe_sha256": "300beef94b9c8ca57ce360f5be508f29dfdf71206465cd9dc2aff5524716a235",
+    "rpx_sha256": "f23dd591b853624ef7fe1aa47161a629f24757c80baf71daa2942068d4f05fbe",
+    "wuhb_sha256": "b97e7de16f8c4888927e8a8f9f3abeb8e3bf578179f727294acf47bb6f472d29",
+    "build_receipt_sha256": "1f3220aa5a65e5a587dba99d48bb2db71ad36a07c3fc8f72839805d2a8533eb2",
+    "toolchain": "1.1.0",
+    "cemu_stock_receipt_sha256": "529dbaf7e73a0d307be2e6507a715d4d1e3526adc279e9eadd927d0a2ea180fa",
+    "physical_throughput": "pending",
+    "receipt": "rc70-qualification.md"
+  },
   "matched_warm_hud_reopen": {
     "candidate": "0.8.0-rc.68",
     "evidence": "cemu_multicore_marker_only",

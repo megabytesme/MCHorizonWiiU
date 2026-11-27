@@ -63,6 +63,11 @@ before expanding that architecture.
 - Keep tonight's changes in independent rendering, resource retirement,
   terrain, loading, DRS and Cemu correctness. Authentication, permissions
   and security controls are on hold for separate review.
+- RC 70 built with the recovered pinned Cafe toolchain and verified Cargo
+  cache. Its native RPX and WUHB passed verification and its reconstructed
+  source recipe is on canonical main. The supervised queue keeps RC 61
+  first and groups the later independent switches into one follow-up
+  deployment. [RC 70 qualification](rc70-qualification.md)
 - RC 69 passed four offline Cemu saved-world runs with stock terrain,
   24-byte vertices, 20-byte vertices and recorded solid draws. Each run
   reached 100 sections per display before a 60-second dwell and completed
