@@ -158,6 +158,11 @@ before expanding that architecture.
   verified the rendered interior, surrounding water, boat persistence
   and full GX2 bulk recovery. The exact package is staged for supervised
   parity, Village and loading checks. [RC 64 evidence](rc64-qualification.md)
+- RC 65 skips empty terrain-unload scans and checks common prepared
+  state rows without building temporary NBT maps. The matched Cemu
+  probe reached Game in 51.538 seconds, down from 54.451. All 32 deadline
+  records joined exact HZP3 rows. The physical timing and settled
+  section gate are pending. [RC 65 evidence](rc65-qualification.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

@@ -301,6 +301,18 @@
     "physical": "queued_supervised",
     "receipt": "rc64-qualification.md"
   },
+  "prepared_state_rows_and_deadline_observation": {
+    "candidate": "0.8.0-rc.65",
+    "engine_tree": "42164dee2b839c0cf7a741590737d573f6ee4029",
+    "rpx_sha256": "631818e62cc4a1c576b47c1861ed759e9fe904ff33134d2ee1437df9fbe19375",
+    "wuhb_sha256": "9289113bf374e8e422ed54bbbc1efbd6d4a4b8a00509664581519b5d006e5015",
+    "matched_cemu_first_game_ms": [54451, 51538],
+    "matched_cemu_generator_data_ms": [13428, 10925],
+    "cemu_deadline_rows_joined": 32,
+    "cemu_deadline_independent_refresh_clock": false,
+    "physical_settled_deadline_capture": "pending_exact_section_gate",
+    "receipt": "rc65-qualification.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],
