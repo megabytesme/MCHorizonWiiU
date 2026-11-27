@@ -56,3 +56,27 @@ Profile modes test alternate HUD atlas writeback, shared model uploads,
 scaled-output clear omission and early TV submission. Use separate
 dual-output comparisons at matched settings before changing defaults.
 [Hardware qualification queue](post-rc35-queue.md)
+
+## Stock menu blur readback
+
+A standalone Cafe title copied the full WHB source surface for each
+display, then tested the six stock passes over 13×9 TV and 9×7 GamePad
+regions. Both Cemu backends matched the copy-only reference. With the
+six linear texture samples per pass, the stock arm differed from the
+integer reference in 50 TV and 29 GamePad pixels. Every differing
+channel was within one 8-bit unit. The result repeated on both backends
+after fixing diagnostic timing log formatting.
+
+An 11-point-tap control with explicit round-to-nearest matched all eight
+paired cases on both backends. Stale GamePad source, reversed pass
+order, missing vertical passes and an early TV menu suffix each changed
+only the expected output. The 16 readbacks per backend matched the
+applicable exact RGBA references, including the guard regions.
+The RPX SHA-256 is
+`e7aa832560f65323ecb645d1c32ece908c7544c6c83799b1fbf9178b351c0c88`.
+The Cemu receipt SHA-256 is
+`0e0676ee4c1c8ac42ae5a082d36e8970d6cb0c24a8fa8fb66fd70ed2cd3e9c13`.
+
+The point-tap path serves as a reference. Full-display cost, Wii U
+filter precision and live menu integration remain open. The renderer
+continues to record the menu blur omission.
