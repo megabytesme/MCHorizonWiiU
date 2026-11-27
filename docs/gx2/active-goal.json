@@ -96,7 +96,11 @@
     "wuhb_sha256": "71d3527ebc089eb88bf8fb6d5c061c0b8686ec876721ac681378c8bb53537db8",
     "native_build": "passed",
     "warm_mob_host_retained_estimate_bytes": 703314,
-    "runtime": "queued",
+    "runtime": "cemu_interpreter_cold_parked_warm_adopted_both_saves_and_clean_exit",
+    "cemu_warm_mob_allowance_bytes": 635674,
+    "cemu_ready_ms_cold_warm": [607240, 571345],
+    "cemu_mob_preparation_ms_cold_warm": [12602.577, 7234.547],
+    "cemu_retired_bulk_bytes_cold_warm": [234880920, 234880920],
     "physical": "queued",
     "receipt": "rc55-qualification.md"
   },

@@ -95,7 +95,9 @@ before expanding that architecture.
   recompiler replay stopped at the existing farmland startup fault before
   reaching a draw. [RC 54 qualification](rc54-qualification.md)
 - RC 55 adds physical worker and GX2 queue observations and optional warm
-  mob data reuse. The exact native package is staged for supervised testing.
+  mob data reuse. Exact Cemu cold and warm launches saved the same pose
+  and recovered the bulk heap. The warm round adopted the mob base, with
+  the preparation span falling from 12.603 to 7.235 seconds.
   [RC 55 qualification](rc55-qualification.md)
 - RC 56 adds a passive cave graph, earlier cancellation of mob preparation,
   and Cemu farmland key checkpoints. The native build passed. The exact

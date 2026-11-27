@@ -60,3 +60,34 @@ mod overlays are prepared again. Host tests reused the same allocations
 through 21 cycles, with 703,314 estimated retained bytes. Median host
 preparation fell from 9.335 ms cold to 2.991 ms warm. Actual Cafe reopening,
 whole-game memory and SD timing remain queued.
+
+## Exact Cemu cold and warm replay
+
+The RC 55 RPX opened the same disposable Full Performance world twice
+in the interpreter. Both rounds kept independently rendered 1920×1080
+TV and 854×480 GamePad captures, fixed 75% scale, and the same saved
+camera and rotation. This loading fixture reached one terrain section
+per output at the first paired gate.
+
+| Observation | Cold | Warm |
+| --- | ---: | ---: |
+| First returned Game frame | 607.240 s | 571.345 s |
+| First paired terrain wall time | 642.254 s | 599.422 s |
+| Fresh archive SHA verification | 50.708 s | 55.568 s |
+| Stock HUD seed preparation | 59.689 s | 3.939 s |
+| Mob data preparation | 12.603 s | 7.235 s |
+| Mob data decode or reuse span | 11.754 s | 4.995 s |
+| Rust live bytes after Game drop | 54,490,704 | 54,545,361 |
+| Peak requested Rust bytes | 312,639,449 | 344,571,223 |
+| GX2 bulk free after Game drop | 234,880,920 | 234,880,920 |
+
+The cold round staged and parked a 635,674-byte allowance after saving.
+The warm round adopted it after fresh input verification. Both rounds
+saved the same pose, returned to Night, and the process exited cleanly.
+The largest free GX2 block was 234,880,896 bytes after each return.
+The warm round reused both HUD and mob resources. The individual spans
+can overlap and represent the emulator run, so attribute physical wall
+and memory changes with a separate comparison.
+
+The paired run's acceptance receipt SHA-256 is
+`6c15f30916a5ad8a41842724c82f996860d516a5f50f6c7ec8ebdb24b429dcb7`.
