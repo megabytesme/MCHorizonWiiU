@@ -1,0 +1,106 @@
+diff --git a/crates/horizon-client-render/src/streaming.rs b/crates/horizon-client-render/src/streaming.rs
+index f08aaff80464cefde5fc07d7bf3a0be1d323989d..48a7f308c5f8a99783d685e3da0a72e528d5f19c 100644
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -1398,6 +1398,54 @@ impl Streaming {
+         self.shared.upload_budget.used()
+     }
+ 
++    // Keep a dirty request while the server holds the column. The running
++    // revision keeps its own slot and may still finish on return.
++    #[cfg(target_os = "cafe")]
++    fn park_mesh_outside_view(&self, world: &mut World, key: (i32, i32, i32)) -> bool {
++        let (x, _, z) = key;
++        if !self.remote
++            || !self.mesh
++            || in_view_distance(self.center, self.radius, x, z)
++            || self.forced.contains(&(x, z))
++        {
++            return false;
++        }
++        if world.chunks.contains_key(&(x, z)) {
++            world.dirty_sections.insert(key);
++        }
++        true
++    }
++
++    /// Drop old CPU upload work before calculating the current mesh room.
++    /// Already published render meshes keep their ordinary residency.
++    #[cfg(target_os = "cafe")]
++    pub fn prune_cafe_pending_uploads(
++        &mut self,
++        world: &mut World,
++        pending: &mut Vec<((i32, i32, i32), SectionMesh)>,
++    ) {
++        // Each new completion already checks the current view. A settled,
++        // unforced view has no old arrivals to scan for again.
++        if !self.remote
++            || !self.mesh
++            || pending.is_empty()
++            || (self.forced.is_empty() && self.waiting_area == (self.center, self.radius, 0))
++        {
++            return;
++        }
++        let stale = pending
++            .extract_if(.., |(key, _)| {
++                if !self.park_mesh_outside_view(world, *key) {
++                    return false;
++                }
++                // This accepted revision never reached the renderer.
++                self.compile_started.remove(key);
++                true
++            })
++            .collect();
++        self.free(stale);
++    }
++
+     /// Give back meshes the renderer has copied: a worker frees them, ahead of
+     /// other jobs, as vanilla's compile task closes its mesh data on its own
+     /// thread once copied (`SectionRenderDispatcher.RenderSection.CompileTask.doTask`).
+@@ -1956,21 +2004,26 @@ impl Streaming {
+                     }
+                 }
+                 Done::Meshed(x, sy, z, mesh, seq) => {
+-                    if self.meshing.get(&(x, sy, z)) != Some(&seq) {
+-                        resume.stale.push(((x, sy, z), mesh));
++                    let key = (x, sy, z);
++                    if self.meshing.get(&key) != Some(&seq) {
++                        resume.stale.push((key, mesh));
+                         continue;
+                     }
++                    self.meshing.remove(&key);
+                     // Its column unloaded while it was meshed: nothing would
+                     // ever remove the uploaded section.
+                     if !world.chunks.contains_key(&(x, z)) {
+-                        self.meshing.remove(&(x, sy, z));
+-                        resume.stale.push(((x, sy, z), mesh));
++                        resume.stale.push((key, mesh));
++                        continue;
++                    }
++                    #[cfg(target_os = "cafe")]
++                    if self.park_mesh_outside_view(world, key) {
++                        resume.stale.push((key, mesh));
+                         continue;
+                     }
+-                    self.meshing.remove(&(x, sy, z));
+-                    self.compile_started.insert((x, sy, z), seq);
++                    self.compile_started.insert(key, seq);
+                     self.meshed_total += 1;
+-                    resume.uploads.push(((x, sy, z), mesh));
++                    resume.uploads.push((key, mesh));
+                 }
+             }
+         }
+diff --git a/crates/horizon-client/src/game/world/world_update.rs b/crates/horizon-client/src/game/world/world_update.rs
+index 6098afc9f9e3bbb852a352642c4ab740634fe9cb..db1526086f26f58350c2fb5232074b55b36f197e 100644
+--- a/crates/horizon-client/src/game/world/world_update.rs
++++ b/crates/horizon-client/src/game/world/world_update.rs
+@@ -253,6 +253,8 @@ impl Game<'_> {
+                         world.dirty_sections.insert(key);
+                     }
+                 });
++                self.streaming
++                    .prune_cafe_pending_uploads(&mut self.world, &mut self.pending_uploads);
+             }
+         }
+         self.streaming.upload_backlog = self.pending_uploads.len();
