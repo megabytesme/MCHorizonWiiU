@@ -181,3 +181,68 @@ shader alpha discard stay identical. Cemu passed all 28 visual checks
 for independent TV and GamePad views across three overdraw levels and
 two draw orders. The fixture's separate bottom-cycle comparison and
 physical depth/alpha parity remain to be measured. [Same-RPX Re-Z fixture](../../wiiu/diagnostics/gx2-rez/README.md)
+
+## Stock point atlas addressing
+
+The Windows CafeGLSL release reproduced the stock RC 69 terrain GFD
+embedded in the native title byte for byte. Its SHA-256 is
+`c07d3b7557e55341a3bfcd3e36cf2dbd048f8473514a8ac26d400878503f7133`.
+The alternatives preserve the complete 178-dword vertex stage and the
+pixel metadata except program length. Each uses one texture instruction,
+four pixel inputs and five pixel registers. [CafeGLSL compiler release](https://github.com/Exzap/CafeGLSL/releases/tag/v1.0.0-rc1)
+
+| Pixel address path | Pixel program dwords | Issue groups before texture | ALU lanes before texture |
+| --- | ---: | ---: | ---: |
+| Stock | 142 | 8 | 19 |
+| Packed atlas only, retain clamp | 130 | 7 | 15 |
+| Use replicated gutter in place of clamp | 126 | 5 | 12 |
+| Packed atlas only with replicated gutter | 118 | 4 | 8 |
+
+The gutter trial keeps stock alpha, fog and blending. The compiler combines
+the local coordinate multiply and atlas origin add. Multiplication by the
+stock 64-pixel side is exact in the bounded binary32 domain. A host check
+matched all 64,875 split and combined sums at side 64. At side 63 it found
+1,314 different sums. The gutter also requires coherent sprite layers on
+each quad, bounded interpolation and current RGBA edges after animation.
+Keep coverage of those conditions in the native pixel control.
+
+The packed-only clamped GFD is byte-identical to the earlier generic
+packed variant that changed 85,508 GamePad translucent pixels, including
+31,316 alpha values, in each of two standalone Cemu runs. The opaque
+results matched. That variant still needs a same-package stock-to-stock
+control that isolates the GamePad blend state before any requalification.
+
+An isolated Cemu copy of RC 69 replaced only the stock terrain GFD with
+the 126-dword gutter trial. It loaded the original saved view at fixed
+75%, reached 100 sections per display and saved the expected movement.
+The Cemu shader cache retained the exact compiled trial program. The
+first terrain captures matched the stock counterparts byte for byte on
+both displays. After the 45-second dwell, the trial showed a rabbit that
+was absent from the control. The pixel changes were confined to that
+region on both outputs. Save, normal exit and full GX2 heap recovery
+passed. This comparison leaves native point precision and physical
+frame time open. The receipt SHA-256 is
+`e08da8bb6c36568620c89788063009adc838b023a5b1285bcfc0ebb4c9d85f7c`.
+
+The authored boat scene exercised translucent water in separate matched
+stock and gutter runs. Both outputs drew terrain and completed the save,
+heap recovery and title exit. With ordinary animation active, the settled
+captures differed at 571,662 TV and 125,807 GamePad pixels. The two runs
+showed different water animation phases and different live entity poses.
+A separate diagnostic froze texture animation in both arms. Its settled
+differences fell to 54,775 TV and 11,422 GamePad pixels, and the boat and
+fish still moved independently. Initial residency also differed. These
+runs leave translucent pixel parity unresolved. Use a fixed animation
+phase, fixed geometry and explicit per-output draw clear in the next
+standalone comparison. Compare complete RGBA and depth surfaces with
+stock-to-stock and reversed-order controls. The frozen diagnostic receipt
+has SHA-256 `b489c8f6d37117475ab80de40aa160dadd2d8b0dea313109015ee7cffa34bc19`.
+
+The same stock scene allocates 22,708,224 bytes for 1,301 padded 64-pixel
+terrain layers. The retained decoded inputs contain 1,263 16-pixel
+entries, 47 32-pixel entries and one 64-pixel entry. A mixed-size host
+layout for all 1,311 inputs estimates 1,980,416 bytes. Direct remapping
+passed a different texel to alpha discard in the host model. Preserving
+the original selected address and recentering the compact sample passed
+1,473,480 modeled comparisons. The address-coded native fixture's shader
+compiled, with actual paired sampling and throughput testing pending.

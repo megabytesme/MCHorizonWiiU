@@ -67,6 +67,20 @@
     "cache_report_sha256": "22c5c3eb19addb5de8f36307218ac25e2117adc934daa1e96968b8a5beb5180e",
     "combined_draw_proof_sha256": "43b4a7dee1ad5347c3304a7c2d85dd2b113804c779b4eaec41f049df45240e5a"
   },
+  "stock_point_atlas_trial": {
+    "candidate": "0.8.0-rc.69",
+    "stock_gfd_sha256": "c07d3b7557e55341a3bfcd3e36cf2dbd048f8473514a8ac26d400878503f7133",
+    "gutter_gfd_sha256": "f941aa1a713dcbfe1e9a28d8bfed6ac30f345c5937cb280304b3e49195064473",
+    "stock_and_gutter_ps_dwords": [142, 126],
+    "stock_and_gutter_pre_texture_issue_groups": [8, 5],
+    "first_saved_view_changed_pixels_tv_and_gamepad": [0, 0],
+    "saved_view_receipt_sha256": "e08da8bb6c36568620c89788063009adc838b023a5b1285bcfc0ebb4c9d85f7c",
+    "settled_boat_changed_pixels_tv_and_gamepad": [571662, 125807],
+    "settled_frozen_boat_changed_pixels_tv_and_gamepad": [54775, 11422],
+    "frozen_boat_receipt_sha256": "b489c8f6d37117475ab80de40aa160dadd2d8b0dea313109015ee7cffa34bc19",
+    "translucent_parity": "unresolved",
+    "physical": "pending"
+  },
   "stock_village_cemu_replay": {
     "candidate": "0.8.0-rc.69",
     "original_stock_ready_times_ms": [221093, 182265],
