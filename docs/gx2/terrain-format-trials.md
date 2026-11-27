@@ -59,3 +59,21 @@ outputs. RPX SHA-256
 The default-off gameplay bridge budgets the remap alongside native storage
 and falls back when a section would save no bytes. Native gameplay and
 physical timing remain open.
+
+## Greedy meshing eligibility
+
+The current packed terrain UVs encode one repeat below 2.0. Greedy runs
+spanning more cells need a repeat representation that preserves atlas seams.
+The native shaders interpolate fog distances from each original corner.
+A host control in the transition region changed the fog factor from zero
+to 0.758 when corners were removed. A separate control used the actual
+translucent sorter. Combining water cells moved an overlapping glass draw
+ahead of the water and changed the controlled red channel from 0.551 to 0.271.
+
+A conservative host predicate found clear-fog opaque candidates while
+preserving actual local geometry bounds. Across the synthetic six-chunk
+proxy, eligibility removed 13% of quads with an environmental fog start of
+64 blocks and 27% with a start of 96. Those figures describe the proxy.
+A sparse source-only diagnostic now prepares bounds from uploaded sections
+and can report eligible opaque geometry for each output. Use the stock
+saved-view captures to measure coverage before selecting a merge format.
