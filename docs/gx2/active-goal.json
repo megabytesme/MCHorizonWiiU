@@ -350,6 +350,15 @@
     "physical": "fixture_queued_supervised, gameplay_pending",
     "receipt": "../../wiiu/diagnostics/gx2-light-packing/README.md"
   },
+  "half20_unsigned_light_fetch": {
+    "pair_rpx_sha256": "387cf8030e443cdc70398ebaf1e7aed8786cbafaad5e3c08090b0c8170665416",
+    "scalar_rpx_sha256": "44407ef5487004b0bb0dfdaa66ff2029763e81367c033c76f4baa20fb68b2adb",
+    "logical_bytes_per_vertex_stock_half_half20": [28, 24, 20],
+    "cemu_independent_output_rows_passed": 24,
+    "integer_light_values_exhaustively_verified": 65536,
+    "physical_and_hosted_gameplay": "pending",
+    "receipt": "../../wiiu/diagnostics/gx2-half20-light/README.md"
+  },
   "warm_hud_replay": {
     "validation": "cemu_interpreter",
     "first_ready_game_ms": [696436, 529072],

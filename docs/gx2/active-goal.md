@@ -181,6 +181,11 @@ before expanding that architecture.
   groups from 18 to 17, smooth parameters from four to three and pixel
   registers from five to four. Native efficiency and gameplay coverage
   remain open. [Light-packing fixture](../../wiiu/diagnostics/gx2-light-packing/README.md)
+- The 20-byte exact half-position fixture passed 24 Cemu readbacks
+  against stock and half24. It keeps the original light word, matches
+  both lightmaps on both displays, and detects wrong lane, endian and
+  clamp handling. Actual eligible gameplay coverage and native latency
+  remain open. [20-byte fixture](../../wiiu/diagnostics/gx2-half20-light/README.md)
 - The native 24-byte half-position fixture matched stock RGBA under two
   lightmaps on both outputs. Reversed water quad reuse also matched the
   original sorted draws. Eligible terrain and memory savings in ordinary

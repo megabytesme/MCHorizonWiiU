@@ -27,6 +27,17 @@ The production trial will measure exact per-layer eligibility and admission
 cost. Water offsets, rotated models and other off-grid positions can require
 the original float format.
 
+## Exact binary16 with unsigned light
+
+The 20-byte variant combines the existing exact half XYZ with an unsigned
+light halfword. GX2 takes light from the G lane of an aligned two-halfword
+fetch. Both half formats matched stock RGBA on independent TV and GamePad
+attachments under the varying and flat lightmaps. Wrong lane, byte order
+and clamp changed RGB under the varying lightmap while alpha and coverage
+stayed identical. This saves eight logical bytes per eligible vertex
+against stock. Aligned allocation and real geometry coverage still need
+measurement. [Half20 fixture](../../wiiu/diagnostics/gx2-half20-light/README.md)
+
 ## Packed integers and material specialization
 
 Explicit R, G, 0, 1 selectors corrected the UINT2 fetch setup. The 24-byte
