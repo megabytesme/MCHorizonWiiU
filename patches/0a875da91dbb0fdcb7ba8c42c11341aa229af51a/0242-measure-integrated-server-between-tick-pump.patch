@@ -1,0 +1,416 @@
+diff --git a/crates/horizon-client-platform/src/cafe_profile.rs b/crates/horizon-client-platform/src/cafe_profile.rs
+index 62ba6dd..b118f89 100644
+--- a/crates/horizon-client-platform/src/cafe_profile.rs
++++ b/crates/horizon-client-platform/src/cafe_profile.rs
+@@ -2,6 +2,9 @@
+ //! Thread-independent workload totals are recorded by Worker scopes.
+ use std::marker::PhantomData;
+ 
++mod server_pump;
++pub use server_pump::ServerPumpProfile;
++
+ #[repr(u32)]
+ #[derive(Clone, Copy)]
+ pub enum Stage {
+@@ -103,6 +106,7 @@ unsafe extern "C" {
+     fn horizon_gx2_profile_end(stage: u32, begin: u64);
+     fn horizon_gx2_profile_worker_end(worker: u32, begin: u64);
+     fn horizon_worker_schedule_enable(enabled: bool);
++    fn horizon_gx2_profile_server_pump_scope(ordinary_focused: bool);
+     fn horizon_worker_schedule_begin(role: u32, worker: u32) -> u32;
+     fn horizon_worker_schedule_end(ticket: u32);
+     fn horizon_gx2_profile_count(counter: u32, value: u32);
+@@ -202,6 +206,11 @@ pub enum ScheduleRole {
+     RegionWrite,
+ }
+ 
++/// On the foreground host, admit only the ordinary focused game.
++pub fn server_pump_scope(ordinary_focused: bool) {
++    unsafe { horizon_gx2_profile_server_pump_scope(ordinary_focused) }
++}
++
+ /// End the active observation generation on the foreground host before release.
+ pub fn suspend_worker_schedule() {
+     unsafe { horizon_worker_schedule_enable(false) }
+diff --git a/crates/horizon-client-platform/src/cafe_profile/server_pump.rs b/crates/horizon-client-platform/src/cafe_profile/server_pump.rs
+new file mode 100644
+index 0000000..4cc6a79
+--- /dev/null
++++ b/crates/horizon-client-platform/src/cafe_profile/server_pump.rs
+@@ -0,0 +1,124 @@
++//! Sparse integrated-server wall timing for the between-tick chunk pump.
++const SAMPLE_EVERY: u8 = 8;
++const WINDOW_SAMPLES: u32 = 32;
++const MAX_WINDOWS: u8 = 8;
++
++unsafe extern "C" {
++    fn horizon_gx2_profile_server_pump_generation() -> u32;
++    fn horizon_gx2_profile_server_pump_clock() -> u64;
++    fn horizon_gx2_profile_server_pump_report(generation: u32, samples: u32, ticks: *const u64);
++}
++
++fn generation() -> u32 {
++    unsafe { horizon_gx2_profile_server_pump_generation() }
++}
++
++fn clock() -> u64 {
++    unsafe { horizon_gx2_profile_server_pump_clock() }
++}
++
++/// Owned by one integrated tick loop. Sampling never keeps a job or world data.
++#[derive(Default)]
++pub struct ServerPumpProfile {
++    generation: u32,
++    until_sample: u8,
++    windows: u8,
++    window: Window,
++}
++
++#[derive(Default)]
++struct Window {
++    samples: u32,
++    first: u64,
++    wait_sum: u64,
++    update_sum: u64,
++    wait_max: u64,
++    update_max: u64,
++}
++
++pub struct PumpSample {
++    generation: u32,
++    start: u64,
++    wait_end: Option<u64>,
++}
++
++impl ServerPumpProfile {
++    pub fn begin(&mut self) -> Option<PumpSample> {
++        let active = generation();
++        if active == 0 {
++            return None;
++        }
++        if active != self.generation {
++            *self = Self {
++                generation: active,
++                until_sample: SAMPLE_EVERY,
++                ..Self::default()
++            };
++        }
++        if self.windows == MAX_WINDOWS {
++            return None;
++        }
++        self.until_sample -= 1;
++        if self.until_sample != 0 {
++            return None;
++        }
++        self.until_sample = SAMPLE_EVERY;
++        Some(PumpSample {
++            generation: active,
++            start: clock(),
++            wait_end: None,
++        })
++    }
++
++    pub fn finish(&mut self, sample: PumpSample) {
++        let Some(wait_end) = sample.wait_end else {
++            return;
++        };
++        if sample.generation != self.generation || sample.generation != generation() {
++            return;
++        }
++        let end = clock();
++        let (Some(wait), Some(update)) = (
++            wait_end.checked_sub(sample.start),
++            end.checked_sub(wait_end),
++        ) else {
++            return;
++        };
++        let window = &mut self.window;
++        if window.samples == 0 {
++            window.first = sample.start;
++        }
++        window.samples += 1;
++        window.wait_sum = window.wait_sum.saturating_add(wait);
++        window.update_sum = window.update_sum.saturating_add(update);
++        window.wait_max = window.wait_max.max(wait);
++        window.update_max = window.update_max.max(update);
++        if window.samples == WINDOW_SAMPLES {
++            let ticks = [
++                window.first,
++                end,
++                window.wait_sum,
++                window.update_sum,
++                window.wait_max,
++                window.update_max,
++            ];
++            unsafe {
++                horizon_gx2_profile_server_pump_report(
++                    self.generation,
++                    window.samples,
++                    ticks.as_ptr(),
++                );
++            }
++            self.windows += 1;
++            *window = Window::default();
++        }
++    }
++}
++
++impl PumpSample {
++    pub fn wait_finished(&mut self) {
++        if self.generation == generation() {
++            self.wait_end = Some(clock());
++        }
++    }
++}
+diff --git a/crates/horizon-client/src/game/administration/commands/pregen.rs b/crates/horizon-client/src/game/administration/commands/pregen.rs
+index e9c6184..bdf2bcc 100644
+--- a/crates/horizon-client/src/game/administration/commands/pregen.rs
++++ b/crates/horizon-client/src/game/administration/commands/pregen.rs
+@@ -243,7 +243,14 @@ impl Game<'_> {
+     /// Keep the workers fed until `until`: collect what they finished and
+     /// hand them the next jobs as soon as each one is done, rather than once
+     /// a tick.
+-    pub(in crate::game) fn pump_chunks(&mut self, until: Instant, paused: bool) {
++    pub(in crate::game) fn pump_chunks(
++        &mut self,
++        until: Instant,
++        paused: bool,
++        #[cfg(target_os = "cafe")] mut profile: Option<
++            &mut horizon_client_platform::cafe_profile::ServerPumpProfile,
++        >,
++    ) {
+         // Force-loaded chunks too, a mod's held ones as `/forceload`'s: decorating in vanilla's order, a chunk
+         // waits for its neighbours far more often than once a tick allows.
+         // And the players' chunks while they load, as vanilla's server runs
+@@ -263,9 +270,19 @@ impl Game<'_> {
+             if now >= until {
+                 break;
+             }
++            #[cfg(target_os = "cafe")]
++            let mut sample = profile.as_deref_mut().and_then(|profile| profile.begin());
+             self.streaming
+                 .wait((until - now).min(Duration::from_millis(5)));
++            #[cfg(target_os = "cafe")]
++            if let Some(sample) = &mut sample {
++                sample.wait_finished();
++            }
+             self.update_world();
++            #[cfg(target_os = "cafe")]
++            if let (Some(profile), Some(sample)) = (profile.as_deref_mut(), sample) {
++                profile.finish(sample);
++            }
+         }
+     }
+ 
+diff --git a/crates/horizon-client/src/game/interface/dedicated/mod.rs b/crates/horizon-client/src/game/interface/dedicated/mod.rs
+index a95839d..e73fe08 100644
+--- a/crates/horizon-client/src/game/interface/dedicated/mod.rs
++++ b/crates/horizon-client/src/game/interface/dedicated/mod.rs
+@@ -1613,7 +1613,12 @@ impl Game<'_> {
+             state.ticked(Instant::now());
+             // MinecraftServer.runServer: a server more than a second's ticks
+             // behind skips them and says so, at most every 15 seconds.
+-            if let Some(behind) = self.wait_for_next_server_tick(&mut next, paused)
++            if let Some(behind) = self.wait_for_next_server_tick(
++                &mut next,
++                paused,
++                #[cfg(target_os = "cafe")]
++                None,
++            )
+                 && overload_warned.is_none_or(|at| at.elapsed() >= OVERLOAD_WARNING_INTERVAL)
+             {
+                 overload_warned = Some(Instant::now());
+diff --git a/crates/horizon-client/src/game/world/integrated.rs b/crates/horizon-client/src/game/world/integrated.rs
+index 27310da..605cdeb 100644
+--- a/crates/horizon-client/src/game/world/integrated.rs
++++ b/crates/horizon-client/src/game/world/integrated.rs
+@@ -827,6 +827,8 @@ impl Game<'_> {
+     }
+ 
+     fn integrated_tick_loop(&mut self, flags: &Flags) -> Result<()> {
++        #[cfg(target_os = "cafe")]
++        let mut pump_profile = horizon_client_platform::cafe_profile::ServerPumpProfile::default();
+         let mut next = Instant::now();
+         let mut was_paused = false;
+         let mut failure = None;
+@@ -835,7 +837,12 @@ impl Game<'_> {
+             if self.agent.hold_server {
+                 // Keep servicing control requests so the fixture can release the barrier.
+                 // Unlike /tick freeze, no player's queued packets are applied here.
+-                self.wait_for_next_server_tick(&mut next, true);
++                self.wait_for_next_server_tick(
++                    &mut next,
++                    true,
++                    #[cfg(target_os = "cafe")]
++                    None,
++                );
+                 continue;
+             }
+             self.server_tick_deadline = Some(next + self.clock.tick_duration());
+@@ -918,7 +925,12 @@ impl Game<'_> {
+             }
+             self.apply_publish();
+             self.publish_load_view();
+-            self.wait_for_next_server_tick(&mut next, paused);
++            self.wait_for_next_server_tick(
++                &mut next,
++                paused,
++                #[cfg(target_os = "cafe")]
++                (!paused).then_some(&mut pump_profile),
++            );
+         }
+         if failure.is_none() {
+             self.finish_server_capture();
+diff --git a/crates/horizon-client/src/game/world/levels.rs b/crates/horizon-client/src/game/world/levels.rs
+index 5791730..0836193 100644
+--- a/crates/horizon-client/src/game/world/levels.rs
++++ b/crates/horizon-client/src/game/world/levels.rs
+@@ -1487,6 +1487,9 @@ impl Game<'_> {
+         &mut self,
+         next: &mut Instant,
+         paused: bool,
++        #[cfg(target_os = "cafe")] pump_profile: Option<
++            &mut horizon_client_platform::cafe_profile::ServerPumpProfile,
++        >,
+     ) -> Option<Duration> {
+         let now = Instant::now();
+         if !paused && self.clock.sprinting() {
+@@ -1497,7 +1500,12 @@ impl Game<'_> {
+         if *next > now {
+             // The chunks loading (the players', force-loaded ones, a
+             // `/pregen` task) keep the workers fed until the next tick.
+-            self.pump_chunks(*next, paused);
++            self.pump_chunks(
++                *next,
++                paused,
++                #[cfg(target_os = "cafe")]
++                pump_profile,
++            );
+             let now = Instant::now();
+             if *next > now {
+                 std::thread::sleep(*next - now);
+diff --git a/wiiu/loading_app/src/lib.rs b/wiiu/loading_app/src/lib.rs
+index 39aa709..9e8ad7b 100644
+--- a/wiiu/loading_app/src/lib.rs
++++ b/wiiu/loading_app/src/lib.rs
+@@ -1047,6 +1047,7 @@ impl CafeLoadingHost for LoadingHost<'_> {
+             }
+             let input_capture = Span::new(Stage::Input);
+             let focused = self.update_focus(session, game_session.as_mut());
++            cafe_profile::server_pump_scope(focused && self.hosted && !self.hosted_benchmark);
+             if !focused {
+                 cafe_profile::suspend_worker_schedule();
+             }
+diff --git a/wiiu/loading_host/gx2_profile.c b/wiiu/loading_host/gx2_profile.c
+index c543548..e29cc73 100644
+--- a/wiiu/loading_host/gx2_profile.c
++++ b/wiiu/loading_host/gx2_profile.c
+@@ -87,6 +87,9 @@ typedef struct {
+ } ProfileHeader;
+ 
+ static _Atomic bool enabled, worker_capture_active;
++static _Atomic uint32_t server_pump_generation;
++static uint32_t server_pump_next_generation;
++static bool server_pump_requested, server_pump_ordinary_focused;
+ static bool worker_marker_enabled, worker_playing, worker_schedule_requested;
+ static _Atomic uint32_t workers[WORKERS][2];
+ static ProfileFrame current;
+@@ -314,6 +317,9 @@ void horizon_gx2_profile_init(void)
+       FILE *frustum = fopen(ROOT "gx2-prepared-solid-frustum.enable", "rb");
+       prepared_solid_frustum = frustum != NULL;
+       if (frustum) fclose(frustum);
++      FILE *pump = fopen(ROOT "gx2-server-pump-profile.enable", "rb");
++      server_pump_requested = pump != NULL;
++      if (pump) fclose(pump);
+       FILE *schedule = fopen(ROOT "gx2-worker-schedule.enable", "rb");
+       worker_schedule_requested = schedule != NULL;
+       if (schedule) {
+@@ -780,10 +786,56 @@ bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_tick
+    return true;
+ }
+ 
++/* Only the foreground host changes generations. A sampled server iteration
++ * can read the active generation without touching host frame history. */
++static void server_pump_set_active(bool active)
++{
++   if (!server_pump_requested) return;
++   const uint32_t previous = atomic_load_explicit(&server_pump_generation, memory_order_relaxed);
++   if (!active && previous)
++      atomic_store_explicit(&server_pump_generation, 0, memory_order_release);
++   else if (active && !previous && server_pump_next_generation != UINT32_MAX)
++      atomic_store_explicit(&server_pump_generation, ++server_pump_next_generation, memory_order_release);
++}
++
++void horizon_gx2_profile_server_pump_scope(bool ordinary_focused)
++{
++   if (!server_pump_requested) return;
++   server_pump_ordinary_focused = ordinary_focused;
++   if (!ordinary_focused) server_pump_set_active(false);
++}
++
++uint32_t horizon_gx2_profile_server_pump_generation(void)
++{
++   return atomic_load_explicit(&server_pump_generation, memory_order_relaxed);
++}
++
++uint64_t horizon_gx2_profile_server_pump_clock(void)
++{
++   return (uint64_t)OSGetSystemTime();
++}
++
++void horizon_gx2_profile_server_pump_report(uint32_t generation, uint32_t samples,
++                                            const uint64_t ticks[6])
++{
++   if (!generation || !samples ||
++       generation != atomic_load_explicit(&server_pump_generation, memory_order_acquire)) return;
++   /* The process epoch is initialized before the first enabled generation
++    * and remains immutable across hosted sessions. */
++   const uint64_t epoch = process_history.epoch;
++   if (ticks[0] < epoch || ticks[1] < ticks[0]) return;
++   OSReport("Horizon Cafe server pump wall generation=%u samples=%u clock_hz=%u first_ticks=%llu last_ticks=%llu wait_ticks=%llu update_ticks=%llu wait_max_ticks=%llu update_max_ticks=%llu\n",
++            generation, samples, OSTimerClockSpeed, (unsigned long long)(ticks[0] - epoch),
++            (unsigned long long)(ticks[1] - epoch), (unsigned long long)ticks[2],
++            (unsigned long long)ticks[3], (unsigned long long)ticks[4], (unsigned long long)ticks[5]);
++}
++
+ /* The host owns phase changes. Keep the marker gate open between gameplay
+  * loops so worker jobs need no dependency on the frame's recording state. */
+ static void update_worker_capture_phase(uint32_t phase)
+ {
++   server_pump_set_active(server_pump_ordinary_focused && history == &process_history &&
++                          phase == PLAYING_PHASE);
+    if (worker_schedule_requested)
+       horizon_worker_schedule_enable(history == &process_history &&
+                                      (phase == PLAYING_PHASE || phase == CLOSING_PHASE));
+@@ -1091,6 +1143,7 @@ static bool flush_to(const char *path, const char *temporary)
+ 
+ void horizon_gx2_profile_checkpoint_session(void)
+ {
++   horizon_gx2_profile_server_pump_scope(false);
+    if (worker_schedule_requested) {
+       horizon_worker_schedule_enable(false);
+       if (history == &process_history) horizon_worker_schedule_report();
+@@ -1122,6 +1175,7 @@ bool horizon_gx2_profile_begin_trial(uint32_t mode)
+          trial->worker_base[i][j] = atomic_load_explicit(&workers[i][j], memory_order_relaxed);
+    trial->epoch = (uint64_t)OSGetSystemTime();
+    if (worker_schedule_requested) horizon_worker_schedule_enable(false);
++   server_pump_set_active(false);
+    history = trial;
+    select_mode('4', mode == 1 ? 'q' : mode == 2 ? 'r' : EOF);
+    atomic_store_explicit(&enabled, true, memory_order_release);
+diff --git a/wiiu/loading_host/gx2_profile.h b/wiiu/loading_host/gx2_profile.h
+index ff3a331..df0eb02 100644
+--- a/wiiu/loading_host/gx2_profile.h
++++ b/wiiu/loading_host/gx2_profile.h
+@@ -86,6 +86,11 @@ bool horizon_gx2_profile_playing_sequence(uint32_t *sequence);
+ bool horizon_gx2_profile_frame_laps_mode(void);
+ bool horizon_gx2_profile_frame_laps_key(uint32_t *sequence, uint64_t *start_ticks);
+ void horizon_gx2_profile_phase(uint32_t phase);
++void horizon_gx2_profile_server_pump_scope(bool ordinary_focused);
++uint32_t horizon_gx2_profile_server_pump_generation(void);
++uint64_t horizon_gx2_profile_server_pump_clock(void);
++void horizon_gx2_profile_server_pump_report(uint32_t generation, uint32_t samples,
++                                            const uint64_t ticks[6]);
+ uint64_t horizon_gx2_profile_stamp(void);
+ uint64_t horizon_gx2_profile_worker_stamp(void);
+ void horizon_gx2_profile_end(uint32_t stage, uint64_t begin);
